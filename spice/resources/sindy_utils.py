@@ -7,9 +7,9 @@ from tqdm import tqdm
 import dill
 import torch
 
-from resources.bandits import AgentNetwork, AgentSpice, get_update_dynamics, BanditSession, BanditsDrift
-from resources.rnn_utils import DatasetRNN
-from resources.model_evaluation import log_likelihood
+from .bandits import AgentNetwork, AgentSpice, get_update_dynamics, BanditSession, BanditsDrift
+from .rnn_utils import DatasetRNN
+from .model_evaluation import log_likelihood
 
 
 def make_sindy_data(

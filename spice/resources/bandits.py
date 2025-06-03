@@ -8,8 +8,8 @@ import torch
 import pickle
 import dill
 
-from resources.rnn import BaseRNN
-from resources.rnn_utils import DatasetRNN
+from .rnn import BaseRNN
+from .rnn_utils import DatasetRNN
 
 # Setup so that plots will look nice
 small = 15

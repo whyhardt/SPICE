@@ -12,7 +12,7 @@ from typing import Union
 import numpyro
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from resources.bandits import get_update_dynamics
+from .bandits import get_update_dynamics
 
     
 def log_likelihood(data: np.ndarray, probs: np.ndarray, **kwargs):

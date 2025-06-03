@@ -5,10 +5,10 @@ import numpy as np
 import torch
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from resources.fit_sindy import fit_sindy_pipeline
-from resources.bandits import AgentSpice, AgentNetwork, get_update_dynamics
-from resources.sindy_utils import DatasetRNN
-from resources.model_evaluation import log_likelihood
+from .fit_sindy import fit_sindy_pipeline
+from .bandits import AgentSpice, AgentNetwork, get_update_dynamics
+from .sindy_utils import DatasetRNN
+from .model_evaluation import log_likelihood
 
 
 def optimize_for_participant(
@@ -45,7 +45,7 @@ def optimize_for_participant(
         dict: Best optimizer configuration with type and parameters
     """
     
-    from resources.sindy_utils import remove_control_features, conditional_filtering
+    from .sindy_utils import remove_control_features, conditional_filtering
 
     def objective(trial):
         # Sample optimizer type

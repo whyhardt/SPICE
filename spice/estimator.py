@@ -10,21 +10,21 @@ from copy import deepcopy
 from sklearn.base import BaseEstimator
 from typing import Dict, Optional, Tuple, Union, Iterable
 
-from spice.resources import (
+from .resources import (
     AgentSpice,
     AgentNetwork,
     create_dataset,
     check_library_setup,
-    fit_sindy,
+    fit_spice,
     DatasetRNN,
     BaseRNN,
 )
-from spice.resources.rnn_training import fit_model as fit_rnn
+from .resources.rnn_training import fit_model
 
 
 warnings.filterwarnings("ignore")
 
-class rnn_sindy_theorist(BaseEstimator):
+class SpiceEstimator(BaseEstimator):
     """
     RNN-SINDy theorist implemented as a scikit-learn estimator.
     
@@ -60,15 +60,18 @@ class rnn_sindy_theorist(BaseEstimator):
         n_steps_per_call: Optional[int] = 16,  # number of timesteps in one backward-call; -1 for full sequence
         batch_size: Optional[int] = -1,  # -1 for a batch-size equal to the number of participants in the data
         learning_rate: Optional[float] = 5e-3,
-        convergence_threshold: Optional[float] = 1e-6,
+        convergence_threshold: Optional[float] = 1e-7,
         device: Optional[torch.device] = torch.device('cpu'),
         scheduler: Optional[bool] = False, 
         train_test_ratio: Optional[float] = 1.,
+        l1_weight_decay: Optional[float] = 1e-4,
+        l2_weight_decay: Optional[float] = 1e-4,
         
         # SINDy parameters
         sindy_optim_threshold: Optional[float] = 0.03,
         sindy_optim_regularization: Optional[float] = 1e-2,
-        sindy_library_polynomial_degree: Optional[int] = 2,
+        sindy_library_polynomial_degree: Optional[int] = 1,
+        list_signals: Optional[Iterable[str]] = ['x_V', 'c_a', 'c_r'],
         
         verbose: Optional[bool] = False,
     ):
@@ -87,6 +90,8 @@ class rnn_sindy_theorist(BaseEstimator):
         self.train_test_ratio = train_test_ratio
         self.device = device
         self.verbose = verbose
+        self.l1_weight_decay = l1_weight_decay
+        self.l2_weight_decay = l2_weight_decay
         
         # SINDy parameters
         self.sindy_optim_threshold = sindy_optim_threshold
@@ -115,11 +120,12 @@ class rnn_sindy_theorist(BaseEstimator):
         self.rnn_agent = None
         self.rnn_model = None
         self.rnn_optimizer = None
-        self.sindy_agent = None
-        self.sindy_features = None
+        self.spice_agent = None
+        self.spice_features = None
         
         self.rnn_model = rnn_class(
             n_actions=n_actions,
+            list_signals=list_signals,
             hidden_size=hidden_size, 
             n_participants=n_participants,
             n_experiments=n_experiments,
@@ -149,7 +155,7 @@ class rnn_sindy_theorist(BaseEstimator):
         
         batch_size = conditions.shape[0] if self.batch_size == -1 else self.batch_size
         
-        rnn_model, rnn_optimizer, _ = fit_rnn(
+        rnn_model, rnn_optimizer, _ = fit_model(
             model=self.rnn_model,
             dataset_train=dataset,
             optimizer=self.optimizer_rnn,
@@ -157,8 +163,11 @@ class rnn_sindy_theorist(BaseEstimator):
             epochs=self.epochs,
             batch_size=batch_size,
             bagging=self.bagging,
-            n_steps=self.n_steps_per_call,
             scheduler=self.scheduler,
+            n_steps=self.n_steps_per_call,
+            l1_weight_decay=self.l1_weight_decay,
+            l2_weight_decay=self.l2_weight_decay,
+            verbose=self.verbose,
         )
 
         rnn_model.eval()
@@ -177,108 +186,26 @@ class rnn_sindy_theorist(BaseEstimator):
         self.sindy_agent = {}
         self.sindy_features = {}
         sindy_modules = {rnn_module: {} for rnn_module in self.rnn_modules}
-        
-        # skip on IDs = 0 --> correspond to -1 entries in data
-        participant_ids = np.unique(conditions[..., -1]).astype(int)
-        experiment_ids = np.unique(conditions[..., -2]).astype(int)
-        
-        if min(participant_ids) == -1:
-            participant_ids = participant_ids[1:]
-        
-        if min(experiment_ids) == -1:
-            experiment_ids = experiment_ids[1:]
-        
-        for participant_id in participant_ids:
-            self.sindy_features[participant_id] = {}
-            for key in sindy_modules:
-                sindy_modules[key][participant_id] = {}
-                
-            for experiment_id in experiment_ids:
-                self.sindy_features[participant_id][experiment_id] = {}
-                for key in sindy_modules:
-                    sindy_modules[key][participant_id][experiment_id] = {}
-                
-                # get a sub-dataset for the given participant-experiment combination and only for valid 
-                index_participant_experiment_combo = torch.logical_and(dataset.xs[..., -1] == participant_id, dataset.xs[..., -2] == experiment_id)
-                # index_participant_experiment_combo = torch.logical_and(dataset.xs[..., 0] != -1, index_participant_experiment_combo) 
-                sub_xs = dataset.xs[index_participant_experiment_combo][None]
-                sub_ys = dataset.ys[index_participant_experiment_combo][None]
-                
-                self.rnn_agent.new_sess(participant_id=participant_id, experiment_id=experiment_id)
-                
-                if sub_xs.shape[1] > 0:
-                    # Get SINDy-formatted data with exposed latent variables from RNN-Agent
-                    x_train, control, feature_names, beta_scaling = create_dataset(
-                        agent=self.rnn_agent, 
-                        data=DatasetRNN(sub_xs, sub_ys),
-                        n_trials=1024,
-                        n_sessions=1,
-                        participant_id=participant_id,
-                        experiment_id=experiment_id,
-                        dataprocessing=None,
-                        shuffle=False,
-                    )
-                    
-                    # Fit SINDy models -> One model per x_train feature
-                    sindy_modules_id = fit_sindy(
-                        variables=x_train, 
-                        control=control, 
-                        feature_names=feature_names, 
-                        polynomial_degree=self.sindy_library_polynomial_degree, 
-                        library_setup=self.sindy_library_config, 
-                        filter_setup=self.sindy_filter_config, 
-                        verbose=self.verbose,
-                        get_loss=False, 
-                        optimizer_threshold=self.sindy_optim_threshold, 
-                        optimizer_alpha=self.sindy_optim_regularization,
-                    )
-                    
-                    # Test SINDy agent and extract features
-                    features_id = {}
-                    # try:
-                    
-                    # ------------------------------------------------------------------------
-                    # Save trained features of each model
-                    # ------------------------------------------------------------------------
-                    betas = self.rnn_agent.get_betas()
-                    if betas is not None:
-                        fitted_modules = {'beta_'+key: betas[key] for key in betas}
-                        fitted_modules.update(sindy_modules_id)
-                    else:
-                        fitted_modules = sindy_modules_id
-                        
-                    for m in fitted_modules:
-                        if m in sindy_modules:
-                            sindy_modules[m][participant_id][experiment_id] = sindy_modules_id[m]
-                            
-                            features_m = fitted_modules[m].get_feature_names()
-                            coeffs_m = fitted_modules[m].coefficients()[0]
-                        
-                            # Remove dummy control parameters (containing 'u')
-                            index_u = ['dummy' not in feature for feature in features_m]
-                            features_m = np.array(features_m)[index_u].tolist()
-                            coeffs_m = np.array(coeffs_m)[index_u].tolist()
-                        else:
-                            features_m = ['1']
-                            coeffs_m = [fitted_modules[m]]
-                        
-                        features_id[m] = (tuple(features_m), tuple(coeffs_m))
-                        
-                    self.sindy_features[participant_id][experiment_id] = deepcopy(features_id)
-        
-        self.sindy_agent = AgentSpice(
-            model_rnn=rnn_model,
-            sindy_modules=sindy_modules,
-            n_actions=self.n_actions,
-            deterministic=True,
+
+        participant_id = None if self.n_participants > 1 else 0
+
+        self.sindy_agent, self.sindy_features = fit_spice(
+            rnn_modules=self.rnn_modules,
+            control_signals=self.control_parameters,
+            agent_rnn=self.rnn_agent,
+            data=dataset,
+            polynomial_degree=self.sindy_library_polynomial_degree,
+            library_setup=self.sindy_library_config,
+            filter_setup=self.sindy_filter_config,
+            optimizer_threshold=self.sindy_optim_threshold,
+            optimizer_alpha=self.sindy_optim_regularization,
+            participant_id=participant_id,
+            verbose=self.verbose,
         )
-            # except Exception as e:
-            #     # If SINDy agent setup fails, record the error
-            #     for m in sindy_models:
-            #         features_id[m] = (str(e), str(e))
-            #     self.sindy_features[participant_id] = deepcopy(features_id)
-            #     if self.verbose:
-            #         print(f"Warning: SINDy agent setup failed for ID {participant_id}: {str(e)}")
+
+        if self.verbose:
+            print('\nSINDy training finished.')
+            print(f'Training took {time.time() - start_time:.2f} seconds.')
     
     def predict(self, conditions: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """
@@ -376,7 +303,7 @@ if __name__ == '__main__':
     targets = np.random.randint(0, n_actions, size=(n_participants, n_trials, n_actions))
     
     # Create and train model
-    model = rnn_sindy_theorist(
+    model = SpiceEstimator(
         hidden_size=args.hidden_size,
         epochs=args.epochs,
         learning_rate=args.learning_rate,

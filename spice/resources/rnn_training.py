@@ -4,8 +4,8 @@ from torch.utils.data import DataLoader, RandomSampler
 
 import time
 import numpy as np
-from resources.rnn import BaseRNN, CustomEmbedding
-from resources.rnn_utils import DatasetRNN
+from .rnn import BaseRNN, CustomEmbedding
+from .rnn_utils import DatasetRNN
 
 
 def gradient_penalty(f: nn.Module, e_i: torch.Tensor, e_j: torch.Tensor, factor=1.0):

@@ -2,7 +2,7 @@
 SPICE: RNN-SINDy Theorist for Behavioral Modeling
 """
 
-from .theorist import rnn_sindy_theorist
+from .estimator import SpiceEstimator
 
 __version__ = "0.1.0"
-__all__ = ["rnn_sindy_theorist"] 
+__all__ = ["SpiceEstimator"] 

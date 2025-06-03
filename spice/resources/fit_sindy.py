@@ -4,10 +4,10 @@ from math import comb
 
 import pysindy as ps
 
-from resources.sindy_utils import remove_control_features, conditional_filtering
-from resources.rnn_utils import DatasetRNN
-from resources.sindy_utils import generate_off_policy_data, create_dataset
-from resources.bandits import AgentNetwork
+from .sindy_utils import remove_control_features, conditional_filtering
+from .rnn_utils import DatasetRNN
+from .sindy_utils import generate_off_policy_data, create_dataset
+from .bandits import AgentNetwork
 
 def fit_sindy(
     variables: List[np.ndarray], 

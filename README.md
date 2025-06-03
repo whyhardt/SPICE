@@ -1,31 +1,39 @@
-# SPICE: RNN-SINDy Theorist
+# Computational Discovery of Sparse and Interpretable Cognitive Equations (SPICE)
 
-SPICE is a Python package that implements an RNN-SINDy theorist as a scikit-learn estimator for behavioral modeling. It combines Recurrent Neural Networks (RNN) for predicting behavioral choices with Sparse Identification of Nonlinear Dynamics (SINDy) for discovering underlying dynamical systems.
+SPICE is a framework for automating scientific practice in cognitive science and is based on a two cornerstones:
+
+1. A task-specific RNN is trained to predict human behavior and thus learn implicitly latent cognitive mechanisms.
+
+2. Sparse Identification of nonlinear Dynamics (SINDy; an equation discovery algorithm) is used to obtain mathematically interpretable equations for the learned cognitive mechanisms.
+
+The resulting model with the neural-network architecture but with equations instead of RNN modules is called SPICE model. An overview is given in Figure 1.
+
+This README file gives an overview on how to install and run SPICE as a scikit-learn estimator. To learn how to use SPICE in more comprehensive scenarios, you can go to [tutorials](tutorials).
+
+![Figure 1](figures/Figures_NHB_Overview.jpg "Figure 1: SPICE overview")
 
 ## Installation
 
 You can install SPICE using pip:
 
 ```bash
-pip install spice-rnn-sindy
+pip install -e .
 ```
 
 ## Features
 
-- RNN-based behavioral prediction
-- SINDy-based system identification
 - Scikit-learn compatible estimator interface
-- Support for multiple participants and experiments
-- Customizable network architectures and training parameters
+- Customizable network architecture for identifying complex cognitive mechanisms
+- Participant embeddings for identifying individual differences
 
 ## Quick Start
 
 ```python
-from spice import rnn_sindy_theorist
+from spice.estimator import SpiceEstimator
 import numpy as np
 
 # Create and configure the model
-model = rnn_sindy_theorist(
+spice_estimator = SpiceEstimator(
     hidden_size=8,
     epochs=128,
     n_actions=2,
@@ -40,7 +48,7 @@ conditions = np.random.rand(10, 100, 5)  # (n_participants, n_trials, n_features
 targets = np.random.randint(0, 2, size=(10, 100, 2))  # (n_participants, n_trials, n_actions)
 
 # Fit the model
-model.fit(conditions, targets)
+spice_estimator.fit(conditions, targets)
 
 # Make predictions
 pred_rnn, pred_sindy = model.predict(conditions)
@@ -57,19 +65,15 @@ See `requirements.txt` for a complete list of dependencies.
 
 This project is licensed under the MIT License - see the LICENSE file for details.
 
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
 ## Citation
 
 If you use this package in your research, please cite:
 
 ```bibtex
-@software{spice2024,
-  title = {SPICE: RNN-SINDy Theorist for Behavioral Modeling},
-  year = {2024},
-  author = {SPICE Team},
-  url = {https://github.com/yourusername/SPICE}
+@software{spice2025,
+  title = {SPICE: Sparse and Interpretable Cognitive Equations},
+  year = {2025},
+  author = {Weinhardt, Daniel},
+  url = {https://github.com/whyhardt/SPICE}
 }
 ```

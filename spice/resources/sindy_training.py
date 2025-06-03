@@ -4,12 +4,12 @@ from copy import deepcopy
 from tqdm import tqdm
 import pandas as pd
 
-from resources.sindy_utils import remove_bad_participants
-from resources.fit_sindy import fit_sindy_pipeline
-from resources.rnn_utils import DatasetRNN,split_data_along_timedim
-from resources.bandits import AgentNetwork, AgentSpice, get_update_dynamics
-from resources.model_evaluation import bayesian_information_criterion as loss_metric, log_likelihood
-from resources.optimizer_selection import optimize_for_participant
+from .sindy_utils import remove_bad_participants
+from .fit_sindy import fit_sindy_pipeline
+from .rnn_utils import DatasetRNN,split_data_along_timedim
+from .bandits import AgentNetwork, AgentSpice, get_update_dynamics
+from .model_evaluation import bayesian_information_criterion as loss_metric, log_likelihood
+from .optimizer_selection import optimize_for_participant
 
 
 def module_pruning(agent_spice: AgentSpice, dataset: DatasetRNN, participant_ids: Iterable[int], verbose: bool = False):
@@ -192,6 +192,7 @@ def fit_spice(
         except Exception as e:
             # If using Optuna, find the best optimizer configuration for this participant
             print(e)
+            print(e.traceback)
             optuna_pids.append(pid)
             if use_optuna:
                 print(f"Using optuna to find a better set of pysindy parameters for participant {pid}...")
@@ -324,15 +325,16 @@ def fit_spice(
         for rnn_module in rnn_modules:
             sindy_modules[rnn_module][pid] = sindy_modules_id[rnn_module]
 
-    print("Optuna-optimized participants:", optuna_pids)
-    print("Likelihoods of RNN, SPICE (before), SPICE (after):")
-    df = {
-        'PID': optuna_pids,
-        'RNN': likelihoods_rnn,
-        'SPICE': likelihoods_spice_before_optuna,
-        'SPICE (Optuna)': likelihoods_spice_after_optuna,
-    }
-    print(pd.DataFrame(data=df))
+    if use_optuna:
+        print("Optuna-optimized participants:", optuna_pids)
+        print("Likelihoods of RNN, SPICE (before), SPICE (after):")
+        df = {
+            'PID': optuna_pids,
+            'RNN': likelihoods_rnn,
+            'SPICE': likelihoods_spice_before_optuna,
+            'SPICE (Optuna)': likelihoods_spice_after_optuna,
+        }
+        print(pd.DataFrame(data=df))
     
     # set up a SINDy-based agent by replacing the RNN-modules with the respective SINDy-model
     agent_spice = AgentSpice(model_rnn=deepcopy(agent_rnn._model), sindy_modules=sindy_modules, n_actions=agent_rnn._n_actions, deterministic=deterministic)
