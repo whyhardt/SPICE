@@ -290,7 +290,7 @@ class ParticipantEmbeddingRNN(BaseRNN):
         **kwargs,
     ):
         
-        super(ParticipantEmbeddingRNN, self).__init__(n_actions=n_actions, list_signals=list_signals)
+        super(ParticipantEmbeddingRNN, self).__init__(n_actions=n_actions, list_signals=LEARNING_RATE_RNN_CONFIG.spice_feature_list)
         
         # specify here the participant-specifc parts
         self.embedding_size = 8
@@ -378,4 +378,159 @@ class ParticipantEmbeddingRNN(BaseRNN):
         # post-process the forward pass; give here as inputs the logits, batch_first and all values from the memory state
         logits = self.post_forward_pass(logits, batch_first)
         
-        return logits, self.get_state()    
+        return logits, self.get_state()
+    
+
+WEINHARDT_2024_CONFIG = SpiceConfig(
+    rnn_modules=['x_learning_rate_reward', 'x_value_reward_not_chosen', 'x_value_choice_chosen', 'x_value_choice_not_chosen'],
+    control_parameters=['c_action', 'c_reward', 'c_value_reward'],
+    # The new module which handles the not-chosen value, does not need any additional inputs except for the value
+    library_setup = {
+        # 'x_value_reward_chosen': ['c_reward'] -> Remove this one from the library as we are not going to identify the dynamics of a hard-coded equation
+        'x_learning_rate_reward': ['c_reward', 'c_value_reward'],
+        'x_value_reward_not_chosen': [],
+        'x_value_choice_chosen': [],
+        'x_value_choice_not_chosen': [],
+    },
+
+    # Further, the new module should be applied only to the not-chosen values
+    filter_setup = {
+        # 'x_value_reward_chosen': ['c_action', 1, True], -> Remove this one as well
+        'x_learning_rate_reward': ['c_action', 1, True],
+        'x_value_reward_not_chosen': ['c_action', 0, True],
+        'x_value_choice_chosen': ['c_action', 1, True],
+        'x_value_choice_not_chosen': ['c_action', 0, True],
+    }    
+)
+
+class Weinhardt2024RNN(BaseRNN):
+    
+    init_values = {
+            'x_value_reward': 0.5,
+            'x_value_choice': 0.,
+            'x_learning_rate_reward': 0.,
+        }
+    
+    def __init__(
+        self,
+        n_actions,
+        n_participants,
+        **kwargs,
+    ):
+        
+        super(Weinhardt2024RNN, self).__init__(n_actions=n_actions, list_signals=WEINHARDT_2024_CONFIG.spice_feature_list)
+        
+        # set up the participant-embedding layer
+        self.embedding_size = 8
+        self.participant_embedding = torch.nn.Sequential(
+            torch.nn.Embedding(num_embeddings=n_participants, embedding_dim=self.embedding_size),
+            torch.nn.ReLU(),
+            torch.nn.Dropout(p=0.25),
+            )
+        
+        # scaling factor (inverse noise temperature) for each participant for the values which are handled by an hard-coded equation
+        self.betas = torch.nn.ModuleDict()
+        self.betas['x_value_reward'] = torch.nn.Sequential(torch.nn.Linear(self.embedding_size, 1), torch.nn.ReLU())
+        self.betas['x_value_choice'] = torch.nn.Sequential(torch.nn.Linear(self.embedding_size, 1), torch.nn.ReLU())
+        
+        # set up the submodules
+        self.submodules_rnn['x_learning_rate_reward'] = self.setup_module(input_size=2+self.embedding_size, dropout=0.25)
+        self.submodules_rnn['x_value_reward_not_chosen'] = self.setup_module(input_size=0+self.embedding_size, dropout=0.25)
+        self.submodules_rnn['x_value_choice_chosen'] = self.setup_module(input_size=0+self.embedding_size, dropout=0.25)
+        self.submodules_rnn['x_value_choice_not_chosen'] = self.setup_module(input_size=0+self.embedding_size, dropout=0.25)
+        
+        # set up hard-coded equations
+        self.submodules_eq['x_value_reward_chosen'] = lambda value, inputs: value + inputs[..., 1] * (inputs[..., 0] - value)
+        
+    def forward(self, inputs, prev_state=None, batch_first=False):
+        """Forward pass of the RNN
+
+        Args:
+            inputs (torch.Tensor): includes all necessary inputs (action, reward, participant id) to the RNN to let it compute the next action
+            prev_state (Tuple[torch.Tensor], optional): That's the previous memory state of the RNN containing the reward-based value. Defaults to None.
+            batch_first (bool, optional): Indicates whether the first dimension of inputs is batch (True) or timesteps (False). Defaults to False.
+        """
+        
+        # First, we have to initialize all the inputs and outputs (i.e. logits)
+        inputs, embedding_variables, logits, timesteps = self.init_forward_pass(inputs, prev_state, batch_first)
+        actions, rewards, _, _ = inputs
+        participant_id, _ = embedding_variables
+        
+        # Here we compute now the participant embeddings for each entry in the batch
+        participant_embedding = self.participant_embedding(participant_id[:, 0].int()) # TODO: check if this is correct
+        beta_reward = self.betas['x_value_reward'](participant_embedding)
+        beta_choice = self.betas['x_value_choice'](participant_embedding)
+        
+        for timestep, action, reward in zip(timesteps, actions, rewards):
+            
+            # record the inputs for training SINDy later on
+            self.record_signal('c_action', action)
+            self.record_signal('c_reward', reward)
+            self.record_signal('c_value_reward', self.state['x_value_reward'])
+            self.record_signal('x_learning_rate_reward', self.state['x_learning_rate_reward'])
+            self.record_signal('x_value_reward_not_chosen', self.state['x_value_reward'])
+            self.record_signal('x_value_choice_chosen', self.state['x_value_choice'])
+            self.record_signal('x_value_choice_not_chosen', self.state['x_value_choice'])
+            
+            # updates for x_value_reward
+            learning_rate_reward = self.call_module(
+                key_module='x_learning_rate_reward',
+                key_state='x_learning_rate_reward',
+                action=action,
+                inputs=(reward, self.state['x_value_reward']),
+                participant_embedding=participant_embedding,
+                participant_index=participant_id,
+                activation_rnn=torch.nn.functional.sigmoid,
+            )
+            
+            next_value_reward_chosen = self.call_module(
+                key_module='x_value_reward_chosen',
+                key_state='x_value_reward',
+                action=action,
+                inputs=(reward, learning_rate_reward),
+                participant_embedding=participant_embedding,
+                participant_index=participant_id,
+                )
+            
+            next_value_reward_not_chosen = self.call_module(
+                key_module='x_value_reward_not_chosen',
+                key_state='x_value_reward',
+                action=1-action,
+                inputs=None,
+                participant_embedding=participant_embedding,
+                participant_index=participant_id,
+                )
+            
+            # updates for x_value_choice
+            next_value_choice_chosen = self.call_module(
+                key_module='x_value_choice_chosen',
+                key_state='x_value_choice',
+                action=action,
+                inputs=None,
+                participant_embedding=participant_embedding,
+                participant_index=participant_id,
+                activation_rnn=torch.nn.functional.sigmoid,
+                )
+            
+            next_value_choice_not_chosen = self.call_module(
+                key_module='x_value_choice_not_chosen',
+                key_state='x_value_choice',
+                action=1-action,
+                inputs=None,
+                participant_embedding=participant_embedding,
+                participant_index=participant_id,
+                activation_rnn=torch.nn.functional.sigmoid,
+                )
+            
+            # updating the memory state
+            self.state['x_learning_rate_reward'] = learning_rate_reward
+            self.state['x_value_reward'] = next_value_reward_chosen + next_value_reward_not_chosen
+            self.state['x_value_choice'] = next_value_choice_chosen + next_value_choice_not_chosen
+            
+            # Now keep track of the logit in the output array
+            logits[timestep] = self.state['x_value_reward'] * beta_reward + self.state['x_value_choice'] * beta_choice
+            
+        # post-process the forward pass; give here as inputs the logits, batch_first and all values from the memory state
+        logits = self.post_forward_pass(logits, batch_first)
+        
+        return logits, self.get_state()
