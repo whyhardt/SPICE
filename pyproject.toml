@@ -5,10 +5,13 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "spice"
 version = "0.1.0"
-description = "RNN-SINDy theorist for behavioral modeling"
+description = "SPICE: Sparse and Interpretable Cognitive Equations"
 readme = "README.md"
 authors = [
-    { name = "SPICE Team", email = "author@example.com" }
+    { name = "Daniel Weinhardt", email = "daniel.weinhardt@uni-osnabrueck.de" }
+]
+maintainers = [
+    { name = "Muhip Tezcan", email = "itezcan@uni-osnabrueck.de" }
 ]
 license = { file = "LICENSE" }
 classifiers = [
@@ -20,9 +23,38 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
-keywords = ["rnn", "sindy", "machine-learning", "dynamical-systems", "reinforcement-learning"]
+keywords = ["cognitive-science", "reinforcement-learning", "machine-learning", "rnn", "dynamical-systems", "sindy"]
 requires-python = ">=3.11"
-dynamic = ["dependencies", "optional-dependencies"]
+
+dependencies = [
+    "arviz>=0.20.0,<0.21.0",
+    "jax>=0.4.35,<0.5.0",
+    "matplotlib>=3.10.0,<4.0.0",
+    "numpy>=1.21.0,<2.0.0",
+    "numpyro>=0.15.0,<0.16.0",
+    "pandas>=2.2.0,<3.0.0",
+    "pymc>=5.21.0,<6.0.0",
+    "pyro_ppl>=1.9.0,<2.0.0",
+    "pysindy>=1.7.0,<2.0.0",
+    "scikit-learn>=1.0.0,<2.0.0",
+    "scipy>=1.15.0,<2.0.0",
+    "seaborn>=0.13.0,<0.14.0",
+    "theano>=1.0.5,<2.0.0",
+    "torch>=2.0.0,<3.0.0",
+    "tqdm>=4.65.0",
+    "optuna>=4.3.0,<5.0.0",
+    "dill>=0.4.0,<0.5.0",
+    "pytest>=7.0.0"
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0"
+]
+
+[project.urls]
+Issues="https://github.com/whyhardt/SPICE/issues"
+Repository="https://github.com/whyhardt/SPICE"
 
 [tool.setuptools]
 packages = ["spice"]
