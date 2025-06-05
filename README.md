@@ -1,5 +1,7 @@
 # Computational Discovery of Sparse and Interpretable Cognitive Equations (SPICE)
 
+![SPICE Logo](https://github.com/whyhardt/SPICE/blob/main/figures/spice_logo.png?raw=true)
+
 SPICE is a framework for automating scientific practice in cognitive science and is based on a two cornerstones:
 
 1. A task-specific RNN is trained to predict human behavior and thus learn implicitly latent cognitive mechanisms.
@@ -10,11 +12,17 @@ The resulting model with the neural-network architecture but with equations inst
 
 This README file gives an overview on how to install and run SPICE as a scikit-learn estimator. To learn how to use SPICE in more comprehensive scenarios, you can go to [tutorials](tutorials).
 
-![Figure 1](figures/Figures_NHB_Overview.jpg "Figure 1: SPICE overview")
+![Figure 1 - SPICE Overview](https://github.com/whyhardt/SPICE/blob/main/figures/spice_overview.jpg?raw=true "Figure 1: SPICE overview")
 
 ## Installation
 
 You can install SPICE using pip:
+
+```bash
+pip install autospice
+```
+
+or, you can clone this repository and install it locally from the root folder:
 
 ```bash
 pip install -e .
@@ -25,6 +33,7 @@ pip install -e .
 - Scikit-learn compatible estimator interface
 - Customizable network architecture for identifying complex cognitive mechanisms
 - Participant embeddings for identifying individual differences
+- Precoded models for simple Rescorla-Wagner, forgetting mechanism, choise perseveration and parcitipant embeddings
 
 ## Quick Start
 

@@ -3,8 +3,8 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "spice"
-version = "0.1.0"
+name = "autospice"
+version = "0.1.1"
 description = "SPICE: Sparse and Interpretable Cognitive Equations"
 readme = "README.md"
 authors = [
