@@ -12,7 +12,7 @@ The resulting model with the neural-network architecture but with equations inst
 
 This README file gives an overview on how to install and run SPICE as a scikit-learn estimator. To learn how to use SPICE in more comprehensive scenarios, you can go to [tutorials](tutorials).
 
-![Figure 1 - SPICE Overview](https://github.com/whyhardt/SPICE/blob/main/figures/fig1_spice_overview.pdf?raw=true "Figure 1: SPICE overview")
+![Figure 1 - SPICE Overview](https://github.com/whyhardt/SPICE/blob/main/figures/spice_overview.jpg?raw=true "Figure 1: SPICE overview")
 
 ## Installation
 
