@@ -1,6 +1,3 @@
-"""
-Model evaluation utilities.
-"""
 import sys, os
 import numpy as np
 import pandas as pd
@@ -12,41 +9,33 @@ from typing import Union
 import numpyro
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from .bandits import get_update_dynamics
+from spice.resources.bandits import get_update_dynamics
+from spice.benchmarking.hierarchical_bayes_numpyro import rl_model
 
     
 def log_likelihood(data: np.ndarray, probs: np.ndarray, **kwargs):
-    """Calculate log likelihood of predictions.
+    # data: array of binary observations (0 or 1)
+    # probs: array of predicted probabilities for outcome 1 
     
-    Args:
-        data: array of binary observations (0 or 1)
-        probs: array of predicted probabilities for outcome 1
-        
-    Returns:
-        float: Log likelihood score
-    """
+    # Sum over all data points
+    # return np.sum(np.sum(data * np.log(probs), axis=-1), axis=axis) / normalization
     # Ensure probabilities are within a valid range to prevent log(0)
     epsilon = 1e-9
     probs = np.clip(probs, epsilon, 1 - epsilon)
     
     # Calculate log-likelihood for each observation
     log_likelihoods = data * np.log(probs) + (1 - data) * np.log(1 - probs)
+    # log_likelihoods = data * np.log(probs)
+    # log_likelihoods = np.sum(data * np.log(probs), axis=-1)
     
     # Sum log-likelihoods over all observations
     return np.sum(log_likelihoods)
 
 def bayesian_information_criterion(data: np.ndarray, probs: np.ndarray, n_parameters: int, ll: np.ndarray = None, **kwargs):
-    """Calculate Bayesian Information Criterion (BIC).
+    # data: array of binary observations (0 or 1)
+    # probs: array of predicted probabilities for outcome 1
+    # n_parameters: integer number of trainable model parameters
     
-    Args:
-        data: array of binary observations (0 or 1)
-        probs: array of predicted probabilities for outcome 1
-        n_parameters: integer number of trainable model parameters
-        ll: optional pre-computed log likelihood
-        
-    Returns:
-        float: BIC score
-    """
     if ll is None:
         ll = log_likelihood(data=data, probs=probs)
     

@@ -8,21 +8,22 @@ import torch
 import pickle
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from spice.resources.rnn import RLRNN
+from spice.resources.rnn import BaseRNN
 from spice.resources.bandits import AgentSpice, AgentNetwork, AgentQ
 from spice.resources.sindy_training import fit_spice
 from spice.resources.sindy_utils import load_spice
-from spice.utils.convert_dataset import convert_dataset
-from spice.benchmarking.hierarchical_bayes_numpyro import rl_model
+from utils.convert_dataset import convert_dataset
+from benchmarking.hierarchical_bayes_numpyro import rl_model
 
 
 def setup_rnn(
+    class_rnn,
     path_model,
     list_sindy_signals, 
     n_actions=2,
     counterfactual=False,
     device=device('cpu'),
-) -> RLRNN:
+) -> BaseRNN:
     
     # get n_participants and hidden_size from state dict
     state_dict = torch.load(path_model, map_location=torch.device('cpu'))['model']
@@ -40,7 +41,7 @@ def setup_rnn(
     else:
         embedding_size = 0
         
-    rnn = RLRNN(
+    rnn = class_rnn(
         n_actions=n_actions, 
         hidden_size=hidden_size, 
         embedding_size=embedding_size,
@@ -55,6 +56,7 @@ def setup_rnn(
 
 
 def setup_agent_rnn(
+    class_rnn,
     path_model,
     list_sindy_signals,
     n_actions=2,
@@ -63,13 +65,14 @@ def setup_agent_rnn(
     device=device('cpu'),
     ) -> AgentNetwork:
     
-    rnn = setup_rnn(path_model=path_model, list_sindy_signals=list_sindy_signals, device=device, n_actions=n_actions, counterfactual=counterfactual)
+    rnn = setup_rnn(class_rnn=class_rnn, path_model=path_model, list_sindy_signals=list_sindy_signals, device=device, n_actions=n_actions, counterfactual=counterfactual)
     agent = AgentNetwork(model_rnn=rnn, n_actions=n_actions, deterministic=deterministic)
     
     return agent
 
 
 def setup_agent_spice(
+    class_rnn: type,
     path_rnn: str,
     path_data: str,
     rnn_modules: List[str],
@@ -88,7 +91,7 @@ def setup_agent_spice(
     verbose: bool = False,
 ) -> AgentSpice:
     
-    agent_rnn = setup_agent_rnn(path_model=path_rnn, list_sindy_signals=rnn_modules+control_parameters)
+    agent_rnn = setup_agent_rnn(class_rnn=class_rnn, path_model=path_rnn, list_sindy_signals=rnn_modules+control_parameters)
     dataset = convert_dataset(file=path_data)[0]
     
     if path_spice is None or path_spice == '':

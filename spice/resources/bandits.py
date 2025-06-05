@@ -5,11 +5,10 @@ import matplotlib as mpl
 import numpy as np
 from copy import copy, deepcopy
 import torch
-import pickle
-import dill
+from tqdm import tqdm
 
-from .rnn import BaseRNN
-from .rnn_utils import DatasetRNN
+from spice.resources.rnn import BaseRNN, ExtendedEmbedding
+from spice.resources.rnn_utils import DatasetRNN
 
 # Setup so that plots will look nice
 small = 15
@@ -356,15 +355,19 @@ class AgentNetwork:
       
       self.new_sess()
 
-  def new_sess(self, participant_id: int = 0, **kwargs):
+  def new_sess(self, participant_id: int = 0, experiment_id: int = 0, additional_embedding_inputs: np.ndarray = torch.zeros(0)):
     """Reset the network for the beginning of a new session."""
     if not isinstance(participant_id, torch.Tensor):
       participant_id = torch.tensor(participant_id, dtype=int, device=self._model.device)[None]
     
     self._model.set_initial_state(batch_size=1)
     
-    self._xs = torch.zeros((1, self._n_actions*2+1))
-    self._xs[0, -1] = participant_id
+    self._meta_data = torch.zeros((1, 2))
+    self._meta_data[0, -1] = participant_id
+    self._meta_data[0, -2] = experiment_id
+    
+    self._additional_meta_data = additional_embedding_inputs if isinstance(additional_embedding_inputs, torch.Tensor) else torch.tensor(additional_embedding_inputs, dtype=torch.float32)
+    self._additional_meta_data = self._additional_meta_data.view(1, -1)
     
     self.set_state()
 
@@ -374,7 +377,7 @@ class AgentNetwork:
     if betas is not None:
       logits = np.sum(
         np.concatenate([
-          self._state[key] * betas[key] for key in self._state if 'x_value' in key
+          self._state[key] * betas[key] for key in self._state if key in betas 
           ]), 
         axis=0)
     else:
@@ -401,11 +404,11 @@ class AgentNetwork:
     else:
       return np.random.choice(self._n_actions, p=choice_probs)
 
-  def update(self, choice: float, reward: float, participant_id: float, *args, **kwargs):
+  def update(self, choice: float, reward: float, block: int = 0, additional_inputs: np.ndarray = torch.zeros(0), **kwargs):
     choice = torch.eye(self._n_actions)[int(choice)]
-    self._xs = torch.concat([choice, torch.tensor(reward), torch.tensor(participant_id).view(-1)]).view(1, 1, -1).to(device=self._model.device)
+    xs = torch.concat([choice, torch.tensor(reward), torch.tensor(additional_inputs), torch.tensor(block).view(1), self._meta_data.view(-1)]).view(1, 1, -1).to(device=self._model.device)
     with torch.no_grad():
-      self._model(self._xs, self._model.get_state(detach=True))
+      self._model(xs, self._model.get_state(detach=True))
     self.set_state()
   
   def set_state(self):
@@ -415,7 +418,13 @@ class AgentNetwork:
     if hasattr(self._model, 'betas'):
       betas = {}
       if hasattr(self._model, 'participant_embedding'):
-        participant_embedding = self._model.participant_embedding(torch.tensor(self._xs[..., -1], device=self._model.device, dtype=torch.int32).view(1, 1))
+        if isinstance(self._model.participant_embedding, ExtendedEmbedding):
+          participant_embedding = self._model.participant_embedding(
+            dict_id = self._meta_data[..., -1].int().to(device=self._model.device),
+            additional = self._additional_meta_data.to(device=self._model.device),
+            )
+        else:
+          participant_embedding = self._model.participant_embedding(self._meta_data[..., -1].int().to(device=self._model.device).view(1, 1))
       for key in self._model.betas:
         betas[key] = self._model.betas[key].item() if isinstance(self._model.betas[key], torch.nn.Parameter) else self._model.betas[key](participant_embedding).item()
       return betas
@@ -457,6 +466,7 @@ class AgentSpice(AgentNetwork):
     Returns:
         Dict[int, int]: Dictionary which maps the participant ID onto the respective number of parameters
     """
+    
     submodules = self.get_modules()
     keys_submodules = list(submodules.keys())
     participant_ids = list(submodules[keys_submodules[0]].keys())
@@ -498,9 +508,12 @@ class Bandits:
   
   def step(self, choice):
     pass
+  
+  def new_sess(self):
+    pass
 
 
-class BanditsFlips(Bandits):
+class BanditsFlip(Bandits):
   """Env for 2-armed bandit task with reward probs that flip in blocks."""
 
   def __init__(
@@ -511,7 +524,7 @@ class BanditsFlips(Bandits):
       counterfactual: bool = False,
   ):
     
-    super(BanditsFlips, self).__init__()
+    super(BanditsFlip, self).__init__()
     
     # Assign the input parameters as properties
     self._block_flip_prob = block_flip_prob
@@ -713,6 +726,83 @@ class BanditsDrift(Bandits):
     return self._n_actions
 
 
+class BanditsFlip_eckstein2022(Bandits):
+  """Env for 2-armed bandit task with reward probs that flip in blocks as used in Eckstein et al (2022).
+  Additional flipping criteria: accumulated reward > threshold with threshold ~ Uniform(7,15)."""
+
+  def __init__(
+      self,
+      reward_prob_high: float = 0.75,
+      reward_prob_low: float = 0.,
+      counterfactual: bool = False,
+  ):
+    
+    super(BanditsFlip_eckstein2022, self).__init__()
+    
+    # Assign the input parameters as properties
+    self._block_flip_criteria = np.random.uniform(7, 15)
+    self._accumulated_reward_block = 0
+    self._accumulated_steps_block = 0
+    
+    self._reward_prob_high = reward_prob_high
+    self._reward_prob_low = reward_prob_low
+    
+    self._counterfactual = counterfactual
+    
+    # Choose a random block to start in
+    self._block = np.random.binomial(1, 0.5)
+    
+    # Set up the new block
+    self.new_block()
+
+  def new_sess(self):
+    # Choose a random block to start in
+    self._block = np.random.binomial(1, 0.5)
+    self.new_block()
+
+  def new_block(self):
+    """Flip the reward probabilities for a new block."""
+    # Flip the block
+    self._block = 1 - self._block
+    # Set the reward probabilites
+    if self._block == 1:
+      self.reward_probs = [self._reward_prob_high, self._reward_prob_low]
+    else:
+      self.reward_probs = [self._reward_prob_low, self._reward_prob_high]
+      
+    self._block_flip_criteria = np.random.uniform(7, 15)
+    self._accumulated_reward_block = 0
+    self._accumulated_steps_block = 0
+
+  def step(self, choice: int = None):
+    """Step the model forward given chosen action."""
+
+    if self._accumulated_steps_block == 0 and choice == np.argmax(self.reward_probs):
+      # first trial in a new block -> if the choice is correct -> always reward 
+      reward = np.zeros(self.n_actions)
+      reward[choice] = 1
+    else:
+      # Sample a reward with this probability
+      reward = np.array([float(np.random.binomial(1, prob)) for prob in self.reward_probs], dtype=float)
+    
+    # Check whether to flip the block
+    self._accumulated_reward_block += reward[choice]
+    self._accumulated_steps_block += 1
+    if self._accumulated_reward_block >= self._block_flip_criteria:
+      self.new_block()
+    
+    # Return the reward
+    choice_onehot = np.eye(self.n_actions)[choice]
+    if self._counterfactual:
+      return reward
+    else:
+      return choice_onehot * reward[choice] + (1-choice_onehot)*-1
+
+  @property
+  def n_actions(self) -> int:
+    return 2
+
+
 class BanditSession(NamedTuple):
   """Holds data for a single session of a bandit task."""
   choices: np.ndarray
@@ -815,9 +905,11 @@ def create_dataset(
   experiment_list = []
   parameter_list = []
 
-  for session in range(n_sessions):
+  print('Creating dataset...')
+  for session in tqdm(range(n_sessions)):
     if verbose:
       print(f'Running session {session+1}/{n_sessions}...')
+    environment.new_sess()
     agent.new_sess(sample_parameters=sample_parameters, participant_id=session)
     experiment, choices, rewards = run_experiment(agent, environment, n_trials, session)
     experiment_list.append(experiment)
@@ -871,6 +963,10 @@ def get_update_dynamics(experiment: Union[np.ndarray, torch.Tensor], agent: Unio
     n_trials = len(experiment) - np.argmax(experiment[::-1][:, 0] != -1)
     choices = experiment[:n_trials, :agent._n_actions]
     rewards = experiment[:n_trials, agent._n_actions:2*agent._n_actions]
+    # TODO: additional_inputs are currently treated as signals and as meta-information for the embedding
+    additional_inputs = experiment[0, 2*agent._n_actions:-3]
+    current_block = int(experiment[0, -3])
+    experiment_id = int(experiment[0, -2])
     participant_id = int(experiment[0, -1])
   else:
     raise TypeError("experiment is of not of class numpy.ndarray or torch.Tensor")
@@ -879,23 +975,31 @@ def get_update_dynamics(experiment: Union[np.ndarray, torch.Tensor], agent: Unio
   q = np.zeros((n_trials, agent._n_actions))
   q_reward = np.zeros((n_trials, agent._n_actions))
   q_choice = np.zeros((n_trials, agent._n_actions))
+  q_trial = np.zeros((n_trials, agent._n_actions))
   learning_rate_reward = np.zeros((n_trials, agent._n_actions))
   choice_probs = np.zeros((n_trials, agent._n_actions))
 
   # reset agent states according to ID
-  agent.new_sess(participant_id=participant_id)
+  agent.new_sess(participant_id=participant_id, experiment_id=experiment_id, additional_embedding_inputs=additional_inputs)
   
   for trial in range(n_trials):
     # track all states
     q[trial] = agent.q
     q_reward[trial] = agent._state['x_value_reward'] if 'x_value_reward' in agent._state else np.zeros(agent._n_actions)
     q_choice[trial] = agent._state['x_value_choice'] if 'x_value_choice' in agent._state else np.zeros(agent._n_actions)
+    q_trial[trial] = agent._state['x_value_trial'] if 'x_value_trial' in agent._state else np.zeros(agent._n_actions)
     learning_rate_reward[trial] = agent._state['x_learning_rate_reward'] if 'x_learning_rate_reward' in agent._state else np.zeros(agent._n_actions)
     
     choice_probs[trial] = agent.get_choice_probs()
-    agent.update(choice=np.argmax(choices[trial], axis=-1), reward=rewards[trial], participant_id=participant_id)
+    
+    agent.update(
+      choice=np.argmax(choices[trial], axis=-1), 
+      reward=rewards[trial],  
+      block=current_block, 
+      additional_inputs=additional_inputs,
+      )
   
-  return (q, q_reward, q_choice, learning_rate_reward), choice_probs, agent
+  return (q, q_reward, q_choice, learning_rate_reward, q_trial), choice_probs, agent
 
 
 ###############

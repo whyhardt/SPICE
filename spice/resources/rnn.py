@@ -47,7 +47,20 @@ class CustomEmbedding(nn.Module):
         return torch.eye(self.num_embeddings, dtype=torch.float32, requires_grad=True, device=index.device)[index]
     
     def get_embedding(self, one_hot_encoded: torch.Tensor):
-        return self.linear(one_hot_encoded)
+        return self.linear(one_hot_encoded)    
+
+
+class ExtendedEmbedding(nn.Module):
+    
+    def __init__(self, num_embeddings, num_inputs, embedding_dim):
+        super().__init__()
+        
+        self.embedding = nn.Embedding(num_embeddings, embedding_dim)
+        self.linear_out = nn.Linear(embedding_dim+num_inputs, embedding_dim)
+        
+    def forward(self, dict_id, additional):
+        embedding = self.embedding(dict_id)
+        return self.linear_out(torch.concat((embedding, additional), dim=-1))    
     
     
 class BaseRNN(nn.Module):
@@ -86,6 +99,9 @@ class BaseRNN(nn.Module):
         
         actions = inputs[:, :, :self._n_actions].float()
         rewards = inputs[:, :, self._n_actions:2*self._n_actions].float()
+        additional_inputs = inputs[:, :, 2*self._n_actions:-3].float()
+        blocks = inputs[:, :, -3:-2].int().repeat(1, 1, 2)
+        experiment_ids = inputs[0, :, -2:-1].int()
         participant_ids = inputs[0, :, -1:].int()
         
         if prev_state is not None:
@@ -96,8 +112,8 @@ class BaseRNN(nn.Module):
         timesteps = torch.arange(actions.shape[0])
         logits = torch.zeros_like(actions)
         
-        return (actions, rewards, participant_ids), logits, timesteps
-    
+        return (actions, rewards, blocks, additional_inputs), (participant_ids, experiment_ids), logits, timesteps
+
     def post_forward_pass(self, logits, batch_first):
         # add model dim again and set state
         # self.set_state(*args)
@@ -235,7 +251,8 @@ class BaseRNN(nn.Module):
         """
         record_signal = False
         
-        action = action.unsqueeze(-1)
+        if action is not None:
+            action = action.unsqueeze(-1)
         value = self.get_state()[key_state].unsqueeze(-1)
         # value = key_state.unsqueeze(-1)
         
@@ -334,7 +351,7 @@ class RLRNN(BaseRNN):
         embedding_size = 8,
         dropout = 0.,
         device = torch.device('cpu'),
-        list_signals = ['x_learning_rate_reward', 'x_value_reward_not_chosen', 'x_value_choice_chosen', 'x_value_choice_not_chosen', 'c_action', 'c_reward_chosen', 'c_value_reward', 'c_value_choice'],
+        list_signals = ['x_learning_rate_reward', 'x_value_reward_not_chosen', 'x_value_choice_chosen', 'x_value_choice_not_chosen', 'c_action', 'c_reward', 'c_value_reward', 'c_value_choice'],
         **kwargs,
     ):
         
@@ -343,13 +360,13 @@ class RLRNN(BaseRNN):
         # set up the participant-embedding layer
         self.embedding_size = embedding_size
         if embedding_size > 1:
-            # self.participant_embedding = torch.nn.Sequential(
-            #     torch.nn.Embedding(num_embeddings=n_participants, embedding_dim=self.embedding_size),
+            self.participant_embedding = torch.nn.Sequential(
+                torch.nn.Embedding(num_embeddings=n_participants, embedding_dim=self.embedding_size),
             #     # CustomEmbedding(num_embeddings=n_participants, embedding_dim=embedding_size),
-            #     torch.nn.ReLU(),
-            #     torch.nn.Dropout(p=dropout),
-            #     )
-            self.participant_embedding = torch.nn.Embedding(num_embeddings=n_participants, embedding_dim=self.embedding_size)
+                torch.nn.ReLU(),
+                torch.nn.Dropout(p=dropout),
+                )
+            # self.participant_embedding = torch.nn.Embedding(num_embeddings=n_participants, embedding_dim=self.embedding_size)
         else:
             self.embedding_size = 1
             self.participant_embedding = DummyModule()
@@ -361,7 +378,7 @@ class RLRNN(BaseRNN):
         
         # set up the submodules
         self.submodules_rnn['x_learning_rate_reward'] = self.setup_module(input_size=3+self.embedding_size, dropout=dropout)
-        self.submodules_rnn['x_value_reward_not_chosen'] = self.setup_module(input_size=2+self.embedding_size, dropout=dropout)
+        self.submodules_rnn['x_value_reward_not_chosen'] = self.setup_module(input_size=1+self.embedding_size, dropout=dropout)
         self.submodules_rnn['x_value_choice_chosen'] = self.setup_module(input_size=1+self.embedding_size, dropout=dropout)
         self.submodules_rnn['x_value_choice_not_chosen'] = self.setup_module(input_size=1+self.embedding_size, dropout=dropout)
         
@@ -371,7 +388,7 @@ class RLRNN(BaseRNN):
     def x_value_reward_chosen(self, value, inputs):
         return value + inputs[..., 1] * (inputs[..., 0] - value)
     
-    def forward(self, inputs, prev_state=None, batch_first=False):
+    def forward(self, input_variables, prev_state=None, batch_first=False):
         """Forward pass of the RNN
 
         Args:
@@ -381,28 +398,25 @@ class RLRNN(BaseRNN):
         """
         
         # First, we have to initialize all the inputs and outputs (i.e. logits)
-        inputs, logits, timesteps = self.init_forward_pass(inputs, prev_state, batch_first)
-        actions, rewards, participant_id = inputs
-        
-        # derive more observations
-        rewards_chosen = (actions * rewards).sum(dim=-1, keepdim=True).repeat(1, 1, self._n_actions)
-        # rewards_not_chosen = ((1-actions) * rewards).sum(dim=-1, keepdim=True).repeat(1, 1, self._n_actions)
+        input_variables, embedding_variables, logits, timesteps = self.init_forward_pass(input_variables, prev_state, batch_first)
+        actions, rewards, _, _ = input_variables
+        participant_id, _ = embedding_variables
         
         # Here we compute now the participant embeddings for each entry in the batch
-        participant_embedding = self.participant_embedding(participant_id[:, 0].int())
+        participant_embeddings = self.participant_embedding(participant_id[:, 0].int())
         
         # get scaling factors
         scaling_factors = {}
         for key in self.state:
             if key in self.betas:
-                scaling_factors[key] = self.betas[key] if isinstance(self.betas[key], nn.Parameter) else self.betas[key](participant_embedding)
+                scaling_factors[key] = self.betas[key] if isinstance(self.betas[key], nn.Parameter) else self.betas[key](participant_embeddings)
         
-        for timestep, action, reward_chosen in zip(timesteps, actions, rewards_chosen): #, rewards_not_chosen
+        for timestep, action, reward in zip(timesteps, actions, rewards): #, rewards_not_chosen
             
             # record the current memory state and control inputs to the modules for SINDy training
             if not self.training and len(self.submodules_sindy)==0:
                 self.record_signal('c_action', action)
-                self.record_signal('c_reward_chosen', reward_chosen)
+                self.record_signal('c_reward', reward)
                 # self.record_signal('c_reward_not_chosen', reward_not_chosen)
                 self.record_signal('c_value_reward', self.state['x_value_reward'])
                 self.record_signal('c_value_choice', self.state['x_value_choice'])
@@ -417,12 +431,11 @@ class RLRNN(BaseRNN):
                 key_state='x_learning_rate_reward',
                 action=action,
                 inputs=(
-                    reward_chosen, 
-                    # reward_not_chosen, 
+                    reward, 
                     self.state['x_value_reward'], 
                     self.state['x_value_choice'],
                     ),
-                participant_embedding=participant_embedding,
+                participant_embedding=participant_embeddings,
                 participant_index=participant_id,
                 activation_rnn=torch.nn.functional.sigmoid,
             )
@@ -432,25 +445,20 @@ class RLRNN(BaseRNN):
                 key_state='x_value_reward',
                 action=action,
                 inputs=(
-                    reward_chosen, 
+                    reward,
                     learning_rate_reward,
                     ),
-                participant_embedding=participant_embedding,
+                participant_embedding=participant_embeddings,
                 participant_index=participant_id,
                 )
-           
+
             next_value_reward_not_chosen = self.call_module(
                 key_module='x_value_reward_not_chosen',
                 key_state='x_value_reward',
                 action=1-action,
-                inputs=(
-                    reward_chosen, 
-                    # reward_not_chosen, 
-                    self.state['x_value_choice'],
-                    ),
-                participant_embedding=participant_embedding,
+                inputs=(self.state['x_value_choice']),
+                participant_embedding=participant_embeddings,
                 participant_index=participant_id,
-                # activation_rnn=torch.nn.functional.sigmoid,
                 )
             
             # updates for x_value_choice
@@ -459,7 +467,7 @@ class RLRNN(BaseRNN):
                 key_state='x_value_choice',
                 action=action,
                 inputs=(self.state['x_value_reward']),
-                participant_embedding=participant_embedding,
+                participant_embedding=participant_embeddings,
                 participant_index=participant_id,
                 activation_rnn=torch.nn.functional.sigmoid,
                 )
@@ -469,7 +477,7 @@ class RLRNN(BaseRNN):
                 key_state='x_value_choice',
                 action=1-action,
                 inputs=(self.state['x_value_reward']),
-                participant_embedding=participant_embedding,
+                participant_embedding=participant_embeddings,
                 participant_index=participant_id,
                 activation_rnn=torch.nn.functional.sigmoid,
                 )
@@ -478,7 +486,7 @@ class RLRNN(BaseRNN):
             self.state['x_learning_rate_reward'] = learning_rate_reward
             self.state['x_value_reward'] = next_value_reward_chosen + next_value_reward_not_chosen
             self.state['x_value_choice'] = next_value_choice_chosen + next_value_choice_not_chosen
-             
+            
             # Now keep track of the logit in the output array
             logits[timestep] = self.state['x_value_reward'] * scaling_factors['x_value_reward'] + self.state['x_value_choice'] * scaling_factors['x_value_choice']
             

@@ -4,8 +4,8 @@ from torch.utils.data import DataLoader, RandomSampler
 
 import time
 import numpy as np
-from .rnn import BaseRNN, CustomEmbedding
-from .rnn_utils import DatasetRNN
+from spice.resources.rnn import BaseRNN, CustomEmbedding
+from spice.resources.rnn_utils import DatasetRNN
 
 
 def gradient_penalty(f: nn.Module, e_i: torch.Tensor, e_j: torch.Tensor, factor=1.0):
@@ -262,7 +262,7 @@ def fit_model(
         # Create the scheduler with the Lambda function
         scheduler_warmup = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=warmup_lr_lambda)
         
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer=optimizer, T_0=warmup_steps, T_mult=2)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer=optimizer, T_0=warmup_steps if warmup_steps > 0 else 64, T_mult=2)
         # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer=optimizer, factor=0.1, patience=10, threshold=0, cooldown=64, min_lr=1e-6)
         # scheduler = ReduceOnPlateauWithRestarts(optimizer=optimizer, min_lr=1e-6, factor=0.1, patience=8)
     else:

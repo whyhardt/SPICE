@@ -4,10 +4,10 @@ from math import comb
 
 import pysindy as ps
 
-from .sindy_utils import remove_control_features, conditional_filtering
-from .rnn_utils import DatasetRNN
-from .sindy_utils import generate_off_policy_data, create_dataset
-from .bandits import AgentNetwork
+from spice.resources.sindy_utils import remove_control_features, conditional_filtering
+from spice.resources.rnn_utils import DatasetRNN
+from spice.resources.sindy_utils import generate_off_policy_data, create_dataset
+from spice.resources.bandits import AgentNetwork
 
 def fit_sindy(
     variables: List[np.ndarray], 
@@ -145,11 +145,15 @@ def fit_sindy_pipeline(
     
     # get participant data
     if n_sessions_off_policy == 0 and data is not None:
-        mask_participant_id = dataset_fit.xs[:, 0, -1] == participant_id
+        mask_participant_id = data.xs[:, 0, -1] == participant_id
         dataset_fit = DatasetRNN(*data[mask_participant_id])
     elif n_sessions_off_policy > 0:
+        mask_participant_id = (data.xs[:, 0, -1] == participant_id).int().argmax().item()
         dataset_fit = generate_off_policy_data(
-            participant_id=participant_id, 
+            participant_id=participant_id,
+            experiment_id=data.xs[mask_participant_id, 0, -2],
+            block=data.xs[mask_participant_id, 0, -3],
+            additional_inputs=data.xs[mask_participant_id, 0, agent._n_actions*2:-3],
             n_trials_off_policy=n_trials_off_policy,
             n_trials_same_action_off_policy=n_trials_same_action_off_policy,
             n_sessions_off_policy=n_sessions_off_policy,
