@@ -1,7 +1,6 @@
 """
 SPICE training pipeline as a scikit-learn estimator
 """
-import sys
 import warnings
 import time
 import torch

@@ -9,8 +9,8 @@ from tqdm import tqdm
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from spice.resources.bandits import create_dataset, BanditsDrift, get_update_dynamics, AgentQ
 from spice.resources.rnn_utils import DatasetRNN
-from spice.utils.setup_agents import setup_agent_mcmc
-from spice.utils.convert_dataset import convert_dataset
+from analysis.utils.setup_agents import setup_agent_mcmc
+from analysis.utils.convert_dataset import convert_dataset
 from spice.benchmarking.hierarchical_bayes_numpyro import rl_model
 
 

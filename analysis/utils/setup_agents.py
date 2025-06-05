@@ -12,7 +12,7 @@ from spice.resources.rnn import BaseRNN
 from spice.resources.bandits import AgentSpice, AgentNetwork, AgentQ
 from spice.resources.sindy_training import fit_spice
 from spice.resources.sindy_utils import load_spice
-from utils.convert_dataset import convert_dataset
+from analysis.utils.convert_dataset import convert_dataset
 from benchmarking.hierarchical_bayes_numpyro import rl_model
 
 

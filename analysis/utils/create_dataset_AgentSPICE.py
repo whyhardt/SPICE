@@ -6,7 +6,7 @@ from tqdm import tqdm
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from spice.resources.bandits import create_dataset, BanditsDrift, get_update_dynamics
-from spice.utils.setup_agents import setup_agent_spice
+from analysis.utils.setup_agents import setup_agent_spice
 
 
 def main(path_rnn, path_spice, path_data, path_save, n_trials_per_session):

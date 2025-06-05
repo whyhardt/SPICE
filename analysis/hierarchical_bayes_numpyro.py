@@ -11,7 +11,7 @@ import argparse
 import pickle
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from spice.utils.convert_dataset import convert_dataset
+from analysis.utils.convert_dataset import convert_dataset
 from spice.resources.rnn_utils import split_data_along_timedim
 
 
@@ -92,16 +92,20 @@ def rl_model(model, choice, reward, hierarchical):
         # Priors for group-level parameters
         alpha_pos_mean = numpyro.sample("alpha_pos_mean", dist.Beta(1, 1)) if model[0]==1 else 1
         alpha_neg_mean = numpyro.sample("alpha_neg_mean", dist.Beta(1, 1)) if model[1]==1 else -1
-        alpha_ch_mean = numpyro.sample("alpha_ch_mean", dist.Beta(1, 1)) if model[2]==1 else 1
-        beta_ch_mean = numpyro.sample("beta_ch_mean", dist.Beta(1, 1)) if model[3]==1 else 0
-        beta_r_mean = numpyro.sample("beta_r_mean", dist.Beta(1, 1)) if model[4]==1 else 1
+        alpha_cf_pos_mean = numpyro.sample("alpha_cf_pos_mean", dist.Beta(1, 1)) if model[2]==1 else 0
+        alpha_cf_neg_mean = numpyro.sample("alpha_cf_neg_mean", dist.Beta(1, 1)) if model[3]==1 else 0
+        alpha_ch_mean = numpyro.sample("alpha_ch_mean", dist.Beta(1, 1)) if model[4]==1 else 1
+        beta_ch_mean = numpyro.sample("beta_ch_mean", dist.Beta(1, 1)) if model[5]==1 else 0
+        beta_r_mean = numpyro.sample("beta_r_mean", dist.Beta(1, 1)) if model[6]==1 else 1
         
         # Priors for individual-level variation (hierarchical)
         alpha_pos_kappa = numpyro.sample("alpha_pos_kappa", dist.HalfNormal(1.0)) if model[0]==1 else 0
         alpha_neg_kappa = numpyro.sample("alpha_neg_kappa", dist.HalfNormal(1.0)) if model[1]==1 else 0
-        alpha_ch_kappa = numpyro.sample("alpha_ch_kappa", dist.HalfNormal(1.0))  if model[2]==1 else 0
-        beta_ch_kappa = numpyro.sample("beta_ch_kappa", dist.HalfNormal(1.0)) if model[3]==1 else 0
-        beta_r_kappa = numpyro.sample("beta_r_kappa", dist.HalfNormal(1.0)) if model[4]==1 else 0
+        alpha_cf_pos_kappa = numpyro.sample("alpha_cf_pos_kappa", dist.HalfNormal(1.0)) if model[2]==1 else 0
+        alpha_cf_neg_kappa = numpyro.sample("alpha_cf_neg_kappa", dist.HalfNormal(1.0)) if model[3]==1 else 0
+        alpha_ch_kappa = numpyro.sample("alpha_ch_kappa", dist.HalfNormal(1.0))  if model[4]==1 else 0
+        beta_ch_kappa = numpyro.sample("beta_ch_kappa", dist.HalfNormal(1.0)) if model[5]==1 else 0
+        beta_r_kappa = numpyro.sample("beta_r_kappa", dist.HalfNormal(1.0)) if model[6]==1 else 0
         
         # Individual-level parameters
         n_participants = choice.shape[1]
@@ -119,42 +123,61 @@ def rl_model(model, choice, reward, hierarchical):
                 alpha_neg = alpha_pos  # share value with alpha_pos
                 
             if model[2]:
+                alpha_cf_pos = numpyro.sample("alpha_cf_pos", dist.Beta(alpha_cf_pos_mean * alpha_cf_pos_kappa, (1 - alpha_cf_pos_mean) * alpha_cf_pos_kappa))[:, None]
+            else:
+                alpha_cf_pos = alpha_pos
+
+            if model[3]:
+                alpha_cf_neg = numpyro.sample("alpha_cf_neg", dist.Beta(alpha_cf_neg_mean * alpha_cf_neg_kappa, (1 - alpha_cf_neg_mean) * alpha_cf_neg_kappa))[:, None]
+            elif not model[3] and model[2]:
+                alpha_cf_neg = alpha_cf_pos
+            else:
+                alpha_cf_neg = alpha_neg
+
+            if model[4]:
                 alpha_ch = numpyro.sample("alpha_ch", dist.Beta(alpha_ch_mean * alpha_ch_kappa, (1 - alpha_ch_mean) * alpha_ch_kappa))[:, None]
             else:
                 alpha_ch = jnp.full((n_participants, 1), 1.0)
 
-            if model[3]:
+            if model[5]:
                 # beta_ch = numpyro.sample("beta_ch", scaled_beta(beta_ch_mean * beta_ch_kappa, (1 - beta_ch_mean) * beta_ch_kappa, 0, 15))[:, None]
                 beta_ch = numpyro.sample("beta_ch", dist.Beta(beta_ch_mean * beta_ch_kappa, (1 - beta_ch_mean) * beta_ch_kappa))[:, None] * beta_scaling
             else:
                 beta_ch = jnp.full((n_participants, 1), 0.0)
 
-            if model[4]:
+            if model[6]:
                 # beta_r = numpyro.sample("beta_r", scaled_beta(beta_r_mean * beta_r_kappa, (1 - beta_r_mean) * beta_r_kappa, 0, 15))[:, None]
                 beta_r = numpyro.sample("beta_r", dist.Beta(beta_r_mean * beta_r_kappa, (1 - beta_r_mean) * beta_r_kappa))[:, None] * beta_scaling
             else:
                 beta_r = jnp.full((n_participants, 1), 1.0)
-                            
+                
+            beta_cf = 1.0 if model[7] else 0.0
+            
     else:
         # Basic bayesian inference (not hierarchical)
         alpha_pos = numpyro.sample("alpha_pos", dist.Beta(1, 1)) if model[0]==1 else 1
         alpha_neg = numpyro.sample("alpha_neg", dist.Beta(1, 1)) if model[1]==1 else alpha_pos
+        alpha_cf_pos = numpyro.sample("alpha_cf_pos", dist.Beta(1, 1)) if model[0]==1 else alpha_pos
+        alpha_cf_neg = numpyro.sample("alpha_cf_neg", dist.Beta(1, 1)) if model[1]==1 else alpha_neg
         alpha_ch = numpyro.sample("alpha_ch", dist.Beta(1, 1)) if model[2]==1 else 1
         beta_ch = numpyro.sample("beta_ch", scaled_beta(1, 1, 0, 15)) if model[3]==1 else 0
         beta_r = numpyro.sample("beta_r", scaled_beta(1, 1, 0, 15)) if model[4]==1 else 1
-        
-    def update(carry, x):#, alpha_pos, alpha_neg, alpha_c, beta_r, beta_ch):
+        beta_cf = 1.0 if model[7] else 0.0
+    
+    def update(carry, x):
         r_values = carry[0]
         c_values = carry[1]
         ch, rw = x[:, :2], x[:, 2][:, None]
         
         # Compute prediction errors for each outcome
         rpe = (rw - r_values) * ch
+        rpe_cf = ((1-rw) - r_values) * (1-ch) * beta_cf
         cpe = ch - c_values
         
         # Update Q-values
         lr = jnp.where(rw > 0.5, alpha_pos, alpha_neg)
-        r_values = r_values + lr * rpe
+        lr_cf = jnp.where(rw > 0.5, alpha_cf_pos, alpha_cf_neg)
+        r_values = r_values + lr * rpe + lr_cf * rpe_cf
         c_values = c_values + alpha_ch * cpe
         
         # compute the action probability of option 0
@@ -205,7 +228,7 @@ def main(file: str, model: str, num_samples: int, num_warmup: int, num_chains: i
     output_file = output_file.split('.')[0] + '_' + model + '.nc'
     
     # Check model str
-    valid_config = ['Ap', 'An', 'Ach', 'Bch', 'Br']
+    valid_config = ['Ap', 'An', 'Acfp', 'Acfn', 'Ach', 'Bch', 'Br', 'Bcf']
     model_checked = '' + model
     for c in valid_config:
         model_checked = model_checked.replace(c, '')

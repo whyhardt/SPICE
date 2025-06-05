@@ -6,8 +6,8 @@ import pickle
 import matplotlib.pyplot as plt
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from spice.utils.setup_agents import setup_agent_rnn, setup_agent_spice, setup_agent_q
-from spice.utils.convert_dataset import convert_dataset
+from analysis.utils.setup_agents import setup_agent_rnn, setup_agent_spice, setup_agent_q
+from analysis.utils.convert_dataset import convert_dataset
 from spice.benchmarking.hierarchical_bayes_numpyro import rl_model
 from spice.utils.plotting import plot_session
 
