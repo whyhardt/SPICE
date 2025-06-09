@@ -491,6 +491,49 @@ class AgentSpice(AgentNetwork):
             n_parameters[participant_id] += 1
     return n_parameters
   
+  def get_spice_features(self, mapping_modules_values: dict = None) -> Dict[int, int]:
+    """Extract features in each module for each participant. 
+    Considers also beta values (if mapping_modules_values is given).
+    
+    Args:
+        mapping_modules_values (dict, optional): Defines which module maps onto which value in the memory state (will be deprecated in newer versions because this information will be stored as an attribute in the RNN) 
+
+    Returns:
+        Dict[int, int]: Dictionary which maps the participant ID onto the respective number of parameters
+    """
+    spice_features = {}
+    submodules = self.get_modules()
+    keys_submodules = list(submodules.keys())
+    participant_ids = list(submodules[keys_submodules[0]].keys())
+    for participant_id in participant_ids:
+      self.new_sess(participant_id=participant_id)
+      features = {}
+      betas = self.get_betas()
+      beta_features = {}
+      if betas is not None:
+        beta_features.update({'beta_'+key: betas[key] for key in betas})
+
+      for submodule in submodules:
+        if submodule in self.get_modules():
+          features_m = submodules[submodule][participant_id].get_feature_names()
+          coeffs_m = submodules[submodule][participant_id].coefficients()[0]  # TODO: Why [0]?
+          # Remove dummy control parameters (containing 'u')
+          index_u = ['dummy' not in feature for feature in features_m]
+          features_m = np.array(features_m)[index_u].tolist()
+          coeffs_m = np.array(coeffs_m)[index_u].tolist()
+          features[submodule] = (tuple(features_m), tuple(coeffs_m))
+
+
+      if betas is not None:
+        for module, value in betas.items():
+          if value != 0:
+            features_m = ['1']
+            coeffs_m = [value]
+            features[f'beta_{module}'] = (tuple(features_m), tuple(coeffs_m))  
+
+      spice_features[participant_id] = features
+    return spice_features  
+  
   def get_participant_ids(self):
     modules = self.get_modules()
     return list(modules[list(modules.keys())[0]].keys())  

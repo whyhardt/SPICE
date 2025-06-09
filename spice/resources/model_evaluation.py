@@ -10,7 +10,6 @@ import numpyro
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from spice.resources.bandits import get_update_dynamics
-from spice.benchmarking.hierarchical_bayes_numpyro import rl_model
 
     
 def log_likelihood(data: np.ndarray, probs: np.ndarray, **kwargs):
