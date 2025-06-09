@@ -281,7 +281,7 @@ class BaseRNN(nn.Module):
                 inputs = torch.zeros((*inputs.shape[:-1], 1))
             
             if participant_index is None:
-                participant_index = torch.zeros((1, 1), dtype=torch.int32)
+                participant_index = torch.zeros((value.shape[0], 1), dtype=torch.int32)
             
             next_value = np.zeros_like(value)
             for index_batch in range(value.shape[0]):

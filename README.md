@@ -39,31 +39,55 @@ pip install -e .
 
 ```python
 from spice.estimator import SpiceEstimator
-import numpy as np
+from spice.precoded import RescorlaWagnerRNN, RESCOLA_WAGNER_CONFIG
+from spice.resources.bandits import BanditsDrift, AgentQ, create_dataset
 
-# Create and configure the model
-spice_estimator = SpiceEstimator(
-    hidden_size=8,
-    epochs=128,
+# Simulate dataset from a two-armed bandit task with a Q agent
+environment = BanditsDrift(sigma=0.2, n_actions=2)
+
+agent = AgentQ(
     n_actions=2,
-    n_participants=10,
-    learning_rate=1e-2,
-    sindy_optim_threshold=0.03,
-    verbose=True
+    alpha_reward=0.6,  # Learning rate for positive rewards 
+    alpha_penalty=0.6,  # Learning rate for negative rewards
+    forget_rate=0.3,
 )
 
-# Generate example data
-conditions = np.random.rand(10, 100, 5)  # (n_participants, n_trials, n_features)
-targets = np.random.randint(0, 2, size=(10, 100, 2))  # (n_participants, n_trials, n_actions)
+dataset, _, _ = create_dataset(
+    agent=agent,
+    environment=environment,
+    n_trials=200,
+    n_sessions=256,
+)
 
-# Fit the model
-spice_estimator.fit(conditions, targets)
+# Create and fit SPICE model
+spice_estimator = SpiceEstimator(
+    rnn_class=RescorlaWagnerRNN,
+    spice_config=RESCOLA_WAGNER_CONFIG,
+    hidden_size=8,
+    learning_rate=5e-3,
+    epochs=16,
+    n_steps_per_call=16,
+    spice_participant_id=0,
+    verbose=True,
+)
 
-# Make predictions
-pred_rnn, pred_sindy = model.predict(conditions)
+spice_estimator.fit(dataset.xs, dataset.ys)
 
-# Get learned features
-features = model.get_sindy_features()
+# Get learned SPICE features
+features = spice_estimator.spice_agent.get_spice_features()
+for id, feat in features.items():
+    print(f"\nAgent {id}:")
+    for model_name, (feat_names, coeffs) in feat.items():
+        print(f"  {model_name}:")
+        for name, coeff in zip(feat_names, coeffs):
+            print(f"    {name}: {coeff}")
+
+# Predict behavior
+pred_rnn, pred_spice = spice_estimator.predict(dataset.xs)
+
+print("\nPrediction shapes:")
+print(f"RNN predictions: {pred_rnn.shape}")
+print(f"SPICE predictions: {pred_spice.shape}")  
 ```
 
 ## Requirements
