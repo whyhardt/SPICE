@@ -1,0 +1,36 @@
+title: SPICE Documentation
+description: Documentation for Sparse and Interpretable Cognitive Equations
+theme: just-the-docs
+baseurl: "/SPICE"
+url: "https://whyhardt.github.io"
+
+# Theme settings
+color_scheme: light
+search_enabled: true
+heading_anchors: true
+aux_links:
+  "SPICE on GitHub":
+    - "https://github.com/whyhardt/SPICE"
+aux_links_new_tab: true
+
+# Build settings
+markdown: kramdown
+plugins:
+  - jekyll-feed
+  - jekyll-seo-tag
+
+# Navigation structure
+nav_external_links:
+  - title: SPICE on GitHub
+    url: https://github.com/whyhardt/SPICE
+    hide_icon: false
+
+# Footer content
+footer_content: "Copyright &copy; 2024 Daniel Weinhardt. Distributed under an <a href=\"https://github.com/whyhardt/SPICE/tree/main/LICENSE\">MIT license.</a>"
+
+# Exclude files from processing
+exclude:
+  - Gemfile
+  - Gemfile.lock
+  - node_modules
+  - vendor 

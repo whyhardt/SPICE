@@ -1,0 +1,612 @@
+
+
+<!DOCTYPE html>
+
+<html lang="en-US">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=Edge">
+
+  <link rel="stylesheet" href="/SPICE/assets/css/just-the-docs-default.css">
+
+  <link rel="stylesheet" href="/SPICE/assets/css/just-the-docs-head-nav.css" id="jtd-head-nav-stylesheet">
+
+  <style id="jtd-nav-activation">
+  
+
+    
+    .site-nav > ul.nav-list:first-child > li:not(:nth-child(4)) > a,
+    .site-nav > ul.nav-list:first-child > li > ul > li a {
+      background-image: none;
+    }
+
+    .site-nav > ul.nav-list:not(:first-child) a,
+    .site-nav li.external a {
+      background-image: none;
+    }
+
+    .site-nav > ul.nav-list:first-child > li:nth-child(4) > a {
+      font-weight: 600;
+      text-decoration: none;
+    }.site-nav > ul.nav-list:first-child > li:nth-child(4) > button svg {
+      transform: rotate(-90deg);
+    }.site-nav > ul.nav-list:first-child > li.nav-list-item:nth-child(4) > ul.nav-list {
+      display: block;
+    }
+  </style>
+
+  
+
+  
+    <script src="/SPICE/assets/js/vendor/lunr.min.js"></script>
+  
+
+  <script src="/SPICE/assets/js/just-the-docs.js"></script>
+
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
+  
+
+
+
+  <!-- Begin Jekyll SEO tag v2.8.0 -->
+<title>API Reference | SPICE Documentation</title>
+<meta name="generator" content="Jekyll v4.3.4" />
+<meta property="og:title" content="API Reference" />
+<meta property="og:locale" content="en_US" />
+<meta name="description" content="Documentation for Sparse and Interpretable Cognitive Equations" />
+<meta property="og:description" content="Documentation for Sparse and Interpretable Cognitive Equations" />
+<link rel="canonical" href="http://localhost:4000/SPICE/api.html" />
+<meta property="og:url" content="http://localhost:4000/SPICE/api.html" />
+<meta property="og:site_name" content="SPICE Documentation" />
+<meta property="og:type" content="website" />
+<meta name="twitter:card" content="summary" />
+<meta property="twitter:title" content="API Reference" />
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"WebPage","description":"Documentation for Sparse and Interpretable Cognitive Equations","headline":"API Reference","url":"http://localhost:4000/SPICE/api.html"}</script>
+<!-- End Jekyll SEO tag -->
+
+
+  
+
+</head>
+
+<body>
+  <a class="skip-to-main" href="#main-content">Skip to main content</a>
+  <svg xmlns="http://www.w3.org/2000/svg" class="d-none">
+  <symbol id="svg-link" viewBox="0 0 24 24">
+  <title>Link</title>
+  <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather feather-link">
+    <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path>
+  </svg>
+</symbol>
+
+  <symbol id="svg-menu" viewBox="0 0 24 24">
+  <title>Menu</title>
+  <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather feather-menu">
+    <line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="18" x2="21" y2="18"></line>
+  </svg>
+</symbol>
+
+  <symbol id="svg-arrow-right" viewBox="0 0 24 24">
+  <title>Expand</title>
+  <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather feather-chevron-right">
+    <polyline points="9 18 15 12 9 6"></polyline>
+  </svg>
+</symbol>
+
+  <!-- Feather. MIT License: https://github.com/feathericons/feather/blob/master/LICENSE -->
+<symbol id="svg-external-link" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather feather-external-link">
+  <title id="svg-external-link-title">(external link)</title>
+  <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line>
+</symbol>
+
+  
+    <symbol id="svg-doc" viewBox="0 0 24 24">
+  <title>Document</title>
+  <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather feather-file">
+    <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"></path><polyline points="13 2 13 9 20 9"></polyline>
+  </svg>
+</symbol>
+
+    <symbol id="svg-search" viewBox="0 0 24 24">
+  <title>Search</title>
+  <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather feather-search">
+    <circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+  </svg>
+</symbol>
+
+  
+  
+    <!-- Bootstrap Icons. MIT License: https://github.com/twbs/icons/blob/main/LICENSE.md -->
+<symbol id="svg-copy" viewBox="0 0 16 16">
+  <title>Copy</title>
+  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16">
+    <path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/>
+    <path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5h3zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0h-3z"/>
+  </svg>
+</symbol>
+<symbol id="svg-copied" viewBox="0 0 16 16">
+  <title>Copied</title>
+  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard-check-fill" viewBox="0 0 16 16">
+    <path d="M6.5 0A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0h-3Zm3 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5h3Z"/>
+    <path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1A2.5 2.5 0 0 1 9.5 5h-3A2.5 2.5 0 0 1 4 2.5v-1Zm6.854 7.354-3 3a.5.5 0 0 1-.708 0l-1.5-1.5a.5.5 0 0 1 .708-.708L7.5 10.793l2.646-2.647a.5.5 0 0 1 .708.708Z"/>
+  </svg>
+</symbol>
+
+  
+</svg>
+
+  
+    <div class="side-bar">
+  <div class="site-header" role="banner">
+    <a href="/SPICE/" class="site-title lh-tight">
+  SPICE Documentation
+
+</a>
+    <button id="menu-button" class="site-button btn-reset" aria-label="Toggle menu" aria-pressed="false">
+      <svg viewBox="0 0 24 24" class="icon" aria-hidden="true"><use xlink:href="#svg-menu"></use></svg>
+    </button>
+  </div>
+
+  <nav aria-label="Main" id="site-nav" class="site-nav">
+  
+  
+    <ul class="nav-list"><li class="nav-list-item"><a href="/SPICE/" class="nav-list-link">Home</a></li><li class="nav-list-item"><a href="/SPICE/installation.html" class="nav-list-link">Installation</a></li><li class="nav-list-item"><a href="/SPICE/quickstart.html" class="nav-list-link">Quick Start</a></li><li class="nav-list-item"><a href="/SPICE/api.html" class="nav-list-link">API Reference</a></li><li class="nav-list-item"><button class="nav-list-expander btn-reset" aria-label="toggle items in Tutorials category" aria-pressed="false">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><use xlink:href="#svg-arrow-right"></use></svg>
+      </button><a href="/SPICE/tutorials.html" class="nav-list-link">Tutorials</a><ul class="nav-list"><li class="nav-list-item"><a href="/SPICE/tutorials/rescorla_wagner.html" class="nav-list-link">Basic Rescorla-Wagner Model</a></li><li class="nav-list-item"><a href="/SPICE/tutorials/rescorla_wagner_forgetting.html" class="nav-list-link">Rescorla-Wagner with Forgetting</a></li><li class="nav-list-item"><a href="/SPICE/tutorials/hardcoded_equations.html" class="nav-list-link">Working with Hardcoded Equations</a></li><li class="nav-list-item"><a href="/SPICE/tutorials/individual_differences.html" class="nav-list-link">Modeling Individual Differences</a></li><li class="nav-list-item"><a href="/SPICE/tutorials/weinhardt_2024.html" class="nav-list-link">Weinhardt et al. 2024 Case Study</a></li></ul></li></ul>
+  <ul class="nav-list"><li class="nav-list-item external">
+          <a href="https://github.com/whyhardt/SPICE" class="nav-list-link external"
+            
+          >
+            SPICE on GitHub
+            <svg viewBox="0 0 24 24" aria-labelledby="svg-external-link-title"><use xlink:href="#svg-external-link"></use></svg>
+          </a>
+        </li></ul>
+</nav>
+
+
+
+
+  
+  
+    <footer class="site-footer">
+      This site uses <a href="https://github.com/just-the-docs/just-the-docs">Just the Docs</a>, a documentation theme for Jekyll.
+    </footer>
+  
+</div>
+
+  
+  <div class="main" id="top">
+    <div id="main-header" class="main-header">
+  
+    
+
+<div class="search" role="search">
+  <div class="search-input-wrap">
+    <input type="text" id="search-input" class="search-input" tabindex="0" placeholder="Search SPICE Documentation" aria-label="Search SPICE Documentation" autocomplete="off">
+    <label for="search-input" class="search-label"><svg viewBox="0 0 24 24" class="search-icon"><use xlink:href="#svg-search"></use></svg></label>
+  </div>
+  <div id="search-results" class="search-results"></div>
+</div>
+
+  
+  
+  
+    <nav aria-label="Auxiliary" class="aux-nav">
+  <ul class="aux-nav-list">
+    
+      <li class="aux-nav-list-item">
+        <a href="https://github.com/whyhardt/SPICE" class="site-button"
+          
+          target="_blank" rel="noopener noreferrer"
+          
+        >
+          SPICE on GitHub
+        </a>
+      </li>
+    
+  </ul>
+</nav>
+
+  
+</div>
+
+    <div class="main-content-wrap">
+      
+      <div id="main-content" class="main-content">
+        <main>
+          
+            <h1 id="api-reference">
+  
+  
+    <a href="#api-reference" class="anchor-heading" aria-labelledby="api-reference"><svg viewBox="0 0 16 16" aria-hidden="true"><use xlink:href="#svg-link"></use></svg></a> API Reference
+  
+  
+</h1>
+    
+
+<p>This page documents the main classes and functions in SPICE.</p>
+<h2 id="core-classes">
+  
+  
+    <a href="#core-classes" class="anchor-heading" aria-labelledby="core-classes"><svg viewBox="0 0 16 16" aria-hidden="true"><use xlink:href="#svg-link"></use></svg></a> Core Classes
+  
+  
+</h2>
+    
+<h3 id="spiceestimator">
+  
+  
+    <a href="#spiceestimator" class="anchor-heading" aria-labelledby="spiceestimator"><svg viewBox="0 0 16 16" aria-hidden="true"><use xlink:href="#svg-link"></use></svg></a> SpiceEstimator
+  
+  
+</h3>
+    
+
+<p>The main class for training and using SPICE models. Implements scikit-learn’s estimator interface.</p>
+
+<div class="language-python highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kn">from</span> <span class="n">spice.estimator</span> <span class="kn">import</span> <span class="n">SpiceEstimator</span>
+</code></pre></div></div>
+<h4 id="parameters">
+  
+  
+    <a href="#parameters" class="anchor-heading" aria-labelledby="parameters"><svg viewBox="0 0 16 16" aria-hidden="true"><use xlink:href="#svg-link"></use></svg></a> Parameters
+  
+  
+</h4>
+    
+
+<ul>
+  <li><code class="language-plaintext highlighter-rouge">rnn_class</code> (BaseRNN): RNN class to use (can be precoded or custom implementation)</li>
+  <li><code class="language-plaintext highlighter-rouge">spice_config</code> (SpiceConfig): Configuration for SPICE features and library</li>
+  <li><code class="language-plaintext highlighter-rouge">hidden_size</code> (int, default=8): Size of RNN hidden layer</li>
+  <li><code class="language-plaintext highlighter-rouge">dropout</code> (float, default=0.25): Dropout rate for RNN</li>
+  <li><code class="language-plaintext highlighter-rouge">n_actions</code> (int, default=2): Number of possible actions</li>
+  <li><code class="language-plaintext highlighter-rouge">n_participants</code> (int, default=0): Number of participants</li>
+  <li><code class="language-plaintext highlighter-rouge">n_experiments</code> (int, default=0): Number of experiments</li>
+  <li><code class="language-plaintext highlighter-rouge">epochs</code> (int, default=128): Number of training epochs</li>
+  <li><code class="language-plaintext highlighter-rouge">learning_rate</code> (float, default=5e-3): Learning rate for training</li>
+  <li><code class="language-plaintext highlighter-rouge">spice_optim_threshold</code> (float, default=0.03): Threshold for SPICE optimization</li>
+  <li><code class="language-plaintext highlighter-rouge">spice_participant_id</code> (int, optional): ID of specific participant to analyze</li>
+  <li><code class="language-plaintext highlighter-rouge">verbose</code> (bool, default=False): Whether to print progress information</li>
+</ul>
+<h4 id="methods">
+  
+  
+    <a href="#methods" class="anchor-heading" aria-labelledby="methods"><svg viewBox="0 0 16 16" aria-hidden="true"><use xlink:href="#svg-link"></use></svg></a> Methods
+  
+  
+</h4>
+    
+<h5 id="fitconditions-targets">
+  
+  
+    <a href="#fitconditions-targets" class="anchor-heading" aria-labelledby="fitconditions-targets"><svg viewBox="0 0 16 16" aria-hidden="true"><use xlink:href="#svg-link"></use></svg></a> fit(conditions, targets)
+  
+  
+</h5>
+    
+<p>Trains both RNN and SPICE models on given data.</p>
+
+<div class="language-python highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">def</span> <span class="nf">fit</span><span class="p">(</span><span class="n">conditions</span><span class="p">:</span> <span class="n">np</span><span class="p">.</span><span class="n">ndarray</span><span class="p">,</span> <span class="n">targets</span><span class="p">:</span> <span class="n">np</span><span class="p">.</span><span class="n">ndarray</span><span class="p">)</span>
+<span class="sh">"""</span><span class="s">
+Args:
+    conditions: Array of shape (n_participants, n_trials, n_features)
+    targets: Array of shape (n_participants, n_trials, n_actions)
+</span><span class="sh">"""</span>
+</code></pre></div></div>
+<h5 id="predictconditions">
+  
+  
+    <a href="#predictconditions" class="anchor-heading" aria-labelledby="predictconditions"><svg viewBox="0 0 16 16" aria-hidden="true"><use xlink:href="#svg-link"></use></svg></a> predict(conditions)
+  
+  
+</h5>
+    
+<p>Makes predictions using both RNN and SPICE models.</p>
+
+<div class="language-python highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">def</span> <span class="nf">predict</span><span class="p">(</span><span class="n">conditions</span><span class="p">:</span> <span class="n">np</span><span class="p">.</span><span class="n">ndarray</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Tuple</span><span class="p">[</span><span class="n">np</span><span class="p">.</span><span class="n">ndarray</span><span class="p">,</span> <span class="n">np</span><span class="p">.</span><span class="n">ndarray</span><span class="p">]</span>
+<span class="sh">"""</span><span class="s">
+Args:
+    conditions: Array of shape (n_participants, n_trials, n_features)
+Returns:
+    Tuple containing:
+    - RNN predictions
+    - SPICE predictions
+</span><span class="sh">"""</span>
+</code></pre></div></div>
+<h5 id="get_spice_features">
+  
+  
+    <a href="#get_spice_features" class="anchor-heading" aria-labelledby="get_spice_features"><svg viewBox="0 0 16 16" aria-hidden="true"><use xlink:href="#svg-link"></use></svg></a> get_spice_features()
+  
+  
+</h5>
+    
+<p>Returns learned SPICE features and equations.</p>
+
+<div class="language-python highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">def</span> <span class="nf">get_spice_features</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="n">Dict</span>
+<span class="sh">"""</span><span class="s">
+Returns:
+    Dictionary mapping participant IDs to their learned features and equations
+</span><span class="sh">"""</span>
+</code></pre></div></div>
+<h3 id="spiceconfig">
+  
+  
+    <a href="#spiceconfig" class="anchor-heading" aria-labelledby="spiceconfig"><svg viewBox="0 0 16 16" aria-hidden="true"><use xlink:href="#svg-link"></use></svg></a> SpiceConfig
+  
+  
+</h3>
+    
+
+<p>Configuration class for setting up SPICE models.</p>
+
+<div class="language-python highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kn">from</span> <span class="n">spice.estimator</span> <span class="kn">import</span> <span class="n">SpiceConfig</span>
+</code></pre></div></div>
+<h4 id="parameters-1">
+  
+  
+    <a href="#parameters-1" class="anchor-heading" aria-labelledby="parameters-1"><svg viewBox="0 0 16 16" aria-hidden="true"><use xlink:href="#svg-link"></use></svg></a> Parameters
+  
+  
+</h4>
+    
+
+<ul>
+  <li><code class="language-plaintext highlighter-rouge">library_setup</code> (Dict[str, List[str]]): Maps features to library components</li>
+  <li><code class="language-plaintext highlighter-rouge">filter_setup</code> (Dict[str, List]): Maps features to filter conditions</li>
+  <li><code class="language-plaintext highlighter-rouge">control_parameters</code> (List[str]): List of control parameter names</li>
+  <li><code class="language-plaintext highlighter-rouge">rnn_modules</code> (List[str]): List of RNN module names</li>
+</ul>
+<h2 id="precoded-models">
+  
+  
+    <a href="#precoded-models" class="anchor-heading" aria-labelledby="precoded-models"><svg viewBox="0 0 16 16" aria-hidden="true"><use xlink:href="#svg-link"></use></svg></a> Precoded Models
+  
+  
+</h2>
+    
+
+<p>SPICE comes with several precoded RNN models for common cognitive mechanisms:</p>
+<h3 id="rescorlawagnerrnn">
+  
+  
+    <a href="#rescorlawagnerrnn" class="anchor-heading" aria-labelledby="rescorlawagnerrnn"><svg viewBox="0 0 16 16" aria-hidden="true"><use xlink:href="#svg-link"></use></svg></a> RescorlaWagnerRNN
+  
+  
+</h3>
+    
+
+<p>Implementation of the Rescorla-Wagner learning model.</p>
+
+<div class="language-python highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kn">from</span> <span class="n">spice.precoded</span> <span class="kn">import</span> <span class="n">RescorlaWagnerRNN</span><span class="p">,</span> <span class="n">RESCOLA_WAGNER_CONFIG</span>
+</code></pre></div></div>
+<h3 id="forgettingrnn">
+  
+  
+    <a href="#forgettingrnn" class="anchor-heading" aria-labelledby="forgettingrnn"><svg viewBox="0 0 16 16" aria-hidden="true"><use xlink:href="#svg-link"></use></svg></a> ForgettingRNN
+  
+  
+</h3>
+    
+
+<p>Model incorporating forgetting mechanisms.</p>
+
+<div class="language-python highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kn">from</span> <span class="n">spice.precoded</span> <span class="kn">import</span> <span class="n">ForgettingRNN</span>
+</code></pre></div></div>
+<h3 id="learningraternn">
+  
+  
+    <a href="#learningraternn" class="anchor-heading" aria-labelledby="learningraternn"><svg viewBox="0 0 16 16" aria-hidden="true"><use xlink:href="#svg-link"></use></svg></a> LearningRateRNN
+  
+  
+</h3>
+    
+
+<p>Model with adaptive learning rates.</p>
+
+<div class="language-python highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kn">from</span> <span class="n">spice.precoded</span> <span class="kn">import</span> <span class="n">LearningRateRNN</span>
+</code></pre></div></div>
+<h3 id="participantembeddingrnn">
+  
+  
+    <a href="#participantembeddingrnn" class="anchor-heading" aria-labelledby="participantembeddingrnn"><svg viewBox="0 0 16 16" aria-hidden="true"><use xlink:href="#svg-link"></use></svg></a> ParticipantEmbeddingRNN
+  
+  
+</h3>
+    
+
+<p>Model that learns participant-specific embeddings.</p>
+
+<div class="language-python highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kn">from</span> <span class="n">spice.precoded</span> <span class="kn">import</span> <span class="n">ParticipantEmbeddingRNN</span>
+</code></pre></div></div>
+<h2 id="agents">
+  
+  
+    <a href="#agents" class="anchor-heading" aria-labelledby="agents"><svg viewBox="0 0 16 16" aria-hidden="true"><use xlink:href="#svg-link"></use></svg></a> Agents
+  
+  
+</h2>
+    
+<h3 id="agentspice">
+  
+  
+    <a href="#agentspice" class="anchor-heading" aria-labelledby="agentspice"><svg viewBox="0 0 16 16" aria-hidden="true"><use xlink:href="#svg-link"></use></svg></a> AgentSpice
+  
+  
+</h3>
+    
+
+<p>SPICE agent that combines RNN and SINDy equations.</p>
+
+<div class="language-python highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kn">from</span> <span class="n">spice.resources.bandits</span> <span class="kn">import</span> <span class="n">AgentSpice</span>
+</code></pre></div></div>
+<h4 id="methods-1">
+  
+  
+    <a href="#methods-1" class="anchor-heading" aria-labelledby="methods-1"><svg viewBox="0 0 16 16" aria-hidden="true"><use xlink:href="#svg-link"></use></svg></a> Methods
+  
+  
+</h4>
+    
+<h5 id="get_spice_features-1">
+  
+  
+    <a href="#get_spice_features-1" class="anchor-heading" aria-labelledby="get_spice_features-1"><svg viewBox="0 0 16 16" aria-hidden="true"><use xlink:href="#svg-link"></use></svg></a> get_spice_features()
+  
+  
+</h5>
+    
+<p>Extracts features and coefficients for each module and participant.</p>
+
+<div class="language-python highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">def</span> <span class="nf">get_spice_features</span><span class="p">(</span><span class="n">mapping_modules_values</span><span class="p">:</span> <span class="nb">dict</span> <span class="o">=</span> <span class="bp">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="n">Dict</span><span class="p">]</span>
+<span class="sh">"""</span><span class="s">
+Args:
+    mapping_modules_values: Optional mapping of modules to memory state values
+Returns:
+    Dictionary mapping participant IDs to their features and coefficients
+</span><span class="sh">"""</span>
+</code></pre></div></div>
+<h5 id="count_parameters">
+  
+  
+    <a href="#count_parameters" class="anchor-heading" aria-labelledby="count_parameters"><svg viewBox="0 0 16 16" aria-hidden="true"><use xlink:href="#svg-link"></use></svg></a> count_parameters()
+  
+  
+</h5>
+    
+<p>Counts non-zero parameters for each participant.</p>
+
+<div class="language-python highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">def</span> <span class="nf">count_parameters</span><span class="p">(</span><span class="n">mapping_modules_values</span><span class="p">:</span> <span class="nb">dict</span> <span class="o">=</span> <span class="bp">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">int</span><span class="p">]</span>
+<span class="sh">"""</span><span class="s">
+Args:
+    mapping_modules_values: Optional mapping of modules to memory state values
+Returns:
+    Dictionary mapping participant IDs to parameter counts
+</span><span class="sh">"""</span>
+</code></pre></div></div>
+<h2 id="utility-functions">
+  
+  
+    <a href="#utility-functions" class="anchor-heading" aria-labelledby="utility-functions"><svg viewBox="0 0 16 16" aria-hidden="true"><use xlink:href="#svg-link"></use></svg></a> Utility Functions
+  
+  
+</h2>
+    
+<h3 id="fit_spice">
+  
+  
+    <a href="#fit_spice" class="anchor-heading" aria-labelledby="fit_spice"><svg viewBox="0 0 16 16" aria-hidden="true"><use xlink:href="#svg-link"></use></svg></a> fit_spice()
+  
+  
+</h3>
+    
+
+<p>Fits SPICE by replacing RNN modules with SINDy equations.</p>
+
+<div class="language-python highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kn">from</span> <span class="n">spice.resources.sindy_training</span> <span class="kn">import</span> <span class="n">fit_spice</span>
+
+<span class="k">def</span> <span class="nf">fit_spice</span><span class="p">(</span>
+    <span class="n">rnn_modules</span><span class="p">:</span> <span class="n">List</span><span class="p">[</span><span class="nb">str</span><span class="p">],</span>
+    <span class="n">control_signals</span><span class="p">:</span> <span class="n">List</span><span class="p">[</span><span class="nb">str</span><span class="p">],</span>
+    <span class="n">agent_rnn</span><span class="p">:</span> <span class="n">AgentNetwork</span><span class="p">,</span>
+    <span class="n">data</span><span class="p">:</span> <span class="n">DatasetRNN</span> <span class="o">=</span> <span class="bp">None</span><span class="p">,</span>
+    <span class="n">polynomial_degree</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">2</span><span class="p">,</span>
+    <span class="n">optimizer_threshold</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.05</span><span class="p">,</span>
+    <span class="n">optimizer_alpha</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.1</span><span class="p">,</span>
+    <span class="n">participant_id</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="bp">None</span><span class="p">,</span>
+    <span class="n">verbose</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="bp">False</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Tuple</span><span class="p">[</span><span class="n">AgentSpice</span><span class="p">,</span> <span class="nb">float</span><span class="p">]</span>
+<span class="sh">"""</span><span class="s">
+Args:
+    rnn_modules: List of RNN module names to replace
+    control_signals: List of control signal names
+    agent_rnn: Trained RNN agent
+    data: Training dataset
+    polynomial_degree: Degree for polynomial features
+    optimizer_threshold: Threshold for optimization
+    optimizer_alpha: Alpha parameter for optimization
+    participant_id: Specific participant to process
+    verbose: Whether to print progress
+Returns:
+    Tuple of (SPICE agent, loss value)
+</span><span class="sh">"""</span>
+</code></pre></div></div>
+<h3 id="optimize_for_participant">
+  
+  
+    <a href="#optimize_for_participant" class="anchor-heading" aria-labelledby="optimize_for_participant"><svg viewBox="0 0 16 16" aria-hidden="true"><use xlink:href="#svg-link"></use></svg></a> optimize_for_participant()
+  
+  
+</h3>
+    
+
+<p>Optimizes SPICE parameters for a specific participant.</p>
+
+<div class="language-python highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kn">from</span> <span class="n">spice.resources.optimizer_selection</span> <span class="kn">import</span> <span class="n">optimize_for_participant</span>
+
+<span class="k">def</span> <span class="nf">optimize_for_participant</span><span class="p">(</span>
+    <span class="n">participant_id</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+    <span class="n">agent_rnn</span><span class="p">:</span> <span class="n">AgentNetwork</span><span class="p">,</span>
+    <span class="n">data</span><span class="p">:</span> <span class="n">DatasetRNN</span><span class="p">,</span>
+    <span class="n">metric_rnn</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span>
+    <span class="n">rnn_modules</span><span class="p">:</span> <span class="nb">list</span><span class="p">,</span>
+    <span class="n">control_signals</span><span class="p">:</span> <span class="nb">list</span><span class="p">,</span>
+    <span class="n">library_setup</span><span class="p">:</span> <span class="nb">dict</span><span class="p">,</span>
+    <span class="n">filter_setup</span><span class="p">:</span> <span class="nb">dict</span><span class="p">,</span>
+    <span class="n">polynomial_degree</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+    <span class="n">n_sessions_off_policy</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+    <span class="n">n_trials_optuna</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">50</span><span class="p">,</span>
+    <span class="n">verbose</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="bp">False</span>
+<span class="p">)</span>
+<span class="sh">"""</span><span class="s">
+Args:
+    participant_id: ID of participant to optimize for
+    agent_rnn: Trained RNN agent
+    data: Training data
+    metric_rnn: RNN performance metric
+    rnn_modules: List of RNN modules
+    control_signals: List of control signals
+    library_setup: Library configuration
+    filter_setup: Filter configuration
+    polynomial_degree: Degree for polynomial features
+    n_sessions_off_policy: Number of off-policy sessions
+    n_trials_optuna: Number of optimization trials
+    verbose: Whether to print progress
+</span><span class="sh">"""</span>
+</code></pre></div></div>
+
+          
+
+          
+            
+          
+        </main>
+        
+
+  <hr>
+  <footer>
+    
+
+    <p class="text-small text-grey-dk-100 mb-0">Copyright &copy; 2024 Daniel Weinhardt. Distributed under an <a href="https://github.com/whyhardt/SPICE/tree/main/LICENSE">MIT license.</a></p>
+
+    
+  </footer>
+
+
+      </div>
+    </div>
+    
+      
+
+<div class="search-overlay"></div>
+
+    
+  </div>
+
+  
+</body>
+</html>
+
