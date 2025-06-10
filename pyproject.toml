@@ -55,6 +55,7 @@ dev = [
 [project.urls]
 Issues="https://github.com/whyhardt/SPICE/issues"
 Repository="https://github.com/whyhardt/SPICE"
+Documentation="https://whyhardt.github.io/SPICE/"
 
 [tool.setuptools]
 packages = ["spice"]

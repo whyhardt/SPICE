@@ -8,6 +8,8 @@ SPICE is a framework for automating scientific practice in cognitive science and
 
 2. Sparse Identification of nonlinear Dynamics (SINDy; an equation discovery algorithm) is used to obtain mathematically interpretable equations for the learned cognitive mechanisms.
 
+📚 **Documentation**: [https://whyhardt.github.io/SPICE/](https://whyhardt.github.io/SPICE/)
+
 The resulting model with the neural-network architecture but with equations instead of RNN modules is called SPICE model. An overview is given in Figure 1.
 
 This README file gives an overview on how to install and run SPICE as a scikit-learn estimator. To learn how to use SPICE in more comprehensive scenarios, you can go to [tutorials](tutorials).
