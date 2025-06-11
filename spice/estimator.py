@@ -11,12 +11,15 @@ from typing import Dict, Optional, Tuple, Union, Iterable
 
 from .resources import (
     AgentNetwork,
+    AgentSpice,
     check_library_setup,
     fit_spice,
     DatasetRNN,
     BaseRNN,
 )
 from .resources.rnn_training import fit_model
+from .resources.rnn_utils import load_checkpoint
+from .resources.sindy_utils import load_spice, save_spice
 
 
 warnings.filterwarnings("ignore")
@@ -85,6 +88,8 @@ class SpiceEstimator(BaseEstimator):
         spice_participant_id: Optional[int] = None,  # Set to participant id to fit to a single participant
         
         verbose: Optional[bool] = False,
+
+        save_path: Optional[str] = None
     ):
         
         super(BaseEstimator, self).__init__()
@@ -103,7 +108,10 @@ class SpiceEstimator(BaseEstimator):
         self.verbose = verbose
         self.l1_weight_decay = l1_weight_decay
         self.l2_weight_decay = l2_weight_decay
-        
+
+        # Save parameters
+        self.save_path = save_path
+
         # SPICE training parameters
         self.spice_optim_threshold = spice_optim_threshold
         self.spice_library_polynomial_degree = spice_library_polynomial_degree
@@ -195,7 +203,7 @@ class SpiceEstimator(BaseEstimator):
         spice_modules = {rnn_module: {} for rnn_module in self.rnn_modules}
 
         self.spice_agent, self.spice_features = fit_spice(
-            rnn_modules=self.rnn_modules,
+            rnn_modules=spice_modules,
             control_signals=self.control_parameters,
             agent_rnn=self.rnn_agent,
             data=dataset,
@@ -211,6 +219,14 @@ class SpiceEstimator(BaseEstimator):
         if self.verbose:
             print('SPICE training finished.')
             print(f'Training took {time.time() - start_time:.2f} seconds.')
+
+        if self.save_path is not None:
+            spice_path = self.save_path.replace('.pth', '_spice.pkl')
+            print(f'Saving models to {self.save_path} and {spice_path}...')
+            self.save_spice(self.save_path, spice_path)
+            print(f'Models saved to {self.save_path} and {spice_path}.')
+
+
     
     def predict(self, conditions: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """
@@ -275,3 +291,43 @@ class SpiceEstimator(BaseEstimator):
         else:
             print(f'RNN model has no participant_embedding module.')
             return None
+        
+    def load_rnn_model(self, path_model: str, deterministic: bool = True):
+        self.rnn_model, self.rnn_optimizer = load_checkpoint(path_model, self.rnn_model, self.rnn_optimizer)
+        self.rnn_agent = AgentNetwork(self.rnn_model, self.n_actions, deterministic=deterministic, device=self.device)
+        
+    def load_spice_model(self, path_spice: str, deterministic: bool = True):
+        spice_modules = load_spice(path_spice)
+        self.spice_agent = AgentSpice(model_rnn=self.rnn_agent._model, sindy_modules=spice_modules, n_actions=self.rnn_agent._n_actions, deterministic=deterministic)
+
+    def load_spice(self, path_rnn: str, path_spice: str, deterministic: bool = True):
+        """
+        Load the RNN and SPICE models from the given paths.
+        
+        Args:
+            path_rnn: Path to the RNN model
+            path_spice: Path to the SPICE model
+            deterministic: Whether to use a deterministic model (default: True)
+        """
+        if path_rnn is not None:
+            self.load_rnn_model(path_rnn, deterministic=deterministic)
+        if path_spice is not None:
+            self.load_spice_model(path_spice, deterministic=deterministic)
+
+    def save_spice(self, path_rnn: str = None, path_spice: str = None):
+        """
+        Save the RNN and SPICE models to the given paths.
+        If path_rnn is None, only the SPICE model will be saved (requires a fitted SPICE model including the RNN).
+        If path_spice is None, only the RNN model will be saved (requires a fitted RNN model).
+        
+        Args:
+            path_rnn: Path to the RNN model
+            path_spice: Path to the SPICE model
+        """
+        if path_rnn is not None:
+            # Save RNN model
+            state_dict = {'model': self.rnn_model.state_dict(), 'optimizer': self.rnn_optimizer.state_dict()}
+            torch.save(state_dict, path_rnn)
+        if path_spice is not None:
+            # Save SPICE model
+            save_spice(self.spice_agent, path_spice)

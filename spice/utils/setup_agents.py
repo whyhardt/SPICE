@@ -94,9 +94,11 @@ def setup_agent_spice(
 ) -> AgentSpice:
     
     agent_rnn = setup_agent_rnn(class_rnn=class_rnn, path_model=path_rnn, list_sindy_signals=rnn_modules+control_parameters)
-    dataset = convert_dataset(file=path_data)[0]
     
     if path_spice is None or path_spice == '':
+        if path_data is None or path_data == '':
+            raise ValueError('Either path_spice or path_data must be provided.')
+        dataset = convert_dataset(file=path_data)[0]
         # fit SPICE model to RNN
         agent_spice, _ = fit_spice(
             agent_rnn=agent_rnn,
