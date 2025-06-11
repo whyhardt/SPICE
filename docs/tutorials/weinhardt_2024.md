@@ -2,7 +2,7 @@
 layout: default
 title: Weinhardt et al. 2024 Case Study
 parent: Tutorials
-nav_order: 5
+nav_order: 6
 ---
 
 # Weinhardt et al. 2024 Case Study

@@ -11,27 +11,32 @@ Welcome to the SPICE tutorials section. These tutorials will guide you through v
 
 ## Available Tutorials
 
-1. [Basic Rescorla-Wagner Model](tutorials/rescorla_wagner.html)
+1. [Data Preparation in SPICE](tutorials/data_preparation.html)
+   - Learn how to prepare and format your data for SPICE
+   - Understand the DatasetRNN class and data utilities
+   - Overview dataset splitting and preprocessing techniques
+
+2. [Basic Rescorla-Wagner Model](tutorials/rescorla_wagner.html)
    - Introduction to SPICE using a simple Rescorla-Wagner learning model
    - Learn how to set up and train your first SPICE model
    - Understand the basics of combining RNNs with equation discovery
 
-2. [Rescorla-Wagner with Forgetting](tutorials/rescorla_wagner_forgetting.html)
+3. [Rescorla-Wagner with Forgetting](tutorials/rescorla_wagner_forgetting.html)
    - Extend the basic model with forgetting mechanisms
    - Learn how to work with multiple cognitive mechanisms
    - Understand how SPICE discovers interaction effects
 
-3. [Working with Hardcoded Equations](tutorials/hardcoded_equations.html)
+4. [Working with Hardcoded Equations](tutorials/hardcoded_equations.html)
    - Learn how to use predefined equations in SPICE
    - Understand when and why to use hardcoded equations
    - Compare performance with discovered equations
 
-4. [Modeling Individual Differences](tutorials/individual_differences.html)
+5. [Modeling Individual Differences](tutorials/individual_differences.html)
    - Learn how to capture individual differences in cognitive models
    - Work with participant-specific parameters
    - Analyze and interpret individual variations
 
-5. [Case Study: Weinhardt et al. 2024](tutorials/weinhardt_2024.html)
+6. [Case Study: Weinhardt et al. 2024](tutorials/weinhardt_2024.html)
    - Complete case study from recent research
    - Advanced modeling techniques
    - Real-world application example

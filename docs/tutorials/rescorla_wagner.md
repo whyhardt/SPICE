@@ -2,7 +2,7 @@
 layout: default
 title: Basic Rescorla-Wagner Model
 parent: Tutorials
-nav_order: 1
+nav_order: 2
 ---
 
 # Basic Rescorla-Wagner Model Tutorial
@@ -165,6 +165,5 @@ After completing this tutorial, you can:
 
 ## Additional Resources
 
-- [Original Rescorla-Wagner Paper](https://psycnet.apa.org/record/1973-01780-001)
 - [SPICE API Documentation](../api.html)
 - [GitHub Repository](https://github.com/whyhardt/SPICE) 

@@ -2,7 +2,7 @@
 layout: default
 title: Working with Hardcoded Equations
 parent: Tutorials
-nav_order: 3
+nav_order: 4
 ---
 
 # Working with Hardcoded Equations
@@ -195,6 +195,5 @@ After completing this tutorial, you can:
 
 ## Additional Resources
 
-- [Reward Prediction Error Theory](https://www.nature.com/articles/nrn1406)
 - [SPICE API Documentation](../api.html)
 - [GitHub Repository](https://github.com/whyhardt/SPICE) 

@@ -2,7 +2,7 @@
 layout: default
 title: Rescorla-Wagner with Forgetting
 parent: Tutorials
-nav_order: 2
+nav_order: 3
 ---
 
 # Rescorla-Wagner with Forgetting Tutorial
@@ -176,6 +176,5 @@ After completing this tutorial, you can:
 
 ## Additional Resources
 
-- [Memory and Forgetting in RL](https://arxiv.org/abs/1602.02445)
 - [SPICE API Documentation](../api.html)
 - [GitHub Repository](https://github.com/whyhardt/SPICE) 

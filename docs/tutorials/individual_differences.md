@@ -2,7 +2,7 @@
 layout: default
 title: Modeling Individual Differences
 parent: Tutorials
-nav_order: 4
+nav_order: 5
 ---
 
 # Modeling Individual Differences in SPICE
@@ -215,6 +215,5 @@ After completing this tutorial, you can:
 
 ## Additional Resources
 
-- [Individual Differences in RL](https://www.nature.com/articles/s41593-020-0658-y)
 - [SPICE API Documentation](../api.html)
 - [GitHub Repository](https://github.com/whyhardt/SPICE) 
