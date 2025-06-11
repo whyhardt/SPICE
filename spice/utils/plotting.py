@@ -13,7 +13,7 @@ def plot_session(agents: Dict[str, Union[AgentSpice, AgentNetwork, AgentQ]], exp
     # plot the dynamcis associated with the first arm
     
     # valid keys in agent dictionary
-    valid_keys_color_pairs = {'groundtruth': 'tab:blue', 'rnn': 'tab:orange', 'sindy': 'tab:pink', 'benchmark':'tab:grey'}    
+    valid_keys_color_pairs = {'groundtruth': 'tab:blue', 'rnn': 'tab:orange', 'spice': 'tab:pink', 'benchmark':'tab:grey'}    
     
     n_actions = agents[list(agents.keys())[0]]._n_actions
     if isinstance(experiment, BanditSession):

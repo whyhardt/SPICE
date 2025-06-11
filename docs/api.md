@@ -32,6 +32,8 @@ from spice.estimator import SpiceEstimator
 - `spice_optim_threshold` (float, default=0.03): Threshold for SPICE optimization
 - `spice_participant_id` (int, optional): ID of specific participant to analyze
 - `verbose` (bool, default=False): Whether to print progress information
+- `save_path_rnn` (str, optional): File path (.pkl) to save RNN model after training
+- `save_path_spice` (str, optional): File path (.pkl) to save SPICE model after training
 
 #### Methods
 
@@ -70,6 +72,32 @@ def get_spice_features() -> Dict
 """
 Returns:
     Dictionary mapping participant IDs to their learned features and equations
+"""
+```
+
+##### save_spice(path_rnn, path_spice)
+Save the RNN and SPICE models to disk.
+
+```python
+def save_spice(path_rnn: str = None, path_spice: str = None)
+"""
+Args:
+    path_rnn: Path to save the RNN model (.pkl file)
+    path_spice: Path to save the SPICE model (.pkl file)
+Note: If path_rnn is None, only SPICE model will be saved. If path_spice is None, only RNN model will be saved.
+"""
+```
+
+##### load_spice(path_rnn, path_spice, deterministic)
+Load saved RNN and SPICE models from disk.
+
+```python
+def load_spice(path_rnn: str, path_spice: str, deterministic: bool = True)
+"""
+Args:
+    path_rnn: Path to the saved RNN model
+    path_spice: Path to the saved SPICE model
+    deterministic: Whether to use deterministic mode (default: True)
 """
 ```
 
@@ -234,4 +262,83 @@ Args:
     n_trials_optuna: Number of optimization trials
     verbose: Whether to print progress
 """
-``` 
+```
+
+### convert_dataset()
+
+Converts a CSV dataset into SPICE-compatible format.
+
+```python
+from spice.utils.convert_dataset import convert_dataset
+
+def convert_dataset(
+    file: str,
+    device = None,
+    sequence_length: int = None,
+    df_participant_id: str = 'session',
+    df_block: str = 'block',
+    df_experiment_id: str = 'experiment',
+    df_choice: str = 'choice',
+    df_reward: str = 'reward',
+    additional_inputs: List[str] = None
+) -> Tuple[DatasetRNN, List[BanditSession], pd.DataFrame, Tuple]
+"""
+Args:
+    file: Path to CSV file containing the dataset
+    device: PyTorch device to use
+    sequence_length: Length of sequences to generate
+    df_participant_id: Column name for participant IDs
+    df_block: Column name for block numbers
+    df_experiment_id: Column name for experiment IDs
+    df_choice: Column name for choices
+    df_reward: Column name for rewards
+    additional_inputs: List of additional input column names
+
+Returns:
+    Tuple containing:
+    - DatasetRNN object
+    - List of BanditSession objects
+    - Original DataFrame
+    - Tuple of dynamics arrays (probs_choice, values_action, values_reward, values_choice)
+"""
+```
+
+### Plotting Functions
+
+#### plot_session()
+
+Plot data from a behavioral session comparing different agents.
+
+```python
+from spice.utils.plotting import plot_session
+
+def plot_session(
+    agents: Dict[str, Union[AgentSpice, AgentNetwork, AgentQ]],
+    experiment: Union[BanditSession, np.ndarray],
+    labels: List[str] = None,
+    save: str = None
+) -> Tuple[plt.Figure, plt.Axes]
+"""
+Args:
+    agents: Dictionary mapping agent names to agent objects
+    experiment: BanditSession or numpy array containing experiment data
+    labels: Labels for the plot legend
+    save: Path to save the plot
+Returns:
+    Tuple of matplotlib Figure and Axes objects
+"""
+```
+
+The plot includes:
+- Action probabilities
+- Q-values
+- Reward values
+- Learning rates
+- Choice values
+- Trial values
+
+Valid agent keys in the agents dictionary:
+- 'groundtruth': Ground truth agent (blue)
+- 'rnn': RNN agent (orange)
+- 'spice': SPICE agent (pink)
+- 'benchmark': Benchmark agent (grey) 

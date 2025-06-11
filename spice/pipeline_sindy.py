@@ -262,10 +262,10 @@ def main(
         
         # get analysis plot
         if agent is not None:
-            agents = {'groundtruth': agent, 'rnn': agent_rnn, 'sindy': agent_spice}
+            agents = {'groundtruth': agent, 'rnn': agent_rnn, 'spice': agent_spice}
             plt_title = r'$GT:\beta_{reward}=$'+str(np.round(agent._beta_reward, 2)) + r'; $\beta_{choice}=$'+str(np.round(agent._beta_choice, 2))+'\n'
         else:
-            agents = {'rnn': agent_rnn, 'sindy': agent_spice}
+            agents = {'rnn': agent_rnn, 'spice': agent_spice}
             plt_title = ''
             
         fig, axs = plot_session(agents, experiment_test)

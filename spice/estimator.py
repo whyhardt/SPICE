@@ -30,6 +30,15 @@ class SpiceConfig():
                  filter_setup: Dict[str, Iterable[Union[str, float, int, bool]]],
                  control_parameters: Iterable[str],
                  rnn_modules: Iterable[str]):
+        """
+        Config class for SPICE model.
+
+        Args:
+            library_setup: Dictionary of library setup
+            filter_setup: Dictionary of filter setup
+            control_parameters: List of control parameters
+            rnn_modules: List of RNN modules
+        """
         self.library_setup = library_setup
         self.filter_setup = filter_setup
         self.control_parameters = control_parameters
@@ -92,6 +101,32 @@ class SpiceEstimator(BaseEstimator):
         save_path_rnn: Optional[str] = None,
         save_path_spice: Optional[str] = None
     ):
+        """
+        Args:
+            rnn_class: RNN class. Can be one of the precoded models in rnn.py or a custom implementation.
+            spice_config: SPICE config
+            list_signals: List of signals to use for SPICE
+            hidden_size: Hidden size of the RNN
+            dropout: Dropout rate of the RNN
+            n_actions: Number of actions
+            n_participants: Number of participants
+            n_experiments: Number of experiments
+            epochs: Number of epochs to train the RNN
+            bagging: Whether to use bagging for the RNN
+            sequence_length: Sequence length for the RNN
+            n_steps_per_call: Number of steps per call for the RNN
+            batch_size: Batch size for the RNN
+            learning_rate: Learning rate for the RNN
+            convergence_threshold: Convergence threshold for the RNN
+            device: Device to use for the RNN (default: 'cpu')
+            scheduler: Whether to use a scheduler for the RNN (default: False)
+            train_test_ratio: Ratio of training to test data (default: 1.)
+            l1_weight_decay: L1 weight decay for the RNN
+            l2_weight_decay: L2 weight decay for the RNN
+            verbose: Whether to print verbose output (default: False)
+            save_path_rnn: File path (.pkl) to save RNN model after training (default: None)
+            save_path_spice: File path (.pkl) to save SPICE model after training (default: None)
+        """
         
         super(BaseEstimator, self).__init__()
         
@@ -208,7 +243,7 @@ class SpiceEstimator(BaseEstimator):
         self.spice_features = {}
         spice_modules = {rnn_module: {} for rnn_module in self.rnn_modules}
 
-        self.spice_agent, self.spice_features = fit_spice(
+        self.spice_agent, loss_spice = fit_spice(
             rnn_modules=self.rnn_modules,
             control_signals=self.control_parameters,
             agent_rnn=self.rnn_agent,
@@ -221,6 +256,8 @@ class SpiceEstimator(BaseEstimator):
             participant_id=self.spice_participant_id,
             verbose=self.verbose,
         )
+
+        self.spice_features = self.spice_agent.get_spice_features()
 
         if self.verbose:
             print('SPICE training finished.')
