@@ -70,6 +70,8 @@ spice_estimator = SpiceEstimator(
     epochs=16,
     n_steps_per_call=16,
     spice_participant_id=0,
+    save_path_rnn='rnn_model.pkl',   # (Optional) File path (.pkl) to save RNN model after training
+    save_path_spice='spice_model.pkl', # (Optional) File path (.pkl) to save SPICE model after training
     verbose=True,
 )
 
@@ -90,6 +92,21 @@ pred_rnn, pred_spice = spice_estimator.predict(dataset.xs)
 print("\nPrediction shapes:")
 print(f"RNN predictions: {pred_rnn.shape}")
 print(f"SPICE predictions: {pred_spice.shape}")  
+```
+
+### Saving and loading models
+
+In addition to specifying save paths when creating the SpiceEstimator, you can also save an existing estimator's models, or load from save files:
+
+```python
+# Save trained model to file
+spice_estimator.save_spice(path_rnn='rnn_model.pkl', path_spice='spice_model.pkl')
+
+# Load saved model
+loaded_spice = SpiceEstimator.load_spice(path_rnn='rnn_model.pkl', path_spice='spice_model.pkl')
+
+# Use loaded model for predictions
+pred_rnn, pred_spice = loaded_spice.predict(dataset.xs)
 ```
 
 ## Requirements
