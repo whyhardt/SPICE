@@ -71,7 +71,7 @@ def plot_session(agents: Dict[str, Union[AgentSpice, AgentNetwork, AgentQ]], exp
 
     # qs = normalize(qs)
 
-    fig, axs = plt.subplots(6, 1, figsize=(20, 10))
+    fig, axs = plt.subplots(5, 1, figsize=(20, 10))
     axs_row = 0
     fig_col = None
     
@@ -134,19 +134,6 @@ def plot_session(agents: Dict[str, Union[AgentSpice, AgentNetwork, AgentQ]], exp
         rewards=rewards,
         timeseries=q_choice[:, :, 0],
         timeseries_name='$q_{choice}$',
-        color=colors,
-        fig_ax=(fig, axs[axs_row, fig_col]) if fig_col is not None else (fig, axs[axs_row]),
-        x_axis_info=True,
-        y_axis_info=True,
-        )
-    axs_row += 1
-    
-    plt_session(
-        compare=True,
-        choices=choices,
-        rewards=rewards,
-        timeseries=q_trial[:, :, 0],
-        timeseries_name='$q_{trial}$',
         color=colors,
         fig_ax=(fig, axs[axs_row, fig_col]) if fig_col is not None else (fig, axs[axs_row]),
         x_axis_info=True,
