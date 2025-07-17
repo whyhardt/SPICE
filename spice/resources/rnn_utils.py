@@ -1,5 +1,6 @@
 import torch
 from torch.utils.data import Dataset
+from typing import Union, List
 
 
 class DatasetRNN(Dataset):
@@ -90,10 +91,13 @@ class DatasetRNN(Dataset):
 def load_checkpoint(params_path, model, optimizer):
     # load trained parameters
     state_dict = torch.load(params_path, map_location=torch.device('cpu'))
+    
     state_dict_model = state_dict['model']
     state_dict_optimizer = state_dict['optimizer']
+    
     model.load_state_dict(state_dict_model)
     optimizer.load_state_dict(state_dict_optimizer)
+    
     return model, optimizer
 
 
@@ -196,3 +200,121 @@ def split_data_along_timedim(dataset: DatasetRNN, split_ratio: float, device: to
         test_xs[index_session, :, full_columns] = xs[index_session, :test_xs.shape[1], full_columns]
     
     return DatasetRNN(train_xs, train_ys, device=device), DatasetRNN(test_xs, test_ys, device=device)
+
+
+def split_data_along_sessiondim(dataset: DatasetRNN, list_test_sessions: List[int] = None, device: torch.device = torch.device('cpu')):
+    """Split the data along the time dimension (dim=1). 
+    Each session (dim=0) can be of individual length and is therefore post-padded with -1.
+    To split the data into training and testing samples according to the split_ratio each session's individual length has to be considered.
+    E.g.: 
+    1. session_length = len(session 0) -> 120
+    2. split_index = int(split_ratio * session length) -> 96
+    3. samples for training data -> 96
+    4. samples for testing data -> 24 = 120 - 96    
+
+    Args:
+        data (torch.Tensor): Data containing all sessions in the shape (session, time, features)
+        split_ratio (float): Float number indicating the ratio to be used as training data
+
+    Returns:
+        tuple(DatasetRNN, DatasetRNN): Training data and testing data splitted along time dimension (dim=1)
+    """
+    
+    if list_test_sessions is not None:
+        
+        dim = 1
+        xs, ys = dataset.xs.cpu(), dataset.ys.cpu()
+        
+        # get participant ids
+        participants_ids = xs[:, 0, -1].unique()
+        
+        # get sessions ids
+        session_ids = xs[:, 0, -3].unique()
+        
+        # set training sessions
+        if list_test_sessions:
+            n_sessions_test = len(list_test_sessions)
+            session_ids_test = torch.tensor(list_test_sessions, dtype=torch.float32)
+        else:
+            n_sessions_test = 0
+            session_ids_test = torch.tensor()
+        
+        n_sessions_train = len(session_ids) - n_sessions_test
+            
+        if all(session_ids[:-1] < 1):
+            session_ids_test /= len(session_ids) - 1
+        
+        # set test sessions
+        session_ids_train = torch.zeros(n_sessions_train)
+        index_sid = 0
+        for sid in session_ids:
+            if not sid in session_ids_test:
+                session_ids_train[index_sid] = sid
+                index_sid += 1     
+        
+        # setup new variables
+        train_xs, test_xs, train_ys, test_ys = torch.zeros((len(participants_ids) * n_sessions_train, *xs.shape[1:])), torch.zeros((len(participants_ids) * n_sessions_test, *xs.shape[1:])), torch.zeros((len(participants_ids) * n_sessions_train, *ys.shape[1:]))-1, torch.zeros((len(participants_ids) * n_sessions_test, *ys.shape[1:]))-1
+        train_xs[..., :-1], test_xs[..., :-1] = train_xs[..., :-1]-1, test_xs[..., :-1]-1
+        
+        index_train = 0
+        index_test = 0
+        for pid in participants_ids:
+            for sid in session_ids:
+                mask_ids = torch.logical_and(xs[:, 0, -3] == sid, xs[:, 0, -1] == pid)
+                if sid in session_ids_train:
+                    train_xs[index_train] = xs[mask_ids]
+                    train_ys[index_train] = ys[mask_ids]
+                    index_train += 1
+                elif sid in session_ids_test:
+                    test_xs[index_test] = xs[mask_ids]
+                    test_ys[index_test] = ys[mask_ids]
+                    index_test += 1
+                else:
+                    raise ValueError("session id was not found in training nor test sessions.")
+        
+        
+        return DatasetRNN(train_xs, train_ys, device=device), DatasetRNN(test_xs, test_ys, device=device)
+
+    else:
+        return dataset, dataset
+
+def reshape_data_along_participantdim(dataset: DatasetRNN, device: torch.device = torch.device('cpu')):
+    """Reshape the data along the participant dim.
+    
+    Args:
+        dataset (DatasetRNN): current dataset of shape (participants*sessions*, trial, features)
+        device (torch.device, optional): Defaults to torch.device('cpu').
+
+    Returns:
+        DatasetRNN: restructured dataset with shape (participant, session, trial, features)
+    """
+    
+    xs, ys = dataset.xs.cpu(), dataset.ys.cpu()
+    
+    # get participant ids
+    participants_ids = xs[:, 0, -1].unique()
+    
+    # setup new variables
+    xs_new, ys_new = [], []
+    n_sessions_max = 0
+    for pid in participants_ids:
+        # collect participant-level sessions
+        mask_ids = xs[:, 0, -1] == pid
+        xs_new.append(xs[mask_ids])
+        ys_new.append(ys[mask_ids])
+        # correct number of sessions for each participant if maximum number of session changed
+        if len(xs[mask_ids]) > n_sessions_max:
+            n_sessions_max = max(len(xs[mask_ids]), n_sessions_max)
+            for xs_i, ys_i in zip(xs_new, ys_new):
+                if xs_i.shape[0] < n_sessions_max:
+                    pad_sessions_xs = torch.zeros((n_sessions_max-xs_i.shape[0], *xs_i.shape[1:]), device=xs_i.device)
+                    # set ID dimensions as full arrays without -1
+                    pad_sessions_xs[..., :-3] += -1
+                    # setting only participant ID makes sense because experiment and session IDs do not affect the following computations
+                    pad_sessions_xs[..., -1] += xs_i[0, 0, -1]
+                    xs_i = torch.concat((xs_i, pad_sessions_xs))
+                    pad_sessions_ys = torch.zeros((n_sessions_max-ys_i.shape[0], *ys_i.shape[1:]), device=ys_i.device) - 1
+                    ys_i = torch.concat((ys_i, pad_sessions_ys))
+    
+    # setup new dataset with shape (participant, session, trial, features)
+    return DatasetRNN(torch.stack(xs_new), torch.stack(ys_new), device=device)

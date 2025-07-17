@@ -43,4 +43,7 @@ build/
 docs/_site/
 docs/.jekyll-cache/
 docs/.jekyll-metadata
-docs/.sass-cache/ 
+docs/.sass-cache/
+
+# SPICE
+weinhardt2025/benchmarking/params

@@ -1,11 +1,11 @@
+import time
+import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, RandomSampler
 
-import time
-import numpy as np
-from spice.resources.rnn import BaseRNN, CustomEmbedding
-from spice.resources.rnn_utils import DatasetRNN
+from .rnn import BaseRNN
+from .rnn_utils import DatasetRNN
 
 
 def gradient_penalty(f: nn.Module, e_i: torch.Tensor, e_j: torch.Tensor, factor=1.0):
@@ -119,8 +119,6 @@ def batch_train(
     ys: torch.Tensor,
     optimizer: torch.optim.Optimizer = None,
     n_steps: int = -1,
-    l1_weight_decay: float = 1e-4,
-    l2_weight_decay: float = 1e-4,
     loss_fn: nn.modules.loss._Loss = nn.CrossEntropyLoss(),
     ):
 
@@ -159,43 +157,9 @@ def batch_train(
         
         if torch.is_grad_enabled():
             
-            # L1 weight decay to enforce sparsification in the network (except for participant embedding)
-            l1_reg = l1_weight_decay * torch.stack([
-                param.abs().sum()
-                for name, param in model.named_parameters()
-                # if "embedding" not in name
-                # if "embedding" in name
-                ]).mean()
-            
-            # Regularization of the embedding space
-            if l2_weight_decay > 0:
-                if hasattr(model, 'participant_embedding') and isinstance(model.participant_embedding, nn.Sequential) and isinstance(model.participant_embedding[0], CustomEmbedding):
-                    # gradient penalty between two participants
-                    # sample two random distributions of participant indices as one-hot-encoded tensors
-                    e_i = torch.randint(low=0, high=model.n_participants, size=(xs.shape[0],), dtype=torch.int64, device=xs_step.device)
-                    e_j = torch.randint(low=0, high=model.n_participants, size=(xs.shape[0],), dtype=torch.int64, device=xs_step.device)
-                    embedding_reg = gradient_penalty(model.participant_embedding, e_i, e_j, factor=l2_weight_decay)
-                elif hasattr(model, 'participant_embedding') and ((isinstance(model.participant_embedding, nn.Sequential) and isinstance(model.participant_embedding[0], nn.Embedding)) or isinstance(model.participant_embedding, nn.Embedding)):
-                    # L2 weight decay on participant embedding to enforce smoother gradients between participants and prevent overfitting
-                    if model.embedding_size > 1:
-                        embedding_reg = l2_weight_decay * torch.stack([
-                            param.pow(2).sum()
-                            for name, param in model.named_parameters()
-                            if "embedding" in name
-                            # if "embedding" not in name
-                            ]).mean()
-                    else:
-                        embedding_reg = 0
-                else:
-                    embedding_reg = 0
-            else:
-                embedding_reg = 0
-                
-            loss = loss_step + l1_reg + embedding_reg
-            
             # backpropagation
             optimizer.zero_grad()
-            loss.backward()
+            loss_step.backward()
             optimizer.step()
     
     return model, optimizer, loss_batch.item()/iterations
@@ -212,9 +176,8 @@ def fit_model(
     bagging: bool = False,
     scheduler: bool = False,
     n_steps: int = -1,
-    l1_weight_decay: float = 1e-4,
-    l2_weight_decay: float = 1e-4,
     verbose: bool = True,
+    path_save_checkpoints: str = None,
     ):
     """_summary_
 
@@ -228,7 +191,6 @@ def fit_model(
         batch_size (int, optional): Batch size. Defaults to -1.
         bagging (bool, optional): Enables bootstrap aggregation. Defaults to False.
         n_steps (int, optional): Number of steps passed at once through the RNN to compute a gradient over steps. Defaults to -1.
-        l1_weight_decay (float, optional): L1 weight decay for sparsification. Defaults to 1e-4.
         verbose (bool, optional): Verbosity. Defaults to True.
 
     Returns:
@@ -239,7 +201,7 @@ def fit_model(
     # initialize dataloader
     if batch_size == -1:
         batch_size = len(dataset_train)
-        
+    
     # use random sampling with replacement
     if bagging:
         batch_size = max(batch_size, 64)
@@ -251,17 +213,31 @@ def fit_model(
         dataloader_test = DataLoader(dataset_test, batch_size=len(dataset_test))
     
     # set up learning rate scheduler
+    warmup_steps = 1024
+    warmup_steps = warmup_steps if epochs > warmup_steps else 1 #int(epochs * 0.125/16)
     if scheduler and optimizer is not None:
-        warmup_steps = 64 if epochs > 64 else 0 #int(epochs * 0.125/16)
         # Define the LambdaLR scheduler for warm-up
+        # def warmup_lr_lambda(current_step):
+        #     if current_step < warmup_steps / 0.8:
+        #         return min(1e-1, float(current_step) / float(max(1, warmup_steps))) / (optimizer.param_groups[0]['lr']) / 100
+        #     else:
+        #         return 1 - float(current_step) / float(max(1, warmup_steps)) / (optimizer.param_groups[0]['lr']) / 100
+        #     return 1.0  # No change after warm-up phase
+        default_lr = optimizer.param_groups[0]['lr'] + 0
         def warmup_lr_lambda(current_step):
-            if current_step < warmup_steps:
-                return float(current_step) / float(max(1, warmup_steps)) * 10
-            return 1.0  # No change after warm-up phase
+            scale = 1e-1 / default_lr
+            if current_step < warmup_steps * 0.8:
+                return 0.1 * scale  # Scaling factor during the first 80% of warmup
+            elif current_step < warmup_steps:
+                # Linearly anneal towards 1.0 in the last 20% of warmup steps
+                progress = (current_step - warmup_steps * 0.8) / (warmup_steps * 0.2)
+                return (0.1 + progress * (1.0 - 0.1)) * scale
+            else:
+                return 1.0  # Default learning rate scaling after warmup
 
         # Create the scheduler with the Lambda function
         scheduler_warmup = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=warmup_lr_lambda)
-        
+                
         scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer=optimizer, T_0=warmup_steps if warmup_steps > 0 else 64, T_mult=2)
         # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer=optimizer, factor=0.1, patience=10, threshold=0, cooldown=64, min_lr=1e-6)
         # scheduler = ReduceOnPlateauWithRestarts(optimizer=optimizer, min_lr=1e-6, factor=0.1, patience=8)
@@ -284,6 +260,7 @@ def fit_model(
     loss_train = 0
     loss_test = 0
     iterations_per_epoch = max(len(dataset_train), 64) // batch_size
+    save_at_epoch = warmup_steps
     
     # start training
     while continue_training:
@@ -305,8 +282,6 @@ def fit_model(
                     ys=ys,
                     optimizer=optimizer,
                     n_steps=n_steps,
-                    l1_weight_decay=l1_weight_decay,
-                    l2_weight_decay=l2_weight_decay,
                 )
                 loss_train += loss_i
             loss_train /= iterations_per_epoch
@@ -362,7 +337,12 @@ def fit_model(
                     #     scheduler.step(epoch=n_calls_to_train_model)
                     else:
                         scheduler.step()
-                    
+            
+            # save checkpoint
+            if path_save_checkpoints and n_calls_to_train_model == save_at_epoch:
+                torch.save(model.state_dict(), path_save_checkpoints.replace('.', f'_ep{n_calls_to_train_model}.'))
+                save_at_epoch *= 2
+                
         except KeyboardInterrupt:
             continue_training = False
             msg = 'Training interrupted. Continuing with further operations...'
