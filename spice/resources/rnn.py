@@ -6,18 +6,45 @@ import numpy as np
 
 
 class GRUModule(nn.Module):
-    def __init__(self, input_size, hidden_size, dropout):
+    def __init__(self, input_size, **kwargs):
         super().__init__()
         
         self.gru_in = nn.GRU(input_size, 1)
-        # self.dropout = nn.Dropout(dropout)
         self.linear_out = nn.Linear(1, 1)
-       
+        
+        # Simple weight initialization for all parameters
+        self._initialize_weights()
+    
+    def _initialize_weights(self):
+        """Apply Xavier uniform to all parameters"""
+        for param in self.parameters():
+            if param.dim() > 1:  # Only weight matrices, skip biases
+                nn.init.xavier_uniform_(param)
+            else:
+                nn.init.zeros_(param)
+                
+    # def _initialize_weights(self):
+    #     """Initialize weights using Xavier/Glorot initialization for better training stability"""
+    #     # Initialize GRU weights
+    #     for name, param in self.gru_in.named_parameters():
+    #         if 'weight_ih' in name:  # Input-to-hidden weights
+    #             nn.init.xavier_uniform_(param)
+    #         elif 'weight_hh' in name:  # Hidden-to-hidden weights
+    #             nn.init.orthogonal_(param)
+    #         elif 'bias' in name:  # Biases
+    #             nn.init.zeros_(param)
+    #             # Set forget gate bias to 1 for better gradient flow (if applicable)
+    #             n = param.size(0)
+    #             param.data[n//3:2*n//3].fill_(1.0)  # GRU reset gate bias
+        
+    #     # Initialize linear layer weights
+    #     nn.init.xavier_uniform_(self.linear_out.weight)
+    #     nn.init.zeros_(self.linear_out.bias)
+
     def forward(self, inputs):
         n_actions = inputs.shape[1]
         inputs = inputs.view(inputs.shape[0]*inputs.shape[1], inputs.shape[2]).unsqueeze(0)
         next_state = self.gru_in(inputs[..., 1:], inputs[..., :1].contiguous())[1].view(-1, n_actions, 1)
-        # next_state = self.dropout(next_state)
         next_state = self.linear_out(next_state)
         return next_state
 
@@ -27,66 +54,67 @@ class DummyModule(nn.Module):
         super().__init__()
         
     def forward(self, inputs: torch.Tensor):
-        return torch.ones_like(inputs, device=inputs.device, dtype=torch.float).view(-1, 1)
+        return torch.ones((*inputs.shape[:-1], 1), device=inputs.device, dtype=torch.float)
     
     
-class CustomEmbedding(nn.Module):
-    
-    def __init__(self, num_embeddings, embedding_dim):
+class ParameterModule(nn.Module):
+    def __init__(self):
         super().__init__()
         
-        self.num_embeddings = num_embeddings
-        self.embedding_dim = embedding_dim
+        self.parameter = nn.Parameter(torch.tensor(1.))
         
-        self.linear = torch.nn.Linear(num_embeddings, embedding_dim, bias=False)
+    def forward(self, *args, **kwargs):
+        return self.parameter
     
-    def forward(self, index: torch.Tensor):
-        return self.get_embedding(self.one_hot_encode(index))
     
-    def one_hot_encode(self, index: torch.Tensor):
-        return torch.eye(self.num_embeddings, dtype=torch.float32, requires_grad=True, device=index.device)[index]
-    
-    def get_embedding(self, one_hot_encoded: torch.Tensor):
-        return self.linear(one_hot_encoded)    
 
+class SparseLeakyReLU(nn.LeakyReLU):
+    
+    def __init__(self, negative_slope = 0.01, inplace = False, threshold=0.01):
+        """Leaky ReLU which in training-mode behaves like the standard LeakyReLU-module.
+        In eval-mode it compares the activation value against a threshold and sets it to 0 if it is below.
 
-class ExtendedEmbedding(nn.Module):
+        Args:
+            negative_slope (float, optional): _description_. Defaults to 0.01.
+            inplace (bool, optional): _description_. Defaults to False.
+            threshold (float, optional): _description_. Defaults to 0.01.
+        """
+        super().__init__(negative_slope, inplace)
+        self.threshold = threshold
     
-    def __init__(self, num_embeddings, num_inputs, embedding_dim):
-        super().__init__()
-        
-        self.embedding = nn.Embedding(num_embeddings, embedding_dim)
-        self.linear_out = nn.Linear(embedding_dim+num_inputs, embedding_dim)
-        
-    def forward(self, dict_id, additional):
-        embedding = self.embedding(dict_id)
-        return self.linear_out(torch.concat((embedding, additional), dim=-1))    
-    
-    
+    def forward(self, input):
+        activation = super().forward(input)
+        if self.training:
+            return activation
+        else:
+            if activation < self.threshold:
+                return torch.zeros_like(activation)
+            else:
+                activation
+                
+
 class BaseRNN(nn.Module):
     def __init__(
         self, 
         n_actions, 
-        hidden_size: int = 8,
         n_participants: int = 0,
+        embedding_size: int = 0,
         device=torch.device('cpu'),
-        list_signals=['x_V', 'c_a', 'c_r'],
-        embedding_size: int = 1,
         ):
         super(BaseRNN, self).__init__()
         
         # define general network parameters
         self.device = device
         self._n_actions = n_actions
-        self.hidden_size = hidden_size
-        self.embedding_size = 0
+        self.embedding_size = embedding_size
         self.n_participants = n_participants
         
         # session recording; used for sindy training; training variables start with 'x' and control parameters with 'c' 
-        self.recording = {key: [] for key in list_signals}
+        self.recording = {}
         self.submodules_rnn = nn.ModuleDict()
         self.submodules_eq = dict()
         self.submodules_sindy = dict()
+        self.betas = nn.ModuleDict()
         
         self.state = self.set_initial_state()
         
@@ -133,13 +161,8 @@ class BaseRNN(nn.Module):
             Tuple[torch.Tensor]: initial hidden state
         """
                 
-        for key in self.recording.keys():
-            self.recording[key] = []
-        
-        # state dimensions: (habit_state, value_state, habit, value)
-        # dimensions of states: (batch_size, substate, hidden_size)
-        # self.set_state(*[init_value + torch.zeros([batch_size, self._n_actions], dtype=torch.float, device=self.device) for init_value in self.init_values])
-        
+        self.recording = {}
+                
         state = {key: torch.full(size=[batch_size, self._n_actions], fill_value=self.init_values[key], dtype=torch.float32, device=self.device) for key in self.init_values}
         
         self.set_state(state)
@@ -182,39 +205,40 @@ class BaseRNN(nn.Module):
             new_value (_type_): value at timestep t of shape (batch_size, feature_dim)
         """
         
+        if key not in self.recording:
+            self.recording[key] = []
         self.recording[key].append(value.detach().cpu().numpy())
         
     def get_recording(self, key):
         return self.recording[key]
     
-    def setup_module(self, input_size: int, hidden_size: int = None, dropout: float = 0., activation: nn.Module = None):
+    def setup_constant(self, embedding_size: int = None, leaky_relu: float = 0.01):
+        if embedding_size is not None:
+            return nn.Sequential(nn.Linear(embedding_size, 1), nn.LeakyReLU(leaky_relu))
+        else:
+            return ParameterModule()
+    
+    def setup_embedding(self, num_embeddings: int, embedding_size: int, leaky_relu: float = 0.01, dropout: float = 0.5):
+        return torch.nn.Sequential(
+            torch.nn.Embedding(num_embeddings=num_embeddings, embedding_dim=embedding_size),
+            torch.nn.LeakyReLU(leaky_relu),
+            torch.nn.Dropout(p=dropout),
+            )
+    
+    def setup_module(self, input_size: int):
         """This method creates the standard RNN-module used in computational discovery of cognitive dynamics
 
         Args:
             input_size (_type_): The number of inputs (excluding the memory state)
-            hidden_size (_type_): Hidden size after the input layer
             dropout (_type_): Dropout rate before output layer
             activation (nn.Module, optional): Possibility to include an activation function. Defaults to None.
 
         Returns:
             torch.nn.Module: A torch module which can be called by one line and returns state update
         """
-        if hidden_size is None:
-            hidden_size = self.hidden_size
-            
-        # Linear network
-        # layers = [
-        #     nn.Linear(input_size+1, hidden_size),
-        #     nn.Tanh(),
-        #     nn.Dropout(dropout),
-        #     nn.Linear(hidden_size, 1),
-        # ]
-        # if activation is not None:
-        #     layers.append(activation())
-        # module = nn.Sequential(*layers)
         
         # GRU network
-        module = GRUModule(input_size=input_size, hidden_size=hidden_size, dropout=dropout)
+        module = GRUModule(input_size=input_size)
         
         return module 
     
@@ -249,7 +273,6 @@ class BaseRNN(nn.Module):
         Returns:
             _type_: _description_
         """
-        record_signal = False
         
         if action is not None:
             action = action.unsqueeze(-1)
@@ -281,7 +304,7 @@ class BaseRNN(nn.Module):
                 inputs = torch.zeros((*inputs.shape[:-1], 1))
             
             if participant_index is None:
-                participant_index = torch.zeros((value.shape[0], 1), dtype=torch.int32)
+                participant_index = torch.zeros((1, 1), dtype=torch.int32)
             
             next_value = np.zeros_like(value)
             for index_batch in range(value.shape[0]):
@@ -333,164 +356,3 @@ class BaseRNN(nn.Module):
         
         # replace rnn modules with sindy modules
         self.submodules_sindy = modules
-
-
-class RLRNN(BaseRNN):
-    
-    init_values = {
-            'x_value_reward': 0.5,
-            'x_value_choice': 0.,
-            'x_learning_rate_reward': 0.,
-        }
-    
-    def __init__(
-        self,
-        n_actions: int,
-        n_participants: int,
-        hidden_size = 8,
-        embedding_size = 8,
-        dropout = 0.,
-        device = torch.device('cpu'),
-        list_signals = ['x_learning_rate_reward', 'x_value_reward_not_chosen', 'x_value_choice_chosen', 'x_value_choice_not_chosen', 'c_action', 'c_reward', 'c_value_reward', 'c_value_choice'],
-        **kwargs,
-    ):
-        
-        super(RLRNN, self).__init__(n_actions=n_actions, list_signals=list_signals, hidden_size=hidden_size, device=device, n_participants=n_participants)
-        
-        # set up the participant-embedding layer
-        self.embedding_size = embedding_size
-        if embedding_size > 1:
-            self.participant_embedding = torch.nn.Sequential(
-                torch.nn.Embedding(num_embeddings=n_participants, embedding_dim=self.embedding_size),
-            #     # CustomEmbedding(num_embeddings=n_participants, embedding_dim=embedding_size),
-                torch.nn.ReLU(),
-                torch.nn.Dropout(p=dropout),
-                )
-            # self.participant_embedding = torch.nn.Embedding(num_embeddings=n_participants, embedding_dim=self.embedding_size)
-        else:
-            self.embedding_size = 1
-            self.participant_embedding = DummyModule()
-        
-        # scaling factor (inverse noise temperature) for each participant for the values which are handled by an hard-coded equation
-        self.betas = torch.nn.ModuleDict()
-        self.betas['x_value_reward'] = torch.nn.Sequential(torch.nn.Linear(self.embedding_size, 1), torch.nn.ReLU())# if embedding_size > 0 else torch.nn.Parameter(torch.tensor(1.0))
-        self.betas['x_value_choice'] = torch.nn.Sequential(torch.nn.Linear(self.embedding_size, 1), torch.nn.ReLU())# if embedding_size > 0 else torch.nn.Parameter(torch.tensor(1.0))
-        
-        # set up the submodules
-        self.submodules_rnn['x_learning_rate_reward'] = self.setup_module(input_size=3+self.embedding_size, dropout=dropout)
-        self.submodules_rnn['x_value_reward_not_chosen'] = self.setup_module(input_size=1+self.embedding_size, dropout=dropout)
-        self.submodules_rnn['x_value_choice_chosen'] = self.setup_module(input_size=1+self.embedding_size, dropout=dropout)
-        self.submodules_rnn['x_value_choice_not_chosen'] = self.setup_module(input_size=1+self.embedding_size, dropout=dropout)
-        
-        # set up hard-coded equations
-        self.submodules_eq['x_value_reward_chosen'] = self.x_value_reward_chosen
-    
-    def x_value_reward_chosen(self, value, inputs):
-        return value + inputs[..., 1] * (inputs[..., 0] - value)
-    
-    def forward(self, input_variables, prev_state=None, batch_first=False):
-        """Forward pass of the RNN
-
-        Args:
-            inputs (torch.Tensor): includes all necessary inputs (action, reward, participant id) to the RNN to let it compute the next action
-            prev_state (Tuple[torch.Tensor], optional): That's the previous memory state of the RNN containing the reward-based value. Defaults to None.
-            batch_first (bool, optional): Indicates whether the first dimension of inputs is batch (True) or timesteps (False). Defaults to False.
-        """
-        
-        # First, we have to initialize all the inputs and outputs (i.e. logits)
-        input_variables, embedding_variables, logits, timesteps = self.init_forward_pass(input_variables, prev_state, batch_first)
-        actions, rewards, _, _ = input_variables
-        participant_id, _ = embedding_variables
-        
-        # Here we compute now the participant embeddings for each entry in the batch
-        participant_embeddings = self.participant_embedding(participant_id[:, 0].int())
-        
-        # get scaling factors
-        scaling_factors = {}
-        for key in self.state:
-            if key in self.betas:
-                scaling_factors[key] = self.betas[key] if isinstance(self.betas[key], nn.Parameter) else self.betas[key](participant_embeddings)
-        
-        for timestep, action, reward in zip(timesteps, actions, rewards): #, rewards_not_chosen
-            
-            # record the current memory state and control inputs to the modules for SINDy training
-            if not self.training and len(self.submodules_sindy)==0:
-                self.record_signal('c_action', action)
-                self.record_signal('c_reward', reward)
-                # self.record_signal('c_reward_not_chosen', reward_not_chosen)
-                self.record_signal('c_value_reward', self.state['x_value_reward'])
-                self.record_signal('c_value_choice', self.state['x_value_choice'])
-                self.record_signal('x_learning_rate_reward', self.state['x_learning_rate_reward'])
-                self.record_signal('x_value_reward_not_chosen', self.state['x_value_reward'])
-                self.record_signal('x_value_choice_chosen', self.state['x_value_choice'])
-                self.record_signal('x_value_choice_not_chosen', self.state['x_value_choice'])
-            
-            # updates for x_value_reward
-            learning_rate_reward = self.call_module(
-                key_module='x_learning_rate_reward',
-                key_state='x_learning_rate_reward',
-                action=action,
-                inputs=(
-                    reward, 
-                    self.state['x_value_reward'], 
-                    self.state['x_value_choice'],
-                    ),
-                participant_embedding=participant_embeddings,
-                participant_index=participant_id,
-                activation_rnn=torch.nn.functional.sigmoid,
-            )
-            
-            next_value_reward_chosen = self.call_module(
-                key_module='x_value_reward_chosen',
-                key_state='x_value_reward',
-                action=action,
-                inputs=(
-                    reward,
-                    learning_rate_reward,
-                    ),
-                participant_embedding=participant_embeddings,
-                participant_index=participant_id,
-                )
-
-            next_value_reward_not_chosen = self.call_module(
-                key_module='x_value_reward_not_chosen',
-                key_state='x_value_reward',
-                action=1-action,
-                inputs=(self.state['x_value_choice']),
-                participant_embedding=participant_embeddings,
-                participant_index=participant_id,
-                )
-            
-            # updates for x_value_choice
-            next_value_choice_chosen = self.call_module(
-                key_module='x_value_choice_chosen',
-                key_state='x_value_choice',
-                action=action,
-                inputs=(self.state['x_value_reward']),
-                participant_embedding=participant_embeddings,
-                participant_index=participant_id,
-                activation_rnn=torch.nn.functional.sigmoid,
-                )
-            
-            next_value_choice_not_chosen = self.call_module(
-                key_module='x_value_choice_not_chosen',
-                key_state='x_value_choice',
-                action=1-action,
-                inputs=(self.state['x_value_reward']),
-                participant_embedding=participant_embeddings,
-                participant_index=participant_id,
-                activation_rnn=torch.nn.functional.sigmoid,
-                )
-            
-            # updating the memory state
-            self.state['x_learning_rate_reward'] = learning_rate_reward
-            self.state['x_value_reward'] = next_value_reward_chosen + next_value_reward_not_chosen
-            self.state['x_value_choice'] = next_value_choice_chosen + next_value_choice_not_chosen
-            
-            # Now keep track of the logit in the output array
-            logits[timestep] = self.state['x_value_reward'] * scaling_factors['x_value_reward'] + self.state['x_value_choice'] * scaling_factors['x_value_choice']
-            
-        # post-process the forward pass; give here as inputs the logits, batch_first and all values from the memory state
-        logits = self.post_forward_pass(logits, batch_first)
-                
-        return logits, self.get_state()

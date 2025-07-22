@@ -7,19 +7,14 @@ import torch
 import numpy as np
 from copy import deepcopy
 from sklearn.base import BaseEstimator
-from typing import Dict, Optional, Tuple, Union, Iterable
+from typing import Dict, Optional, Tuple, Union, Iterable, List
 
-from .resources import (
-    AgentNetwork,
-    AgentSpice,
-    check_library_setup,
-    fit_spice,
-    DatasetRNN,
-    BaseRNN,
-)
 from .resources.rnn_training import fit_model
-from .resources.rnn_utils import load_checkpoint
-from .resources.sindy_utils import load_spice, save_spice
+from .resources.rnn_utils import load_checkpoint, DatasetRNN
+from .resources.sindy_utils import load_spice, save_spice, check_library_setup
+from .resources.sindy_training import fit_spice
+from .resources.bandits import AgentNetwork, AgentSpice
+from .resources.rnn import BaseRNN, ParameterModule
 
 
 warnings.filterwarnings("ignore")
@@ -61,16 +56,10 @@ class SpiceEstimator(BaseEstimator):
     def __init__(
         self,
         
-        # RNN class. Can be one of the precoded models in rnn.py or a custom implementation.
+        # RNN class and SPICE configuration. Can be one of the precoded models in rnn.py or a custom implementation.
         rnn_class: BaseRNN,
-        
         spice_config: SpiceConfig,
-        list_signals: Optional[Iterable[str]] = ['x_V', 'c_a', 'c_r'],
         
-        # RNN parameters
-        hidden_size: int = 8,
-        dropout: float = 0.25,
-
         # Data/Environment parameters
         n_actions: int = 2,
         n_participants: int = 0,
@@ -80,21 +69,27 @@ class SpiceEstimator(BaseEstimator):
         epochs: int = 128,
         bagging: bool = False,
         sequence_length: Optional[int] = -1,  # -1 for keeping the sequence length in the data to its original length, otherwise strided windows of length sequence_length,
-        n_steps_per_call: Optional[int] = 16,  # number of timesteps in one backward-call; -1 for full sequence
+        n_steps_per_call: Optional[int] = -1,  # number of timesteps in one backward-call; -1 for full sequence
         batch_size: Optional[int] = -1,  # -1 for a batch-size equal to the number of participants in the data
-        learning_rate: Optional[float] = 5e-3,
-        convergence_threshold: Optional[float] = 1e-7,
+        learning_rate: Optional[float] = 1e-2,
+        convergence_threshold: Optional[float] = 0,
         device: Optional[torch.device] = torch.device('cpu'),
         scheduler: Optional[bool] = False, 
-        train_test_ratio: Optional[float] = 1.,
-        l1_weight_decay: Optional[float] = 1e-4,
+        train_test_ratio: Optional[Union[float, List[int]]] = 1.,
         l2_weight_decay: Optional[float] = 1e-4,
+        dropout: Optional[float] = 0.5,
         
         # SPICE training parameters
-        spice_optim_threshold: Optional[float] = 0.03,
+        spice_optimizer_type: Optional[str] = 'SR3_weighted_l1',
+        spice_optim_threshold: Optional[float] = 0.05,
         spice_optim_regularization: Optional[float] = 1e-2,
         spice_library_polynomial_degree: Optional[int] = 1,
-        spice_participant_id: Optional[int] = None,  # Set to participant id to fit to a single participant
+        n_trials_off_policy: Optional[int] = 1000,
+        n_sessions_off_policy: Optional[int] = 1,
+        n_trials_same_action_off_policy: Optional[int] = 5,
+        use_optuna: Optional[bool] = False,
+        optuna_threshold: Optional[float] = 0.1,
+        optuna_n_trials: Optional[int] = 50,
         
         verbose: Optional[bool] = False,
 
@@ -121,7 +116,6 @@ class SpiceEstimator(BaseEstimator):
             device: Device to use for the RNN (default: 'cpu')
             scheduler: Whether to use a scheduler for the RNN (default: False)
             train_test_ratio: Ratio of training to test data (default: 1.)
-            l1_weight_decay: L1 weight decay for the RNN
             l2_weight_decay: L2 weight decay for the RNN
             verbose: Whether to print verbose output (default: False)
             save_path_rnn: File path (.pkl) to save RNN model after training (default: None)
@@ -142,7 +136,7 @@ class SpiceEstimator(BaseEstimator):
         self.train_test_ratio = train_test_ratio
         self.device = device
         self.verbose = verbose
-        self.l1_weight_decay = l1_weight_decay
+        self.deterministic = False
         self.l2_weight_decay = l2_weight_decay
 
         # Save parameters
@@ -150,10 +144,16 @@ class SpiceEstimator(BaseEstimator):
         self.save_path_spice = save_path_spice
 
         # SPICE training parameters
+        self.spice_optimizer_type = spice_optimizer_type
         self.spice_optim_threshold = spice_optim_threshold
         self.spice_library_polynomial_degree = spice_library_polynomial_degree
         self.spice_optim_regularization = spice_optim_regularization
-        self.spice_participant_id = spice_participant_id
+        self.n_trials_off_policy = n_trials_off_policy
+        self.n_sessions_off_policy = n_sessions_off_policy
+        self.n_trials_same_action_off_policy = n_trials_same_action_off_policy
+        self.use_optuna = use_optuna
+        self.optuna_threshold = optuna_threshold
+        self.optuna_n_trials = optuna_n_trials
 
         # Data parameters
         self.n_actions = n_actions
@@ -161,7 +161,6 @@ class SpiceEstimator(BaseEstimator):
         self.n_experiments = n_experiments
         
         # RNN parameters
-        self.hidden_size = hidden_size
         self.dropout = dropout
         
         self.rnn_agent = None
@@ -170,10 +169,8 @@ class SpiceEstimator(BaseEstimator):
         
         self.rnn_model = rnn_class(
             n_actions=n_actions,
-            list_signals=spice_config.spice_feature_list,
-            hidden_size=hidden_size, 
             n_participants=n_participants,
-            n_experiments=n_experiments
+            n_experiments=n_experiments,
         ).to(device)
 
         self.spice_library_config = spice_config.library_setup
@@ -185,7 +182,7 @@ class SpiceEstimator(BaseEstimator):
 
         self.optimizer_rnn = torch.optim.Adam(self.rnn_model.parameters(), lr=learning_rate)
     
-    def fit(self, conditions: np.ndarray, targets: np.ndarray):
+    def fit(self, data: np.ndarray, targets: np.ndarray, data_test: np.ndarray = None, target_test: np.ndarray = None):
         """
         Fit the RNN and SPICE models to given data.
         
@@ -194,21 +191,24 @@ class SpiceEstimator(BaseEstimator):
             targets: Array of shape (n_participants, n_trials, n_actions)
         """
         
-        dataset = DatasetRNN(conditions, targets)
+        dataset = DatasetRNN(data, targets)
+        dataset_test = DatasetRNN(data_test, target_test) if data_test is not None and target_test is not None else None
+        
         start_time = time.time()
         
         # ------------------------------------------------------------------------
         # Fit RNN
         # ------------------------------------------------------------------------
         
-        if self.verbose:
-            print('\nTraining the RNN...')
+        # if self.verbose:
+        print('\nTraining the RNN...')
         
-        batch_size = conditions.shape[0] if self.batch_size == -1 else self.batch_size
+        batch_size = data.shape[0] if self.batch_size == -1 else self.batch_size
         
         rnn_model, rnn_optimizer, _ = fit_model(
             model=self.rnn_model,
             dataset_train=dataset,
+            dataset_test=dataset_test,
             optimizer=self.optimizer_rnn,
             convergence_threshold=self.convergence_threshold,
             epochs=self.epochs,
@@ -216,9 +216,8 @@ class SpiceEstimator(BaseEstimator):
             bagging=self.bagging,
             scheduler=self.scheduler,
             n_steps=self.n_steps_per_call,
-            l1_weight_decay=self.l1_weight_decay,
-            l2_weight_decay=self.l2_weight_decay,
             verbose=self.verbose,
+            path_save_checkpoints=None,
         )
 
         rnn_model.eval()
@@ -233,8 +232,7 @@ class SpiceEstimator(BaseEstimator):
         if self.save_path_rnn is not None:
             print(f'Saving RNN model to {self.save_path_rnn}...')
             self.save_spice(self.save_path_rnn, None)
-            print(f'RNN model saved to {self.save_path_rnn}')            
-        
+            
         # ------------------------------------------------------------------------
         # Fit SPICE
         # ------------------------------------------------------------------------
@@ -243,7 +241,7 @@ class SpiceEstimator(BaseEstimator):
         self.spice_features = {}
         spice_modules = {rnn_module: {} for rnn_module in self.rnn_modules}
 
-        self.spice_agent, loss_spice = fit_spice(
+        self.spice_agent = fit_spice(
             rnn_modules=self.rnn_modules,
             control_signals=self.control_parameters,
             agent_rnn=self.rnn_agent,
@@ -251,14 +249,23 @@ class SpiceEstimator(BaseEstimator):
             polynomial_degree=self.spice_library_polynomial_degree,
             library_setup=self.spice_library_config,
             filter_setup=self.spice_filter_config,
+            optimizer_type=self.spice_optimizer_type,
             optimizer_threshold=self.spice_optim_threshold,
             optimizer_alpha=self.spice_optim_regularization,
-            participant_id=self.spice_participant_id,
-            verbose=self.verbose,
-        )
+            shuffle = False,
+            n_trials_off_policy = self.n_trials_off_policy,
+            n_sessions_off_policy = self.n_sessions_off_policy,
+            n_trials_same_action_off_policy = self.n_trials_same_action_off_policy,
+            train_test_ratio = self.train_test_ratio,
+            deterministic = self.deterministic,
+            verbose = self.verbose,
+            use_optuna = self.use_optuna,
+            optuna_threshold = self.optuna_threshold,
+            optuna_n_trials = self.optuna_n_trials,
+        )[0]
 
-        self.spice_features = self.spice_agent.get_spice_features()
-
+        # self.spice_features = self.spice_agent.get_spice_features()
+        
         if self.verbose:
             print('SPICE training finished.')
             print(f'Training took {time.time() - start_time:.2f} seconds.')
@@ -266,10 +273,7 @@ class SpiceEstimator(BaseEstimator):
         if self.save_path_spice is not None:
             print(f'Saving SPICE model to {self.save_path_spice}...')
             self.save_spice(None, self.save_path_spice)
-            print(f'SPICE model saved to {self.save_path_spice}')
 
-
-    
     def predict(self, conditions: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """
         Make predictions using both RNN and SPICE models.
@@ -283,8 +287,14 @@ class SpiceEstimator(BaseEstimator):
             - SPICE predictions
         """
         
-        # get rnn prediction about action probability
-        conditions = torch.tensor(conditions, dtype=torch.float32, device=self.device)
+        if isinstance(conditions, np.ndarray):
+            conditions = torch.tensor(conditions, dtype=torch.float32, device=self.device)
+        elif isinstance(conditions, torch.Tensor):
+            pass
+        else:
+            raise TypeError(f"conditions must be either of type numpy.ndarray or torch.Tensor.")
+        
+        # get predictions about action probability by RNN and SPICE separately
         prediction_rnn = np.full((*conditions.shape[:-1], self.n_actions), np.nan).reshape(-1, self.n_actions)
         prediction_spice = np.full((*conditions.shape[:-1], self.n_actions), np.nan).reshape(-1, self.n_actions)
         mask = torch.sum(conditions[..., :self.n_actions].reshape(-1, self.n_actions), dim=-1, keepdim=False) != -2
@@ -303,16 +313,23 @@ class SpiceEstimator(BaseEstimator):
         
         return prediction_rnn, prediction_spice
 
-    def get_spice_features(self) -> Dict:
+    def print_spice_model(self, participant_id: int = 0) -> None:
         """
         Get the learned SPICE features and equations.
         
         Returns:
             Dictionary containing features and equations for each agent/model
         """
-        if self.spice_features is None:
-            raise ValueError("Model hasn't been fitted yet. Call fit() first.")
-        return self.spice_features
+        print("SPICE modules:")
+        self.spice_agent.print_model(participant_id)
+        
+        if hasattr(self.rnn_model, 'betas') and len(self.rnn_model.betas) > 0:
+            for key in self.rnn_model.betas:
+                if not isinstance(self.rnn_model.betas[key], ParameterModule):
+                    participant_embedding = self.rnn_model.participant_embedding(torch.tensor(participant_id, device=self.device).int())
+                else:
+                    participant_embedding = None
+                print(f"beta({key}) = {self.rnn_model.betas[key](participant_embedding).item():.4f}")
     
     def get_spice_agents(self) -> Dict:
         """

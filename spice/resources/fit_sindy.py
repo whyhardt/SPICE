@@ -4,10 +4,10 @@ from math import comb
 
 import pysindy as ps
 
-from spice.resources.sindy_utils import remove_control_features, conditional_filtering
-from spice.resources.rnn_utils import DatasetRNN
-from spice.resources.sindy_utils import generate_off_policy_data, create_dataset
-from spice.resources.bandits import AgentNetwork
+from .sindy_utils import remove_control_features, conditional_filtering
+from .rnn_utils import DatasetRNN
+from .sindy_utils import generate_off_policy_data, create_dataset
+from .bandits import AgentNetwork
 
 def fit_sindy(
     variables: List[np.ndarray], 
@@ -17,7 +17,7 @@ def fit_sindy(
     polynomial_degree: int = 1, 
     library_setup: Dict[str, List[str]] = {},
     filter_setup: Dict[str, Tuple[str, float]] = {},
-    optimizer_type: str = "SR3_L1",
+    optimizer_type: str = "SR3_weighted_l1",
     optimizer_threshold: float = 0.05,
     optimizer_alpha: float = 1,
     catch_convergence_warning: bool = False,
@@ -105,7 +105,7 @@ def fit_sindy(
         # Setup sindy model for current x-feature
         sindy_models[x_feature] = ps.SINDy(
             optimizer=optimizer,
-            feature_library=ps.PolynomialLibrary(polynomial_degree),
+            feature_library=ps.PolynomialLibrary(polynomial_degree, interaction_only=False),
             discrete_time=True,
             feature_names=feature_names_i,
         )
@@ -115,6 +115,14 @@ def fit_sindy(
         
         if catch_convergence_warning and sindy_models[x_feature].optimizer.iters >= sindy_models[x_feature].optimizer.max_iter-1:
             raise RuntimeError("SINDy optimizer did not converge.")
+        
+        # drop very small sindy coefficients for sparsity
+        coefficients = sindy_models[x_feature].model.steps[-1][1].coef_[0]
+        for i, c in enumerate(coefficients):
+            if np.abs(c) < optimizer_threshold:
+                sindy_models[x_feature].model.steps[-1][1].coef_[0, i] = 0
+            elif np.abs(c-1) < optimizer_threshold:
+                sindy_models[x_feature].model.steps[-1][1].coef_[0, i] = 1
         
         if verbose:
             sindy_models[x_feature].print()

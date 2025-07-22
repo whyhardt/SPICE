@@ -7,9 +7,9 @@ from tqdm import tqdm
 import dill
 import torch
 
-from spice.resources.bandits import AgentNetwork, AgentSpice, get_update_dynamics, BanditSession, BanditsDrift
-from spice.resources.rnn_utils import DatasetRNN
-from spice.resources.model_evaluation import log_likelihood
+from .bandits import AgentNetwork, AgentSpice, get_update_dynamics, BanditSession, BanditsDrift
+from .rnn_utils import DatasetRNN
+from .model_evaluation import log_likelihood
 
 
 def make_sindy_data(
@@ -386,7 +386,7 @@ def load_spice(file) -> Dict:
   return spice_modules
 
 
-def generate_off_policy_data(participant_id: int, block: int, experiment_id: int, n_trials_off_policy: int, n_trials_same_action_off_policy: int, n_sessions_off_policy: int = 1, n_actions: int = 2, additional_inputs: np.ndarray = np.zeros(0)) -> DatasetRNN:
+def generate_off_policy_data(participant_id: int, block: int, experiment_id: int, n_trials_off_policy: int, n_trials_same_action_off_policy: int, n_sessions_off_policy: int = 1, n_actions: int = 2, additional_inputs: np.ndarray = np.zeros(0), sigma_drift: float = 0.2) -> DatasetRNN:
   """Generates a simple off-policy dataset where each action is repeated n_trials_same_action_off_policy times and then switched.
 
   Args:
@@ -402,7 +402,7 @@ def generate_off_policy_data(participant_id: int, block: int, experiment_id: int
   
   # set up environment to create an off-policy dataset (w.r.t to trained RNN) of arbitrary length
   # The trained RNN will then perform value updates to get off-policy data
-  environment = BanditsDrift(sigma=0.2, n_actions=n_actions)
+  environment = BanditsDrift(sigma=sigma_drift, n_actions=n_actions)
   
   # create a dummy dataset where each choice is chosen for n times and then an action switch occures
   xs = torch.zeros((n_sessions_off_policy, n_trials_off_policy, 2*n_actions+3+additional_inputs.shape[-1])) - 1
@@ -533,10 +533,10 @@ SindyConfig_eckstein2022 = {
   'dataprocessing_setup': {
       'x_learning_rate_reward': [0, 0, 0],
       'x_value_reward_not_chosen': [0, 0, 0],
-      'x_value_choice_chosen': [1, 1, 0],
-      'x_value_choice_not_chosen': [1, 1, 0],
+      'x_value_choice_chosen': [0, 0, 0],
+      'x_value_choice_not_chosen': [0, 0, 0],
       'c_value_reward': [0, 0, 0],
-      'c_value_choice': [1, 1, 0],
+      'c_value_choice': [0, 0, 0],
   },
   
 }
@@ -545,17 +545,17 @@ SindyConfig_eckstein2022 = {
 SindyConfig_dezfouli2019 = {
   
   # tracked variables and control signals in the RNN
-  'rnn_modules': ['x_learning_rate_reward', 'x_value_reward_not_chosen', 'x_value_choice_chosen', 'x_value_choice_not_chosen', 'x_value_trial'],
-  'control_parameters': ['c_action', 'c_reward_chosen', 'c_block', 'c_value_reward', 'c_value_choice', 'c_value_trial'],
+  'rnn_modules': ['x_learning_rate_reward', 'x_value_reward_not_chosen', 'x_value_choice_chosen', 'x_value_choice_not_chosen'],
+  'control_parameters': ['c_action', 'c_reward_chosen', 'c_value_reward', 'c_value_choice'],
   
   # library setup: 
   # which terms are allowed as control inputs in each SINDy model
   # key is the SINDy model name, value is a list of allowed control inputs from the list of control signals 
   'library_setup': {
-      'x_learning_rate_reward': ['c_reward_chosen', 'c_block', 'c_value_trial', 'c_value_reward', 'c_value_choice'],
-      'x_value_reward_not_chosen': ['c_reward_chosen', 'c_block', 'c_value_trial', 'c_value_choice'],
-      'x_value_choice_chosen': ['c_block', 'c_value_trial', 'c_value_reward'],
-      'x_value_choice_not_chosen': ['c_block', 'c_value_trial', 'c_value_reward'],
+      'x_learning_rate_reward': ['c_reward_chosen', 'c_value_reward', 'c_value_choice'],
+      'x_value_reward_not_chosen': ['c_reward_chosen', 'c_value_choice'],
+      'x_value_choice_chosen': ['c_value_reward'],
+      'x_value_choice_not_chosen': ['c_value_reward'],
   },
   
   # data-filter setup: 
@@ -585,10 +585,62 @@ SindyConfig_dezfouli2019 = {
   'dataprocessing_setup': {
       'x_learning_rate_reward': [0, 0, 0],
       'x_value_reward_not_chosen': [0, 0, 0],
-      'x_value_choice_chosen': [1, 1, 0],
-      'x_value_choice_not_chosen': [1, 1, 0],
+      'x_value_choice_chosen': [0, 0, 0],
+      'x_value_choice_not_chosen': [0, 0, 0],
       'c_value_reward': [0, 0, 0],
-      'c_value_choice': [1, 1, 0],
+      'c_value_choice': [0, 0, 0],
+  },
+  
+}
+
+
+SindyConfig_dezfouli2019_blocks = {
+  
+  # tracked variables and control signals in the RNN
+  'rnn_modules': ['x_learning_rate_reward', 'x_value_reward_not_chosen', 'x_value_choice_chosen', 'x_value_choice_not_chosen', 'x_value_block', 'x_value_trial'],
+  'control_parameters': ['c_action', 'c_reward_chosen', 'c_value_reward', 'c_value_choice', 'c_value_block', 'c_value_trial'],
+  
+  # library setup: 
+  # which terms are allowed as control inputs in each SINDy model
+  # key is the SINDy model name, value is a list of allowed control inputs from the list of control signals 
+  'library_setup': {
+      'x_learning_rate_reward': ['c_reward_chosen', 'c_value_reward', 'c_value_choice', 'c_value_block', 'c_value_trial'],
+      'x_value_reward_not_chosen': ['c_reward_chosen', 'c_value_choice', 'c_value_block', 'c_value_trial'],
+      'x_value_choice_chosen': ['c_value_reward', 'c_value_block', 'c_value_trial'],
+      'x_value_choice_not_chosen': ['c_value_reward', 'c_value_block', 'c_value_trial'],
+  },
+  
+  # data-filter setup: 
+  # which samples are allowed as training samples in each SINDy model based on the given filter condition (conditions are always equality conditions)
+  # key is the SINDy model name, value is a list with a triplet of values:
+  #   1. str: feature name to be used as a filter
+  #   2. numeric: the numeric filter condition
+  #   3. bool: remove feature from control inputs --> TODO: check if this is necessary or makes things just more complicated
+  # Multiple conditions can also be given as a list of triplets.
+  # Example:
+  #   'x_value_choice_not_chosen': ['c_action', 0, True] means that for the SINDy model 'x_value_choice_not_chosen', only samples where the feature 'c_action' == 0 are used for training the SINDy model. 
+  #   The control parameter 'c_action' is removed afterwards from the list of control signals for training of the model
+  'filter_setup': {
+      'x_learning_rate_reward': ['c_action', 1, True],
+      'x_value_reward_not_chosen': ['c_action', 0, True],
+      'x_value_choice_chosen': ['c_action', 1, True],
+      'x_value_choice_not_chosen': ['c_action', 0, True],
+  },
+  
+  # data pre-processing setup:
+  # define the processing steps for each variable and control signal.
+  # possible processing steps are: 
+  #   1. Trimming: Remove the first 25% of the samples along the time-axis. This is useful if the RNN begins with a variable at 0 but then accumulates first first to a specific default value, i.e. the range changes from (0, p) to (q, q+p). That way the data is cleared of the accumulation process. Trimming will be active for all variables, if it is active for one. 
+  #   2. Offset-Clearing: Clearup any offset by determining the minimal value q of a variable and move the value range from (q, q+p) -> (0, p). This step makes SINDy equations less complex and aligns them more with RL-Theory
+  #   3. Normalization: Scale the value range of a variable to x_max - x_min = 1. Offset-Clearing is recommended to achieve a value range of (0, 1) 
+  # The processing steps are passed in the form of a binary triplet in this order: (Trimming, Offset-Clearing, Normalization) 
+  'dataprocessing_setup': {
+      'x_learning_rate_reward': [0, 0, 0],
+      'x_value_reward_not_chosen': [0, 0, 0],
+      'x_value_choice_chosen': [0, 0, 0],
+      'x_value_choice_not_chosen': [0, 0, 0],
+      'c_value_reward': [0, 0, 0],
+      'c_value_choice': [0, 0, 0],
   },
   
 }

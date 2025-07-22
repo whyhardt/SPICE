@@ -25,23 +25,22 @@ def main(
 
   # rnn parameters
   hidden_size = 8,
-  embedding_size = 8,
-  dropout = 0.,
+  embedding_size = 32,
+  dropout = 0.5,
 
   # data and training parameters
   epochs = 128,
   train_test_ratio = 1.,
-  l1_weight_decay=1e-4,
   l2_weight_decay=0,
   bagging = False,
-  sequence_length = -1,
-  n_steps = 16,  # -1 for full sequence
+  sequence_length = -1, # -1 for full sequence
+  n_steps = -1,  # -1 for full sequence
   batch_size = -1,  # -1 for one batch per epoch
-  learning_rate = 5e-3,
+  learning_rate = 1e-2,
   convergence_threshold = 0,
   scheduler = False,
   additional_inputs_data: List[str] = None,
-  
+
   # ground truth parameters
   n_trials = 200,
   n_sessions = 256,
@@ -68,8 +67,8 @@ def main(
   
   # print cuda devices available
   print(f'Cuda available: {torch.cuda.is_available()}')
-  # device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-  device = torch.device('cpu')
+  device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+  # device = torch.device('cpu')
   
   if not os.path.exists('params'):
     os.makedirs('params')
@@ -95,7 +94,8 @@ def main(
       confirmation_bias=confirmation_bias, 
       beta_choice=beta_choice, 
       alpha_choice=alpha_choice,
-      alpha_counterfactual=alpha_counterfactual, 
+      alpha_counterfactual_reward=alpha_counterfactual,
+      alpha_counterfactual_penalty=alpha_counterfactual, 
       parameter_variance=parameter_variance,
       )
     if reward_prediction_error is not None:
@@ -147,14 +147,21 @@ def main(
       
   n_participants = len(dataset.xs[..., -1].unique())
   
-  if train_test_ratio < 1:
-    dataset_train, dataset_test = rnn_utils.split_data_along_timedim(dataset, train_test_ratio)
-    dataset_train = bandits.DatasetRNN(dataset_train.xs, dataset_train.ys, sequence_length=sequence_length, device=device)
+  if isinstance(train_test_ratio, float):
+    if train_test_ratio < 1:
+      dataset_train, dataset_test = rnn_utils.split_data_along_timedim(dataset, train_test_ratio)
+      dataset_train = bandits.DatasetRNN(dataset_train.xs, dataset_train.ys, sequence_length=sequence_length, device=device)
+    else:
+      dataset_train = bandits.DatasetRNN(dataset.xs, dataset.ys, sequence_length=sequence_length, device=device)
+      # if dataset_test is None:
+      #   dataset_test = bandits.DatasetRNN(dataset.xs, dataset.ys, device=device)
+  elif isinstance(train_test_ratio, list):
+    dataset_train, dataset_test = rnn_utils.split_data_along_sessiondim(dataset=dataset, list_test_sessions=train_test_ratio, device=device)
+  elif train_test_ratio is None:
+    dataset_train, dataset_test = dataset, dataset
   else:
-    dataset_train = bandits.DatasetRNN(dataset.xs, dataset.ys, sequence_length=sequence_length, device=device)
-    # if dataset_test is None:
-    #   dataset_test = bandits.DatasetRNN(dataset.xs, dataset.ys, device=device)
-    
+    raise TypeError("train_test_raio must be either a float number or a list of integers containing the session/block ids which should be used as test sessions/blocks")
+  
   if data is None and model is None:
     params_path = rnn_utils.parameter_file_naming(
       'params/params', 
@@ -185,8 +192,8 @@ def main(
       n_participants=n_participants,
       ).to(device)
   
-  optimizer_rnn = torch.optim.Adam(model.parameters(), lr=learning_rate)
-
+  optimizer_rnn = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=l2_weight_decay)
+  
   print('Setup of the RNN model complete.')
 
   if checkpoint:
@@ -203,7 +210,7 @@ def main(
         model=model,
         dataset_train=dataset_train,
         # dataset_test=None,
-        dataset_test=dataset_test,
+        # dataset_test=dataset_test,
         # dataset_test=dataset_train,
         optimizer=optimizer_rnn,
         convergence_threshold=convergence_threshold,
@@ -212,8 +219,6 @@ def main(
         bagging=bagging,
         n_steps=n_steps,
         scheduler=scheduler,
-        l1_weight_decay=l1_weight_decay,
-        l2_weight_decay=l2_weight_decay,
         path_save_checkpoints=params_path if save_checkpoints else None,
     )
         
@@ -275,21 +280,20 @@ if __name__=='__main__':
   
   # RNN parameters
   parser.add_argument('--hidden_size', type=int, default=8, help='Hidden size of the RNN')
-  parser.add_argument('--embedding_size', type=int, default=8, help='Participant embedding size of the RNN')
-  parser.add_argument('--dropout', type=float, default=0.25, help='Dropout rate')
+  parser.add_argument('--embedding_size', type=int, default=32, help='Participant embedding size of the RNN')
+  parser.add_argument('--dropout', type=float, default=0.5, help='Dropout rate')
 
   # data and training parameters
-  parser.add_argument('--epochs', type=int, default=128, help='Number of epochs for training')
-  parser.add_argument('--n_steps', type=int, default=16, help='Number of recurrent steps per training call; -1: Use whole sequence at once;')
+  parser.add_argument('--scheduler', action='store_true', help='Whether to use a learning rate scheduler during training')
   parser.add_argument('--bagging', action='store_true', help='Whether to use bagging')
+  parser.add_argument('--epochs', type=int, default=8192, help='Number of epochs for training')
+  parser.add_argument('--n_steps', type=int, default=-1, help='Number of recurrent steps per training call; -1: Use whole sequence at once;')
   parser.add_argument('--batch_size', type=int, default=-1, help='Batch size; -1: Use whole dataset at once;')
-  parser.add_argument('--learning_rate', type=float, default=5e-3, help='Learning rate of the RNN')
-  parser.add_argument('--l1_weight_decay', type=float, default=1e-4, help='Learning rate of the RNN')
+  parser.add_argument('--sequence_length', type=int, default=-1, help='Length of training sequences; -1: Use whole sequence at once;')
+  parser.add_argument('--learning_rate', type=float, default=1e-2, help='Learning rate of the RNN')
   parser.add_argument('--l2_weight_decay', type=float, default=0, help='Learning rate of the RNN')
   parser.add_argument('--convergence_threshold', type=float, default=0, help='Convergence threshold to early-stop training')
-  parser.add_argument('--train_test_ratio', type=float, default=1.0, help='Ratio of training data')
-  parser.add_argument('--sequence_length', type=int, default=-1, help='Length of training sequences; -1: Use whole sequence at once;')
-  parser.add_argument('--scheduler', action='store_true', help='Whether to use a learning rate scheduler during training')
+  parser.add_argument('--train_test_ratio', type=str, default="1.0", help='Ratio of training data; Can also be a comma-separated list of integeres to indicate testing sessions.')
   
   # Ground truth parameters
   parser.add_argument('--n_trials', type=int, default=200, help='Number of trials per session')
@@ -310,14 +314,25 @@ if __name__=='__main__':
   # Analysis parameters
   parser.add_argument('--analysis', action='store_true', help='Whether to perform visual analysis on one participant (keyword argument: participant_id)')
   parser.add_argument('--participant_id', type=int, default=None, help='Participant ID for visual analysis (keyword argument: analysis)')
-
+  parser.add_argument('--save_checkpoints', action='store_true', help='Save a checkpoint after 2^n training steps with $n\in\mathbb\{N\}$.')
+  
   args = parser.parse_args()  
   
+  # currently fixed 
+  class_rnn = rnn.RLRNN_eckstein2022
+  
+  # convert train_test_ratio to number of list of numbers
+  if ',' in args.train_test_ratio:
+    train_test_ratio = [int(x) for x in args.train_test_ratio.split(',')]
+  else:
+    train_test_ratio = float(args.train_test_ratio)
+    
   main(
     checkpoint = args.checkpoint,
     model = args.model,
     data = args.data,
-
+    class_rnn=class_rnn,
+    
     # rnn parameters
     hidden_size = args.hidden_size,
     embedding_size = args.embedding_size,
@@ -325,7 +340,7 @@ if __name__=='__main__':
 
     # data and training parameters
     epochs = args.epochs,
-    train_test_ratio = args.train_test_ratio,
+    train_test_ratio = train_test_ratio,
     n_trials = args.n_trials,
     n_sessions = args.n_sessions,
     bagging = args.bagging,
@@ -335,7 +350,6 @@ if __name__=='__main__':
     learning_rate = args.learning_rate,
     convergence_threshold = args.convergence_threshold,
     scheduler = args.scheduler,
-    l1_weight_decay=args.l1_weight_decay,
     l2_weight_decay=args.l2_weight_decay,
     
     # ground truth parameters
@@ -352,7 +366,9 @@ if __name__=='__main__':
     sigma = args.sigma,
     counterfactual = args.counterfactual,
     
+    # analysis parameters
     analysis = args.analysis,
+    save_checkpoints=args.save_checkpoints,
     participant_id = args.participant_id,
     )
   
