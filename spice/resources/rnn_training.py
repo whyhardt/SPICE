@@ -3,6 +3,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, RandomSampler
+# import tqdm
 
 from .rnn import BaseRNN
 from .rnn_utils import DatasetRNN
@@ -311,21 +312,21 @@ def fit_model(
             last_loss += loss_test if dataset_test is not None else loss_train
             
             msg = None
-            if verbose:
-                msg = f'Epoch {n_calls_to_train_model}/{epochs} --- L(Train): {loss_train:.7f}'                
-                if dataset_test is not None:
-                    msg += f'; L(Val): {loss_test:.7f}'
-                msg += f'; Time: {time.time()-t_start:.2f}s; Convergence: {convergence_value:.2e}'
-                if scheduler is not None:
-                    msg += f'; LR: {scheduler_warmup.get_last_lr()[-1] if n_calls_to_train_model < warmup_steps else scheduler.get_last_lr()[-1]:.2e}'
-                    if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau) or isinstance(scheduler, ReduceOnPlateauWithRestarts):
-                        msg += f"; Metric: {scheduler.best:.7f}; Bad epochs: {scheduler.num_bad_epochs}/{scheduler.patience}"
-                if converged:
-                    msg += '\nModel converged!'
-                elif n_calls_to_train_model >= epochs:
-                    msg += '\nMaximum number of training epochs reached.'
-                    if not converged:
-                        msg += '\nModel did not converge yet.'
+            # if verbose:
+            msg = f'Epoch {n_calls_to_train_model}/{epochs} --- L(Train): {loss_train:.7f}'                
+            if dataset_test is not None:
+                msg += f'; L(Val): {loss_test:.7f}'
+            msg += f'; Time: {time.time()-t_start:.2f}s; Convergence: {convergence_value:.2e}'
+            if scheduler is not None:
+                msg += f'; LR: {scheduler_warmup.get_last_lr()[-1] if n_calls_to_train_model < warmup_steps else scheduler.get_last_lr()[-1]:.2e}'
+                if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau) or isinstance(scheduler, ReduceOnPlateauWithRestarts):
+                    msg += f"; Metric: {scheduler.best:.7f}; Bad epochs: {scheduler.num_bad_epochs}/{scheduler.patience}"
+            if converged:
+                msg += '\nModel converged!'
+            elif n_calls_to_train_model >= epochs:
+                msg += '\nMaximum number of training epochs reached.'
+                if not converged:
+                    msg += '\nModel did not converge yet.'
                         
             if scheduler is not None:
                 if n_calls_to_train_model <= warmup_steps: 
@@ -346,7 +347,8 @@ def fit_model(
         except KeyboardInterrupt:
             continue_training = False
             msg = 'Training interrupted. Continuing with further operations...'
-        if verbose:
-            print(msg)
+        
+        #if verbose:
+        print(msg, end='\r')
             
     return model, optimizer, loss_train

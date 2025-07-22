@@ -116,6 +116,14 @@ def fit_sindy(
         if catch_convergence_warning and sindy_models[x_feature].optimizer.iters >= sindy_models[x_feature].optimizer.max_iter-1:
             raise RuntimeError("SINDy optimizer did not converge.")
         
+        # drop very small sindy coefficients for sparsity
+        coefficients = sindy_models[x_feature].model.steps[-1][1].coef_[0]
+        for i, c in enumerate(coefficients):
+            if np.abs(c) < optimizer_threshold:
+                sindy_models[x_feature].model.steps[-1][1].coef_[0, i] = 0
+            elif np.abs(c-1) < optimizer_threshold:
+                sindy_models[x_feature].model.steps[-1][1].coef_[0, i] = 1
+        
         if verbose:
             sindy_models[x_feature].print()
     

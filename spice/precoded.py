@@ -59,7 +59,6 @@ class RescorlaWagnerRNN(BaseRNN):
                 key_state='x_value_reward',
                 action=action,
                 inputs=reward,
-                # activation_rnn=torch.nn.functional.sigmoid,
                 )
 
             # and keep the value of the not-chosen option unchanged
@@ -202,8 +201,9 @@ class LearningRateRNN(BaseRNN):
         self.submodules_eq['x_value_reward_chosen'] = lambda value, inputs: value + inputs[..., 1] * (inputs[..., 0] - value)
 
         # add a scaling factor (i.e. inverse noise temperature) for 'x_value_reward'
-        self.betas = torch.nn.ParameterDict()
-        self.betas['x_value_reward'] = torch.nn.Parameter(torch.tensor(1.))             
+        # self.betas = torch.nn.ParameterDict()
+        # self.betas['x_value_reward'] = torch.nn.Parameter(torch.tensor(1.))             
+        self.betas['x_value_reward'] = self.setup_constant()
         
     def forward(self, inputs, prev_state=None, batch_first=False):
         """Forward pass of the RNN
@@ -266,7 +266,7 @@ class LearningRateRNN(BaseRNN):
             self.state['x_value_reward'] = next_value_reward_chosen + next_value_reward_not_chosen
             
             # Now keep track of the logit in the output array
-            logits[timestep] = self.state['x_value_reward'] * self.betas['x_value_reward']
+            logits[timestep] = self.state['x_value_reward'] * self.betas['x_value_reward']()
         
         # post-process the forward pass; give here as inputs the logits, batch_first and all values from the memory state
         logits = self.post_forward_pass(logits, batch_first)
@@ -290,19 +290,17 @@ class ParticipantEmbeddingRNN(BaseRNN):
         n_actions,
         # add an additional inputs to set the number of participants in your data
         n_participants,
+        embedding_size: int = 8,
         **kwargs,
     ):
         
-        super(ParticipantEmbeddingRNN, self).__init__(n_actions=n_actions)
+        super(ParticipantEmbeddingRNN, self).__init__(n_actions=n_actions, embedding_size=embedding_size)
         
-        # specify here the participant-specifc parts
-        self.embedding_size = 8
-        self.participant_embedding = torch.nn.Embedding(num_embeddings=n_participants, embedding_dim=self.embedding_size)
+        # specify here the participant embedding
+        self.participant_embedding = self.setup_embedding(n_participants, embedding_size, dropout=0.)
         
-        # and now we are adding for each participant a scaling factor (inverse noise temperature).
-        # but this time, we want to use the participant embedding as an input
-        self.betas = torch.nn.ModuleDict()
-        self.betas['x_value_reward'] = torch.nn.Sequential(torch.nn.Linear(self.embedding_size, 1), torch.nn.ReLU())
+        # Add a scaling factor (inverse noise temperature) for each participant.
+        self.betas['x_value_reward'] = self.setup_constant(self.embedding_size)
         
         # and here we specify the general architecture
         # add to the input_size the embedding_size as well because we are going to pass the participant-embedding to the RNN-modules
@@ -330,7 +328,6 @@ class ParticipantEmbeddingRNN(BaseRNN):
 
         # Here we compute now the participant embeddings for each entry in the batch
         participant_embedding = self.participant_embedding(participant_id[:, 0].int())
-        # beta_value_reward = self.betas['x_value_reward'](participant_embedding)
         
         for timestep, action, reward in zip(timesteps, actions, rewards):
             
@@ -434,7 +431,6 @@ class Weinhardt2024RNN(BaseRNN):
             )
         
         # scaling factor (inverse noise temperature) for each participant for the values which are handled by an hard-coded equation
-        self.betas = torch.nn.ModuleDict()
         self.betas['x_value_reward'] = torch.nn.Sequential(torch.nn.Linear(self.embedding_size, 1), torch.nn.ReLU())
         self.betas['x_value_choice'] = torch.nn.Sequential(torch.nn.Linear(self.embedding_size, 1), torch.nn.ReLU())
         
@@ -462,7 +458,7 @@ class Weinhardt2024RNN(BaseRNN):
         participant_id, _ = embedding_variables
         
         # Here we compute now the participant embeddings for each entry in the batch
-        participant_embedding = self.participant_embedding(participant_id[:, 0].int()) # TODO: check if this is correct
+        participant_embedding = self.participant_embedding(participant_id[:, 0].int())
         beta_reward = self.betas['x_value_reward'](participant_embedding)
         beta_choice = self.betas['x_value_choice'](participant_embedding)
         
@@ -582,20 +578,14 @@ class Weinhardt2025RNN(BaseRNN):
         **kwargs,
     ):
         
-        super().__init__(n_actions=n_actions, device=device, n_participants=n_participants)
+        super().__init__(n_actions=n_actions, device=device, n_participants=n_participants, embedding_size=embedding_size)
                 
         # set up the participant-embedding layer
-        self.embedding_size = embedding_size
-        self.participant_embedding = torch.nn.Sequential(
-            torch.nn.Embedding(num_embeddings=n_participants, embedding_dim=self.embedding_size),
-            torch.nn.LeakyReLU(leaky_relu),
-            torch.nn.Dropout(p=dropout),
-            )
-            
+        self.participant_embedding = self.setup_embedding(num_embeddings=n_participants, embedding_size=embedding_size)
+        
         # scaling factor (inverse noise temperature) for each participant for the values which are handled by an hard-coded equation
-        self.betas = torch.nn.ModuleDict()
-        self.betas['x_value_reward'] = torch.nn.Sequential(torch.nn.Linear(self.embedding_size, 1), torch.nn.LeakyReLU(leaky_relu))
-        self.betas['x_value_choice'] = torch.nn.Sequential(torch.nn.Linear(self.embedding_size, 1), torch.nn.LeakyReLU(leaky_relu))
+        self.betas['x_value_reward'] = self.setup_constant(embedding_size=self.embedding_size, leaky_relu=leaky_relu)
+        self.betas['x_value_choice'] = self.setup_constant(embedding_size=self.embedding_size, leaky_relu=leaky_relu)
         
         # set up the submodules
         self.submodules_rnn['x_learning_rate_reward'] = self.setup_module(input_size=3+self.embedding_size)
@@ -619,9 +609,9 @@ class Weinhardt2025RNN(BaseRNN):
         """
         
         # First, we have to initialize all the inputs and outputs (i.e. logits)
-        input_variables, embedding_variables, logits, timesteps = self.init_forward_pass(inputs, prev_state, batch_first)
+        input_variables, ids, logits, timesteps = self.init_forward_pass(inputs, prev_state, batch_first)
         actions, rewards, _, _ = input_variables
-        participant_id, _ = embedding_variables
+        participant_id, _ = ids
         
         # derive more observations
         rewards_chosen = (actions * rewards).sum(dim=-1, keepdim=True).repeat(1, 1, self._n_actions)
@@ -629,12 +619,6 @@ class Weinhardt2025RNN(BaseRNN):
         
         # Here we compute now the participant embeddings for each entry in the batch
         participant_embedding = self.participant_embedding(participant_id[:, 0].int())
-        
-        # get scaling factors
-        scaling_factors = {}
-        for key in self.state:
-            if key in self.betas:
-                scaling_factors[key] = self.betas[key] if isinstance(self.betas[key], nn.Parameter) else self.betas[key](participant_embedding)
         
         for timestep, action, reward_chosen in zip(timesteps, actions, rewards_chosen): #, rewards_not_chosen
             
@@ -719,7 +703,7 @@ class Weinhardt2025RNN(BaseRNN):
             self.state['x_value_choice'] = next_value_choice_chosen + next_value_choice_not_chosen
              
             # Now keep track of the logit in the output array
-            logits[timestep] = self.state['x_value_reward'] * scaling_factors['x_value_reward'] + self.state['x_value_choice'] * scaling_factors['x_value_choice']
+            logits[timestep] = self.state['x_value_reward'] * self.betas['x_value_reward'](participant_embedding) + self.state['x_value_choice'] * self.betas['x_value_choice'](participant_embedding)
             
         # post-process the forward pass; give here as inputs the logits, batch_first and all values from the memory state
         logits = self.post_forward_pass(logits, batch_first)

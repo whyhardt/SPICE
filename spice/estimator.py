@@ -14,7 +14,7 @@ from .resources.rnn_utils import load_checkpoint, DatasetRNN
 from .resources.sindy_utils import load_spice, save_spice, check_library_setup
 from .resources.sindy_training import fit_spice
 from .resources.bandits import AgentNetwork, AgentSpice
-from .resources.rnn import BaseRNN
+from .resources.rnn import BaseRNN, ParameterModule
 
 
 warnings.filterwarnings("ignore")
@@ -200,8 +200,8 @@ class SpiceEstimator(BaseEstimator):
         # Fit RNN
         # ------------------------------------------------------------------------
         
-        if self.verbose:
-            print('\nTraining the RNN...')
+        # if self.verbose:
+        print('\nTraining the RNN...')
         
         batch_size = data.shape[0] if self.batch_size == -1 else self.batch_size
         
@@ -232,8 +232,7 @@ class SpiceEstimator(BaseEstimator):
         if self.save_path_rnn is not None:
             print(f'Saving RNN model to {self.save_path_rnn}...')
             self.save_spice(self.save_path_rnn, None)
-            print(f'RNN model saved to {self.save_path_rnn}')            
-        
+            
         # ------------------------------------------------------------------------
         # Fit SPICE
         # ------------------------------------------------------------------------
@@ -274,10 +273,7 @@ class SpiceEstimator(BaseEstimator):
         if self.save_path_spice is not None:
             print(f'Saving SPICE model to {self.save_path_spice}...')
             self.save_spice(None, self.save_path_spice)
-            print(f'SPICE model saved to {self.save_path_spice}')
 
-
-    
     def predict(self, conditions: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """
         Make predictions using both RNN and SPICE models.
@@ -317,16 +313,23 @@ class SpiceEstimator(BaseEstimator):
         
         return prediction_rnn, prediction_spice
 
-    def get_spice_features(self) -> Dict:
+    def print_spice_model(self, participant_id: int = 0) -> None:
         """
         Get the learned SPICE features and equations.
         
         Returns:
             Dictionary containing features and equations for each agent/model
         """
-        if self.spice_features is None:
-            raise ValueError("Model hasn't been fitted yet. Call fit() first.")
-        return self.spice_features
+        print("SPICE modules:")
+        self.spice_agent.print_model(participant_id)
+        
+        if hasattr(self.rnn_model, 'betas') and len(self.rnn_model.betas) > 0:
+            for key in self.rnn_model.betas:
+                if not isinstance(self.rnn_model.betas[key], ParameterModule):
+                    participant_embedding = self.rnn_model.participant_embedding(torch.tensor(participant_id, device=self.device).int())
+                else:
+                    participant_embedding = None
+                print(f"beta({key}) = {self.rnn_model.betas[key](participant_embedding).item():.4f}")
     
     def get_spice_agents(self) -> Dict:
         """

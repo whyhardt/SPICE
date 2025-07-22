@@ -11,6 +11,35 @@ class GRUModule(nn.Module):
         
         self.gru_in = nn.GRU(input_size, 1)
         self.linear_out = nn.Linear(1, 1)
+        
+        # Simple weight initialization for all parameters
+        self._initialize_weights()
+    
+    def _initialize_weights(self):
+        """Apply Xavier uniform to all parameters"""
+        for param in self.parameters():
+            if param.dim() > 1:  # Only weight matrices, skip biases
+                nn.init.xavier_uniform_(param)
+            else:
+                nn.init.zeros_(param)
+                
+    # def _initialize_weights(self):
+    #     """Initialize weights using Xavier/Glorot initialization for better training stability"""
+    #     # Initialize GRU weights
+    #     for name, param in self.gru_in.named_parameters():
+    #         if 'weight_ih' in name:  # Input-to-hidden weights
+    #             nn.init.xavier_uniform_(param)
+    #         elif 'weight_hh' in name:  # Hidden-to-hidden weights
+    #             nn.init.orthogonal_(param)
+    #         elif 'bias' in name:  # Biases
+    #             nn.init.zeros_(param)
+    #             # Set forget gate bias to 1 for better gradient flow (if applicable)
+    #             n = param.size(0)
+    #             param.data[n//3:2*n//3].fill_(1.0)  # GRU reset gate bias
+        
+    #     # Initialize linear layer weights
+    #     nn.init.xavier_uniform_(self.linear_out.weight)
+    #     nn.init.zeros_(self.linear_out.bias)
 
     def forward(self, inputs):
         n_actions = inputs.shape[1]
@@ -25,7 +54,18 @@ class DummyModule(nn.Module):
         super().__init__()
         
     def forward(self, inputs: torch.Tensor):
-        return torch.ones_like(inputs, device=inputs.device, dtype=torch.float).view(-1, 1)
+        return torch.ones((*inputs.shape[:-1], 1), device=inputs.device, dtype=torch.float)
+    
+    
+class ParameterModule(nn.Module):
+    def __init__(self):
+        super().__init__()
+        
+        self.parameter = nn.Parameter(torch.tensor(1.))
+        
+    def forward(self, *args, **kwargs):
+        return self.parameter
+    
     
 
 class SparseLeakyReLU(nn.LeakyReLU):
@@ -58,6 +98,7 @@ class BaseRNN(nn.Module):
         self, 
         n_actions, 
         n_participants: int = 0,
+        embedding_size: int = 0,
         device=torch.device('cpu'),
         ):
         super(BaseRNN, self).__init__()
@@ -65,7 +106,7 @@ class BaseRNN(nn.Module):
         # define general network parameters
         self.device = device
         self._n_actions = n_actions
-        self.embedding_size = 0
+        self.embedding_size = embedding_size
         self.n_participants = n_participants
         
         # session recording; used for sindy training; training variables start with 'x' and control parameters with 'c' 
@@ -73,6 +114,7 @@ class BaseRNN(nn.Module):
         self.submodules_rnn = nn.ModuleDict()
         self.submodules_eq = dict()
         self.submodules_sindy = dict()
+        self.betas = nn.ModuleDict()
         
         self.state = self.set_initial_state()
         
@@ -169,6 +211,19 @@ class BaseRNN(nn.Module):
         
     def get_recording(self, key):
         return self.recording[key]
+    
+    def setup_constant(self, embedding_size: int = None, leaky_relu: float = 0.01):
+        if embedding_size is not None:
+            return nn.Sequential(nn.Linear(embedding_size, 1), nn.LeakyReLU(leaky_relu))
+        else:
+            return ParameterModule()
+    
+    def setup_embedding(self, num_embeddings: int, embedding_size: int, leaky_relu: float = 0.01, dropout: float = 0.5):
+        return torch.nn.Sequential(
+            torch.nn.Embedding(num_embeddings=num_embeddings, embedding_dim=embedding_size),
+            torch.nn.LeakyReLU(leaky_relu),
+            torch.nn.Dropout(p=dropout),
+            )
     
     def setup_module(self, input_size: int):
         """This method creates the standard RNN-module used in computational discovery of cognitive dynamics

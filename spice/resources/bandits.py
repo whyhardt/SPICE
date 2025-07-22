@@ -10,7 +10,7 @@ import dill
 from tqdm import tqdm
 import pysindy as ps
 
-from .rnn import BaseRNN
+from .rnn import BaseRNN, ParameterModule
 from .rnn_utils import DatasetRNN
 
 # Setup so that plots will look nice
@@ -62,13 +62,9 @@ class Agent:
     """Update the agent after one step of the task.
     
     Args:
-      alpha (float): Baseline learning rate between 0 and 1.
-      beta (float): softmax inverse noise temperature. Regulates the noise in the decision-selection.
+      alpha_reward (float): Baseline learning rate between 0 and 1.
+      beta_reward (float): softmax inverse noise temperature. Regulates the noise in the decision-selection.
       n_actions: number of actions (default=2)
-      forget_rate (float): rate at which q values decay toward the initial values (default=0)
-      perseverance_bias (float): rate at which q values move toward previous action (default=0)
-      alpha_penalty (float): separate learning rate for negative outcomes
-      confirmation_bias (float): higher learning rate for believe-confirming outcomes and lower learning rate otherwise
       parameter_variance (float): sets a variance around the model parameters' mean values to sample from a normal distribution e.g. at each new session. 0: no variance, -1: std = mean
     """
     
@@ -200,8 +196,8 @@ class AgentQ(Agent):
       beta_choice: float = 0.,
       alpha_choice: float = 1.,
       forget_rate: float = 0.,
-      confirmation_bias: float = 0.,
       parameter_variance: Union[Dict[str, float], float] = 0.,
+      deterministic: bool = False,
       ):
     """Update the agent after one step of the task.
     
@@ -212,18 +208,16 @@ class AgentQ(Agent):
       forget_rate (float): rate at which q values decay toward the initial values (default=0)
       perseverance_bias (float): rate at which q values move toward previous action (default=0)
       alpha_penalty (float): separate learning rate for negative outcomes
-      confirmation_bias (float): higher learning rate for believe-confirming outcomes and lower learning rate otherwise
       parameter_variance (float): sets a variance around the model parameters' mean values to sample from a normal distribution e.g. at each new session. 0: no variance, -1: std = mean
     """
     
-    super().__init__(n_actions=n_actions, parameter_variance=parameter_variance)
+    super().__init__(n_actions=n_actions, parameter_variance=parameter_variance, deterministic=deterministic)
     
-    self._list_params = ['beta_reward', 'alpha_reward', 'alpha_penalty', 'alpha_counterfactual', 'beta_choice', 'alpha_choice', 'confirmation_bias', 'forget_rate']
+    self._list_params = ['beta_reward', 'alpha_reward', 'alpha_penalty', 'alpha_counterfactual', 'beta_choice', 'alpha_choice', 'forget_rate']
     
     self._mean_beta_reward = beta_reward
     self._mean_alpha_reward = alpha_reward
     self._mean_alpha_penalty = alpha_penalty if alpha_penalty >= 0 else alpha_reward
-    self._mean_confirmation_bias = confirmation_bias
     self._mean_forget_rate = forget_rate
     self._mean_beta_choice = beta_choice
     self._mean_alpha_choice = alpha_choice
@@ -233,7 +227,6 @@ class AgentQ(Agent):
     self._beta_reward = beta_reward
     self._alpha_reward = alpha_reward
     self._alpha_penalty = alpha_penalty if alpha_penalty >= 0 else alpha_reward
-    self._confirmation_bias = confirmation_bias
     self._forget_rate = forget_rate
     self._beta_choice = beta_choice
     self._alpha_choice = alpha_choice
@@ -277,14 +270,11 @@ class AgentQ(Agent):
         self._alpha_penalty = np.clip(np.random.normal(self._mean_alpha_penalty, self._mean_alpha_penalty/2 if self._parameter_variance['alpha_penalty'] == -1 else self._parameter_variance['alpha_penalty']), 0, 1)
         self._alpha_choice = np.clip(np.random.normal(self._mean_alpha_choice, self._mean_alpha_choice/2 if self._parameter_variance['alpha_choice'] == -1 else self._parameter_variance['alpha_choice']), 0, 1)
         self._alpha_counterfactual = np.clip(np.random.normal(self._mean_alpha_counterfactual, self._mean_alpha_counterfactual/2 if self._parameter_variance['alpha_counterfactual'] == -1 else self._parameter_variance['alpha_counterfactual']), 0, 1)
-        self._confirmation_bias = np.clip(np.random.normal(self._mean_confirmation_bias, self._mean_confirmation_bias/2 if self._parameter_variance['confirmation_bias'] == -1 else self._parameter_variance['confirmation_bias']), 0, 1)
         self._forget_rate = np.clip(np.random.normal(self._mean_forget_rate, self._mean_forget_rate/2 if self._parameter_variance['forget_rate'] == -1 else self._parameter_variance['forget_rate']), 0, 1)
 
         # sanity checks
-        # 1. (alpha, alpha_penalty) + confirmation_bias*max_confirmation must be in range(0, 1)
-        #     with max_confirmation = (q-q0)(r-q0) = +/- 0.25
-        max_learning_rate = self._alpha_reward + self._confirmation_bias*0.25 <= 1 and self._alpha_penalty + self._confirmation_bias*0.25 <= 1
-        min_learning_rate = self._alpha_reward + self._confirmation_bias*-0.25 >= 0 and self._alpha_penalty + self._confirmation_bias*-0.25 >= 0 
+        max_learning_rate = self._alpha_reward <= 1 and self._alpha_penalty <= 1
+        min_learning_rate = self._alpha_reward >= 0 and self._alpha_penalty >= 0 
         sanity = max_learning_rate and min_learning_rate
 
   def update(self, choice: int, reward: np.ndarray, *args, **kwargs):
@@ -346,7 +336,7 @@ class AgentQ(Agent):
   
   @property
   def q_choice(self):
-    return (self._state['x_value_reward']*self._beta_choice).reshape(self._n_actions)
+    return (self._state['x_value_choice']*self._beta_choice).reshape(self._n_actions)
   
   @property
   def learning_rate_reward(self):
@@ -372,7 +362,6 @@ class AgentQ_SampleZeros(AgentQ):
       beta_choice: float = 0.,
       alpha_choice: float = 1.,
       forget_rate: float = 0.,
-      confirmation_bias: float = 0.,
       parameter_variance: Union[Dict[str, float], float] = 0.,
       beta_distribution: np.ndarray = (0.7, 1.0),
       zero_threshold: float = 0.1,
@@ -387,7 +376,6 @@ class AgentQ_SampleZeros(AgentQ):
       beta_choice=beta_choice,
       alpha_choice=alpha_choice,
       forget_rate=forget_rate,
-      confirmation_bias=confirmation_bias,
       parameter_variance=parameter_variance,
       )
     
@@ -503,7 +491,7 @@ class AgentNetwork(Agent):
       if hasattr(self._model, 'participant_embedding'):
         participant_embedding = self._model.participant_embedding(self._meta_data[..., -1].int().to(device=self._model.device).view(1, 1))
       for key in self._model.betas:
-        betas[key] = self._model.betas[key].item() if isinstance(self._model.betas[key], torch.nn.Parameter) else self._model.betas[key](participant_embedding).item()
+        betas[key] = self._model.betas[key]().item() if isinstance(self._model.betas[key], ParameterModule) else self._model.betas[key](participant_embedding).item()
       return betas
     return None
 
@@ -524,7 +512,7 @@ class AgentNetwork(Agent):
       #     self._state[key] * betas[key] for key in self._state if key in betas and 'reward' in key
       #     ]), 
       #   axis=0)
-      logits = self._state['x_value_reward'] #* betas['x_value_reward']
+      logits = self._state['x_value_reward'] * betas['x_value_reward']
     else:
       # logits = np.sum(
       #   np.concatenate([
@@ -1110,7 +1098,6 @@ def create_dataset(
           'alpha_penalty': copy(agent._alpha_penalty),
           'beta_choice': copy(agent._beta_choice),
           'alpha_choice': copy(agent._alpha_choice),
-          'confirmation_bias': copy(agent._confirmation_bias),
           'forget_rate': copy(agent._forget_rate),
         }
       )
