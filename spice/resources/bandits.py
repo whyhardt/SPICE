@@ -461,7 +461,7 @@ class AgentNetwork(Agent):
   def get_logit(self):
     """Return the value of the agent's current state."""
     betas = self.get_betas()
-    if betas is not None:
+    if betas:
       logits = np.sum(
         np.concatenate([
           self._state[key] * betas[key] for key in self._state if key in betas 
@@ -506,7 +506,7 @@ class AgentNetwork(Agent):
   @property
   def q_reward(self):
     betas = self.get_betas()
-    if betas is not None:
+    if betas:
       # logits = np.sum(
       #   np.concatenate([
       #     self._state[key] * betas[key] for key in self._state if key in betas and 'reward' in key
@@ -526,7 +526,7 @@ class AgentNetwork(Agent):
   def q_choice(self):
     if 'x_value_choice' in self._state:
       betas = self.get_betas()
-      if betas is not None:
+      if betas:
         # logits = np.sum(
         #   np.concatenate([
         #     self._state[key] * betas[key] for key in self._state if key in betas and 'choice' in key
@@ -590,13 +590,13 @@ class AgentSpice(AgentNetwork):
       for submodule in submodules:
         parameters_module = submodules[submodule][participant_id].coefficients()
         # n_parameters_module = n_parameters_module * (n_parameters_module > 0.05)
-        if betas is not None:
+        if betas:
           #beta_value_module = betas[mapping_modules_values[submodule]]
           # n_parameters[participant_id] += (parameters_module * beta_value_module != 0).sum()
           n_parameters[participant_id] += (parameters_module != 0).sum()
         else:
           n_parameters[participant_id] += (parameters_module != 0).sum()
-      if betas is not None:
+      if betas:
         # include beta parameters if non-zero
         for value in betas:
           if np.abs(betas[value]) > 1e-2:
