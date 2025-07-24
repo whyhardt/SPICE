@@ -442,7 +442,7 @@ class AgentNetwork(Agent):
   def get_logit(self):
     """Return the value of the agent's current state."""
     betas = self.get_betas()
-    if betas is not None:
+    if betas:
       logits = np.sum(
         np.concatenate([
           self._state[key] * betas[key] for key in self._state if key in betas 
@@ -485,6 +485,53 @@ class AgentNetwork(Agent):
   def q(self):
     return self.get_logit()
   
+  @property
+  def q_reward(self):
+    betas = self.get_betas()
+    if betas:
+      # logits = np.sum(
+      #   np.concatenate([
+      #     self._state[key] * betas[key] for key in self._state if key in betas and 'reward' in key
+      #     ]), 
+      #   axis=0)
+      logits = self._state['x_value_reward'] * betas['x_value_reward']
+    else:
+      # logits = np.sum(
+      #   np.concatenate([
+      #     self._state[key] for key in self._state if 'x_value' in key and 'reward' in key
+      #     ]),
+      #   axis=0)
+      logits = self._state['x_value_reward']
+    return logits
+
+  @property
+  def q_choice(self):
+    if 'x_value_choice' in self._state:
+      betas = self.get_betas()
+      if betas:
+        # logits = np.sum(
+        #   np.concatenate([
+        #     self._state[key] * betas[key] for key in self._state if key in betas and 'choice' in key
+        #     ]), 
+        #   axis=0)
+        logits = self._state['x_value_choice'] #* betas['x_value_choice']
+      else:
+        # logits = np.sum(
+        #   np.concatenate([
+        #     self._state[key] for key in self._state if 'x_value' in key and 'choice' in key
+        #     ]),
+        #   axis=0)
+        logits = self._state['x_value_choice']
+    else:
+      logits = torch.zeros((1, self._n_actions))
+    return logits
+  
+  @property
+  def learning_rate_reward(self):
+    if 'x_learning_rate_reward' in self._state:
+      return self._state['x_learning_rate_reward']
+    else:
+      return torch.zeros((1, self._n_actions))
 
 class AgentSpice(AgentNetwork):
   
@@ -525,13 +572,13 @@ class AgentSpice(AgentNetwork):
       for submodule in submodules:
         parameters_module = submodules[submodule][participant_id].coefficients()
         # n_parameters_module = n_parameters_module * (n_parameters_module > 0.05)
-        if betas is not None:
+        if betas:
           #beta_value_module = betas[mapping_modules_values[submodule]]
           # n_parameters[participant_id] += (parameters_module * beta_value_module != 0).sum()
           n_parameters[participant_id] += (parameters_module != 0).sum()
         else:
           n_parameters[participant_id] += (parameters_module != 0).sum()
-      if betas is not None:
+      if betas:
         # include beta parameters if non-zero
         for value in betas:
           if np.abs(betas[value]) > 1e-2:
