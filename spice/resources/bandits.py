@@ -485,54 +485,7 @@ class AgentNetwork(Agent):
   def q(self):
     return self.get_logit()
   
-  @property
-  def q_reward(self):
-    betas = self.get_betas()
-    if betas:
-      # logits = np.sum(
-      #   np.concatenate([
-      #     self._state[key] * betas[key] for key in self._state if key in betas and 'reward' in key
-      #     ]), 
-      #   axis=0)
-      logits = self._state['x_value_reward'] * betas['x_value_reward']
-    else:
-      # logits = np.sum(
-      #   np.concatenate([
-      #     self._state[key] for key in self._state if 'x_value' in key and 'reward' in key
-      #     ]),
-      #   axis=0)
-      logits = self._state['x_value_reward']
-    return logits
-
-  @property
-  def q_choice(self):
-    if 'x_value_choice' in self._state:
-      betas = self.get_betas()
-      if betas:
-        # logits = np.sum(
-        #   np.concatenate([
-        #     self._state[key] * betas[key] for key in self._state if key in betas and 'choice' in key
-        #     ]), 
-        #   axis=0)
-        logits = self._state['x_value_choice'] #* betas['x_value_choice']
-      else:
-        # logits = np.sum(
-        #   np.concatenate([
-        #     self._state[key] for key in self._state if 'x_value' in key and 'choice' in key
-        #     ]),
-        #   axis=0)
-        logits = self._state['x_value_choice']
-    else:
-      logits = torch.zeros((1, self._n_actions))
-    return logits
   
-  @property
-  def learning_rate_reward(self):
-    if 'x_learning_rate_reward' in self._state:
-      return self._state['x_learning_rate_reward']
-    else:
-      return torch.zeros((1, self._n_actions))
-
 class AgentSpice(AgentNetwork):
   
   def __init__(
