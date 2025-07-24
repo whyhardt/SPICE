@@ -88,9 +88,9 @@ use_test = True
 path_data = f'data/{study}/{study}.csv'
 path_model_rnn = f'params/{study}/rnn_{study}_l2_0_00001.pkl'
 path_model_spice = f'params/{study}/spice_{study}_l2_0_00001.pkl'
-path_model_baseline = os.path.join(f'params/{study}/', baseline_file)
+path_model_baseline = None#os.path.join(f'params/{study}/', baseline_file)
 path_model_benchmark = None#os.path.join(f'params/{study}', benchmark_file) if len(models_benchmark) > 0 else None
-path_model_benchmark_lstm = f'params/{study}/lstm_{study}.pkl'
+path_model_benchmark_lstm = None#f'params/{study}/lstm_{study}.pkl'
 
 # -------------------------------------------------------------------------------
 # MODEL COMPARISON PIPELINE

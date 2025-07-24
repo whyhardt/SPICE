@@ -100,19 +100,20 @@ def create_dataset(
     # sort the data of one session into the corresponding signals
     for key in keys_x+keys_c:
       if len(agent._model.get_recording(key)) > 0:
-        # get all recorded values for the current session of one specific key 
-        recording = agent._model.get_recording(key)
-        # create tensor from list of tensors 
-        values = np.concatenate(recording)[trimming:, 0]
-        # remove insignificant updates with a high-pass filter: check if dv/dt > threshold; otherwise set v(t=1) = v(t=0)
-        # dvdt = np.abs(np.diff(values))
-        # for index_time in range(1, dvdt.shape[0]):
-        #   values[index_time] = np.where(dvdt[index_time-1] > highpass_threshold_dt, values[index_time], values[index_time-1])
-        
-        if key in keys_x:
-          x_train[key].append(values)
-        elif key in keys_c:
-          control[key].append(values)
+        for index_action in range(agent._n_actions):
+          # get all recorded values for the current session of one specific key 
+          recording = agent._model.get_recording(key)
+          # create tensor from list of tensors 
+          values = np.concatenate(recording)[trimming:, index_action]
+          # remove insignificant updates with a high-pass filter: check if dv/dt > threshold; otherwise set v(t=1) = v(t=0)
+          # dvdt = np.abs(np.diff(values))
+          # for index_time in range(1, dvdt.shape[0]):
+          #   values[index_time] = np.where(dvdt[index_time-1] > highpass_threshold_dt, values[index_time], values[index_time-1])
+          
+          if key in keys_x:
+            x_train[key].append(values)
+          elif key in keys_c:
+            control[key].append(values)
           
   feature_names = None
   

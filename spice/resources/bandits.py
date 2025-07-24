@@ -1,4 +1,4 @@
-from typing import NamedTuple, Union, Optional, Dict, Callable, Tuple
+from typing import NamedTuple, Union, Optional, Dict, Callable, Tuple, List
 
 import matplotlib.pyplot as plt
 import matplotlib as mpl
@@ -73,8 +73,10 @@ class Agent:
     self._mean_beta_reward = beta_reward
     self._mean_alpha_reward = alpha_reward
     
-    self._beta_reward = beta_reward
     self._alpha_reward = alpha_reward
+    
+    self._betas = {}
+    self._betas['x_value_reward'] = beta_reward
     
     self._n_actions = n_actions
     self._q_init = 0.5
@@ -151,28 +153,16 @@ class Agent:
     # Update memory state
     self._state['x_value_reward'] += reward_update
     self._state['x_learning_rate_reward'] = alpha
-    
+  
+  def get_state_value(self, state: str, multiply_with_beta: bool = True):
+    if multiply_with_beta and state in self._betas:
+      return (self._state[state] * self._betas[state]).reshape(self._n_actions)
+    else:
+      return self._state[state].reshape(self._n_actions)
 
   @property
   def q(self):
-    return (self._state['x_value_reward']*self._beta_reward).reshape(self._n_actions)
-  
-  @property
-  def q_reward(self):
-    return (self._state['x_value_reward']*self._beta_reward).reshape(self._n_actions)
-  
-  @property
-  def q_choice(self):
-    return np.zeros(self._n_actions)
-  
-  @property
-  def q_trial(self):
-    return np.zeros(self._n_actions)
-  
-  @property
-  def learning_rate_reward(self):
-    return np.zeros(self._n_actions)
-  
+    return (self._state['x_value_reward']*self._betas['x_value_reward']).reshape(self._n_actions)
 
 
 class AgentQ(Agent):
@@ -224,14 +214,17 @@ class AgentQ(Agent):
     self._mean_alpha_counterfactual_reward = alpha_counterfactual_reward
     self._mean_alpha_counterfactual_penalty = alpha_counterfactual_penalty
     
-    self._beta_reward = beta_reward
+    self._beta['x_value_reward'] = beta_reward
     self._alpha_reward = alpha_reward
     self._alpha_penalty = alpha_penalty if alpha_penalty >= 0 else alpha_reward
     self._forget_rate = forget_rate
-    self._beta_choice = beta_choice
+    self._beta['x_value_choice'] = beta_choice
     self._alpha_choice = alpha_choice
     self._alpha_counterfactual_reward = alpha_counterfactual_reward
     self._alpha_counterfactual_penalty = alpha_counterfactual_penalty
+    
+    self._betas['x_value_reward'] = beta_reward
+    self._betas['x_value_choice'] = beta_choice
     
     self._n_actions = n_actions
     self._parameter_variance = self.check_parameter_variance(parameter_variance)
@@ -264,8 +257,8 @@ class AgentQ(Agent):
       sanity = False
       while not sanity:
         # sample new parameters until all sanity checks are passed
-        self._beta_reward = np.clip(np.random.normal(self._mean_beta_reward, self._mean_beta_reward/2 if self._parameter_variance['beta_reward'] == -1 else self._parameter_variance['beta_reward']), 0, 2*self._mean_beta_reward)
-        self._beta_choice = np.clip(np.random.normal(self._mean_beta_choice, self._mean_beta_choice/2 if self._parameter_variance['beta_choice'] == -1 else self._parameter_variance['beta_choice']), 0, 2*self._mean_beta_choice)
+        self._beta['x_value_reward'] = np.clip(np.random.normal(self._mean_beta_reward, self._mean_beta_reward/2 if self._parameter_variance['beta_reward'] == -1 else self._parameter_variance['beta_reward']), 0, 2*self._mean_beta_reward)
+        self._beta['x_value_choice'] = np.clip(np.random.normal(self._mean_beta_choice, self._mean_beta_choice/2 if self._parameter_variance['beta_choice'] == -1 else self._parameter_variance['beta_choice']), 0, 2*self._mean_beta_choice)
         self._alpha_reward = np.clip(np.random.normal(self._mean_alpha_reward, self._mean_alpha_reward/2 if self._parameter_variance['alpha_reward'] == -1 else self._parameter_variance['alpha_reward']), 0 , 1)
         self._alpha_penalty = np.clip(np.random.normal(self._mean_alpha_penalty, self._mean_alpha_penalty/2 if self._parameter_variance['alpha_penalty'] == -1 else self._parameter_variance['alpha_penalty']), 0, 1)
         self._alpha_choice = np.clip(np.random.normal(self._mean_alpha_choice, self._mean_alpha_choice/2 if self._parameter_variance['alpha_choice'] == -1 else self._parameter_variance['alpha_choice']), 0, 1)
@@ -328,19 +321,7 @@ class AgentQ(Agent):
 
   @property
   def q(self):
-    return (self._state['x_value_reward']*self._beta_reward + self._state['x_value_choice']*self._beta_choice).reshape(self._n_actions)
-  
-  @property
-  def q_reward(self):
-    return (self._state['x_value_reward']*self._beta_reward).reshape(self._n_actions)
-  
-  @property
-  def q_choice(self):
-    return (self._state['x_value_choice']*self._beta_choice).reshape(self._n_actions)
-  
-  @property
-  def learning_rate_reward(self):
-    return self._state['x_learning_rate_reward'].reshape(self._n_actions)
+    return (self._state['x_value_reward']*self._beta['x_value_reward'] + self._state['x_value_choice']*self._beta['x_value_choice']).reshape(self._n_actions)
 
 
 class AgentQ_SampleZeros(AgentQ):
@@ -390,13 +371,13 @@ class AgentQ_SampleZeros(AgentQ):
     # sample new parameters
     if sample_parameters:
       # sample scaling parameters (inverse noise temperatures)
-      self._beta_reward, self._beta_choice = 0, 0
-      while self._beta_reward <= self._zero_threshold and self._beta_choice <=  self._zero_threshold:
-        self._beta_reward = np.random.rand()
-        self._beta_choice = np.random.rand()
+      self._beta['x_value_reward'], self._beta['x_value_choice'] = 0, 0
+      while self._beta['x_value_reward'] <= self._zero_threshold and self._beta['x_value_choice'] <=  self._zero_threshold:
+        self._beta['x_value_reward'] = np.random.rand()
+        self._beta['x_value_choice'] = np.random.rand()
         # apply zero-threshold if applicable
-        self._beta_reward = self._beta_reward * 2 * self._mean_beta_reward if self._beta_reward > self._zero_threshold else 0
-        self._beta_choice = self._beta_choice * 2 * self._mean_beta_choice if self._beta_choice > self._zero_threshold else 0
+        self._beta['x_value_reward'] = self._beta['x_value_reward'] * 2 * self._mean_beta_reward if self._beta['x_value_reward'] > self._zero_threshold else 0
+        self._beta['x_value_choice'] = self._beta['x_value_choice'] * 2 * self._mean_beta_choice if self._beta['x_value_choice'] > self._zero_threshold else 0
       
       # sample auxiliary parameters
       self._forget_rate = np.random.rand()
@@ -434,7 +415,7 @@ class AgentNetwork(Agent):
       """
       
       super().__init__(n_actions=n_actions)
-              
+
       self._deterministic = deterministic
 
       self._model = model_rnn
@@ -484,7 +465,8 @@ class AgentNetwork(Agent):
   
   def set_state(self):
     self._state = self._model.get_state()
-
+    self._betas = self.get_betas()
+    
   def get_betas(self):
     if hasattr(self._model, 'betas'):
       betas = {}
@@ -498,58 +480,11 @@ class AgentNetwork(Agent):
   def get_participant_ids(self):
     if hasattr(self._model, 'participant_embedding'):
       return tuple(np.arange(self._model.participant_embedding.num_embeddings).tolist())
-
+  
   @property
   def q(self):
     return self.get_logit()
   
-  @property
-  def q_reward(self):
-    betas = self.get_betas()
-    if betas is not None:
-      # logits = np.sum(
-      #   np.concatenate([
-      #     self._state[key] * betas[key] for key in self._state if key in betas and 'reward' in key
-      #     ]), 
-      #   axis=0)
-      logits = self._state['x_value_reward'] * betas['x_value_reward']
-    else:
-      # logits = np.sum(
-      #   np.concatenate([
-      #     self._state[key] for key in self._state if 'x_value' in key and 'reward' in key
-      #     ]),
-      #   axis=0)
-      logits = self._state['x_value_reward']
-    return logits
-
-  @property
-  def q_choice(self):
-    if 'x_value_choice' in self._state:
-      betas = self.get_betas()
-      if betas is not None:
-        # logits = np.sum(
-        #   np.concatenate([
-        #     self._state[key] * betas[key] for key in self._state if key in betas and 'choice' in key
-        #     ]), 
-        #   axis=0)
-        logits = self._state['x_value_choice'] #* betas['x_value_choice']
-      else:
-        # logits = np.sum(
-        #   np.concatenate([
-        #     self._state[key] for key in self._state if 'x_value' in key and 'choice' in key
-        #     ]),
-        #   axis=0)
-        logits = self._state['x_value_choice']
-    else:
-      logits = torch.zeros((1, self._n_actions))
-    return logits
-  
-  @property
-  def learning_rate_reward(self):
-    if 'x_learning_rate_reward' in self._state:
-      return self._state['x_learning_rate_reward']
-    else:
-      return torch.zeros((1, self._n_actions))
 
 class AgentSpice(AgentNetwork):
   
@@ -1112,7 +1047,7 @@ def create_dataset(
   return dataset, experiment_list, parameter_list
 
 
-def get_update_dynamics(experiment: Union[np.ndarray, torch.Tensor], agent: Agent):
+def get_update_dynamics(experiment: Union[np.ndarray, torch.Tensor], agent: Agent, additional_signals: List[str] = ['x_value_reward', 'x_learing_rate_reward', 'x_value_choice']):
   """Compute Q-Values of a specific agent for a specific experiment sequence with given actions and rewards.
 
   Args:
@@ -1145,24 +1080,14 @@ def get_update_dynamics(experiment: Union[np.ndarray, torch.Tensor], agent: Agen
   
   # initialize storages
   q = np.zeros((n_trials, agent._n_actions))
-  q_reward = np.zeros((n_trials, agent._n_actions))
-  q_choice = np.zeros((n_trials, agent._n_actions))
-  q_trial = np.zeros((n_trials, agent._n_actions))
-  learning_rate_reward = np.zeros((n_trials, agent._n_actions))
+  values_signal = {signal: np.zeros((n_trials, agent._n_actions)) for signal in additional_signals}
   choice_probs = np.zeros((n_trials, agent._n_actions))
   
   for trial in range(n_trials):
     # track all states
     q[trial] = agent.q
-    q_reward[trial] = agent.q_reward
-    q_choice[trial] = agent.q_choice
-    q_trial[trial] = agent.q_trial
-    learning_rate_reward[trial] = agent.learning_rate_reward
-    
-    # q_reward[trial] = agent._state['x_value_reward'] if 'x_value_reward' in agent._state else np.zeros(agent._n_actions)
-    # q_choice[trial] = agent._state['x_value_choice'] if 'x_value_choice' in agent._state else np.zeros(agent._n_actions)
-    # q_trial[trial] = agent._state['x_value_trial'] if 'x_value_trial' in agent._state else np.zeros(agent._n_actions)
-    # learning_rate_reward[trial] = agent._state['x_learning_rate_reward'] if 'x_learning_rate_reward' in agent._state else np.zeros(agent._n_actions)
+    for signal in additional_signals:
+      values_signal[signal][trial] = agent.get_state_value(signal) if signal in agent._state else np.zeros_like(agent.q)
     
     choice_probs[trial] = agent.get_choice_probs()
     
@@ -1173,7 +1098,7 @@ def get_update_dynamics(experiment: Union[np.ndarray, torch.Tensor], agent: Agen
       additional_inputs=additional_inputs,
       )
   
-  return (q[..., :1], q_reward[..., :1], q_choice[..., :1], learning_rate_reward[..., :1], q_trial[..., :1]), choice_probs, agent
+  return (q[..., :1], values_signal), choice_probs, agent
 
 
 ###############
