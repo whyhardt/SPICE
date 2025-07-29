@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "autospice"
-version = "0.1.5"
+version = "0.1.6"
 description = "SPICE: Sparse and Interpretable Cognitive Equations"
 readme = "README.md"
 authors = [
@@ -58,7 +58,7 @@ Repository="https://github.com/whyhardt/SPICE"
 Documentation="https://whyhardt.github.io/SPICE/"
 
 [tool.setuptools]
-packages = ["spice"]
+packages = ["spice", "spice.*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
