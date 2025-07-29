@@ -59,7 +59,7 @@ def fit_sindy(
                     feature_names=feature_names_i, 
                     feature_filter=filter_condition[0], 
                     condition=filter_condition[1], 
-                    remove_feature_filter=False
+                    remove_feature_filter=False,
                 )
         
         # remove unnecessary control features according to library setup

@@ -6,7 +6,7 @@ from tqdm import tqdm
 import torch
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from resources.bandits import create_dataset, get_update_dynamics, BanditsDrift, BanditsFlip_eckstein2022, Bandits_Standard, Agent
+from spice.resources.bandits import create_dataset, get_update_dynamics, BanditsDrift, BanditsFlip_eckstein2022, Bandits_Standard, Agent, AgentQ
 from resources.rnn_utils import DatasetRNN
 from utils.setup_agents import setup_agent_rnn, setup_agent_spice
 from utils.convert_dataset import convert_dataset
@@ -18,13 +18,13 @@ from benchmarking import benchmarking_dezfouli2019, benchmarking_eckstein2022
 
 
 # ----------------------- GENERAL CONFIGURATION ----------------------------
-agent_type = 'spice'  # 'rnn', 'benchmark', 'baseline'
+agent_type = 'q_agent'  # 'rnn', 'benchmark', 'baseline', 'q_agent'
 n_trials_per_session = 200
 
 
 # ------------------- CONFIGURATION ECKSTEIN2022 --------------------
 dataset = 'eckstein2022'
-benchmark_model = 'ApBr'
+benchmark_model = 'ApAnBrBcfBch'
 class_rnn = RLRNN_eckstein2022
 sindy_config = SindyConfig_eckstein2022
 bandits_environment = BanditsFlip_eckstein2022
@@ -53,14 +53,18 @@ path_benchmark = f'params/{dataset}/mcmc_{dataset}_{benchmark_model}.nc'
 
 # ------------------- PIPELINE ----------------------------
 
-if agent_type == 'rnn':
-    path_model = path_rnn
-else:
-    path_model = path_benchmark
-
 generating_model = agent_type if agent_type != 'benchmark' else benchmark_model
 path_data = f'data/{dataset}/{dataset}.csv'
-path_save = f'data/{dataset}/{dataset}_generated_behavior_{generating_model}.csv'
+path_save = f'data/{dataset}/{dataset}_generated_behavior_{generating_model}_test.csv'
+
+if agent_type == 'rnn':
+    path_model = path_rnn
+elif agent_type == 'q_agent':
+    path_model = None
+    path_data = None
+    path_save = 'data/q_agent_.csv'
+else:
+    path_model = path_benchmark
 
 if agent_type == 'spice':
     setup_agent = setup_agent_spice
@@ -70,8 +74,11 @@ elif agent_type == 'rnn':
 else:
     setup_agent = setup_agent_benchmark
 
-n_participants = len(convert_dataset(path_data)[0].xs[:, 0, -1].unique())
-
+if path_data:
+    n_participants = len(convert_dataset(path_data)[0].xs[:, 0, -1].unique())
+else:
+    n_participants = 100
+    
 dataset_xs, dataset_ys = [], []
 for session in range(n_sessions):
     environment = bandits_environment(
@@ -79,14 +86,24 @@ for session in range(n_sessions):
         reward_prob_1 = bandits_kwargs['reward_prob_1'][session] if 'reward_prob_1' in bandits_kwargs else None,
         )
 
-    agent = setup_agent(
-        class_rnn=class_rnn,
-        path_model=path_model,
-        path_rnn=path_rnn,
-        path_spice=path_spice,
-        deterministic=False,
-        model_config=benchmark_model,
-        )
+    if path_model:
+        agent = setup_agent(
+            class_rnn=class_rnn,
+            path_model=path_model,
+            path_rnn=path_rnn,
+            path_spice=path_spice,
+            deterministic=False,
+            model_config=benchmark_model,
+            )
+    else:
+        agent = AgentQ(
+            alpha_reward=0.3, 
+            beta_reward=3,
+            # Different agent-configurations for different experiments
+            # forget_rate = 0.2,
+            # alpha_penalty=0.5,
+            )
+        
     if isinstance(agent, tuple):
         # in case of setup_agent_benchmark -> output: agent, n_parameters
         agent = agent[0]

@@ -167,6 +167,7 @@ def plot_session(
     save: str = None, 
     display_choice: int = 0,
     reward_range: List[float] = [0, 1],
+    signals_to_plot: List[str] = ['x_value_reward', 'x_learing_rate_reward', 'x_value_choice'],
     ):    
     # plot the dynamcis associated with the first arm
     
@@ -191,10 +192,8 @@ def plot_session(
     
     list_probs = []
     list_q_value = []
-    list_q_reward = []
-    list_q_choice = []
-    list_q_trial = []
-    list_alphas = []
+    list_signals = {signal: [] for signal in signals_to_plot}
+    values_signals = {signal: [] for signal in signals_to_plot}
 
     colors = []
     if labels is None:
@@ -203,13 +202,11 @@ def plot_session(
     for valid_key in valid_keys_color_pairs:        
         # get q-values from agent
         if valid_key in [key.lower() for key in agents]:
-            qs, probs, _ = get_update_dynamics(experiment, agents[valid_key])
+            qs, probs, _ = get_update_dynamics(experiment, agents[valid_key], additional_signals=signals_to_plot)
             list_probs.append(np.expand_dims(probs, 0))
             list_q_value.append(np.expand_dims(qs[0], 0))
-            list_q_reward.append(np.expand_dims(qs[1], 0))
-            list_q_choice.append(np.expand_dims(qs[2], 0))
-            list_alphas.append(np.expand_dims(qs[3], 0))
-            list_q_trial.append(np.expand_dims(qs[4], 0))
+            for signal in signals_to_plot:
+              list_signals[signal].append(np.expand_dims(qs[1][signal], 0))
             
             # get color from current agent
             colors.append(valid_keys_color_pairs[valid_key])
@@ -221,18 +218,10 @@ def plot_session(
     # concatenate all choice probs and q-values
     probs = np.concatenate(list_probs, axis=0)
     q_value = np.concatenate(list_q_value, axis=0)
-    q_reward = np.concatenate(list_q_reward, axis=0)
-    q_choice = np.concatenate(list_q_choice, axis=0)
-    q_trial = np.concatenate(list_q_trial, axis=0)
-    alphas = np.concatenate(list_alphas, axis=0)
+    for signal in signals_to_plot:
+      values_signals[signal] = np.concatenate(list_signals[signal], axis=0)
 
-    # normalize q-values
-    # def normalize(qs):
-    #     return (qs - np.min(qs, axis=1, keepdims=True)) / (np.max(qs, axis=1, keepdims=True) - np.min(qs, axis=1, keepdims=True))
-
-    # qs = normalize(qs)
-
-    fig, axs = plt.subplots(5, 1, figsize=(10, 10))
+    fig, axs = plt.subplots(2 + len(signals_to_plot), 1, figsize=(10, 10))
     axs_row = 0
     fig_col = None
     
@@ -265,61 +254,20 @@ def plot_session(
         )
     axs_row += 1
     
-    plot_dynamics(
-        compare=True,
-        choices=choices,
-        rewards=rewards,
-        timeseries=q_reward[:, :, display_choice],
-        timeseries_name='$q_{reward}$',
-        color=colors,
-        fig_ax=(fig, axs[axs_row, fig_col]) if fig_col is not None else (fig, axs[axs_row]),
-        x_axis_info=x_axis,
-        y_axis_info=y_axis,
-        reward_range=reward_range,
-        )
-    axs_row += 1
-    
-    plot_dynamics(
-        compare=True,
-        choices=choices,
-        rewards=rewards,
-        timeseries=alphas[:, :, display_choice],
-        timeseries_name=r'$\alpha$',
-        color=colors,
-        fig_ax=(fig, axs[axs_row, fig_col]) if fig_col is not None else (fig, axs[axs_row]),
-        x_axis_info=x_axis,
-        y_axis_info=y_axis,
-        reward_range=reward_range,
-        )
-    axs_row += 1
-    
-    plot_dynamics(
-        compare=True,
-        choices=choices,
-        rewards=rewards,
-        timeseries=q_choice[:, :, display_choice],
-        timeseries_name='$q_{choice}$',
-        color=colors,
-        fig_ax=(fig, axs[axs_row, fig_col]) if fig_col is not None else (fig, axs[axs_row]),
-        x_axis_info=x_axis,
-        y_axis_info=y_axis,
-        reward_range=reward_range,
-        )
-    axs_row += 1
-    
-    # plot_dynamics(
-    #     compare=True,
-    #     choices=choices,
-    #     rewards=rewards,
-    #     timeseries=q_trial[:, :, display_choice],
-    #     timeseries_name='$q_{trial}$',
-    #     color=colors,
-    #     fig_ax=(fig, axs[axs_row, fig_col]) if fig_col is not None else (fig, axs[axs_row]),
-    #     x_axis_info=x_axis,
-    #     y_axis_info=y_axis,
-    #     reward_range=reward_range,
-    #     )
-    # axs_row += 1
+    for signal in signals_to_plot:
+      plot_dynamics(
+          compare=True,
+          choices=choices,
+          rewards=rewards,
+          timeseries=values_signals[signal][:, :, display_choice],
+          timeseries_name=signal,
+          color=colors,
+          fig_ax=(fig, axs[axs_row, fig_col]) if fig_col is not None else (fig, axs[axs_row]),
+          x_axis_info=x_axis,
+          y_axis_info=y_axis,
+          reward_range=reward_range,
+          )
+      axs_row += 1
     
     if save is not None:
         plt.savefig(save, dpi=300)

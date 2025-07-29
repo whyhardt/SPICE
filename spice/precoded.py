@@ -1,7 +1,6 @@
 from spice.resources.rnn import BaseRNN
 from spice.estimator import SpiceConfig
 import torch
-from torch import nn
 
 
 RESCOLA_WAGNER_CONFIG = SpiceConfig(
