@@ -7,14 +7,13 @@ from spice.estimator import SpiceEstimator
 from spice_config import CONTR_DIFF_CONFIG, RNN_ContrDiff
 
 
-path_data = 'ganesh2024a/data/ganesh2024a.csv'
+path_data = 'ganesh2024a/data/ganesh2024a_merged_rewards.csv'
 path_model = 'ganesh2024a/params/rnn_ganesh2024a.pkl'
 
 dataset = convert_dataset(
     file=path_data, 
     df_block='blocks',
     df_choice='chose_right',
-    df_reward='reward_right',
     df_participant_id='subjID',
     additional_inputs=['contrast_difference'],
     )[0]
@@ -26,7 +25,7 @@ estimator = SpiceEstimator(
     rnn_class=RNN_ContrDiff,
     spice_config=CONTR_DIFF_CONFIG,
     n_participants=n_participants,
-    epochs=1,
+    epochs=200,
     bagging=True,
     learning_rate=1e-2,
     scheduler=True,

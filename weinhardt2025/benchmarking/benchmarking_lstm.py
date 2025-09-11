@@ -11,15 +11,16 @@ from resources.bandits import Agent
 
 class RLLSTM(torch.nn.Module):
     
-    def __init__(self, n_cells, n_actions):
+    def __init__(self, n_cells, n_actions, additional_inputs: int = 0):
         super().__init__()
         
-        self.lstm = torch.nn.LSTM(n_actions*2, n_cells, batch_first=True, dropout=0.5)
+        self.lstm = torch.nn.LSTM(n_actions*2+additional_inputs, n_cells, batch_first=True, dropout=0.5)
         self.lin_out = torch.nn.Linear(n_cells, n_actions)
         self.softmax = torch.nn.Softmax(dim=-1)
         self.device = torch.device('cpu')
         self.n_actions = n_actions
         self.n_cells = n_cells
+        self.additional_inputs = additional_inputs
         
     def forward(self, inputs, state=None):
         
@@ -72,11 +73,15 @@ class AgentLSTM(Agent):
         self._hidden_state = torch.zeros((1, self._model.n_cells)).to(self._model.device)
         self._cell_state = torch.zeros((1, self._model.n_cells)).to(self._model.device)
 
-    def update(self, choice: float, reward: float, **kwargs):
+    def update(self, choice: float, reward: float, additional_inputs: float = None, **kwargs):
         choice = torch.eye(self._n_actions)[int(choice)]
         xs = torch.concat([choice, torch.tensor(reward)]).view(1, -1).to(device=self._model.device)
+        if additional_inputs:
+            xs = torch.concat([xs, torch.tensor(additional_inputs).reshape(1, -1).to(self._model.device)], dim=-1)
+            
         with torch.no_grad():
             logits, state = self._model(xs, self.get_state())
+        
         self.set_state(logits, *state)
 
     def set_state(self, logits: np.ndarray, hidden_state: torch.Tensor, cell_state: torch.Tensor):
@@ -109,7 +114,7 @@ def training(dataset_training: DatasetRNN, lstm: RLLSTM, optimizer: torch.optim.
         
         mask = (dataset_training.xs[..., :1] > -1).to(lstm.device)
         # prediction
-        ys_pred, state = lstm(dataset_training.xs[..., :lstm.n_actions*2].to(lstm.device))
+        ys_pred, state = lstm(dataset_training.xs[..., :lstm.n_actions*2+lstm.additional_inputs].to(lstm.device))
         
         # loss computation
         loss = criterion(
@@ -130,9 +135,9 @@ def training(dataset_training: DatasetRNN, lstm: RLLSTM, optimizer: torch.optim.
                 # prediction
                 
                 if dataset_training.xs.shape[0] == dataset_test.xs.shape[0]:
-                    input_lstm = torch.concat((dataset_training.xs[..., :lstm.n_actions*2], dataset_test.xs[..., :lstm.n_actions*2]), dim=1).to(lstm.device)
+                    input_lstm = torch.concat((dataset_training.xs[..., :lstm.n_actions*2+lstm.additional_inputs], dataset_test.xs[..., :lstm.n_actions*2+lstm.additional_inputs]), dim=1).to(lstm.device)
                 else:
-                    input_lstm = dataset_test.xs[..., :lstm.n_actions*2].to(lstm.device)
+                    input_lstm = dataset_test.xs[..., :lstm.n_actions*2+lstm.additional_inputs].to(lstm.device)
                 ys_pred, state = lstm(input_lstm)
                 
                 # loss computation
@@ -147,14 +152,15 @@ def training(dataset_training: DatasetRNN, lstm: RLLSTM, optimizer: torch.optim.
     
     return lstm
 
-def main(path_save_model:str, path_data: str, n_actions: int, n_cells: int, n_epochs: int, lr: float, split_ratio: float, device=torch.device('cpu')):
+def main(path_save_model:str, path_data: str, n_actions: int, n_cells: int, n_epochs: int, lr: float, split_ratio: float, device=torch.device('cpu'), additional_inputs: int=None):
     
     if isinstance(split_ratio, float):
         dataset_training, dataset_test = split_data_along_timedim(
             convert_dataset(
                 path_data,
                 df_participant_id='subjID',
-                df_reward='reward_right',
+                # df_reward='reward_right',
+                df_block='blocks',
                 additional_inputs=['contrast_difference']
                 )[0], split_ratio=split_ratio)
     else:
@@ -162,11 +168,12 @@ def main(path_save_model:str, path_data: str, n_actions: int, n_cells: int, n_ep
             path_data,
             df_participant_id='subjID',
             df_choice='chose_right',
-            df_reward='reward_right',
+            # df_reward='reward_right',
+            df_block='blocks',
             additional_inputs=['contrast_difference']
             )[0], list_test_sessions=split_ratio)
     
-    lstm = RLLSTM(n_cells=n_cells, n_actions=n_actions).to(device)
+    lstm = RLLSTM(n_cells=n_cells, n_actions=n_actions, additional_inputs=additional_inputs).to(device)
     optimizer = torch.optim.Adam(lstm.parameters(), lr=lr)
     
     print('Training LSTM...')
@@ -187,14 +194,15 @@ if __name__=='__main__':
     # dataset_name = 'gershmanB2018'
     # split_ratio = [4, 8, 12, 16]
     
-    split_ratio = None
+    split_ratio = [2, 4, 6]
     
     path_model_save = f'ganesh2024a/params/lstm_ganesh2024a.pkl'
-    path_data = f'ganesh2024a/data/ganesh2024a.csv'
+    path_data = f'ganesh2024a/data/ganesh2024a_merged_rewards.csv'
     n_actions = 2
-    n_cells = 16
+    n_cells = 4
+    additional_inputs = 1
     n_epochs = 2000
     lr = 1e-2    
     device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
     
-    main(path_save_model=path_model_save, path_data=path_data, n_actions=n_actions, n_cells=n_cells, n_epochs=n_epochs, lr=lr, split_ratio=split_ratio, device=device)
+    main(path_save_model=path_model_save, path_data=path_data, n_actions=n_actions, n_cells=n_cells, n_epochs=n_epochs, lr=lr, split_ratio=split_ratio, device=device, additional_inputs=additional_inputs)
