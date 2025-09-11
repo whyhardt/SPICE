@@ -22,4 +22,4 @@ __all__ = [
     "ParticipantEmbeddingRNN",
     "Weinhardt2024RNN",
     "BaseRNN",
-] 
+]

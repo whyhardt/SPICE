@@ -4,7 +4,7 @@ import torch
 from tqdm import tqdm
 import numpy as np
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'spice')))
 from resources.rnn_utils import DatasetRNN, split_data_along_timedim, split_data_along_sessiondim
 from utils.convert_dataset import convert_dataset
 from resources.bandits import Agent
@@ -150,10 +150,22 @@ def training(dataset_training: DatasetRNN, lstm: RLLSTM, optimizer: torch.optim.
 def main(path_save_model:str, path_data: str, n_actions: int, n_cells: int, n_epochs: int, lr: float, split_ratio: float, device=torch.device('cpu')):
     
     if isinstance(split_ratio, float):
-        dataset_training, dataset_test = split_data_along_timedim(convert_dataset(path_data)[0], split_ratio=split_ratio)
+        dataset_training, dataset_test = split_data_along_timedim(
+            convert_dataset(
+                path_data,
+                df_participant_id='subjID',
+                df_reward='reward_right',
+                additional_inputs=['contrast_difference']
+                )[0], split_ratio=split_ratio)
     else:
-        dataset_training, dataset_test = split_data_along_sessiondim(convert_dataset(path_data)[0], list_test_sessions=split_ratio)
-        
+        dataset_training, dataset_test = split_data_along_sessiondim(convert_dataset(
+            path_data,
+            df_participant_id='subjID',
+            df_choice='chose_right',
+            df_reward='reward_right',
+            additional_inputs=['contrast_difference']
+            )[0], list_test_sessions=split_ratio)
+    
     lstm = RLLSTM(n_cells=n_cells, n_actions=n_actions).to(device)
     optimizer = torch.optim.Adam(lstm.parameters(), lr=lr)
     
@@ -172,16 +184,17 @@ if __name__=='__main__':
     # dataset_name = 'dezfouli2019'
     # split_ratio = [3, 6, 9]
     
-    dataset_name = 'gershmanB2018'
-    split_ratio = [4, 8, 12, 16]
+    # dataset_name = 'gershmanB2018'
+    # split_ratio = [4, 8, 12, 16]
     
-    path_model_save = f'params/{dataset_name}/lstm_{dataset_name}.pkl'
-    path_data = f'data/{dataset_name}/{dataset_name}.csv'
+    split_ratio = None
+    
+    path_model_save = f'ganesh2024a/params/lstm_ganesh2024a.pkl'
+    path_data = f'ganesh2024a/data/ganesh2024a.csv'
     n_actions = 2
     n_cells = 16
     n_epochs = 2000
-    lr = 1e-3
-    
+    lr = 1e-2    
     device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
     
     main(path_save_model=path_model_save, path_data=path_data, n_actions=n_actions, n_cells=n_cells, n_epochs=n_epochs, lr=lr, split_ratio=split_ratio, device=device)

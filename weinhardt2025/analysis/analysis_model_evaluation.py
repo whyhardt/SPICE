@@ -6,6 +6,8 @@ import pandas as pd
 from tqdm import tqdm
 from copy import copy
 
+from . import benchmarking_lstm
+
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 # standard methods and classes used for every model evaluation
 from benchmarking import benchmarking_dezfouli2019
@@ -19,7 +21,7 @@ from utils.convert_dataset import convert_dataset
 from resources import rnn, sindy_utils
 
 # dataset specific benchmarking models
-from benchmarking import benchmarking_dezfouli2019, benchmarking_eckstein2022, benchmarking_lstm
+from benchmarking import benchmarking_dezfouli2019, benchmarking_eckstein2022
 from benchmarking.benchmarking_dezfouli2019 import Dezfouli2019GQL
 
 
