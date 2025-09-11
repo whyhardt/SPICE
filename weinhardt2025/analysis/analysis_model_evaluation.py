@@ -6,28 +6,38 @@ import pandas as pd
 from tqdm import tqdm
 from copy import copy
 
-from . import benchmarking_lstm
-
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 # standard methods and classes used for every model evaluation
-from benchmarking import benchmarking_dezfouli2019
-from resources.model_evaluation import get_scores
-from resources.bandits import get_update_dynamics, AgentQ
-from resources.rnn_utils import split_data_along_timedim, split_data_along_sessiondim
-from utils.setup_agents import setup_agent_rnn, setup_agent_spice
-from utils.convert_dataset import convert_dataset
+from spice.resources.model_evaluation import get_scores
+from spice.resources.bandits import get_update_dynamics, AgentQ
+from spice.resources.rnn_utils import split_data_along_timedim, split_data_along_sessiondim
+from spice.utils.setup_agents import setup_agent_rnn, setup_agent_spice
+from spice.utils.convert_dataset import convert_dataset
 
 # dataset specific SPICE models
-from resources import rnn, sindy_utils
+from spice.resources import rnn, sindy_utils
 
 # dataset specific benchmarking models
-from benchmarking import benchmarking_dezfouli2019, benchmarking_eckstein2022
-from benchmarking.benchmarking_dezfouli2019 import Dezfouli2019GQL
+from weinhardt2025.benchmarking import benchmarking_dezfouli2019
+from weinhardt2025.benchmarking import benchmarking_dezfouli2019, benchmarking_eckstein2022
+from weinhardt2025.benchmarking.benchmarking_dezfouli2019 import Dezfouli2019GQL
+from weinhardt2025.benchmarking import benchmarking_lstm
+from ganesh2024a.spice_config import RNN_ContrDiff, SpiceConfig
 
 
 # -------------------------------------------------------------------------------
 # AGENT CONFIGURATIONS
 # -------------------------------------------------------------------------------
+
+# ------------------- CONFIGURATION ECKSTEIN2022 w/o AGE --------------------
+study = 'ganesh2024a'
+train_test_ratio = [2,4,6]
+sindy_config = SpiceConfig
+rnn_class = RNN_ContrDiff
+additional_inputs = ['contrast_difference']
+path_data = f'{study}/data/{study}_merged_rewards.csv'
+path_model_benchmark_lstm = f'{study}/params/lstm_{study}.pkl'
+kw_dataset_convert = {'df_participant_id': 'subjID', 'df_choice': 'chose_right', 'df_block': 'blocks'}
 
 # ------------------- CONFIGURATION ECKSTEIN2022 w/o AGE --------------------
 # study = 'eckstein2022'
@@ -41,10 +51,7 @@ from benchmarking.benchmarking_dezfouli2019 import Dezfouli2019GQL
 # benchmark_file = f'mcmc_{study}_MODEL.nc'
 # model_config_baseline = 'ApBr'
 # baseline_file = f'mcmc_{study}_ApBr.nc'
-
-# -------------------- CONFIGURATION ECKSTEIN2022 w/ AGE --------------------
-# rnn_class = RLRNN_meta_eckstein2022
-# additional_inputs = ['age']
+# kw_dataset_convert = {}
 
 # ------------------------ CONFIGURATION DEZFOULI2019 -----------------------
 # study = 'dezfouli2019'
@@ -60,45 +67,39 @@ from benchmarking.benchmarking_dezfouli2019 import Dezfouli2019GQL
 # benchmark_file = f'gql_{study}_MODEL.pkl'
 # model_config_baseline = 'PhiBeta'
 # baseline_file = f'gql_{study}_PhiBeta.pkl'
+# kw_dataset_convert = {}
 
 # ------------------------ CONFIGURATION GERSHMAN2018 -----------------------
-study = 'gershmanB2018'
-train_test_ratio = [4, 8, 12, 16]
-models_benchmark = ['PhiBeta']
-sindy_config = sindy_utils.SindyConfig_eckstein2022
-rnn_class = rnn.RLRNN_eckstein2022
-additional_inputs = []
-# setup_agent_benchmark = benchmarking_dezfouli2019.setup_agent_benchmark
-# gql_model = benchmarking_dezfouli2019.gql_model
-setup_agent_benchmark = benchmarking_dezfouli2019.setup_agent_gql
-gql_model = benchmarking_dezfouli2019.Dezfouli2019GQL
-benchmark_file = f'ql_{study}_MODEL.pkl'
-model_config_baseline = 'PhiBeta'
-baseline_file = f'ql_{study}_PhiBeta.pkl'
-
-# ------------------------ CONFIGURATION DEZFOULI2019 w/ blocks -----------------------
-# study = 'dezfouli2019'
-# train_test_ratio = [3, 6, 9]
-# models_benchmark = ['ApAnBrBcfAchBch']#['ApBr', 'ApBrBch', 'ApAnBrBcfAchBch']
-# sindy_config = SindyConfig_dezfouli2019
-# rnn_class = RLRNN_dezfouli2019
+# study = 'gershmanB2018'
+# train_test_ratio = [4, 8, 12, 16]
+# models_benchmark = ['PhiBeta']
+# sindy_config = sindy_utils.SindyConfig_eckstein2022
+# rnn_class = rnn.RLRNN_eckstein2022
 # additional_inputs = []
+# # setup_agent_benchmark = benchmarking_dezfouli2019.setup_agent_benchmark
+# # gql_model = benchmarking_dezfouli2019.gql_model
+# setup_agent_benchmark = benchmarking_dezfouli2019.setup_agent_gql
+# gql_model = benchmarking_dezfouli2019.Dezfouli2019GQL
+# benchmark_file = f'ql_{study}_MODEL.pkl'
+# model_config_baseline = 'PhiBeta'
+# baseline_file = f'ql_{study}_PhiBeta.pkl'
+# kw_dataset_convert = {}
 
 # ------------------------- CONFIGURATION FILE PATHS ------------------------
 use_test = True
 
-path_data = f'data/{study}/{study}.csv'
-path_model_rnn = f'params/{study}/rnn_{study}_l2_0_00001.pkl'
-path_model_spice = f'params/{study}/spice_{study}_l2_0_00001.pkl'
+# path_data = f'data/{study}/{study}.csv'
+path_model_rnn = None#f'params/{study}/rnn_{study}_l2_0_00001.pkl'
+path_model_spice = None#f'params/{study}/spice_{study}_l2_0_00001.pkl'
 path_model_baseline = None#os.path.join(f'params/{study}/', baseline_file)
 path_model_benchmark = None#os.path.join(f'params/{study}', benchmark_file) if len(models_benchmark) > 0 else None
-path_model_benchmark_lstm = None#f'params/{study}/lstm_{study}.pkl'
+# path_model_benchmark_lstm = f'params/{study}/lstm_{study}.pkl'
 
 # -------------------------------------------------------------------------------
 # MODEL COMPARISON PIPELINE
 # -------------------------------------------------------------------------------
 
-dataset = convert_dataset(path_data, additional_inputs=additional_inputs)[0]
+dataset = convert_dataset(path_data, additional_inputs=additional_inputs, **kw_dataset_convert)[0]
 # use these participant_ids if not defined later
 participant_ids = dataset.xs[:, 0, -1].unique().cpu().numpy()
 

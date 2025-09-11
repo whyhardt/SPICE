@@ -102,8 +102,8 @@ def setup_agent_lstm(path_model: str) -> AgentLSTM:
     
     n_cells = state_dict['lin_out.weight'].shape[1]
     n_actions = state_dict['lin_out.weight'].shape[0]
-    
-    lstm = RLLSTM(n_cells=n_cells, n_actions=n_actions)
+    additional_inputs = state_dict['lstm.weight_ih_l0'].shape[1] - n_actions*2
+    lstm = RLLSTM(n_cells=n_cells, n_actions=n_actions, additional_inputs=additional_inputs)
     lstm.load_state_dict(state_dict=state_dict)
     agent = AgentLSTM(model_rnn=lstm, n_actions=n_actions)
     return agent
