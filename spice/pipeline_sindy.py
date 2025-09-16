@@ -8,7 +8,7 @@ from typing import List, Dict
 
 sys.path.append('resources')
 from resources.bandits import AgentQ, BanditsDrift, BanditsSwitch, plot_session, create_dataset as create_dataset_bandits
-from resources.rnn import RLRNN_eckstein2022
+from resources.old_rnn import RLRNN_eckstein2022
 from resources.rnn_utils import parameter_file_naming
 from resources.sindy_utils import check_library_setup, save_spice, SindyConfig_eckstein2022
 from resources.sindy_training import fit_spice
