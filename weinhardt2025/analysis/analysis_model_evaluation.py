@@ -35,9 +35,9 @@ train_test_ratio = [2,4,6]
 sindy_config = SpiceConfig
 rnn_class = RNN_ContrDiff
 additional_inputs = ['contrast_difference']
-path_data = f'{study}/data/{study}_merged_rewards.csv'
+path_data = f'ganesh2024a/data/GBSlider_ganesh2024a_xs_withRand.csv'
 path_model_benchmark_lstm = f'{study}/params/lstm_{study}.pkl'
-kw_dataset_convert = {'df_participant_id': 'subjID', 'df_choice': 'chose_right', 'df_block': 'blocks'}
+kw_dataset_convert = {'df_participant_id': 'subjID', 'df_choice': 'choice', 'df_reward': 'reward', 'df_block': 'blocks'}
 
 # ------------------- CONFIGURATION ECKSTEIN2022 w/o AGE --------------------
 # study = 'eckstein2022'
@@ -86,14 +86,14 @@ kw_dataset_convert = {'df_participant_id': 'subjID', 'df_choice': 'chose_right',
 # kw_dataset_convert = {}
 
 # ------------------------- CONFIGURATION FILE PATHS ------------------------
-use_test = True
+use_test = False
 
 # path_data = f'data/{study}/{study}.csv'
 path_model_rnn = None#f'params/{study}/rnn_{study}_l2_0_00001.pkl'
 path_model_spice = None#f'params/{study}/spice_{study}_l2_0_00001.pkl'
 path_model_baseline = None#os.path.join(f'params/{study}/', baseline_file)
 path_model_benchmark = None#os.path.join(f'params/{study}', benchmark_file) if len(models_benchmark) > 0 else None
-# path_model_benchmark_lstm = f'params/{study}/lstm_{study}.pkl'
+# path_model_benchmark_lstm = f'{study}/params/lstm_{study}_test.pkl'
 
 # -------------------------------------------------------------------------------
 # MODEL COMPARISON PIPELINE

@@ -8,7 +8,7 @@ from spice_config import CONTR_DIFF_CONFIG, RNN_ContrDiff
 
 
 path_data = 'ganesh2024a/data/ganesh2024a_merged_rewards.csv'
-path_model = 'ganesh2024a/params/rnn_ganesh2024a.pkl'
+path_model = 'ganesh2024a/params/rnn_ganesh2024a_test.pkl'
 
 dataset = convert_dataset(
     file=path_data, 
