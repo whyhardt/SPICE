@@ -29,7 +29,7 @@ def main(
   dropout = 0.5,
 
   # meta-optimization parameters
-  metaopt_type: str = 'awd', # 'awd' or 'iMAML'
+  metaopt_type: str = 'awd', # 'awd' or 'imaml'
   # AWD parameters
   lambda_awd: float = 0.022,  # Default from paper experiments
   # iMAML parameters
@@ -242,7 +242,7 @@ def main(
 
         lambda_awd=lambda_awd,
       )
-    elif metaopt_type=='iMAML':
+    elif metaopt_type=='imaml':
       print('Using Implicit MAML (iMAML) for meta-optimization.')
       model, optimizer_rnn, histories = rnn_training_imaml.fit_with_metaopt(
         model=model,
