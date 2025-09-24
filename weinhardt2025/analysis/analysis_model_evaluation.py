@@ -36,8 +36,9 @@ sindy_config = SpiceConfig
 rnn_class = RNN_ContrDiff
 additional_inputs = ['contrast_difference']
 path_data = f'ganesh2024a/data/GBSlider_ganesh2024a_xs_withRand.csv'
+# path_data = 'ganesh2024a/data/ganesh2024a_agentSims_xs.csv'
 path_model_benchmark_lstm = f'{study}/params/lstm_{study}.pkl'
-kw_dataset_convert = {'df_participant_id': 'subjID', 'df_choice': 'choice', 'df_reward': 'reward', 'df_block': 'blocks'}
+kw_dataset_convert = {'df_participant_id': 'subjID', 'df_choice': 'choice', 'df_reward': 'reward', 'df_block': 'blocks', 'timeshift_additional_inputs': True}
 
 # ------------------- CONFIGURATION ECKSTEIN2022 w/o AGE --------------------
 # study = 'eckstein2022'

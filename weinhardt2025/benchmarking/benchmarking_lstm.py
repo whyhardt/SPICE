@@ -39,7 +39,7 @@ class RLLSTM(torch.nn.Module):
         
         x, state = self.lstm(inputs, state)
         logits = self.lin_out(x)
-        # logits = self.softmax(logits)
+
         return logits, state
 
     def to(self, device):
@@ -93,7 +93,8 @@ class AgentLSTM(Agent):
         choice = torch.eye(self._n_actions)[int(choice)]
         xs = torch.concat([choice, torch.tensor(reward)]).view(1, -1).to(device=self._model.device)
         if additional_inputs:
-            xs = torch.concat([xs, torch.tensor(additional_inputs).reshape(1, -1).to(self._model.device), self._meta_data], dim=-1)
+            xs = torch.concat([xs, torch.tensor(additional_inputs).reshape(1, -1).to(self._model.device)], dim=-1)
+        xs = torch.concat((xs, self._meta_data), dim=-1)
             
         with torch.no_grad():
             logits, state = self._model(xs, self.get_state())
@@ -128,17 +129,24 @@ def training(dataset_training: DatasetRNN, lstm: RLLSTM, optimizer: torch.optim.
     
     for e in range(epochs):
         
-        mask = (dataset_training.xs[..., :1] > -1).to(lstm.device)
+        mask_training = (dataset_training.xs[..., :1] > -1).to(lstm.device)
+        if dataset_test:
+            mask_test = (dataset_test.xs[..., :1] > -1).to(lstm.device)
+        
+        target_training = torch.argmax((
+            dataset_training.ys.to(lstm.device) * mask_training
+            ).reshape(-1, lstm.n_actions), dim=1)
+        if dataset_test:
+            target_test = torch.argmax((
+            dataset_test.ys.to(lstm.device) * mask_test
+            ).reshape(-1, lstm.n_actions), dim=1)
+        
         # prediction
         ys_pred, state = lstm(dataset_training.xs.to(lstm.device))
+        ys_pred = (ys_pred * mask_training).reshape(-1, lstm.n_actions)
         
         # loss computation
-        loss = criterion(
-            (ys_pred * mask).reshape(-1, lstm.n_actions),
-            torch.argmax((
-                dataset_training.ys.to(lstm.device)  * mask
-                ).reshape(-1, lstm.n_actions), dim=1),
-            )
+        loss = criterion(ys_pred, target_training)
         
         # backpropagation
         optimizer.zero_grad()
@@ -147,22 +155,18 @@ def training(dataset_training: DatasetRNN, lstm: RLLSTM, optimizer: torch.optim.
         
         if dataset_test is not None:
             with torch.no_grad():
-                mask = (dataset_test.xs[..., :1] > -1).to(lstm.device)
-                # prediction
                 
+                # prediction
                 if dataset_training.xs.shape[0] == dataset_test.xs.shape[0]:
-                    input_lstm = torch.concat((dataset_training.xs, dataset_test.xs), dim=1).to(lstm.device)
+                    input_lstm = torch.concat((dataset_training.xs, dataset_test.xs), dim=1)
                 else:
-                    input_lstm = dataset_test.xs.to(lstm.device)
-                ys_pred, state = lstm(input_lstm)
+                    input_lstm = dataset_test.xs
+                
+                ys_pred, state = lstm(input_lstm.to(lstm.device))
+                ys_pred = (ys_pred[:, -dataset_test.xs.shape[1]:] * mask_test).reshape(-1, lstm.n_actions)
                 
                 # loss computation
-                loss_test = criterion(
-                    (ys_pred[:, -dataset_test.xs.shape[1]:] * mask).reshape(-1, lstm.n_actions),
-                    torch.argmax((
-                        dataset_test.ys.to(lstm.device)  * mask
-                        ).reshape(-1, lstm.n_actions), dim=1),
-                    ).item()
+                loss_test = criterion(ys_pred,target_test).item()
         
         print(f"{e+1}/{epochs}: L(Train) = {loss.item():.5f}; L(Test) = {loss_test:.5f}")
     
@@ -177,7 +181,8 @@ def main(path_save_model:str, path_data: str, n_actions: int, n_cells: int, n_ep
                 df_participant_id='subjID',
                 # df_reward='reward_right',
                 df_block='blocks',
-                additional_inputs=['contrast_difference']
+                additional_inputs=['contrast_difference'],
+                timeshift_additional_inputs=True,
                 )[0], split_ratio=split_ratio)
     else:
         dataset_training, dataset_test = split_data_along_sessiondim(convert_dataset(
@@ -186,7 +191,8 @@ def main(path_save_model:str, path_data: str, n_actions: int, n_cells: int, n_ep
             df_choice='chose_right',
             # df_reward='reward_right',
             df_block='blocks',
-            additional_inputs=['contrast_difference']
+            additional_inputs=['contrast_difference'],
+            timeshift_additional_inputs=True,
             )[0], list_test_sessions=split_ratio)
     
     lstm = RLLSTM(n_cells=n_cells, n_actions=n_actions, additional_inputs=additional_inputs).to(device)
@@ -213,7 +219,8 @@ if __name__=='__main__':
     split_ratio = [2, 4, 6]
     
     path_model_save = f'ganesh2024a/params/lstm_ganesh2024a.pkl'
-    path_data = f'ganesh2024a/data/GBSlider_ganesh2024a_xs_withRand.csv'
+    path_data = 'ganesh2024a/data/GBSlider_ganesh2024a_xs_withRand.csv'
+    # path_data = 'ganesh2024a/data/ganesh2024a_agentSims_xs.csv'
     n_actions = 2
     n_cells = 8
     additional_inputs = 1

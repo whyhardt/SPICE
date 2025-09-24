@@ -188,7 +188,7 @@ def plot_session(
         # choices = experiment[:, :n_actions].argmax(axis=-1)
         # rewards = np.array([exp[choices[i]] for i, exp in enumerate(experiment[:, n_actions:2*n_actions])])  
         choices = experiment[:, display_choice]
-        rewards = experiment[:, n_actions]  
+        rewards = experiment[:, n_actions+display_choice]  
     
     list_probs = []
     list_q_value = []

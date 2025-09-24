@@ -22,6 +22,7 @@ def convert_dataset(
     df_choice: str = 'choice',
     df_reward: str = 'reward',
     additional_inputs: List[str] = None,
+    timeshift_additional_inputs: bool = False,
     ):
     df = pd.read_csv(file, index_col=None)
     
@@ -117,8 +118,8 @@ def convert_dataset(
                 df[additional] = df[additional].map(id_map)    
                 
                 print(f"Values in column {additional} in dataset {file} are not numerical. Converted values are:")
-                print(id_map)
-            
+                print(id_map)        
+    
     n_ids = 0
     if df_participant_id is not None:
         n_ids += 1
@@ -182,5 +183,11 @@ def convert_dataset(
                 values_choice[index_group, :len(choice), index_choice] = group[1][f'choice_value_{index_choice}'].values
         
         experiment_list.append(experiment)
+        
+    # move additional inputs one timestep back in order to make the next decision being based on them
+    if timeshift_additional_inputs:
+        xs[:, :-1, n_actions*2:-3] = xs[:, 1:, n_actions*2:-3]
+        xs = xs[:, :-1]
+        ys = ys[:, :-1]
         
     return DatasetRNN(xs, ys, device=device, sequence_length=sequence_length), experiment_list, original_df, (probs_choice, values_action, values_reward, values_choice)

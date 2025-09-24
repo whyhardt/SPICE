@@ -1047,7 +1047,11 @@ def create_dataset(
   return dataset, experiment_list, parameter_list
 
 
-def get_update_dynamics(experiment: Union[np.ndarray, torch.Tensor], agent: Agent, additional_signals: List[str] = ['x_value_reward', 'x_learing_rate_reward', 'x_value_choice']):
+def get_update_dynamics(
+  experiment: Union[np.ndarray, torch.Tensor], 
+  agent: Agent, 
+  additional_signals: List[str] = ['x_value_reward', 'x_learing_rate_reward', 'x_value_choice'],
+  ):
   """Compute Q-Values of a specific agent for a specific experiment sequence with given actions and rewards.
 
   Args:
@@ -1068,7 +1072,7 @@ def get_update_dynamics(experiment: Union[np.ndarray, torch.Tensor], agent: Agen
     choices = experiment[:n_trials, :agent._n_actions]
     rewards = experiment[:n_trials, agent._n_actions:2*agent._n_actions]
     # TODO: additional_inputs are currently treated as signals and as meta-information for the embedding
-    additional_inputs = experiment[0, 2*agent._n_actions:-3]
+    additional_inputs = experiment[:, 2*agent._n_actions:-3]
     current_block = int(experiment[0, -3])
     experiment_id = int(experiment[0, -2])
     participant_id = int(experiment[0, -1])
@@ -1076,7 +1080,7 @@ def get_update_dynamics(experiment: Union[np.ndarray, torch.Tensor], agent: Agen
     raise TypeError("experiment is of not of class numpy.ndarray or torch.Tensor")
   
   # reset agent states according to ID
-  agent.new_sess(participant_id=participant_id, experiment_id=experiment_id, additional_embedding_inputs=additional_inputs)
+  agent.new_sess(participant_id=participant_id, experiment_id=experiment_id)
   
   # initialize storages
   q = np.zeros((n_trials, agent._n_actions))
@@ -1095,10 +1099,11 @@ def get_update_dynamics(experiment: Union[np.ndarray, torch.Tensor], agent: Agen
       choice=np.argmax(choices[trial], axis=-1), 
       reward=rewards[trial],  
       block=current_block, 
-      additional_inputs=additional_inputs,
+      additional_inputs=additional_inputs[trial],
       )
   
-  return (q[..., :1], values_signal), choice_probs, agent
+  # return (q[..., :1], values_signal), choice_probs, agent
+  return (q, values_signal), choice_probs, agent
 
 
 ###############
