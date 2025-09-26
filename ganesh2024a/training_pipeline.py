@@ -1,6 +1,9 @@
+import sys, os
 import matplotlib.pyplot as plt
 import torch
 
+# import spice from directory
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from spice.utils.convert_dataset import convert_dataset
 from spice.utils.plotting import plot_session
 from spice.estimator import SpiceEstimator
