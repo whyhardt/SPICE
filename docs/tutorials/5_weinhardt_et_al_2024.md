@@ -111,26 +111,6 @@ spice_estimator.fit(dataset.xs, dataset.ys)
 spice_estimator.print_spice_model()
 ```
 
-    
-    Training the RNN...
-    Epoch 1024/1024 --- L(Train): 0.4802393; Time: 0.15s; Convergence: 3.93e-04
-    Maximum number of training epochs reached.
-    Model did not converge yet.
-
-    100%|██████████| 1/1 [00:00<00:00,  1.11it/s]
-
-    SPICE modules:
-    (x_learning_rate_reward)[k+1] = 0.463 1 + -0.239 c_value_reward[k]
-    (x_value_reward_not_chosen)[k+1] = 0.097 1 + 0.793 x_value_reward_not_chosen[k]
-    (x_value_choice_chosen)[k+1] = 0.807 1
-    (x_value_choice_not_chosen)[k+1] = 0.124 1
-    beta(x_value_reward) = 2.6652
-    beta(x_value_choice) = 1.4500
-
-
-    
-
-
 
 ```python
 from spice.utils.plotting import plot_session
@@ -139,12 +119,6 @@ from spice.utils.plotting import plot_session
 agents = {'groundtruth': agent, 'rnn': spice_estimator.rnn_agent, 'spice': spice_estimator.spice_agent}
 fig, axs = plot_session(agents, dataset.xs[0])
 ```
-
-
-    
-![png](output_7_0.png)
-    
-
 
 ## 3. Implementing the RNN from Scratch
 

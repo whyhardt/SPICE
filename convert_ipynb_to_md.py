@@ -2,10 +2,26 @@ import os
 import nbformat
 from nbconvert import MarkdownExporter
 
+def clean_output_cells(notebook):
+    """
+    Clean output cells from the notebook to remove execution results,
+    keeping only the source code and markdown content.
+    """
+    for cell in notebook.cells:
+        if cell.cell_type == 'code':
+            # Clear all outputs (stdout, stderr, display_data, etc.)
+            cell.outputs = []
+            # Clear execution count
+            cell.execution_count = None
+    return notebook
+
 def convert_ipynb_to_md(notebook_path, output_folder):
     # Load the notebook
     with open(notebook_path, 'r', encoding='utf-8') as f:
         notebook = nbformat.read(f, as_version=4)
+
+    # Clean output cells before conversion
+    notebook = clean_output_cells(notebook)
 
     # Extract title from the first Markdown cell
     title = None

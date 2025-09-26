@@ -143,12 +143,6 @@ fig, axs = plot_session(agents, dataset.xs[0])
 plt.show()
 ```
 
-
-    
-![png](output_7_0.png)
-    
-
-
 ## 2. Using the previous model without participant information
 
 Let's inspect first how our last RNN (precoded `LearningRateRNN`) would perform in such a situation to verify the need for tackling individual differences with a participant-embedding layer.
@@ -172,31 +166,6 @@ for participant in range(2):
     spice_estimator.print_spice_model(participant_id=participant)
 ```
 
-    
-    Training the RNN...
-    Epoch 1024/1024 --- L(Train): 0.5704586; Time: 0.09s; Convergence: 7.96e-07
-    Maximum number of training epochs reached.
-    Model did not converge yet.
-
-    100%|██████████| 2/2 [00:01<00:00,  1.69it/s]
-
-    
-    Discovered SPICE model for participant 0:
-    SPICE modules:
-    (x_learning_rate_reward)[k+1] = 0.223 1 + 0.159 c_reward[k] + 0.284 c_value_reward[k]
-    (x_value_reward_not_chosen)[k+1] = 0.890 x_value_reward_not_chosen[k]
-    beta(x_value_reward) = 2.4432
-    
-    Discovered SPICE model for participant 1:
-    SPICE modules:
-    (x_learning_rate_reward)[k+1] = 0.224 1 + 0.160 c_reward[k] + 0.279 c_value_reward[k]
-    (x_value_reward_not_chosen)[k+1] = 0.889 x_value_reward_not_chosen[k]
-    beta(x_value_reward) = 2.4432
-
-
-    
-
-
 Let's inspect the predictions for participant #1.
 
 
@@ -207,12 +176,6 @@ fig, axs = plot_session(agents, dataset_1.xs[0])
 plt.show()
 ```
 
-
-    
-![png](output_11_0.png)
-    
-
-
 And now for participant #2.
 
 
@@ -221,12 +184,6 @@ agents = {'groundtruth': agent_2, 'rnn': spice_estimator.rnn_agent, 'spice': spi
 fig, axs = plot_session(agents, dataset_2.xs[0])
 plt.show()
 ```
-
-
-    
-![png](output_13_0.png)
-    
-
 
 The fit across both participants is  worse compared to the other use-cases, where we had only one participant to fit. 
 
@@ -276,31 +233,6 @@ for participant in range(2):
     spice_estimator_participant_embedding.print_spice_model(participant_id=participant)
 ```
 
-    
-    Training the RNN...
-    Epoch 1024/1024 --- L(Train): 0.5390988; Time: 0.10s; Convergence: 1.27e-06
-    Maximum number of training epochs reached.
-    Model did not converge yet.
-
-    100%|██████████| 2/2 [00:01<00:00,  1.19it/s]
-
-    
-    Discovered SPICE model for participant 0:
-    SPICE modules:
-    (x_learning_rate_reward)[k+1] = 1.162 1 + -0.218 x_learning_rate_reward[k] + -0.126 c_reward[k] + -0.366 c_value_reward[k]
-    (x_value_reward_not_chosen)[k+1] = 0.104 1 + 0.786 x_value_reward_not_chosen[k]
-    beta(x_value_reward) = 2.8068
-    
-    Discovered SPICE model for participant 1:
-    SPICE modules:
-    (x_learning_rate_reward)[k+1] = 0.206 1
-    (x_value_reward_not_chosen)[k+1] = 1.000 x_value_reward_not_chosen[k]
-    beta(x_value_reward) = 3.0683
-
-
-    
-
-
 
 ```python
 from spice.utils.plotting import plot_session
@@ -312,12 +244,6 @@ plt.show()
 ```
 
 
-    
-![png](output_18_0.png)
-    
-
-
-
 ```python
 from spice.utils.plotting import plot_session
 
@@ -326,12 +252,6 @@ agents = {'groundtruth': agent_2, 'rnn': spice_estimator_participant_embedding.r
 fig, axs = plot_session(agents, dataset_2.xs[0])
 plt.show()
 ```
-
-
-    
-![png](output_19_0.png)
-    
-
 
 As you can see in the discovered SPICE models for each participant, we were not only able to recover the difference in learning rates but also the structural difference in terms of the forgetting mechanism.
 
@@ -496,31 +416,6 @@ for participant in range(2):
     print(f"\nDiscovered SPICE model for participant {participant}:")
     spice_estimator_custom.print_spice_model(participant_id=participant)
 ```
-
-    
-    Training the RNN...
-    Epoch 1024/1024 --- L(Train): 0.5392572; Time: 0.10s; Convergence: 4.00e-07
-    Maximum number of training epochs reached.
-    Model did not converge yet.
-
-    100%|██████████| 2/2 [00:01<00:00,  1.30it/s]
-
-    
-    Discovered SPICE model for participant 0:
-    SPICE modules:
-    (x_learning_rate_reward)[k+1] = 0.943 1 + -0.118 x_learning_rate_reward[k]
-    (x_value_reward_not_chosen)[k+1] = 0.107 1 + 0.786 x_value_reward_not_chosen[k]
-    beta(x_value_reward) = 2.7281
-    
-    Discovered SPICE model for participant 1:
-    SPICE modules:
-    (x_learning_rate_reward)[k+1] = 0.206 1
-    (x_value_reward_not_chosen)[k+1] = 1.000 x_value_reward_not_chosen[k]
-    beta(x_value_reward) = 3.0602
-
-
-    
-
 
 # Handling empirical data
 

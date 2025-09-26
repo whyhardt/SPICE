@@ -148,12 +148,6 @@ fig, axs = plot_session(agents, dataset.xs[0])
 plt.show()
 ```
 
-
-    
-![png](output_9_0.png)
-    
-
-
 Now that we are making use of the established theories about the reward-prediction error in human reinforcement learning, we were able to to shift our focus on a less understood area i.e. the learning rate. In this example, the synthetic participant does not exhibit real dynamics in the sense of $\alpha_{t+1} = f(\alpha_{t})$, but the network is in principle equipped to learn also such a mechanism.
 
 ## 3. Implementing the RNN as a custom module

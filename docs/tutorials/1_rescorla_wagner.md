@@ -108,12 +108,6 @@ plt.ylabel(r'$p(r)$')
 plt.show()
 ```
 
-
-    
-![png](output_8_0.png)
-    
-
-
 Great! After setting up the environment, we can now go on to set up our participant!
 
 The agent's behavior is defined by its parameters. These parameters are set once in the beginning but you can also draw new parameters from a distribution for each new session (i.e. performing $t$ trials).
@@ -146,12 +140,6 @@ from spice.utils.plotting import plot_session
 fig, axs = plot_session(agents = {'groundtruth': agent}, experiment=dataset.xs[0])
 plt.show()
 ```
-
-
-    
-![png](output_12_0.png)
-    
-
 
 The green and red ticks at the bottom mark whenever option 1 was chosen and rewarded/not rewarded.
 
@@ -193,21 +181,6 @@ spice_estimator.fit(dataset.xs, dataset.ys)
 spice_estimator.print_spice_model()
 ```
 
-    
-    Training the RNN...
-    Epoch 1024/1024 --- L(Train): 0.5436556; Time: 0.03s; Convergence: 5.87e-05
-    Maximum number of training epochs reached.
-    Model did not converge yet.
-
-    100%|██████████| 1/1 [00:00<00:00,  3.60it/s]
-
-    SPICE modules:
-    (x_value_reward_chosen)[k+1] = -0.411 1 + 0.682 x_value_reward_chosen[k] + 0.887 c_reward[k]
-
-
-    
-
-
 You can see the resulting equation in one of the last output lines.
 
 It should be similar to `(x_value_reward_chosen)[k+1] = -0.411 1 + 0.682 x_value_reward_chosen[k] + 0.887 c_reward[k]`.
@@ -245,12 +218,6 @@ agents = {'groundtruth': agent, 'rnn': spice_estimator.rnn_agent, 'spice': spice
 fig, axs = plot_session(agents, dataset.xs[0])
 plt.show()
 ```
-
-
-    
-![png](output_21_0.png)
-    
-
 
 ## 3. Implementing the RNN as a custom module
 

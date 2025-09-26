@@ -99,22 +99,6 @@ spice_estimator.fit(dataset.xs, dataset.ys)
 spice_estimator.print_spice_model()
 ```
 
-    
-    Training the RNN...
-    Epoch 1024/1024 --- L(Train): 0.6055849; Time: 0.06s; Convergence: 4.44e-07
-    Maximum number of training epochs reached.
-    Model did not converge yet.
-
-    100%|██████████| 1/1 [00:00<00:00,  2.65it/s]
-
-    SPICE modules:
-    (x_value_reward_chosen)[k+1] = -0.375 1 + 0.712 x_value_reward_chosen[k] + 0.862 c_reward[k]
-    (x_value_reward_not_chosen)[k+1] = 0.800 x_value_reward_not_chosen[k]
-
-
-    
-
-
 Let's inspect the discovered cognitive features. As you can see, there is a value update for the chosen action, based on the current value (`x_value_reward_chosen`) and the current reward (`c_reward`), same as the previous simple Rescorla-Wagner model.
 
 Additionally, there is now a second mechanism, `x_value_reward_not_chosen` which gets updated based on the value of the non-chosen action, with a weight of 0.8. This is very close to the original data, considering we set a forgetting rate of 0.2, which means the values will be retained with a weight of 0.8.
@@ -135,12 +119,6 @@ agents = {'groundtruth': agent, 'rnn': spice_estimator.rnn_agent, 'spice': spice
 fig, axs = plot_session(agents, dataset.xs[0])
 plt.show()
 ```
-
-
-    
-![png](output_11_0.png)
-    
-
 
 ## 3. Implementing the RNN as a custom module
 
