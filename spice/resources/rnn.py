@@ -60,11 +60,93 @@ class DummyModule(nn.Module):
 class ParameterModule(nn.Module):
     def __init__(self):
         super().__init__()
-        
+
         self.parameter = nn.Parameter(torch.tensor(1.))
-        
+
     def forward(self, *args, **kwargs):
         return self.parameter
+
+
+class PolynomialLibraryModule(nn.Module):
+    def __init__(self, input_size, embedding_size, degree=2):
+        super().__init__()
+
+        self.input_size = input_size
+        self.embedding_size = embedding_size
+        self.degree = degree
+
+        # Generate all polynomial combinations up to given degree
+        self.polynomial_terms = self._generate_polynomial_terms(input_size, degree)
+        self.n_terms = len(self.polynomial_terms)
+
+        # Linear layer to map participant embedding to polynomial coefficients
+        self.coefficient_network = nn.Linear(embedding_size, self.n_terms)
+
+        # Initialize coefficients to small values
+        nn.init.xavier_uniform_(self.coefficient_network.weight)
+        nn.init.zeros_(self.coefficient_network.bias)
+
+    def _generate_polynomial_terms(self, input_size, degree):
+        """Generate all polynomial combinations up to given degree"""
+        from itertools import combinations_with_replacement
+
+        terms = []
+
+        # Add constant term
+        terms.append([])
+
+        # Add all polynomial combinations up to degree
+        for d in range(1, degree + 1):
+            for combo in combinations_with_replacement(range(input_size), d):
+                terms.append(list(combo))
+
+        return terms
+
+    def _evaluate_polynomials(self, inputs):
+        """Evaluate all polynomial terms for given inputs"""
+        batch_size, n_actions, _ = inputs.shape
+
+        # Initialize polynomial features tensor
+        poly_features = torch.ones((batch_size, n_actions, self.n_terms), device=inputs.device)
+
+        for i, term in enumerate(self.polynomial_terms):
+            if len(term) == 0:  # constant term
+                continue
+            else:
+                # Compute product of variables for this term
+                for var_idx in term:
+                    poly_features[:, :, i] *= inputs[:, :, var_idx]
+
+        return poly_features
+
+    def forward(self, inputs):
+        """Forward pass compatible with call_module method
+
+        Args:
+            inputs: tensor of shape (batch_size, n_actions, input_size + embedding_size)
+                   where input_size includes current state value
+
+        Returns:
+            tensor of shape (batch_size, n_actions, 1) - the update value
+        """
+        # Split inputs into features and participant embedding
+        features = inputs[:, :, :self.input_size]
+        participant_embedding = inputs[:, :, self.input_size:]
+
+        # Take mean of embedding across actions (should be same for all actions)
+        participant_embedding = participant_embedding.mean(dim=1, keepdim=True)
+
+        # Generate polynomial features
+        poly_features = self._evaluate_polynomials(features)
+
+        # Get coefficients from participant embedding
+        coefficients = self.coefficient_network(participant_embedding.squeeze(1))  # (batch_size, n_terms)
+        coefficients = coefficients.unsqueeze(1)  # (batch_size, 1, n_terms)
+
+        # Compute weighted sum of polynomial terms
+        update = torch.sum(poly_features * coefficients, dim=-1, keepdim=True)
+
+        return update
     
     
 
@@ -236,10 +318,28 @@ class BaseRNN(nn.Module):
         Returns:
             torch.nn.Module: A torch module which can be called by one line and returns state update
         """
-        
+
         # GRU network
         module = GRUModule(input_size=input_size)
-        
+
+        return module
+
+    def setup_library(self, input_size: int, embedding_size: int, degree: int = 2):
+        """This method creates a polynomial library module for function approximation
+
+        Args:
+            input_size (int): The number of inputs (excluding the memory state)
+            embedding_size (int): Dimension of participant embedding
+            degree (int, optional): Maximum polynomial degree. Defaults to 2.
+
+        Returns:
+            torch.nn.Module: A polynomial library module that uses participant embeddings
+                           to determine coefficients for polynomial combinations
+        """
+
+        # Polynomial library network
+        module = PolynomialLibraryModule(input_size=input_size, embedding_size=embedding_size, degree=degree)
+
         return module 
     
     def call_module(

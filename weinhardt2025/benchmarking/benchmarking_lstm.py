@@ -219,13 +219,13 @@ if __name__=='__main__':
     split_ratio = [2, 4, 6]
     
     path_model_save = f'ganesh2024a/params/lstm_ganesh2024a.pkl'
-    path_data = 'ganesh2024a/data/GBSlider_ganesh2024a_xs_withRand.csv'
-    # path_data = 'ganesh2024a/data/ganesh2024a_agentSims_xs.csv'
+    # path_data = 'ganesh2024a/data/GBSlider_ganesh2024a_xs_withRand.csv'
+    path_data = 'ganesh2024a/data/ganesh2024a_agentSims_xs.csv'
     n_actions = 2
     n_cells = 8
     additional_inputs = 1
     n_epochs = 10000
     lr = 1e-3    
-    device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+    device = torch.device('cpu')#torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
     
     main(path_save_model=path_model_save, path_data=path_data, n_actions=n_actions, n_cells=n_cells, n_epochs=n_epochs, lr=lr, split_ratio=split_ratio, device=device, additional_inputs=additional_inputs)
