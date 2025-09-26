@@ -73,13 +73,6 @@ torch.manual_seed(42)
 ```
 
 
-
-
-    <torch._C.Generator at 0x1065c1690>
-
-
-
-
 ```python
 from spice.resources.bandits import BanditsDrift, AgentQ, create_dataset
 from spice.resources.rnn_utils import DatasetRNN
@@ -136,33 +129,6 @@ n_participants = len(dataset.xs[..., -1].unique())
 print(f'Shape of the new dataset: {dataset.xs.shape}')
 print(f'Number of participants: {n_participants}')
 ```
-
-    /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages/tqdm/auto.py:21: TqdmWarning: IProgress not found. Please update jupyter and ipywidgets. See https://ipywidgets.readthedocs.io/en/stable/user_install.html
-      from .autonotebook import tqdm as notebook_tqdm
-
-
-    Library setup is valid. All keys and features appear in the provided list of features.
-    Library setup is valid. All keys and features appear in the provided list of features.
-    Library setup is valid. All keys and features appear in the provided list of features.
-    Library setup is valid. All keys and features appear in the provided list of features.
-    Library setup is valid. All keys and features appear in the provided list of features.
-    Creating dataset...
-
-
-    100%|██████████| 50/50 [00:00<00:00, 220.72it/s]
-
-
-    Creating dataset...
-
-
-    100%|██████████| 50/50 [00:00<00:00, 213.35it/s]
-
-    Shape of the new dataset: torch.Size([100, 100, 5])
-    Number of participants: 2
-
-
-    
-
 
 Let's see how different these two participants behave.
 
@@ -509,9 +475,6 @@ class CustomRNN(BaseRNN):
         
         return logits, self.get_state()
 ```
-
-    Library setup is valid. All keys and features appear in the provided list of features.
-
 
 For training the custom RNN, we can use the same `SpiceEstimator` as before. We just need to pass the custom RNN class and the custom configuration. Execute the cell below to fit the custom RNN on the dataset we created earlier.
 

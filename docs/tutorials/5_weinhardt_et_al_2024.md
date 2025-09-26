@@ -55,13 +55,6 @@ torch.manual_seed(42)
 ```
 
 
-
-
-    <torch._C.Generator at 0x128dc1690>
-
-
-
-
 ```python
 from spice.resources.bandits import BanditsDrift, AgentQ, create_dataset
 from spice.resources.rnn_utils import DatasetRNN
@@ -95,21 +88,6 @@ dataset, _, _ = create_dataset(
 # set all participant ids to 0 since this dataset was generated only by one parameterization
 dataset.xs[..., -1] = 0
 ```
-
-    /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages/tqdm/auto.py:21: TqdmWarning: IProgress not found. Please update jupyter and ipywidgets. See https://ipywidgets.readthedocs.io/en/stable/user_install.html
-      from .autonotebook import tqdm as notebook_tqdm
-
-
-    Library setup is valid. All keys and features appear in the provided list of features.
-    Library setup is valid. All keys and features appear in the provided list of features.
-    Library setup is valid. All keys and features appear in the provided list of features.
-    Library setup is valid. All keys and features appear in the provided list of features.
-    Library setup is valid. All keys and features appear in the provided list of features.
-    Creating dataset...
-
-
-    100%|██████████| 100/100 [00:00<00:00, 222.32it/s]
-
 
 ## 2. Using the precoded model
 
@@ -327,9 +305,6 @@ class CustomRNN(BaseRNN):
         
         return logits, self.get_state()
 ```
-
-    Library setup is valid. All keys and features appear in the provided list of features.
-
 
 ## Next Steps
 

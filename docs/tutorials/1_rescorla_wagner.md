@@ -74,13 +74,6 @@ torch.manual_seed(42)
 ```
 
 
-
-
-    <torch._C.Generator at 0x1123c1690>
-
-
-
-
 ```python
 from spice.resources.bandits import BanditsDrift
 ```
@@ -144,12 +137,6 @@ dataset, _, _ = create_dataset(agent=agent, environment=environment, n_trials=10
 dataset.xs[..., -1] = 0
 ```
 
-    Creating dataset...
-
-
-    100%|██████████| 100/100 [00:00<00:00, 236.53it/s]
-
-
 Let the agent perform now the task and track how the agent's internal believes change across trials!
 
 
@@ -179,108 +166,6 @@ print(dataset.xs)
 print('Targets (next choice):')
 print(dataset.ys)
 ```
-
-    Inputs (choice item 1 selected; choice item 2 selected; reward 1; reward 2; session id):
-    tensor([[[ 0.,  1., -1.,  1.,  0.],
-             [ 0.,  1., -1.,  0.,  0.],
-             [ 0.,  1., -1.,  1.,  0.],
-             ...,
-             [ 1.,  0.,  1., -1.,  0.],
-             [ 1.,  0.,  1., -1.,  0.],
-             [ 1.,  0.,  0., -1.,  0.]],
-    
-            [[ 1.,  0.,  1., -1.,  0.],
-             [ 0.,  1., -1.,  0.,  0.],
-             [ 0.,  1., -1.,  1.,  0.],
-             ...,
-             [ 1.,  0.,  0., -1.,  0.],
-             [ 0.,  1., -1.,  1.,  0.],
-             [ 0.,  1., -1.,  1.,  0.]],
-    
-            [[ 1.,  0.,  0., -1.,  0.],
-             [ 0.,  1., -1.,  0.,  0.],
-             [ 1.,  0.,  0., -1.,  0.],
-             ...,
-             [ 0.,  1., -1.,  1.,  0.],
-             [ 0.,  1., -1.,  1.,  0.],
-             [ 0.,  1., -1.,  1.,  0.]],
-    
-            ...,
-    
-            [[ 1.,  0.,  1., -1.,  0.],
-             [ 1.,  0.,  0., -1.,  0.],
-             [ 1.,  0.,  1., -1.,  0.],
-             ...,
-             [ 1.,  0.,  1., -1.,  0.],
-             [ 1.,  0.,  1., -1.,  0.],
-             [ 1.,  0.,  1., -1.,  0.]],
-    
-            [[ 0.,  1., -1.,  0.,  0.],
-             [ 1.,  0.,  0., -1.,  0.],
-             [ 1.,  0.,  1., -1.,  0.],
-             ...,
-             [ 0.,  1., -1.,  1.,  0.],
-             [ 0.,  1., -1.,  1.,  0.],
-             [ 1.,  0.,  0., -1.,  0.]],
-    
-            [[ 0.,  1., -1.,  0.,  0.],
-             [ 1.,  0.,  1., -1.,  0.],
-             [ 1.,  0.,  0., -1.,  0.],
-             ...,
-             [ 1.,  0.,  1., -1.,  0.],
-             [ 0.,  1., -1.,  0.,  0.],
-             [ 1.,  0.,  0., -1.,  0.]]])
-    Targets (next choice):
-    tensor([[[0., 1.],
-             [0., 1.],
-             [0., 1.],
-             ...,
-             [1., 0.],
-             [1., 0.],
-             [1., 0.]],
-    
-            [[0., 1.],
-             [0., 1.],
-             [1., 0.],
-             ...,
-             [0., 1.],
-             [0., 1.],
-             [0., 1.]],
-    
-            [[0., 1.],
-             [1., 0.],
-             [0., 1.],
-             ...,
-             [0., 1.],
-             [0., 1.],
-             [0., 1.]],
-    
-            ...,
-    
-            [[1., 0.],
-             [1., 0.],
-             [1., 0.],
-             ...,
-             [1., 0.],
-             [1., 0.],
-             [1., 0.]],
-    
-            [[1., 0.],
-             [1., 0.],
-             [1., 0.],
-             ...,
-             [0., 1.],
-             [1., 0.],
-             [1., 0.]],
-    
-            [[1., 0.],
-             [1., 0.],
-             [1., 0.],
-             ...,
-             [0., 1.],
-             [1., 0.],
-             [1., 0.]]])
-
 
 Now that we have our data, we can proceed to setup our RNN and train it!
 
@@ -485,9 +370,6 @@ custom_config = SpiceConfig(
     },
 )
 ```
-
-    Library setup is valid. All keys and features appear in the provided list of features.
-
 
 You can now use the `SpiceEstimator` to fit the RNN to the data we generated above.
 

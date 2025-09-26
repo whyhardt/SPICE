@@ -47,13 +47,6 @@ torch.manual_seed(42)
 ```
 
 
-
-
-    <torch._C.Generator at 0x11efc1690>
-
-
-
-
 ```python
 from spice.resources.bandits import BanditsDrift, AgentQ, create_dataset
 
@@ -84,12 +77,6 @@ dataset, _, _ = create_dataset(
 # set all participant ids to 0 since this dataset was generated only by one parameterization
 dataset.xs[..., -1] = 0
 ```
-
-    Creating dataset...
-
-
-    100%|██████████| 100/100 [00:00<00:00, 228.48it/s]
-
 
 ## 2. Using the precoded Rescorla-Wagner RNN with Forgetting Mechanism
 
@@ -257,9 +244,6 @@ class ForgettingRNN(BaseRNN):
         return logits, self.get_state()
 ```
 
-    Library setup is valid. All keys and features appear in the provided list of features.
-
-
 ## Common Issues and Solutions
 
 - **Unstable Learning**: Try reducing the learning rate or increasing batch size
@@ -272,8 +256,3 @@ After completing this tutorial, you can:
 1. Experiment with different forgetting rates
 2. Implement more complex forgetting mechanisms
 3. Move on to [Working with Hardcoded Equations](3_hardcoded_equations.html)
-
-
-```python
-
-```

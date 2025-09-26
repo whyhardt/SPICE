@@ -82,13 +82,6 @@ torch.manual_seed(42)
 ```
 
 
-
-
-    <torch._C.Generator at 0x1072c1690>
-
-
-
-
 ```python
 from spice.resources.bandits import BanditsDrift, AgentQ, create_dataset
 
@@ -120,21 +113,6 @@ dataset, _, _ = create_dataset(
 dataset.xs[..., -1] = 0
 ```
 
-    /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages/tqdm/auto.py:21: TqdmWarning: IProgress not found. Please update jupyter and ipywidgets. See https://ipywidgets.readthedocs.io/en/stable/user_install.html
-      from .autonotebook import tqdm as notebook_tqdm
-
-
-    Library setup is valid. All keys and features appear in the provided list of features.
-    Library setup is valid. All keys and features appear in the provided list of features.
-    Library setup is valid. All keys and features appear in the provided list of features.
-    Library setup is valid. All keys and features appear in the provided list of features.
-    Library setup is valid. All keys and features appear in the provided list of features.
-    Creating dataset...
-
-
-    100%|██████████| 100/100 [00:00<00:00, 221.30it/s]
-
-
 ## 2. Using the precoded model with hardcoded equation
 
 We first load the precoded model, which has the reward prediction error equation hardcoded as one of its modules. Additionally, it has an additional RNN module for the learning rate.
@@ -157,23 +135,6 @@ spice_estimator.fit(dataset.xs, dataset.ys)
 
 spice_estimator.print_spice_model()
 ```
-
-    
-    Training the RNN...
-    Epoch 1024/1024 --- L(Train): 0.6050519; Time: 0.09s; Convergence: 1.64e-07
-    Maximum number of training epochs reached.
-    Model did not converge yet.
-
-    100%|██████████| 1/1 [00:00<00:00,  1.96it/s]
-
-    SPICE modules:
-    (x_learning_rate_reward)[k+1] = 0.359 1
-    (x_value_reward_not_chosen)[k+1] = 0.101 1 + 0.803 x_value_reward_not_chosen[k]
-    beta(x_value_reward) = 2.5995
-
-
-    
-
 
 
 ```python
@@ -322,17 +283,9 @@ class CustomLearningRateRNN(BaseRNN):
         return logits, self.get_state()
 ```
 
-    Library setup is valid. All keys and features appear in the provided list of features.
-
-
 ## Next Steps
 
 After completing this tutorial, you can:
 1. Implement your own hardcoded equations
 2. Combine multiple theoretical mechanisms
 3. Move on to [Modeling Individual Differences](4_individual_differences.html)
-
-
-```python
-
-```
