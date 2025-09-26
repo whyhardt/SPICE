@@ -30,6 +30,15 @@ First, we simulate a synthetic dataset from a Q-learning agent performing the tw
 
 
 ```python
+# Uncomment the below code for Google Colab
+
+#!pip uninstall -y numpy pandas
+#!pip install numpy==1.26.4 pandas==2.2.2
+#!pip install autospice
+```
+
+
+```python
 import numpy as np
 import torch
 
@@ -142,7 +151,7 @@ plt.show()
 
 
     
-![png](output_10_0.png)
+![png](output_11_0.png)
     
 
 

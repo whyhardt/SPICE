@@ -57,6 +57,15 @@ Let's set up the environment first.
 
 
 ```python
+# Uncomment the below code for Google Colab
+
+#!pip uninstall -y numpy pandas
+#!pip install numpy==1.26.4 pandas==2.2.2
+#!pip install autospice
+```
+
+
+```python
 import numpy as np
 import torch
 
@@ -108,7 +117,7 @@ plt.show()
 
 
     
-![png](output_7_0.png)
+![png](output_8_0.png)
     
 
 
@@ -153,7 +162,7 @@ plt.show()
 
 
     
-![png](output_11_0.png)
+![png](output_12_0.png)
     
 
 
@@ -354,7 +363,7 @@ plt.show()
 
 
     
-![png](output_20_0.png)
+![png](output_21_0.png)
     
 
 

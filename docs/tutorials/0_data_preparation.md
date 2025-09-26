@@ -26,6 +26,94 @@ Before starting this tutorial, make sure you have:
 
 
 ```python
+# Uncomment the below code for Google Colab
+
+#!pip uninstall -y numpy pandas
+#!pip install numpy==1.26.4 pandas==2.2.2
+#!pip install autospice
+```
+
+    Requirement already satisfied: autospice in /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages (0.1.4)
+    Requirement already satisfied: arviz<0.21.0,>=0.20.0 in /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages (from autospice) (0.20.0)
+    Requirement already satisfied: jax<0.5.0,>=0.4.35 in /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages (from autospice) (0.4.35)
+    Requirement already satisfied: matplotlib<4.0.0,>=3.10.0 in /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages (from autospice) (3.10.1)
+    Requirement already satisfied: numpy<2.0.0,>=1.21.0 in /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages (from autospice) (1.26.4)
+    Requirement already satisfied: numpyro<0.16.0,>=0.15.0 in /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages (from autospice) (0.15.3)
+    Requirement already satisfied: pandas<3.0.0,>=2.2.0 in /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages (from autospice) (2.2.3)
+    Requirement already satisfied: pymc<6.0.0,>=5.21.0 in /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages (from autospice) (5.21.0)
+    Requirement already satisfied: pyro_ppl<2.0.0,>=1.9.0 in /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages (from autospice) (1.9.1)
+    Requirement already satisfied: pysindy<2.0.0,>=1.7.0 in /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages (from autospice) (1.7.5)
+    Requirement already satisfied: scikit-learn<2.0.0,>=1.0.0 in /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages (from autospice) (1.7.1)
+    Requirement already satisfied: scipy<2.0.0,>=1.15.0 in /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages (from autospice) (1.15.2)
+    Requirement already satisfied: seaborn<0.14.0,>=0.13.0 in /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages (from autospice) (0.13.2)
+    Requirement already satisfied: theano<2.0.0,>=1.0.5 in /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages (from autospice) (1.0.5)
+    Requirement already satisfied: torch<3.0.0,>=2.0.0 in /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages (from autospice) (2.7.1)
+    Requirement already satisfied: tqdm>=4.65.0 in /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages (from autospice) (4.67.1)
+    Requirement already satisfied: optuna<5.0.0,>=4.3.0 in /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages (from autospice) (4.3.0)
+    Requirement already satisfied: dill<0.5.0,>=0.4.0 in /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages (from autospice) (0.4.0)
+    Requirement already satisfied: pytest>=7.0.0 in /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages (from autospice) (8.4.1)
+    Requirement already satisfied: setuptools>=60.0.0 in /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages (from arviz<0.21.0,>=0.20.0->autospice) (68.2.0)
+    Requirement already satisfied: packaging in /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages (from arviz<0.21.0,>=0.20.0->autospice) (25.0)
+    Requirement already satisfied: xarray>=2022.6.0 in /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages (from arviz<0.21.0,>=0.20.0->autospice) (2025.7.1)
+    Requirement already satisfied: h5netcdf>=1.0.2 in /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages (from arviz<0.21.0,>=0.20.0->autospice) (1.6.3)
+    Requirement already satisfied: typing-extensions>=4.1.0 in /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages (from arviz<0.21.0,>=0.20.0->autospice) (4.14.1)
+    Requirement already satisfied: xarray-einstats>=0.3 in /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages (from arviz<0.21.0,>=0.20.0->autospice) (0.9.1)
+    Requirement already satisfied: jaxlib<=0.4.35,>=0.4.34 in /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages (from jax<0.5.0,>=0.4.35->autospice) (0.4.35)
+    Requirement already satisfied: ml-dtypes>=0.4.0 in /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages (from jax<0.5.0,>=0.4.35->autospice) (0.5.1)
+    Requirement already satisfied: opt-einsum in /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages (from jax<0.5.0,>=0.4.35->autospice) (3.4.0)
+    Requirement already satisfied: contourpy>=1.0.1 in /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages (from matplotlib<4.0.0,>=3.10.0->autospice) (1.3.2)
+    Requirement already satisfied: cycler>=0.10 in /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages (from matplotlib<4.0.0,>=3.10.0->autospice) (0.12.1)
+    Requirement already satisfied: fonttools>=4.22.0 in /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages (from matplotlib<4.0.0,>=3.10.0->autospice) (4.59.0)
+    Requirement already satisfied: kiwisolver>=1.3.1 in /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages (from matplotlib<4.0.0,>=3.10.0->autospice) (1.4.8)
+    Requirement already satisfied: pillow>=8 in /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages (from matplotlib<4.0.0,>=3.10.0->autospice) (11.3.0)
+    Requirement already satisfied: pyparsing>=2.3.1 in /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages (from matplotlib<4.0.0,>=3.10.0->autospice) (3.2.3)
+    Requirement already satisfied: python-dateutil>=2.7 in /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages (from matplotlib<4.0.0,>=3.10.0->autospice) (2.9.0.post0)
+    Requirement already satisfied: multipledispatch in /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages (from numpyro<0.16.0,>=0.15.0->autospice) (1.0.0)
+    Requirement already satisfied: alembic>=1.5.0 in /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages (from optuna<5.0.0,>=4.3.0->autospice) (1.16.4)
+    Requirement already satisfied: colorlog in /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages (from optuna<5.0.0,>=4.3.0->autospice) (6.9.0)
+    Requirement already satisfied: sqlalchemy>=1.4.2 in /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages (from optuna<5.0.0,>=4.3.0->autospice) (2.0.41)
+    Requirement already satisfied: PyYAML in /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages (from optuna<5.0.0,>=4.3.0->autospice) (6.0.2)
+    Requirement already satisfied: pytz>=2020.1 in /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages (from pandas<3.0.0,>=2.2.0->autospice) (2025.2)
+    Requirement already satisfied: tzdata>=2022.7 in /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages (from pandas<3.0.0,>=2.2.0->autospice) (2025.2)
+    Requirement already satisfied: cachetools>=4.2.1 in /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages (from pymc<6.0.0,>=5.21.0->autospice) (6.1.0)
+    Requirement already satisfied: cloudpickle in /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages (from pymc<6.0.0,>=5.21.0->autospice) (3.1.1)
+    Requirement already satisfied: pytensor<2.29,>=2.28.1 in /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages (from pymc<6.0.0,>=5.21.0->autospice) (2.28.3)
+    Requirement already satisfied: rich>=13.7.1 in /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages (from pymc<6.0.0,>=5.21.0->autospice) (14.0.0)
+    Requirement already satisfied: threadpoolctl<4.0.0,>=3.1.0 in /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages (from pymc<6.0.0,>=5.21.0->autospice) (3.6.0)
+    Requirement already satisfied: pyro-api>=0.1.1 in /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages (from pyro_ppl<2.0.0,>=1.9.0->autospice) (0.1.2)
+    Requirement already satisfied: derivative in /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages (from pysindy<2.0.0,>=1.7.0->autospice) (0.6.3)
+    Requirement already satisfied: cmake in /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages (from pysindy<2.0.0,>=1.7.0->autospice) (4.0.3)
+    Requirement already satisfied: scs!=2.1.4,>=2.1 in /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages (from pysindy<2.0.0,>=1.7.0->autospice) (3.2.7.post2)
+    Requirement already satisfied: iniconfig>=1 in /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages (from pytest>=7.0.0->autospice) (2.1.0)
+    Requirement already satisfied: pluggy<2,>=1.5 in /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages (from pytest>=7.0.0->autospice) (1.6.0)
+    Requirement already satisfied: pygments>=2.7.2 in /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages (from pytest>=7.0.0->autospice) (2.19.2)
+    Requirement already satisfied: joblib>=1.2.0 in /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages (from scikit-learn<2.0.0,>=1.0.0->autospice) (1.5.1)
+    Requirement already satisfied: six>=1.9.0 in /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages (from theano<2.0.0,>=1.0.5->autospice) (1.17.0)
+    Requirement already satisfied: filelock in /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages (from torch<3.0.0,>=2.0.0->autospice) (3.18.0)
+    Requirement already satisfied: sympy>=1.13.3 in /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages (from torch<3.0.0,>=2.0.0->autospice) (1.14.0)
+    Requirement already satisfied: networkx in /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages (from torch<3.0.0,>=2.0.0->autospice) (3.5)
+    Requirement already satisfied: jinja2 in /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages (from torch<3.0.0,>=2.0.0->autospice) (3.1.6)
+    Requirement already satisfied: fsspec in /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages (from torch<3.0.0,>=2.0.0->autospice) (2025.7.0)
+    Requirement already satisfied: Mako in /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages (from alembic>=1.5.0->optuna<5.0.0,>=4.3.0->autospice) (1.3.10)
+    Requirement already satisfied: h5py in /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages (from h5netcdf>=1.0.2->arviz<0.21.0,>=0.20.0->autospice) (3.14.0)
+    Requirement already satisfied: etuples in /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages (from pytensor<2.29,>=2.28.1->pymc<6.0.0,>=5.21.0->autospice) (0.3.10)
+    Requirement already satisfied: logical-unification in /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages (from pytensor<2.29,>=2.28.1->pymc<6.0.0,>=5.21.0->autospice) (0.4.6)
+    Requirement already satisfied: miniKanren in /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages (from pytensor<2.29,>=2.28.1->pymc<6.0.0,>=5.21.0->autospice) (1.0.5)
+    Requirement already satisfied: cons in /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages (from pytensor<2.29,>=2.28.1->pymc<6.0.0,>=5.21.0->autospice) (0.4.7)
+    Requirement already satisfied: markdown-it-py>=2.2.0 in /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages (from rich>=13.7.1->pymc<6.0.0,>=5.21.0->autospice) (3.0.0)
+    Requirement already satisfied: mpmath<1.4,>=1.1.0 in /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages (from sympy>=1.13.3->torch<3.0.0,>=2.0.0->autospice) (1.3.0)
+    Requirement already satisfied: importlib-metadata>=7.1.0 in /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages (from derivative->pysindy<2.0.0,>=1.7.0->autospice) (8.7.0)
+    Requirement already satisfied: MarkupSafe>=2.0 in /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages (from jinja2->torch<3.0.0,>=2.0.0->autospice) (3.0.2)
+    Requirement already satisfied: zipp>=3.20 in /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages (from importlib-metadata>=7.1.0->derivative->pysindy<2.0.0,>=1.7.0->autospice) (3.23.0)
+    Requirement already satisfied: mdurl~=0.1 in /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages (from markdown-it-py>=2.2.0->rich>=13.7.1->pymc<6.0.0,>=5.21.0->autospice) (0.1.2)
+    Requirement already satisfied: toolz in /Users/imtezcan/Repositories/CogSci/SPICE/.venv/lib/python3.11/site-packages (from logical-unification->pytensor<2.29,>=2.28.1->pymc<6.0.0,>=5.21.0->autospice) (1.0.0)
+    
+    [1m[[0m[34;49mnotice[0m[1;39;49m][0m[39;49m A new release of pip is available: [0m[31;49m23.2.1[0m[39;49m -> [0m[32;49m25.2[0m
+    [1m[[0m[34;49mnotice[0m[1;39;49m][0m[39;49m To update, run: [0m[32;49mpip install --upgrade pip[0m
+
+
+
+```python
 import sys
 import os
 import pandas as pd
