@@ -100,8 +100,6 @@ class SpiceEstimator(BaseEstimator):
         Args:
             rnn_class: RNN class. Can be one of the precoded models in rnn.py or a custom implementation.
             spice_config: SPICE config
-            list_signals: List of signals to use for SPICE
-            hidden_size: Hidden size of the RNN
             dropout: Dropout rate of the RNN
             n_actions: Number of actions
             n_participants: Number of participants
