@@ -31,14 +31,15 @@ from ganesh2024a.spice_config import RNN_ContrDiff, SpiceConfig
 
 # ------------------- CONFIGURATION ECKSTEIN2022 w/o AGE --------------------
 study = 'ganesh2024a'
-train_test_ratio = [2,4,6]
+train_test_ratio = [3,6,9]
 sindy_config = SpiceConfig
 rnn_class = RNN_ContrDiff
 additional_inputs = ['contrast_difference']
-path_data = f'ganesh2024a/data/GBSlider_ganesh2024a_xs_withRand.csv'
+path_data = 'ganesh2024a/data/GBSlider_ganesh2024a_xs_withChosehighLow.csv'
 # path_data = 'ganesh2024a/data/ganesh2024a_agentSims_xs.csv'
 path_model_benchmark_lstm = f'{study}/params/lstm_{study}.pkl'
-kw_dataset_convert = {'df_participant_id': 'subjID', 'df_choice': 'choice', 'df_reward': 'reward', 'df_block': 'blocks', 'timeshift_additional_inputs': True}
+path_model_rnn = f'{study}/params/rnn_{study}.pkl'
+kw_dataset_convert = {'df_participant_id': 'subjID', 'df_choice': 'chose_high', 'df_reward': 'reward', 'df_block': 'blocks', 'timeshift_additional_inputs': True}
 
 # ------------------- CONFIGURATION ECKSTEIN2022 w/o AGE --------------------
 # study = 'eckstein2022'
@@ -87,10 +88,10 @@ kw_dataset_convert = {'df_participant_id': 'subjID', 'df_choice': 'choice', 'df_
 # kw_dataset_convert = {}
 
 # ------------------------- CONFIGURATION FILE PATHS ------------------------
-use_test = False
+use_test = True
 
 # path_data = f'data/{study}/{study}.csv'
-path_model_rnn = None#f'params/{study}/rnn_{study}_l2_0_00001.pkl'
+# path_model_rnn = None#f'params/{study}/rnn_{study}_l2_0_00001.pkl'
 path_model_spice = None#f'params/{study}/spice_{study}_l2_0_00001.pkl'
 path_model_baseline = None#os.path.join(f'params/{study}/', baseline_file)
 path_model_benchmark = None#os.path.join(f'params/{study}', benchmark_file) if len(models_benchmark) > 0 else None

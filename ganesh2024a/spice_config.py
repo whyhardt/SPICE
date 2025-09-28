@@ -85,7 +85,7 @@ class RNN_ContrDiff(BaseRNN):
             # record signals 
             self.record_signal('c_action', action)
             self.record_signal('c_reward', reward_chosen)
-            self.record_signal('c_contr_diff', contr_diff)
+            self.record_signal('c_contr_diff', torch.abs(contr_diff))
             self.record_signal('c_value_reward', self.state['x_value_reward'])
             self.record_signal('c_value_choice', self.state['x_value_choice'])
             self.record_signal('x_value_reward_chosen', self.state['x_value_reward'])

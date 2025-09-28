@@ -4,7 +4,7 @@ import torch
 from tqdm import tqdm
 import numpy as np
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'spice')))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 from spice.resources.rnn_utils import DatasetRNN, split_data_along_timedim, split_data_along_sessiondim
 from spice.utils.convert_dataset import convert_dataset
 from spice.resources.bandits import Agent
@@ -14,7 +14,8 @@ class RLLSTM(torch.nn.Module):
     def __init__(self, n_cells, n_actions, additional_inputs: int = 0):
         super().__init__()
         
-        self.lstm = torch.nn.LSTM(n_actions*2+additional_inputs+32, n_cells, batch_first=True, dropout=0.5)
+        self.lstm = torch.nn.LSTM(n_actions*2+additional_inputs+32, n_cells, batch_first=True)
+        self.dropout = torch.nn.Dropout(0.5)
         self.lin_out = torch.nn.Linear(n_cells, n_actions)
         self.softmax = torch.nn.Softmax(dim=-1)
         self.device = torch.device('cpu')
@@ -38,8 +39,8 @@ class RLLSTM(torch.nn.Module):
         inputs = torch.concat((inputs, participant_embedding), dim=-1)
         
         x, state = self.lstm(inputs, state)
-        logits = self.lin_out(x)
-
+        logits = self.lin_out(self.dropout(x))
+        
         return logits, state
 
     def to(self, device):
@@ -179,6 +180,7 @@ def main(path_save_model:str, path_data: str, n_actions: int, n_cells: int, n_ep
             convert_dataset(
                 path_data,
                 df_participant_id='subjID',
+                df_choice='chose_high',
                 # df_reward='reward_right',
                 df_block='blocks',
                 additional_inputs=['contrast_difference'],
@@ -188,7 +190,7 @@ def main(path_save_model:str, path_data: str, n_actions: int, n_cells: int, n_ep
         dataset_training, dataset_test = split_data_along_sessiondim(convert_dataset(
             path_data,
             df_participant_id='subjID',
-            df_choice='chose_right',
+            df_choice='chose_high',
             # df_reward='reward_right',
             df_block='blocks',
             additional_inputs=['contrast_difference'],
@@ -196,7 +198,7 @@ def main(path_save_model:str, path_data: str, n_actions: int, n_cells: int, n_ep
             )[0], list_test_sessions=split_ratio)
     
     lstm = RLLSTM(n_cells=n_cells, n_actions=n_actions, additional_inputs=additional_inputs).to(device)
-    optimizer = torch.optim.Adam(lstm.parameters(), lr=lr)
+    optimizer = torch.optim.Adam(lstm.parameters(), lr=lr, weight_decay=0.0001)
     
     print('Training LSTM...')
     lstm = training(dataset_training=dataset_training, dataset_test=dataset_test, lstm=lstm, optimizer=optimizer, epochs=n_epochs)
@@ -216,15 +218,15 @@ if __name__=='__main__':
     # dataset_name = 'gershmanB2018'
     # split_ratio = [4, 8, 12, 16]
     
-    split_ratio = [2, 4, 6]
+    split_ratio = [3,6,9]
     
     path_model_save = f'ganesh2024a/params/lstm_ganesh2024a.pkl'
-    # path_data = 'ganesh2024a/data/GBSlider_ganesh2024a_xs_withRand.csv'
-    path_data = 'ganesh2024a/data/ganesh2024a_agentSims_xs.csv'
+    path_data = 'ganesh2024a/data/GBSlider_ganesh2024a_xs_withChosehighLow.csv'
+    # path_data = 'ganesh2024a/data/ganesh2024a_agentSims_xs.csv'
     n_actions = 2
     n_cells = 8
     additional_inputs = 1
-    n_epochs = 10000
+    n_epochs = 8192
     lr = 1e-3    
     device = torch.device('cpu')#torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
     

@@ -274,6 +274,63 @@ class SpiceEstimator(BaseEstimator):
             print(f'Saving SPICE model to {self.save_path_spice}...')
             self.save_spice(None, self.save_path_spice)
 
+    def fit_spice(self, data: np.ndarray, targets: np.ndarray, data_test: np.ndarray = None, target_test: np.ndarray = None, participant_id: int = None):
+        """
+        Fit the RNN and SPICE models to given data.
+        
+        Args:
+            conditions: Array of shape (n_participants, n_trials, n_features)
+            targets: Array of shape (n_participants, n_trials, n_actions)
+        """
+        
+        dataset = DatasetRNN(data, targets)
+        dataset_test = DatasetRNN(data_test, target_test) if data_test is not None and target_test is not None else None
+        
+        start_time = time.time()
+            
+        # ------------------------------------------------------------------------
+        # Fit SPICE
+        # ------------------------------------------------------------------------
+        
+        self.spice_agent = {}
+        self.spice_features = {}
+        spice_modules = {rnn_module: {} for rnn_module in self.rnn_modules}
+
+        self.spice_agent = fit_spice(
+            rnn_modules=self.rnn_modules,
+            control_signals=self.control_parameters,
+            agent_rnn=self.rnn_agent,
+            data=dataset,
+            polynomial_degree=self.spice_library_polynomial_degree,
+            library_setup=self.spice_library_config,
+            filter_setup=self.spice_filter_config,
+            optimizer_type=self.spice_optimizer_type,
+            optimizer_threshold=self.spice_optim_threshold,
+            optimizer_alpha=self.spice_optim_regularization,
+            shuffle = False,
+            n_trials_off_policy = self.n_trials_off_policy,
+            n_sessions_off_policy = self.n_sessions_off_policy,
+            n_trials_same_action_off_policy = self.n_trials_same_action_off_policy,
+            train_test_ratio = self.train_test_ratio,
+            deterministic = self.deterministic,
+            verbose = self.verbose,
+            use_optuna = self.use_optuna,
+            optuna_threshold = self.optuna_threshold,
+            optuna_n_trials = self.optuna_n_trials,
+            participant_id=participant_id,
+        )[0]
+        
+        # self.spice_features = self.spice_agent.get_spice_features()
+        
+        if self.verbose:
+            print('SPICE training finished.')
+            print(f'Training took {time.time() - start_time:.2f} seconds.')
+
+        if self.save_path_spice is not None:
+            print(f'Saving SPICE model to {self.save_path_spice}...')
+            self.save_spice(None, self.save_path_spice)
+
+    
     def predict(self, conditions: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """
         Make predictions using both RNN and SPICE models.
