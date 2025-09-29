@@ -57,10 +57,16 @@ Let's set up the environment first.
 
 
 ```python
-# Uncomment the code below if you are using Google Colab
+# Uncomment the code below and execute the cell if you are using Google Colab
 
 #!pip uninstall -y numpy pandas
 #!pip install numpy==1.26.4 pandas==2.2.2
+```
+
+
+```python
+# Uncomment the code below and execute the cell if you are using Google Colab
+
 #!pip install autospice
 ```
 
@@ -373,13 +379,6 @@ loaded_spice = SpiceEstimator(
 
 loaded_spice.load_spice(path_rnn='rnn_model.pkl', path_spice='spice_model.pkl')
 ```
-
-## Next Steps
-
-After completing this tutorial, you can:
-1. Experiment with different parameter values
-2. Try more complex environments
-3. Move on to the [Rescorla-Wagner with Forgetting](2_rescorla_wagner_forgetting.html) tutorial
 
 ## Common Issues and Solutions
 

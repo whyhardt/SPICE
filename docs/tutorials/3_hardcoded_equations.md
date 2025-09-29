@@ -65,10 +65,16 @@ Again, we simulate another synthetic dataset from a Q-learning agent.
 
 
 ```python
-# Uncomment the code below if you are using Google Colab
+# Uncomment the code below and execute the cell if you are using Google Colab
 
 #!pip uninstall -y numpy pandas
 #!pip install numpy==1.26.4 pandas==2.2.2
+```
+
+
+```python
+# Uncomment the code below and execute the cell if you are using Google Colab
+
 #!pip install autospice
 ```
 
@@ -276,10 +282,3 @@ class CustomLearningRateRNN(BaseRNN):
         
         return logits, self.get_state()
 ```
-
-## Next Steps
-
-After completing this tutorial, you can:
-1. Implement your own hardcoded equations
-2. Combine multiple theoretical mechanisms
-3. Move on to [Modeling Individual Differences](4_individual_differences.html)
