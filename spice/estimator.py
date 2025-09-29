@@ -41,7 +41,7 @@ class SpiceConfig():
 
         self.spice_feature_list = rnn_modules + control_parameters
 
-        if not check_library_setup(self.library_setup, self.spice_feature_list, verbose=True):
+        if not check_library_setup(self.library_setup, self.spice_feature_list):
             raise ValueError('\nLibrary setup does not match feature list.')
 
 
