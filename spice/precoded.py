@@ -536,21 +536,21 @@ class Weinhardt2024RNN(BaseRNN):
         return logits, self.get_state()
     
 
-WEINHARDT_2025_CONFIG = SpiceConfig(
-    rnn_modules=['x_learning_rate_reward', 'x_value_reward_not_chosen', 'x_value_choice_chosen', 'x_value_choice_not_chosen'],
+STANDARD_CONFIG = SpiceConfig(
+    rnn_modules=['x_value_reward_chosen', 'x_value_reward_not_chosen', 'x_value_choice_chosen', 'x_value_choice_not_chosen'],
     control_parameters=['c_action', 'c_reward_chosen', 'c_value_reward', 'c_value_choice'],
     # The new module which handles the not-chosen value, does not need any additional inputs except for the value
     library_setup = {
         # 'x_value_reward_chosen': ['c_reward'] -> Remove this one from the library as we are not going to identify the dynamics of a hard-coded equation
-        'x_learning_rate_reward': ['c_reward_chosen', 'c_value_reward', 'c_value_choice'],
-        'x_value_reward_not_chosen': ['c_reward_chosen', 'c_value_choice'],
+        'x_value_reward_chosen': ['c_reward_chosen', 'c_value_choice'],
+        'x_value_reward_not_chosen': ['c_value_choice'],
         'x_value_choice_chosen': ['c_value_reward'],
         'x_value_choice_not_chosen': ['c_value_reward'],
     },
 
     # Further, the new module should be applied only to the not-chosen values
     filter_setup = {
-        'x_learning_rate_reward': ['c_action', 1, True],
+        'x_value_reward_chosen': ['c_action', 1, True],
         'x_value_reward_not_chosen': ['c_action', 0, True],
         'x_value_choice_chosen': ['c_action', 1, True],
         'x_value_choice_not_chosen': ['c_action', 0, True],
@@ -558,12 +558,11 @@ WEINHARDT_2025_CONFIG = SpiceConfig(
 )
 
 
-class Weinhardt2025RNN(BaseRNN):
+class StandardRNN(BaseRNN):
     
     init_values = {
             'x_value_reward': 0.5,
             'x_value_choice': 0.,
-            'x_learning_rate_reward': 0.,
         }
     
     def __init__(
@@ -587,17 +586,11 @@ class Weinhardt2025RNN(BaseRNN):
         self.betas['x_value_choice'] = self.setup_constant(embedding_size=self.embedding_size, leaky_relu=leaky_relu)
         
         # set up the submodules
-        self.submodules_rnn['x_learning_rate_reward'] = self.setup_module(input_size=3+self.embedding_size)
-        self.submodules_rnn['x_value_reward_not_chosen'] = self.setup_module(input_size=2+self.embedding_size)
+        self.submodules_rnn['x_value_reward_chosen'] = self.setup_module(input_size=2+self.embedding_size)
+        self.submodules_rnn['x_value_reward_not_chosen'] = self.setup_module(input_size=1+self.embedding_size)
         self.submodules_rnn['x_value_choice_chosen'] = self.setup_module(input_size=1+self.embedding_size)
         self.submodules_rnn['x_value_choice_not_chosen'] = self.setup_module(input_size=1+self.embedding_size)
         
-        # set up hard-coded equations
-        self.submodules_eq['x_value_reward_chosen'] = self.x_value_reward_chosen
-    
-    def x_value_reward_chosen(self, value, inputs):
-        return value + inputs[..., 1] * (inputs[..., 0] - value)
-    
     def forward(self, inputs, prev_state=None, batch_first=False):
         """Forward pass of the RNN
 
@@ -628,37 +621,23 @@ class Weinhardt2025RNN(BaseRNN):
                 # self.record_signal('c_reward_not_chosen', reward_not_chosen)
                 self.record_signal('c_value_reward', self.state['x_value_reward'])
                 self.record_signal('c_value_choice', self.state['x_value_choice'])
-                self.record_signal('x_learning_rate_reward', self.state['x_learning_rate_reward'])
+                self.record_signal('x_value_reward_chosen', self.state['x_value_reward'])
                 self.record_signal('x_value_reward_not_chosen', self.state['x_value_reward'])
                 self.record_signal('x_value_choice_chosen', self.state['x_value_choice'])
                 self.record_signal('x_value_choice_not_chosen', self.state['x_value_choice'])
             
-            # updates for x_value_reward
-            learning_rate_reward = self.call_module(
-                key_module='x_learning_rate_reward',
-                key_state='x_learning_rate_reward',
-                action=action,
-                inputs=(
-                    reward_chosen, 
-                    # reward_not_chosen, 
-                    self.state['x_value_reward'], 
-                    self.state['x_value_choice'],
-                    ),
-                participant_embedding=participant_embedding,
-                participant_index=participant_id,
-                activation_rnn=torch.nn.functional.sigmoid,
-            )
-            
+            # updates for x_value_reward            
             next_value_reward_chosen = self.call_module(
                 key_module='x_value_reward_chosen',
                 key_state='x_value_reward',
                 action=action,
                 inputs=(
-                    reward_chosen, 
-                    learning_rate_reward,
+                    reward_chosen,
+                    self.state['x_value_choice'],
                     ),
                 participant_embedding=participant_embedding,
                 participant_index=participant_id,
+                activation_rnn=torch.nn.functional.sigmoid,                
                 )
 
             next_value_reward_not_chosen = self.call_module(
@@ -666,7 +645,6 @@ class Weinhardt2025RNN(BaseRNN):
                 key_state='x_value_reward',
                 action=1-action,
                 inputs=(
-                    reward_chosen, 
                     # reward_not_chosen, 
                     self.state['x_value_choice'],
                     ),
@@ -697,7 +675,6 @@ class Weinhardt2025RNN(BaseRNN):
                 )
             
             # updating the memory state
-            self.state['x_learning_rate_reward'] = learning_rate_reward
             self.state['x_value_reward'] = next_value_reward_chosen + next_value_reward_not_chosen
             self.state['x_value_choice'] = next_value_choice_chosen + next_value_choice_not_chosen
              

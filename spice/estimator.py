@@ -236,43 +236,43 @@ class SpiceEstimator(BaseEstimator):
         # ------------------------------------------------------------------------
         # Fit SPICE
         # ------------------------------------------------------------------------
-        
-        self.spice_agent = {}
-        self.spice_features = {}
-        spice_modules = {rnn_module: {} for rnn_module in self.rnn_modules}
+        if False:
+            self.spice_agent = {}
+            self.spice_features = {}
+            spice_modules = {rnn_module: {} for rnn_module in self.rnn_modules}
 
-        self.spice_agent = fit_spice(
-            rnn_modules=self.rnn_modules,
-            control_signals=self.control_parameters,
-            agent_rnn=self.rnn_agent,
-            data=dataset,
-            polynomial_degree=self.spice_library_polynomial_degree,
-            library_setup=self.spice_library_config,
-            filter_setup=self.spice_filter_config,
-            optimizer_type=self.spice_optimizer_type,
-            optimizer_threshold=self.spice_optim_threshold,
-            optimizer_alpha=self.spice_optim_regularization,
-            shuffle = False,
-            n_trials_off_policy = self.n_trials_off_policy,
-            n_sessions_off_policy = self.n_sessions_off_policy,
-            n_trials_same_action_off_policy = self.n_trials_same_action_off_policy,
-            train_test_ratio = self.train_test_ratio,
-            deterministic = self.deterministic,
-            verbose = self.verbose,
-            use_optuna = self.use_optuna,
-            optuna_threshold = self.optuna_threshold,
-            optuna_n_trials = self.optuna_n_trials,
-        )[0]
+            self.spice_agent = fit_spice(
+                rnn_modules=self.rnn_modules,
+                control_signals=self.control_parameters,
+                agent_rnn=self.rnn_agent,
+                data=dataset,
+                polynomial_degree=self.spice_library_polynomial_degree,
+                library_setup=self.spice_library_config,
+                filter_setup=self.spice_filter_config,
+                optimizer_type=self.spice_optimizer_type,
+                optimizer_threshold=self.spice_optim_threshold,
+                optimizer_alpha=self.spice_optim_regularization,
+                shuffle = False,
+                n_trials_off_policy = self.n_trials_off_policy,
+                n_sessions_off_policy = self.n_sessions_off_policy,
+                n_trials_same_action_off_policy = self.n_trials_same_action_off_policy,
+                train_test_ratio = self.train_test_ratio,
+                deterministic = self.deterministic,
+                verbose = self.verbose,
+                use_optuna = self.use_optuna,
+                optuna_threshold = self.optuna_threshold,
+                optuna_n_trials = self.optuna_n_trials,
+            )[0]
 
-        # self.spice_features = self.spice_agent.get_spice_features()
-        
-        if self.verbose:
-            print('SPICE training finished.')
-            print(f'Training took {time.time() - start_time:.2f} seconds.')
+            # self.spice_features = self.spice_agent.get_spice_features()
+            
+            if self.verbose:
+                print('SPICE training finished.')
+                print(f'Training took {time.time() - start_time:.2f} seconds.')
 
-        if self.save_path_spice is not None:
-            print(f'Saving SPICE model to {self.save_path_spice}...')
-            self.save_spice(None, self.save_path_spice)
+            if self.save_path_spice is not None:
+                print(f'Saving SPICE model to {self.save_path_spice}...')
+                self.save_spice(None, self.save_path_spice)
 
     def predict(self, conditions: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """

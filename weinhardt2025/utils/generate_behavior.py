@@ -5,16 +5,15 @@ import pandas as pd
 from tqdm import tqdm
 import torch
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 from spice.resources.bandits import create_dataset, get_update_dynamics, BanditsDrift, BanditsFlip_eckstein2022, Bandits_Standard, Agent, AgentQ
-from resources.rnn_utils import DatasetRNN
-from utils.setup_agents import setup_agent_rnn, setup_agent_spice
-from utils.convert_dataset import convert_dataset
+from spice.resources.rnn_utils import DatasetRNN
+from spice.utils.setup_agents import setup_agent_rnn, setup_agent_spice
+from spice.utils.convert_dataset import convert_dataset
 
 # dataset specific SPICE configurations and models
-from resources.rnn import RLRNN, RLRNN_eckstein2022, RLRNN_dezfouli2019
-from resources.sindy_utils import SindyConfig, SindyConfig_eckstein2022, SindyConfig_dezfouli2019
-from benchmarking import benchmarking_dezfouli2019, benchmarking_eckstein2022
+from spice.precoded import RescorlaWagnerRNN, Weinhardt2025RNN, RESCOLA_WAGNER_CONFIG, WEINHARDT_2025_CONFIG
+from weinhardt2025.benchmarking import benchmarking_dezfouli2019, benchmarking_eckstein2022
 
 
 # ----------------------- GENERAL CONFIGURATION ----------------------------
@@ -25,8 +24,8 @@ n_trials_per_session = 200
 # ------------------- CONFIGURATION ECKSTEIN2022 --------------------
 dataset = 'eckstein2022'
 benchmark_model = 'ApAnBrBcfBch'
-class_rnn = RLRNN_eckstein2022
-sindy_config = SindyConfig_eckstein2022
+class_rnn = Weinhardt2025RNN
+sindy_config = WEINHARDT_2025_CONFIG
 bandits_environment = BanditsFlip_eckstein2022
 n_sessions = 1
 bandits_kwargs = {}
@@ -62,7 +61,7 @@ if agent_type == 'rnn':
 elif agent_type == 'q_agent':
     path_model = None
     path_data = None
-    path_save = 'data/q_agent_.csv'
+    path_save = 'weinhardt2025/data/q_agent_.csv'
 else:
     path_model = path_benchmark
 

@@ -7,7 +7,6 @@ import torch
 from spice import rnn_sindy_theorist
 from spice.resources import BaseRNN
 
-
 class SimpleRNN(BaseRNN):
     """Simple RNN implementation for testing."""
     def __init__(self, n_actions, hidden_size, dropout, n_participants=0, n_experiments=0):

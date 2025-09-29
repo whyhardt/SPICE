@@ -214,11 +214,9 @@ class AgentQ(Agent):
     self._mean_alpha_counterfactual_reward = alpha_counterfactual_reward
     self._mean_alpha_counterfactual_penalty = alpha_counterfactual_penalty
     
-    self._beta['x_value_reward'] = beta_reward
     self._alpha_reward = alpha_reward
     self._alpha_penalty = alpha_penalty if alpha_penalty >= 0 else alpha_reward
     self._forget_rate = forget_rate
-    self._beta['x_value_choice'] = beta_choice
     self._alpha_choice = alpha_choice
     self._alpha_counterfactual_reward = alpha_counterfactual_reward
     self._alpha_counterfactual_penalty = alpha_counterfactual_penalty
@@ -257,8 +255,8 @@ class AgentQ(Agent):
       sanity = False
       while not sanity:
         # sample new parameters until all sanity checks are passed
-        self._beta['x_value_reward'] = np.clip(np.random.normal(self._mean_beta_reward, self._mean_beta_reward/2 if self._parameter_variance['beta_reward'] == -1 else self._parameter_variance['beta_reward']), 0, 2*self._mean_beta_reward)
-        self._beta['x_value_choice'] = np.clip(np.random.normal(self._mean_beta_choice, self._mean_beta_choice/2 if self._parameter_variance['beta_choice'] == -1 else self._parameter_variance['beta_choice']), 0, 2*self._mean_beta_choice)
+        self._betas['x_value_reward'] = np.clip(np.random.normal(self._mean_beta_reward, self._mean_beta_reward/2 if self._parameter_variance['beta_reward'] == -1 else self._parameter_variance['beta_reward']), 0, 2*self._mean_beta_reward)
+        self._betas['x_value_choice'] = np.clip(np.random.normal(self._mean_beta_choice, self._mean_beta_choice/2 if self._parameter_variance['beta_choice'] == -1 else self._parameter_variance['beta_choice']), 0, 2*self._mean_beta_choice)
         self._alpha_reward = np.clip(np.random.normal(self._mean_alpha_reward, self._mean_alpha_reward/2 if self._parameter_variance['alpha_reward'] == -1 else self._parameter_variance['alpha_reward']), 0 , 1)
         self._alpha_penalty = np.clip(np.random.normal(self._mean_alpha_penalty, self._mean_alpha_penalty/2 if self._parameter_variance['alpha_penalty'] == -1 else self._parameter_variance['alpha_penalty']), 0, 1)
         self._alpha_choice = np.clip(np.random.normal(self._mean_alpha_choice, self._mean_alpha_choice/2 if self._parameter_variance['alpha_choice'] == -1 else self._parameter_variance['alpha_choice']), 0, 1)
@@ -321,7 +319,7 @@ class AgentQ(Agent):
 
   @property
   def q(self):
-    return (self._state['x_value_reward']*self._beta['x_value_reward'] + self._state['x_value_choice']*self._beta['x_value_choice']).reshape(self._n_actions)
+    return (self._state['x_value_reward']*self._betas['x_value_reward'] + self._state['x_value_choice']*self._betas['x_value_choice']).reshape(self._n_actions)
 
 
 class AgentQ_SampleZeros(AgentQ):
@@ -371,13 +369,13 @@ class AgentQ_SampleZeros(AgentQ):
     # sample new parameters
     if sample_parameters:
       # sample scaling parameters (inverse noise temperatures)
-      self._beta['x_value_reward'], self._beta['x_value_choice'] = 0, 0
-      while self._beta['x_value_reward'] <= self._zero_threshold and self._beta['x_value_choice'] <=  self._zero_threshold:
-        self._beta['x_value_reward'] = np.random.rand()
-        self._beta['x_value_choice'] = np.random.rand()
+      self._betas['x_value_reward'], self._betas['x_value_choice'] = 0, 0
+      while self._betas['x_value_reward'] <= self._zero_threshold and self._betas['x_value_choice'] <=  self._zero_threshold:
+        self._betas['x_value_reward'] = np.random.rand()
+        self._betas['x_value_choice'] = np.random.rand()
         # apply zero-threshold if applicable
-        self._beta['x_value_reward'] = self._beta['x_value_reward'] * 2 * self._mean_beta_reward if self._beta['x_value_reward'] > self._zero_threshold else 0
-        self._beta['x_value_choice'] = self._beta['x_value_choice'] * 2 * self._mean_beta_choice if self._beta['x_value_choice'] > self._zero_threshold else 0
+        self._betas['x_value_reward'] = self._betas['x_value_reward'] * 2 * self._mean_beta_reward if self._betas['x_value_reward'] > self._zero_threshold else 0
+        self._betas['x_value_choice'] = self._betas['x_value_choice'] * 2 * self._mean_beta_choice if self._betas['x_value_choice'] > self._zero_threshold else 0
       
       # sample auxiliary parameters
       self._forget_rate = np.random.rand()
@@ -1028,10 +1026,10 @@ def create_dataset(
       # add current parameters to list
       parameter_list.append(
         {
-          'beta_reward': copy(agent._beta_reward),
+          'beta_reward': copy(agent._betas['x_value_reward']),
           'alpha_reward': copy(agent._alpha_reward),
           'alpha_penalty': copy(agent._alpha_penalty),
-          'beta_choice': copy(agent._beta_choice),
+          'beta_choice': copy(agent._betas['x_value_choice']),
           'alpha_choice': copy(agent._alpha_choice),
           'forget_rate': copy(agent._forget_rate),
         }
