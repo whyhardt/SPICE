@@ -36,10 +36,9 @@ Welcome to the SPICE tutorials section. These tutorials will guide you through v
    - Work with participant-specific parameters
    - Analyze and interpret individual variations
 
-6. [Case Study: Weinhardt et al. 2024](tutorials/5_weinhardt_2024.html)
-   - Complete case study from recent research
-   - Advanced modeling techniques
-   - Real-world application example
+6. [Choice Perseverance](tutorials/5_choice_perseverance.html)
+   - Extend the basic model with choice perseverance mechanisms
+   - Handle multiple dynamical variables per choice item
 
 ## Running the Tutorials
 

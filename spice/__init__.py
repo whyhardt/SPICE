@@ -8,7 +8,7 @@ from .precoded import (
     ForgettingRNN,
     LearningRateRNN,
     ParticipantEmbeddingRNN,
-    Weinhardt2024RNN
+    ChoiceRNN
 )
 from .resources.rnn import BaseRNN
 
@@ -20,6 +20,6 @@ __all__ = [
     "ForgettingRNN",
     "LearningRateRNN",
     "ParticipantEmbeddingRNN",
-    "Weinhardt2024RNN",
+    "ChoiceRNN",
     "BaseRNN",
-] 
+]

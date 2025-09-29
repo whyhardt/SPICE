@@ -24,7 +24,8 @@ class SpiceConfig():
                  library_setup: Dict[str, Iterable[str]],
                  filter_setup: Dict[str, Iterable[Union[str, float, int, bool]]],
                  control_parameters: Iterable[str],
-                 rnn_modules: Iterable[str]):
+                 rnn_modules: Iterable[str],
+                 ):
         """
         Config class for SPICE model.
 
