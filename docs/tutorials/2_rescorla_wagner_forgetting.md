@@ -122,7 +122,7 @@ import matplotlib.pyplot as plt
 # get analysis plot
 agents = {'groundtruth': agent, 'rnn': spice_estimator.rnn_agent, 'spice': spice_estimator.spice_agent}
 
-fig, axs = plot_session(agents, dataset.xs[0])
+fig, axs = plot_session(agents, dataset.xs[0], signals_to_plot=['x_value_reward'])
 plt.show()
 ```
 
@@ -140,7 +140,7 @@ As you can see we are going to add one module which will be responsible for upda
 ```python
 from spice.resources.rnn import BaseRNN
 from spice.estimator import SpiceConfig
-    
+
 
 FORGETTING_RNN_CONFIG = SpiceConfig(
     # Add already here the new module and update the library and filter setup.

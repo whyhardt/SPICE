@@ -93,14 +93,16 @@ environment = BanditsDrift(sigma=sigma, n_actions=n_actions)
 # participant #1
 agent_1 = AgentQ(
     n_actions=n_actions,
-    alpha_reward=0.8,  # Higher learning rate in participant #1
+    alpha_reward=0.5,  # Symmetric learning for positive and negative outcomes in participant #1 
     forget_rate=0.2, # Forgetting mechanism in participant #1
 )
 
 # participant #2
 agent_2 = AgentQ(
     n_actions=n_actions,
-    alpha_reward=0.2,  # Lower learning rate in participant #2
+    alpha_reward=0.8,  # Higher learning rate for positive outcomes in participant #2
+    alpha_penalty=0.2,  # Lower learning rate for negative outcomes in participant #2
+    forget_rate=0.2, # Same forgetting mechanism as in participant #1 -> Shared structure
 )
 
 # Create the dataset
@@ -144,7 +146,7 @@ from spice.utils.plotting import plot_session
 import matplotlib.pyplot as plt
 
 agents = {'groundtruth': agent_1, 'benchmark': agent_2}
-fig, axs = plot_session(agents, dataset.xs[0])
+fig, axs = plot_session(agents, dataset.xs[0], signals_to_plot=['x_value_reward'])
 
 plt.show()
 ```
@@ -156,11 +158,11 @@ Let's inspect first how our last RNN (precoded `LearningRateRNN`) would perform 
 
 ```python
 from spice.estimator import SpiceEstimator
-from spice.precoded import LearningRateRNN, LEARNING_RATE_RNN_CONFIG
+from spice.precoded import ForgettingRNN, FORGETTING_RNN_CONFIG
 
 spice_estimator = SpiceEstimator(
-    rnn_class=LearningRateRNN,
-    spice_config=LEARNING_RATE_RNN_CONFIG,
+    rnn_class=ForgettingRNN,
+    spice_config=FORGETTING_RNN_CONFIG,
     learning_rate=1e-2,
     epochs=1024,
 )
@@ -178,7 +180,7 @@ Let's inspect the predictions for participant #1.
 ```python
 # get analysis plot
 agents = {'groundtruth': agent_1, 'rnn': spice_estimator.rnn_agent, 'spice': spice_estimator.spice_agent}
-fig, axs = plot_session(agents, dataset_1.xs[0])
+fig, axs = plot_session(agents, dataset_1.xs[0], signals_to_plot=['x_value_reward'])
 plt.show()
 ```
 
@@ -187,7 +189,7 @@ And now for participant #2.
 
 ```python
 agents = {'groundtruth': agent_2, 'rnn': spice_estimator.rnn_agent, 'spice': spice_estimator.spice_agent}
-fig, axs = plot_session(agents, dataset_2.xs[0])
+fig, axs = plot_session(agents, dataset_2.xs[0], signals_to_plot=['x_value_reward'])
 plt.show()
 ```
 
@@ -218,7 +220,7 @@ These are the reasons why we should use a learning rate scheduler in this scenar
 
 ```python
 from spice.estimator import SpiceEstimator
-from spice.precoded import ParticipantEmbeddingRNN, LEARNING_RATE_RNN_CONFIG
+from spice.precoded import ParticipantEmbeddingRNN, PARTICIPANT_EMBEDDING_RNN_CONFIG
 
 # Get the number of participants from data
 participant_ids = dataset.xs[..., -1].unique()
@@ -226,9 +228,11 @@ n_participants = len(participant_ids)
 
 spice_estimator_participant_embedding = SpiceEstimator(
     rnn_class=ParticipantEmbeddingRNN,
-    spice_config=LEARNING_RATE_RNN_CONFIG,  # Same config as before
+    spice_config=PARTICIPANT_EMBEDDING_RNN_CONFIG,  # Same config as before
     learning_rate=1e-2,
-    epochs=1024,
+    epochs=2048,
+    scheduler=False,
+    l2_weight_decay=0.0001,
     n_participants=n_participants,
 )
 
@@ -245,7 +249,7 @@ from spice.utils.plotting import plot_session
 
 # get analysis plot
 agents = {'groundtruth': agent_1, 'rnn': spice_estimator_participant_embedding.rnn_agent, 'spice': spice_estimator_participant_embedding.spice_agent}
-fig, axs = plot_session(agents, dataset_1.xs[0])
+fig, axs = plot_session(agents, dataset_1.xs[0], signals_to_plot=['x_value_reward'])
 plt.show()
 ```
 
@@ -255,7 +259,7 @@ from spice.utils.plotting import plot_session
 
 # get analysis plot
 agents = {'groundtruth': agent_2, 'rnn': spice_estimator_participant_embedding.rnn_agent, 'spice': spice_estimator_participant_embedding.spice_agent}
-fig, axs = plot_session(agents, dataset_2.xs[0])
+fig, axs = plot_session(agents, dataset_2.xs[0], signals_to_plot=['x_value_reward'])
 plt.show()
 ```
 
@@ -281,17 +285,17 @@ from spice.estimator import SpiceConfig
 
 # Same config as before
 CUSTOM_RNN_CONFIG = SpiceConfig(
-    rnn_modules=['x_learning_rate_reward', 'x_value_reward_not_chosen'],
+    rnn_modules=['x_value_reward_chosen', 'x_value_reward_not_chosen'],
     
-    control_parameters=['c_action', 'c_reward', 'c_value_reward'],
+    control_parameters=['c_action', 'c_reward'],
 
     library_setup={
-        'x_learning_rate_reward': ['c_reward', 'c_value_reward'],
+        'x_value_reward_chosen': ['c_reward'],
         'x_value_reward_not_chosen': [],
     },
 
     filter_setup={
-        'x_learning_rate_reward': ['c_action', 1, True],
+        'x_value_reward_chosen': ['c_action', 1, True],
         'x_value_reward_not_chosen': ['c_action', 0, True],
     },
 )
@@ -300,7 +304,6 @@ class CustomRNN(BaseRNN):
     
     init_values = {
             'x_value_reward': 0.5,
-            'x_learning_rate_reward': 0,
         }
     
     def __init__(
@@ -324,12 +327,8 @@ class CustomRNN(BaseRNN):
         # and here we specify the general architecture
         # add to the input_size the embedding_size as well because we are going to pass the participant-embedding to the RNN-modules
         # set up the submodules
-        self.submodules_rnn['x_learning_rate_reward'] = self.setup_module(input_size=2+self.embedding_size)
+        self.submodules_rnn['x_value_reward_chosen'] = self.setup_module(input_size=1+self.embedding_size)
         self.submodules_rnn['x_value_reward_not_chosen'] = self.setup_module(input_size=0+self.embedding_size)
-        
-        # set up hard-coded equations
-        # add here a RNN-module in the form of an hard-coded equation to compute the update for the chosen reward-based value
-        self.submodules_eq['x_value_reward_chosen'] = lambda value, inputs: value + inputs[..., 1] * (inputs[..., 0] - value)
         
     def forward(self, inputs, prev_state=None, batch_first=False):
         """Forward pass of the RNN
@@ -353,31 +352,19 @@ class CustomRNN(BaseRNN):
             # record the inputs for training SINDy later on
             self.record_signal('c_action', action)
             self.record_signal('c_reward', reward)
-            self.record_signal('c_value_reward', self.state['x_value_reward'])
-            self.record_signal('x_learning_rate_reward', self.state['x_learning_rate_reward'])
+            self.record_signal('x_value_reward_chosen', self.state['x_value_reward'])
             self.record_signal('x_value_reward_not_chosen', self.state['x_value_reward'])
             
-            learning_rate_reward = self.call_module(
-                key_module='x_learning_rate_reward',
-                key_state='x_learning_rate_reward',
+            next_value_reward_chosen = self.call_module(
+                key_module='x_value_reward_chosen',
+                key_state='x_value_reward',
                 action=action,
-                inputs=(reward, self.state['x_value_reward']),
+                inputs=(reward),
                 # add participant-embedding (for RNN-modules) and participant-index (later for SINDy-modules) 
                 participant_embedding=participant_embedding,
                 participant_index=participant_id,
                 activation_rnn=torch.nn.functional.sigmoid,
             )
-            
-            # Let's perform the belief update for the reward-based value of the chosen option            
-            next_value_reward_chosen = self.call_module(
-                key_module='x_value_reward_chosen',
-                key_state='x_value_reward',
-                action=action,
-                inputs=(reward, learning_rate_reward),
-                # add participant-embedding (for RNN-modules) and participant-index (later for SINDy-modules) 
-                participant_embedding=participant_embedding,
-                participant_index=participant_id,
-                )
             
             # Update of the not-chosen reward-based value
             next_value_reward_not_chosen = self.call_module(
@@ -391,7 +378,6 @@ class CustomRNN(BaseRNN):
                 )
             
             self.state['x_value_reward'] = next_value_reward_chosen + next_value_reward_not_chosen
-            self.state['x_learning_rate_reward'] = learning_rate_reward
             
             # Now keep track of the logit in the output array
             logits[timestep] = self.state['x_value_reward'] * self.betas['x_value_reward'](participant_embedding)

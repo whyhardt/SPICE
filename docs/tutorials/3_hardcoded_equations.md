@@ -150,7 +150,7 @@ import matplotlib.pyplot as plt
 # get analysis plot
 agents = {'groundtruth': agent, 'rnn': spice_estimator.rnn_agent, 'spice': spice_estimator.spice_agent}
 
-fig, axs = plot_session(agents, dataset.xs[0])
+fig, axs = plot_session(agents, dataset.xs[0], signals_to_plot=['x_value_reward', 'x_learning_rate_reward'])
 plt.show()
 ```
 

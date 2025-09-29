@@ -143,7 +143,7 @@ Let the agent perform now the task and track how the agent's internal believes c
 ```python
 from spice.utils.plotting import plot_session
 
-fig, axs = plot_session(agents = {'groundtruth': agent}, experiment=dataset.xs[0])
+fig, axs = plot_session(agents = {'groundtruth': agent}, experiment=dataset.xs[0], signals_to_plot=['x_value_reward'])
 plt.show()
 ```
 
@@ -221,7 +221,7 @@ from spice.utils.plotting import plot_session
 # get analysis plot
 agents = {'groundtruth': agent, 'rnn': spice_estimator.rnn_agent, 'spice': spice_estimator.spice_agent}
 
-fig, axs = plot_session(agents, dataset.xs[0])
+fig, axs = plot_session(agents, dataset.xs[0], signals_to_plot=['x_value_reward'])
 plt.show()
 ```
 
