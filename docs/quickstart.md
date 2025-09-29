@@ -43,11 +43,9 @@ dataset, _, _ = create_dataset(
 spice_estimator = SpiceEstimator(
     rnn_class=RescorlaWagnerRNN,           # Type of RNN to use
     spice_config=RESCOLA_WAGNER_CONFIG,     # Configuration for SPICE
-    hidden_size=8,                          # Size of hidden layer
     learning_rate=5e-3,                     # Learning rate for training
     epochs=16,                              # Number of training epochs
     n_steps_per_call=16,                    # Steps per training iteration
-    spice_participant_id=0,                 # Participant ID for analysis
     verbose=True,                           # Enable progress output
 )
 
@@ -126,12 +124,11 @@ estimator = SpiceEstimator(
 ### Multiple Participants
 ```python
 # Train on multiple participants
-for participant_id in range(n_participants):
-    estimator = SpiceEstimator(
-        spice_participant_id=participant_id,
-        # ... other parameters
-    )
-    estimator.fit(X[participant_id], y[participant_id])
+estimator = SpiceEstimator(
+    n_participants=5,  # Number of participants
+    # ... other parameters
+)
+estimator.fit(X, y)
 ```
 
 ### Hyperparameter Tuning
@@ -139,7 +136,7 @@ for participant_id in range(n_participants):
 from sklearn.model_selection import GridSearchCV
 
 param_grid = {
-    'hidden_size': [4, 8, 16],
+    'n_steps_per_call': [4, 8, 16],
     'learning_rate': [1e-3, 5e-3, 1e-2],
 }
 

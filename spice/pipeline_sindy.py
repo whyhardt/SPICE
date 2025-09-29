@@ -128,7 +128,7 @@ def main(
     
     sindy_feature_list = rnn_modules + control_parameters
 
-    if not check_library_setup(library_setup, sindy_feature_list, verbose=True):
+    if not check_library_setup(library_setup, sindy_feature_list):
         raise ValueError('Library setup does not match feature list.')
         
     # ---------------------------------------------------------------------------------------------------
