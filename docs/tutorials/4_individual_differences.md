@@ -56,10 +56,16 @@ We are going generate half the dataset with participant #1 and the other half wi
 
 
 ```python
-# Uncomment the code below if you are using Google Colab
+# Uncomment the code below and execute the cellif you are using Google Colab
 
 #!pip uninstall -y numpy pandas
 #!pip install numpy==1.26.4 pandas==2.2.2
+```
+
+
+```python
+# Uncomment the code below and execute the cell if you are using Google Colab
+
 #!pip install autospice
 ```
 
@@ -429,10 +435,3 @@ In this context four measures proved to be very helpful:
 4. When using a learning rate scheduler you have to make sure to increase the number of epochs. Until now we trained all models with 2^10=1024 epochs. For real data it basically cannot get enough. But 2^13=8192 epochs proved to be sufficient to get good results.
 
 Keep all these steps in mind when handling empirical data and you are good to go and apply SPICE to your very own project!
-
-## Next Steps
-
-After completing this tutorial, you can:
-1. Apply individual difference modeling to your own data
-2. Explore more complex embedding architectures
-3. Move on to [Weinhardt et al. 2024 Case Study](5_weinhardt_2024.html)

@@ -30,10 +30,16 @@ First, we simulate a synthetic dataset from a Q-learning agent performing the tw
 
 
 ```python
-# Uncomment the code below if you are using Google Colab
+# Uncomment the code below and execute the cell if you are using Google Colab
 
 #!pip uninstall -y numpy pandas
 #!pip install numpy==1.26.4 pandas==2.2.2
+```
+
+
+```python
+# Uncomment the code below and execute the cell if you are using Google Colab
+
 #!pip install autospice
 ```
 
@@ -227,10 +233,3 @@ class ForgettingRNN(BaseRNN):
 - **Unstable Learning**: Try reducing the learning rate or increasing batch size
 - **Poor Forgetting**: Adjust the forgetting rate or increase training data
 - **Convergence Issues**: Increase the number of epochs or adjust optimizer parameters
-
-## Next Steps
-
-After completing this tutorial, you can:
-1. Experiment with different forgetting rates
-2. Implement more complex forgetting mechanisms
-3. Move on to [Working with Hardcoded Equations](3_hardcoded_equations.html)

@@ -38,10 +38,16 @@ We are going generate half the dataset with participant #1 and the other half wi
 
 
 ```python
-# Uncomment the code below if you are using Google Colab
+# Uncomment the code below and execute the cell if you are using Google Colab
 
 #!pip uninstall -y numpy pandas
 #!pip install numpy==1.26.4 pandas==2.2.2
+```
+
+
+```python
+# Uncomment the code below and execute the cell if you are using Google Colab
+
 #!pip install autospice
 ```
 
@@ -279,10 +285,3 @@ class CustomRNN(BaseRNN):
         
         return logits, self.get_state()
 ```
-
-## Next Steps
-
-After completing this tutorial, you can:
-1. Modify the model for your research
-2. Add new cognitive mechanisms
-3. Apply to different experimental paradigms
