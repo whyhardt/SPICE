@@ -57,7 +57,7 @@ Let's set up the environment first.
 
 
 ```python
-# Uncomment the below code for Google Colab
+# Uncomment the code below if you are using Google Colab
 
 #!pip uninstall -y numpy pandas
 #!pip install numpy==1.26.4 pandas==2.2.2
