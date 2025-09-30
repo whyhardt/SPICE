@@ -9,10 +9,11 @@ class GRUModule(nn.Module):
     def __init__(self, input_size, **kwargs):
         super().__init__()
         
-        self.gru_in = nn.GRU(input_size, 1)
+        self.linear_in = nn.Linear(input_size, 8+input_size)
+        self.gru_in = nn.GRU(8+input_size, 1)
         self.linear_out = nn.Linear(1, 1)
         
-        # Simple weight initialization for all parameters
+        #Simple weight initialization for all parameters
         self._initialize_weights()
     
     def _initialize_weights(self):
@@ -22,29 +23,11 @@ class GRUModule(nn.Module):
                 nn.init.xavier_uniform_(param)
             else:
                 nn.init.zeros_(param)
-                
-    # def _initialize_weights(self):
-    #     """Initialize weights using Xavier/Glorot initialization for better training stability"""
-    #     # Initialize GRU weights
-    #     for name, param in self.gru_in.named_parameters():
-    #         if 'weight_ih' in name:  # Input-to-hidden weights
-    #             nn.init.xavier_uniform_(param)
-    #         elif 'weight_hh' in name:  # Hidden-to-hidden weights
-    #             nn.init.orthogonal_(param)
-    #         elif 'bias' in name:  # Biases
-    #             nn.init.zeros_(param)
-    #             # Set forget gate bias to 1 for better gradient flow (if applicable)
-    #             n = param.size(0)
-    #             param.data[n//3:2*n//3].fill_(1.0)  # GRU reset gate bias
-        
-    #     # Initialize linear layer weights
-    #     nn.init.xavier_uniform_(self.linear_out.weight)
-    #     nn.init.zeros_(self.linear_out.bias)
 
     def forward(self, inputs):
         n_actions = inputs.shape[1]
         inputs = inputs.view(inputs.shape[0]*inputs.shape[1], inputs.shape[2]).unsqueeze(0)
-        next_state = self.gru_in(inputs[..., 1:], inputs[..., :1].contiguous())[1].view(-1, n_actions, 1)
+        next_state = self.gru_in(self.linear_in(inputs[..., 1:]), inputs[..., :1].contiguous())[1].view(-1, n_actions, 1)
         next_state = self.linear_out(next_state)
         return next_state
 

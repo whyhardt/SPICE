@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "autospice"
-version = "0.1.98"
+version = "0.2.0"
 description = "SPICE: Sparse and Interpretable Cognitive Equations"
 readme = "README.md"
 authors = [

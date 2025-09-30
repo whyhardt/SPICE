@@ -67,7 +67,7 @@ class SpiceEstimator(BaseEstimator):
         n_experiments: int = 0,
         
         # RNN training parameters
-        epochs: int = 128,
+        epochs: int = 1,
         bagging: bool = False,
         sequence_length: Optional[int] = -1,  # -1 for keeping the sequence length in the data to its original length, otherwise strided windows of length sequence_length,
         n_steps_per_call: Optional[int] = -1,  # number of timesteps in one backward-call; -1 for full sequence
@@ -77,8 +77,8 @@ class SpiceEstimator(BaseEstimator):
         device: Optional[torch.device] = torch.device('cpu'),
         scheduler: Optional[bool] = False, 
         train_test_ratio: Optional[Union[float, List[int]]] = 1.,
-        l2_weight_decay: Optional[float] = 1e-4,
-        dropout: Optional[float] = 0.5,
+        l2_weight_decay: Optional[float] = 0,
+        dropout: Optional[float] = 0.,
         
         # SPICE training parameters
         spice_optimizer_type: Optional[str] = 'SR3_weighted_l1',
