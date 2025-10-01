@@ -78,6 +78,7 @@ class SpiceEstimator(BaseEstimator):
         scheduler: Optional[bool] = False, 
         train_test_ratio: Optional[Union[float, List[int]]] = 1.,
         l2_weight_decay: Optional[float] = 0,
+        l1_weight_decay: Optional[float] = 0,
         dropout: Optional[float] = 0.,
         
         # SPICE training parameters
@@ -139,6 +140,7 @@ class SpiceEstimator(BaseEstimator):
         self.verbose = verbose
         self.deterministic = False
         self.l2_weight_decay = l2_weight_decay
+        self.l1_weight_decay = l1_weight_decay
 
         # Save parameters
         self.save_path_rnn = save_path_rnn
@@ -182,13 +184,14 @@ class SpiceEstimator(BaseEstimator):
 
         self.spice_feature_list = spice_config.spice_feature_list
 
-        self.optimizer_rnn = torch.optim.AdamW(
-            self.rnn_model.parameters(),
-            lr=learning_rate,
-            betas=(0.9, 0.999),
-            eps=1e-8,
-            weight_decay=l2_weight_decay
-        )
+        # Separate parameters
+        embedding_params = list(self.rnn_model.participant_embedding.parameters())
+        other_params = [p for p in self.rnn_model.parameters() if not any(p is ep for ep in embedding_params)]
+
+        self.optimizer_rnn = torch.optim.AdamW([
+            {'params': embedding_params, 'weight_decay': 0.0},      # Only L1 (from your loss)
+            {'params': other_params, 'weight_decay': 0.01}          # L1 + L2
+        ], lr=1e-3)
     
     def fit(self, data: np.ndarray, targets: np.ndarray, data_test: np.ndarray = None, target_test: np.ndarray = None):
         """

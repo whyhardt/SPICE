@@ -16,7 +16,8 @@ if __name__=='__main__':
     parser.add_argument('--data', type=str, default=None, help='Path to dataset')
 
     # data and training parameters
-    parser.add_argument('--l2', type=float, default=0, help='Learning rate of the RNN')
+    parser.add_argument('--l1', type=float, default=0, help='L1 Reg of the RNNs participant embedding')
+    parser.add_argument('--l2', type=float, default=0, help='L2 Reg of the RNNs flexible modules (excl. embeddings)')
     parser.add_argument('--train_test_ratio', type=str, default="2", help='Ratio of training data; Can also be a comma-separated list of integeres to indicate testing sessions.')
 
     args = parser.parse_args()
@@ -46,6 +47,7 @@ if __name__=='__main__':
         scheduler=True,
         device=torch.device('cuda' if torch.cuda.is_available() else 'cpu'),
         train_test_ratio=args.train_test_ratio,
+        l1_weight_decay=args.l1,
         l2_weight_decay=args.l2,
         dropout=0.5,
         use_optuna=True,

@@ -119,10 +119,11 @@ def batch_train(
     xs: torch.Tensor,
     ys: torch.Tensor,
     optimizer: torch.optim.Optimizer = None,
+    l1_weight_decay: float = 0.,
     n_steps: int = -1,
     loss_fn: nn.modules.loss._Loss = nn.CrossEntropyLoss(),
     ):
-
+    
     """
     Trains a model with the given batch.
     """
@@ -149,15 +150,22 @@ def batch_train(
         ys_step = ys_step * mask
         
         loss_step = loss_fn(
-            ys_pred.reshape(-1, model._n_actions), 
+            ys_pred.reshape(-1, model._n_actions),
             torch.argmax(ys_step.reshape(-1, model._n_actions), dim=1),
             )
-        
+
+        # Add L1 regularization on participant embedding weights
+        if l1_weight_decay > 0 and hasattr(model, 'participant_embedding'):
+            # Get the embedding layer weights (first layer in the Sequential)
+            embedding_weights = model.participant_embedding[0].weight
+            l1_loss = l1_weight_decay * torch.sum(torch.abs(embedding_weights))
+            loss_step = loss_step + l1_loss
+
         loss_batch += loss_step
         iterations += 1
-        
+
         if torch.is_grad_enabled():
-            
+
             # backpropagation
             optimizer.zero_grad()
             loss_step.backward()
@@ -172,6 +180,7 @@ def fit_model(
     dataset_test: DatasetRNN = None,
     optimizer: torch.optim.Optimizer = None,
     convergence_threshold: float = 1e-7,
+    l1_weight_decay: float = 0.,
     epochs: int = 1,
     batch_size: int = -1,
     bagging: bool = False,
@@ -283,6 +292,7 @@ def fit_model(
                     ys=ys,
                     optimizer=optimizer,
                     n_steps=n_steps,
+                    l1_weight_decay=l1_weight_decay,
                 )
                 loss_train += loss_i
             loss_train /= iterations_per_epoch
@@ -300,6 +310,7 @@ def fit_model(
                         xs=xs,
                         ys=ys,
                         optimizer=optimizer,
+                        l1_weight_decay=l1_weight_decay,
                     )
                 model.train()
             
