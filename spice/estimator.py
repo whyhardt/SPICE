@@ -190,7 +190,7 @@ class SpiceEstimator(BaseEstimator):
 
         self.optimizer_rnn = torch.optim.AdamW([
             {'params': embedding_params, 'weight_decay': 0.0},      # Only L1 (from your loss)
-            {'params': other_params, 'weight_decay': 0.01}          # L1 + L2
+            {'params': other_params, 'weight_decay': l2_weight_decay}          # L1 + L2
         ], lr=1e-3)
     
     def fit(self, data: np.ndarray, targets: np.ndarray, data_test: np.ndarray = None, target_test: np.ndarray = None):
