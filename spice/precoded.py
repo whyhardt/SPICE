@@ -564,7 +564,7 @@ class Weinhardt2025RNN(BaseRNN):
         self.betas['x_value_choice'] = self.setup_constant(embedding_size=self.embedding_size, leaky_relu=leaky_relu)
         
         # set up the submodules
-        self.submodules_rnn['x_learning_rate_reward'] = self.setup_module(input_size=2+self.embedding_size)
+        self.submodules_rnn['x_value_reward_chosen'] = self.setup_module(input_size=2+self.embedding_size)
         self.submodules_rnn['x_value_reward_not_chosen'] = self.setup_module(input_size=2+self.embedding_size)
         self.submodules_rnn['x_value_choice_chosen'] = self.setup_module(input_size=1+self.embedding_size)
         self.submodules_rnn['x_value_choice_not_chosen'] = self.setup_module(input_size=1+self.embedding_size)
@@ -599,7 +599,7 @@ class Weinhardt2025RNN(BaseRNN):
                 # self.record_signal('c_reward_not_chosen', reward_not_chosen)
                 self.record_signal('c_value_reward', self.state['x_value_reward'])
                 self.record_signal('c_value_choice', self.state['x_value_choice'])
-                self.record_signal('x_learning_rate_reward', self.state['x_learning_rate_reward'])
+                self.record_signal('x_value_reward_chosen', self.state['x_value_reward'])
                 self.record_signal('x_value_reward_not_chosen', self.state['x_value_reward'])
                 self.record_signal('x_value_choice_chosen', self.state['x_value_choice'])
                 self.record_signal('x_value_choice_not_chosen', self.state['x_value_choice'])
@@ -629,7 +629,6 @@ class Weinhardt2025RNN(BaseRNN):
                     ),
                 participant_embedding=participant_embedding,
                 participant_index=participant_id,
-                activation_rnn=torch.nn.functional.sigmoid,
                 )
             
             # updates for x_value_choice

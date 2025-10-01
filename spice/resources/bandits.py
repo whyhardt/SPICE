@@ -443,13 +443,13 @@ class AgentNetwork(Agent):
     if betas:
       logits = np.sum(
         np.concatenate([
-          self._state[key] * betas[key] for key in self._state if key in betas 
+          (self._state[key] * betas[key]).cpu().numpy() for key in self._state if key in betas 
           ]), 
         axis=0)
     else:
       logits = np.sum(
         np.concatenate([
-          self._state[key] for key in self._state if 'x_value' in key
+          self._state[key].cpu().numpy() for key in self._state if 'x_value' in key
           ]),
         axis=0)
     return logits
@@ -1085,7 +1085,7 @@ def get_update_dynamics(experiment: Union[np.ndarray, torch.Tensor], agent: Agen
     # track all states
     q[trial] = agent.q
     for signal in additional_signals:
-      values_signal[signal][trial] = agent.get_state_value(signal) if signal in agent._state else np.zeros_like(agent.q)
+      values_signal[signal][trial] = agent.get_state_value(signal).cpu().numpy() if signal in agent._state else np.zeros_like(agent.q)
     
     choice_probs[trial] = agent.get_choice_probs()
     

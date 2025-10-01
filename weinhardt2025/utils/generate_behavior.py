@@ -5,28 +5,28 @@ import pandas as pd
 from tqdm import tqdm
 import torch
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from spice.resources.bandits import create_dataset, get_update_dynamics, BanditsDrift, BanditsFlip_eckstein2022, Bandits_Standard, Agent, AgentQ
-from resources.rnn_utils import DatasetRNN
-from utils.setup_agents import setup_agent_rnn, setup_agent_spice
-from utils.convert_dataset import convert_dataset
+from spice.resources.rnn_utils import DatasetRNN
+from spice.utils.setup_agents import setup_agent_rnn, setup_agent_spice
+from spice.utils.convert_dataset import convert_dataset
 
 # dataset specific SPICE configurations and models
-from resources.rnn import RLRNN, RLRNN_eckstein2022, RLRNN_dezfouli2019
-from resources.sindy_utils import SindyConfig, SindyConfig_eckstein2022, SindyConfig_dezfouli2019
-from benchmarking import benchmarking_dezfouli2019, benchmarking_eckstein2022
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
+from spice.precoded import Weinhardt2025RNN, WEINHARDT_2025_CONFIG
+from weinhardt2025.benchmarking import benchmarking_dezfouli2019, benchmarking_eckstein2022
 
 
 # ----------------------- GENERAL CONFIGURATION ----------------------------
 agent_type = 'q_agent'  # 'rnn', 'benchmark', 'baseline', 'q_agent'
 n_trials_per_session = 200
 
+dataset = 'None'
 
 # ------------------- CONFIGURATION ECKSTEIN2022 --------------------
 dataset = 'eckstein2022'
 benchmark_model = 'ApAnBrBcfBch'
-class_rnn = RLRNN_eckstein2022
-sindy_config = SindyConfig_eckstein2022
+class_rnn = Weinhardt2025RNN
+sindy_config = WEINHARDT_2025_CONFIG
 bandits_environment = BanditsFlip_eckstein2022
 n_sessions = 1
 bandits_kwargs = {}
@@ -54,15 +54,15 @@ path_benchmark = f'params/{dataset}/mcmc_{dataset}_{benchmark_model}.nc'
 # ------------------- PIPELINE ----------------------------
 
 generating_model = agent_type if agent_type != 'benchmark' else benchmark_model
-path_data = f'data/{dataset}/{dataset}.csv'
-path_save = f'data/{dataset}/{dataset}_generated_behavior_{generating_model}_test.csv'
+path_data = f'weinhardt2025/data/{dataset}/{dataset}.csv'
+path_save = f'weinhardt2025/data/{dataset}/{dataset}_generated_behavior_{generating_model}_test.csv'
 
 if agent_type == 'rnn':
     path_model = path_rnn
 elif agent_type == 'q_agent':
     path_model = None
     path_data = None
-    path_save = 'data/q_agent_.csv'
+    path_save = 'weinhardt2025/data/q_agent_.csv'
 else:
     path_model = path_benchmark
 

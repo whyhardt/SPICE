@@ -261,17 +261,17 @@ def split_data_along_sessiondim(dataset: DatasetRNN, list_test_sessions: List[in
         for pid in participants_ids:
             for sid in session_ids:
                 mask_ids = torch.logical_and(xs[:, 0, -3] == sid, xs[:, 0, -1] == pid)
-                if sid in session_ids_train:
-                    train_xs[index_train] = xs[mask_ids]
-                    train_ys[index_train] = ys[mask_ids]
-                    index_train += 1
-                elif sid in session_ids_test:
-                    test_xs[index_test] = xs[mask_ids]
-                    test_ys[index_test] = ys[mask_ids]
-                    index_test += 1
-                else:
-                    raise ValueError("session id was not found in training nor test sessions.")
-        
+                if mask_ids.max():
+                    if sid in session_ids_train:
+                        train_xs[index_train] = xs[mask_ids]
+                        train_ys[index_train] = ys[mask_ids]
+                        index_train += 1
+                    elif sid in session_ids_test:
+                        test_xs[index_test] = xs[mask_ids]
+                        test_ys[index_test] = ys[mask_ids]
+                        index_test += 1
+                    else:
+                        raise ValueError("session id was not found in training nor test sessions.")
         
         return DatasetRNN(train_xs, train_ys, device=device), DatasetRNN(test_xs, test_ys, device=device)
 
