@@ -7,7 +7,7 @@ from tqdm import tqdm
 import dill
 import torch
 
-from .bandits import AgentNetwork, AgentSpice, get_update_dynamics, BanditSession, BanditsDrift
+from .bandits import AgentNetwork, AgentSpice, get_update_dynamics, BanditSession, BanditsDrift, Bandits
 from .rnn_utils import DatasetRNN
 from .model_evaluation import log_likelihood
 
@@ -387,7 +387,18 @@ def load_spice(file) -> Dict:
   return spice_modules
 
 
-def generate_off_policy_data(participant_id: int, block: int, experiment_id: int, n_trials_off_policy: int, n_trials_same_action_off_policy: int, n_sessions_off_policy: int = 1, n_actions: int = 2, additional_inputs: np.ndarray = np.zeros(0), sigma_drift: float = 0.2) -> DatasetRNN:
+def generate_off_policy_data(
+  participant_id: int, 
+  block: int, 
+  experiment_id: int, 
+  n_trials_off_policy: int, 
+  n_trials_same_action_off_policy: int, 
+  simulation_environment: Bandits = None, 
+  n_sessions_off_policy: int = 1, 
+  n_actions: int = 2, 
+  additional_inputs: np.ndarray = np.zeros(0), 
+  sigma_drift: float = 0.2,
+  ) -> DatasetRNN:
   """Generates a simple off-policy dataset where each action is repeated n_trials_same_action_off_policy times and then switched.
 
   Args:
@@ -403,7 +414,10 @@ def generate_off_policy_data(participant_id: int, block: int, experiment_id: int
   
   # set up environment to create an off-policy dataset (w.r.t to trained RNN) of arbitrary length
   # The trained RNN will then perform value updates to get off-policy data
-  environment = BanditsDrift(sigma=sigma_drift, n_actions=n_actions)
+  if simulation_environment:
+    environment = simulation_environment
+  else:
+    environment = BanditsDrift(sigma=sigma_drift, n_actions=n_actions)
   
   # create a dummy dataset where each choice is chosen for n times and then an action switch occures
   xs = torch.zeros((n_sessions_off_policy, n_trials_off_policy, 2*n_actions+3+additional_inputs.shape[-1])) - 1

@@ -4,10 +4,9 @@ import torch
 from tqdm import tqdm
 import numpy as np
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from resources.rnn_utils import DatasetRNN, split_data_along_timedim, split_data_along_sessiondim
-from utils.convert_dataset import convert_dataset
-from resources.bandits import Agent
+from spice.resources.rnn_utils import DatasetRNN, split_data_along_timedim, split_data_along_sessiondim
+from spice.utils.convert_dataset import convert_dataset
+from spice.resources.bandits import Agent
 
 class RLLSTM(torch.nn.Module):
     

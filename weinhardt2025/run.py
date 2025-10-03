@@ -4,8 +4,9 @@ import torch
 
 from spice.estimator import SpiceEstimator
 from spice.utils.convert_dataset import convert_dataset
-from spice.resources.rnn_utils import split_data_along_sessiondim
-from spice.precoded import Weinhardt2025RNN, WEINHARDT_2025_CONFIG
+from spice.resources.rnn_utils import split_data_along_sessiondim, split_data_along_timedim
+from spice.resources.bandits import BanditsDrift_eckstein2024
+from spice.precoded import Weinhardt2025RNN, WEINHARDT_2025_CONFIG, BufferWorkingMemoryRNN, BUFFER_WORKING_MEMORY_CONFIG
 
 
 if __name__=='__main__':
@@ -16,44 +17,81 @@ if __name__=='__main__':
     parser.add_argument('--data', type=str, default=None, help='Path to dataset')
 
     # data and training parameters
+    parser.add_argument('--epochs', type=int, default=1, help='Number of training epochs')
     parser.add_argument('--l1', type=float, default=0, help='L1 Reg of the RNNs participant embedding')
     parser.add_argument('--l2', type=float, default=0, help='L2 Reg of the RNNs flexible modules (excl. embeddings)')
-    parser.add_argument('--train_test_ratio', type=str, default="2", help='Ratio of training data; Can also be a comma-separated list of integeres to indicate testing sessions.')
-
+    parser.add_argument('--time_train_test_ratio', type=float, default=None, help='Ratio of training data; Can also be a comma-separated list of integeres to indicate testing sessions.')
+    parser.add_argument('--session_train_test_ratio', type=str, default=None, help='Ratio of training data; Can also be a comma-separated list of integeres to indicate testing sessions.')
+    
     args = parser.parse_args()
     
-    dataset_train = convert_dataset(
+    args.model = "weinhardt2025/params/eckstein2024/rnn_eckstein2024.pkl"
+    args.data = "weinhardt2025/data/eckstein2024/eckstein2024.csv"
+    args.train_test_ratio = "1,3"
+    
+    dataset = convert_dataset(
         file=args.data,
-        df_participant_id='session',
+        df_participant_id='s_id',
         df_block='block',
-        df_choice='choice',
+        df_choice='action',
         df_reward='reward',
     )[0]
     
-    dataset_train.xs[..., -1] = 0
-    
-    # dataset_train, dataset_test = split_data_along_sessiondim(dataset, [int(args.train_test_ratio)])
-    
+    if args.time_train_test_ratio:
+        args.session_train_test_ratio = None
+        dataset_train, dataset_test = split_data_along_timedim(dataset, args.time_train_test_ratio)
+    elif args.session_train_test_ratio:
+        args.session_train_test_ratio = args.session_train_test_ratio.split(',')
+        args.session_train_test_ratio = [int(item) for item in args.session_train_test_ratio]
+        dataset_train, dataset_test = split_data_along_sessiondim(dataset, [int(item) for item in args.session_train_test_ratio])    
+    else:
+        dataset_train, dataset_test = dataset, dataset
+        
     n_actions = dataset_train.ys.shape[-1]
     n_participants = len(dataset_train.xs[..., -1].unique())
     
+    simulation_environment = BanditsDrift_eckstein2024(sigma=0.2, n_actions=4)
+    
     estimator = SpiceEstimator(
-        rnn_class=Weinhardt2025RNN,
-        spice_config=WEINHARDT_2025_CONFIG,
+        rnn_class=BufferWorkingMemoryRNN,
+        spice_config=BUFFER_WORKING_MEMORY_CONFIG,
         n_actions=n_actions,
         n_participants=n_participants,
-        epochs=1,
+        epochs=args.epochs,
         bagging=True,
         scheduler=True,
         device=torch.device('cuda' if torch.cuda.is_available() else 'cpu'),
-        train_test_ratio=args.train_test_ratio,
+        train_test_ratio=args.time_train_test_ratio if args.time_train_test_ratio else args.session_train_test_ratio,
         l1_weight_decay=args.l1,
         l2_weight_decay=args.l2,
-        dropout=0.5,
+        dropout=0.25,
+        learning_rate=1e-3,
         use_optuna=True,
         fit_spice=True,
+        spice_library_polynomial_degree=2,
+        simulation_environment=simulation_environment,
+        n_sessions_off_policy=1,
+        # spice_optim_regularization=0.01,
+        # spice_optim_threshold=0.,
         save_path_rnn=args.model,
         save_path_spice=args.model.replace('rnn', 'spice'),
     )
     
-    estimator.fit(dataset_train.xs, dataset_train.ys)
+    # estimator.fit(dataset_train.xs, dataset_train.ys)
+    
+    # estimator.load_rnn_model(args.model)
+    # estimator.load_spice_model(args.model.replace('rnn', 'spice'))
+    
+    estimator.load_rnn_model(args.model)
+    estimator.fit_spice(dataset_train.xs, dataset_train.ys, participant_id=0)
+    
+    estimator.print_spice_model(participant_id=0)
+    # estimator.print_spice_model(participant_id=130)
+    # estimator.print_spice_model(participant_id=250)
+    
+    import matplotlib.pyplot as plt
+    from spice.utils.plotting import plot_session
+    
+    agents = {'rnn': estimator.rnn_agent, 'spice': estimator.spice_agent}
+    fig, axs = plot_session(agents, dataset_train.xs[0])
+    plt.show()

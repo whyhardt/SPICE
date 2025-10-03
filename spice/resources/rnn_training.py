@@ -223,7 +223,7 @@ def fit_model(
         dataloader_test = DataLoader(dataset_test, batch_size=len(dataset_test))
     
     # set up learning rate scheduler
-    warmup_steps = 1024
+    warmup_steps = 128
     warmup_steps = warmup_steps if epochs > warmup_steps else 1 #int(epochs * 0.125/16)
     if scheduler and optimizer is not None:
         # Define the LambdaLR scheduler for warm-up
@@ -236,12 +236,17 @@ def fit_model(
         default_lr = optimizer.param_groups[0]['lr'] + 0
         def warmup_lr_lambda(current_step):
             scale = 1e-1 / default_lr
-            if current_step < warmup_steps * 0.8:
-                return 0.1 * scale  # Scaling factor during the first 80% of warmup
-            elif current_step < warmup_steps:
+            # if current_step < warmup_steps * 0.8:
+            #     return 0.1 * scale  # Scaling factor during the first 80% of warmup
+            # elif current_step < warmup_steps:
+            #     # Linearly anneal towards 1.0 in the last 20% of warmup steps
+            #     progress = (current_step - warmup_steps * 0.8) / (warmup_steps * 0.2)
+            #     return (0.1 + progress * (1.0 - 0.1)) * scale
+            if current_step < warmup_steps:
                 # Linearly anneal towards 1.0 in the last 20% of warmup steps
-                progress = (current_step - warmup_steps * 0.8) / (warmup_steps * 0.2)
-                return (0.1 + progress * (1.0 - 0.1)) * scale
+                # progress = (current_step - warmup_steps) / (warmup_steps)
+                # return (0.1 + progress * (1.0 - 0.1)) * scale
+                return current_step / warmup_steps
             else:
                 return 1.0  # Default learning rate scaling after warmup
 

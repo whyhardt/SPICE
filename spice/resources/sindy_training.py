@@ -7,7 +7,7 @@ import pandas as pd
 from .sindy_utils import remove_bad_participants
 from .fit_sindy import fit_sindy_pipeline
 from .rnn_utils import DatasetRNN,split_data_along_timedim, split_data_along_sessiondim
-from .bandits import AgentNetwork, AgentSpice, get_update_dynamics
+from .bandits import AgentNetwork, AgentSpice, get_update_dynamics, Bandits
 from .model_evaluation import bayesian_information_criterion as loss_metric, log_likelihood
 from .optimizer_selection import optimize_for_participant
 
@@ -97,6 +97,7 @@ def fit_spice(
     participant_id: int = None,
     shuffle: bool = False,
     dataprocessing: Dict[str, List] = None,
+    simulation_environment: Bandits = None,
     n_trials_off_policy: int = 1000,
     n_sessions_off_policy: int = 1,
     n_trials_same_action_off_policy: int = 5,
@@ -175,6 +176,7 @@ def fit_spice(
             optimizer_threshold=optimizer_threshold,
             polynomial_degree=polynomial_degree,
             shuffle=shuffle,
+            simulation_environment = simulation_environment,
             n_sessions_off_policy=n_sessions_off_policy,
             n_trials_off_policy=n_trials_off_policy,
             n_trials_same_action_off_policy=n_trials_same_action_off_policy,
@@ -214,6 +216,7 @@ def fit_spice(
                     filter_setup=filter_setup,
                     polynomial_degree=polynomial_degree,
                     optimizer_type=optimizer_type,
+                    simulation_environment=simulation_environment,
                     n_sessions_off_policy=n_sessions_off_policy,
                     n_trials_off_policy=n_trials_off_policy,
                     n_trials_same_action_off_policy=n_trials_same_action_off_policy,
@@ -254,6 +257,7 @@ def fit_spice(
                 polynomial_degree=polynomial_degree,
                 shuffle=shuffle,
                 # n_sessions_off_policy=optuna_n_sessions_off_policy,
+                simulation_environment=simulation_environment,
                 n_sessions_off_policy=n_sessions_off_policy,
                 n_trials_off_policy=n_trials_off_policy,
                 n_trials_same_action_off_policy=n_trials_same_action_off_policy,

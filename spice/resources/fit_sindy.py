@@ -7,7 +7,7 @@ import pysindy as ps
 from .sindy_utils import remove_control_features, conditional_filtering
 from .rnn_utils import DatasetRNN
 from .sindy_utils import generate_off_policy_data, create_dataset
-from .bandits import AgentNetwork
+from .bandits import AgentNetwork, Bandits
 
 def fit_sindy(
     variables: List[np.ndarray], 
@@ -144,6 +144,7 @@ def fit_sindy_pipeline(
     optimizer_threshold: float,
     polynomial_degree: int,
     shuffle: bool,
+    simulation_environment: Bandits,
     n_sessions_off_policy: int,
     n_trials_off_policy: int,
     n_trials_same_action_off_policy: int,
@@ -158,6 +159,7 @@ def fit_sindy_pipeline(
     elif n_sessions_off_policy > 0:
         mask_participant_id = (data.xs[:, 0, -1] == participant_id).int().argmax().item()
         dataset_fit = generate_off_policy_data(
+            simulation_environment = simulation_environment,
             participant_id=participant_id,
             experiment_id=data.xs[mask_participant_id, 0, -2],
             block=data.xs[mask_participant_id, 0, -3],

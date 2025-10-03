@@ -7,12 +7,11 @@ import numpy as np
 import torch
 import pickle
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from resources.rnn import BaseRNN
-from resources.bandits import AgentSpice, AgentNetwork, AgentQ
-from resources.sindy_training import fit_spice
-from resources.sindy_utils import load_spice
-from utils.convert_dataset import convert_dataset
+from spice.resources.rnn import BaseRNN
+from spice.resources.bandits import AgentSpice, AgentNetwork, AgentQ
+from spice.resources.sindy_training import fit_spice
+from spice.resources.sindy_utils import load_spice
+from spice.utils.convert_dataset import convert_dataset
 
 
 def setup_rnn(
@@ -83,6 +82,7 @@ def setup_agent_spice(
     sindy_library_setup: Dict[str, List] = None,
     sindy_filter_setup: Dict[str, List] = None,
     sindy_dataprocessing: Dict[str, List] = None,
+    n_actions: int = 2,
     threshold: float = 0.05,
     regularization: float = 0.1,
     participant_id: int = None,
@@ -93,7 +93,7 @@ def setup_agent_spice(
     **kwargs,
 ) -> AgentSpice:
     
-    agent_rnn = setup_agent_rnn(class_rnn=class_rnn, path_model=path_rnn)
+    agent_rnn = setup_agent_rnn(class_rnn=class_rnn, path_model=path_rnn, n_actions=n_actions)
     
     if path_spice is None or path_spice == '':
         dataset = convert_dataset(file=path_data)[0]

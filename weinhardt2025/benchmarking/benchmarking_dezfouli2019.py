@@ -8,10 +8,10 @@ import pickle
 from typing import List
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from resources.rnn_utils import DatasetRNN, split_data_along_timedim, split_data_along_sessiondim, reshape_data_along_participantdim
-from utils.convert_dataset import convert_dataset
-from resources.bandits import Agent, AgentNetwork
-from resources.rnn_training import batch_train
+from spice.resources.rnn_utils import DatasetRNN, split_data_along_timedim, split_data_along_sessiondim, reshape_data_along_participantdim
+from spice.utils.convert_dataset import convert_dataset
+from spice.resources.bandits import Agent, AgentNetwork
+from spice.resources.rnn_training import batch_train
 
 
 class Dezfouli2019GQL(torch.nn.Module):

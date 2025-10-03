@@ -2,9 +2,9 @@ import optuna
 import numpy as np
 
 from .fit_sindy import fit_sindy_pipeline
-from .bandits import AgentSpice, AgentNetwork, get_update_dynamics
+from .bandits import AgentSpice, AgentNetwork, get_update_dynamics, Bandits
 from .sindy_utils import DatasetRNN
-   
+
 
 def optimize_for_participant(
     participant_id: int,
@@ -17,6 +17,7 @@ def optimize_for_participant(
     filter_setup: dict,
     polynomial_degree: int,
     optimizer_type: str,
+    simulation_environment: Bandits,
     n_sessions_off_policy: int,
     n_trials_off_policy: int,
     n_trials_same_action_off_policy: int,
@@ -75,6 +76,7 @@ def optimize_for_participant(
             optimizer_threshold=optimizer_threshold,
             polynomial_degree=polynomial_degree,
             shuffle=True,
+            simulation_environment=simulation_environment,
             n_sessions_off_policy=n_sessions_off_policy,
             n_trials_off_policy=n_trials_off_policy,
             n_trials_same_action_off_policy=n_trials_same_action_off_policy,

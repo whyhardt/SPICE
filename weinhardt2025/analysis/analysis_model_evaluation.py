@@ -6,33 +6,33 @@ import pandas as pd
 from tqdm import tqdm
 from copy import copy
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 # standard methods and classes used for every model evaluation
-from benchmarking import benchmarking_dezfouli2019
-from resources.model_evaluation import get_scores
-from resources.bandits import get_update_dynamics, AgentQ
-from resources.rnn_utils import split_data_along_timedim, split_data_along_sessiondim
-from utils.setup_agents import setup_agent_rnn, setup_agent_spice
-from utils.convert_dataset import convert_dataset
+from weinhardt2025.benchmarking import benchmarking_dezfouli2019
+from spice.resources.model_evaluation import get_scores
+from spice.resources.bandits import get_update_dynamics, AgentQ
+from spice.resources.rnn_utils import split_data_along_timedim, split_data_along_sessiondim
+from spice.utils.setup_agents import setup_agent_rnn, setup_agent_spice
+from spice.utils.convert_dataset import convert_dataset
 
 # dataset specific SPICE models
-from resources import rnn, sindy_utils
+from spice import precoded
 
 # dataset specific benchmarking models
-from benchmarking import benchmarking_dezfouli2019, benchmarking_eckstein2022, benchmarking_lstm
-from benchmarking.benchmarking_dezfouli2019 import Dezfouli2019GQL
+from weinhardt2025.benchmarking import benchmarking_dezfouli2019, benchmarking_eckstein2022, benchmarking_lstm
+from weinhardt2025.benchmarking.benchmarking_dezfouli2019 import Dezfouli2019GQL
 
 
 # -------------------------------------------------------------------------------
 # AGENT CONFIGURATIONS
 # -------------------------------------------------------------------------------
 
-# ------------------- CONFIGURATION ECKSTEIN2022 w/o AGE --------------------
+# ------------------- CONFIGURATION ECKSTEIN2022 --------------------
 # study = 'eckstein2022'
 # models_benchmark = ['ApAnBrBcfBch']#['ApBr', 'ApBrAcfpBcf', 'ApBrAcfpBcfBch', 'ApAnBrBch', 'ApAnBrAcfpAcfnBcfBch', 'ApAnBrBcfBch']
 # train_test_ratio = 0.8
-# sindy_config = sindy_utils.SindyConfig_eckstein2022
-# rnn_class = rnn.RLRNN_eckstein2022
+# sindy_config = precoded.BUFFER_WORKING_MEMORY_CONFIG
+# rnn_class = precoded.BufferWorkingMemoryRNN
 # additional_inputs = None
 # setup_agent_benchmark = benchmarking_eckstein2022.setup_agent_benchmark
 # rl_model = benchmarking_eckstein2022.rl_model
@@ -40,9 +40,18 @@ from benchmarking.benchmarking_dezfouli2019 import Dezfouli2019GQL
 # model_config_baseline = 'ApBr'
 # baseline_file = f'mcmc_{study}_ApBr.nc'
 
-# -------------------- CONFIGURATION ECKSTEIN2022 w/ AGE --------------------
-# rnn_class = RLRNN_meta_eckstein2022
-# additional_inputs = ['age']
+# ------------------- CONFIGURATION ECKSTEIN2024 --------------------
+study = 'eckstein2024'
+models_benchmark = ['ApAnBrBcfBch']#['ApBr', 'ApBrAcfpBcf', 'ApBrAcfpBcfBch', 'ApAnBrBch', 'ApAnBrAcfpAcfnBcfBch', 'ApAnBrBcfBch']
+train_test_ratio = [1,3]
+sindy_config = precoded.BUFFER_WORKING_MEMORY_CONFIG
+rnn_class = precoded.BufferWorkingMemoryRNN
+additional_inputs = None
+setup_agent_benchmark = benchmarking_eckstein2022.setup_agent_benchmark
+rl_model = benchmarking_eckstein2022.rl_model
+benchmark_file = f'mcmc_{study}_MODEL.nc'
+model_config_baseline = 'ApBr'
+baseline_file = f'mcmc_{study}_ApBr.nc'
 
 # ------------------------ CONFIGURATION DEZFOULI2019 -----------------------
 # study = 'dezfouli2019'
@@ -60,19 +69,19 @@ from benchmarking.benchmarking_dezfouli2019 import Dezfouli2019GQL
 # baseline_file = f'gql_{study}_PhiBeta.pkl'
 
 # ------------------------ CONFIGURATION GERSHMAN2018 -----------------------
-study = 'gershmanB2018'
-train_test_ratio = [4, 8, 12, 16]
-models_benchmark = ['PhiBeta']
-sindy_config = sindy_utils.SindyConfig_eckstein2022
-rnn_class = rnn.RLRNN_eckstein2022
-additional_inputs = []
-# setup_agent_benchmark = benchmarking_dezfouli2019.setup_agent_benchmark
-# gql_model = benchmarking_dezfouli2019.gql_model
-setup_agent_benchmark = benchmarking_dezfouli2019.setup_agent_gql
-gql_model = benchmarking_dezfouli2019.Dezfouli2019GQL
-benchmark_file = f'ql_{study}_MODEL.pkl'
-model_config_baseline = 'PhiBeta'
-baseline_file = f'ql_{study}_PhiBeta.pkl'
+# study = 'gershmanB2018'
+# train_test_ratio = [4, 8, 12, 16]
+# models_benchmark = ['PhiBeta']
+# sindy_config = precoded.
+# rnn_class = rnn.RLRNN_eckstein2022
+# additional_inputs = []
+# # setup_agent_benchmark = benchmarking_dezfouli2019.setup_agent_benchmark
+# # gql_model = benchmarking_dezfouli2019.gql_model
+# setup_agent_benchmark = benchmarking_dezfouli2019.setup_agent_gql
+# gql_model = benchmarking_dezfouli2019.Dezfouli2019GQL
+# benchmark_file = f'ql_{study}_MODEL.pkl'
+# model_config_baseline = 'PhiBeta'
+# baseline_file = f'ql_{study}_PhiBeta.pkl'
 
 # ------------------------ CONFIGURATION DEZFOULI2019 w/ blocks -----------------------
 # study = 'dezfouli2019'
@@ -85,9 +94,9 @@ baseline_file = f'ql_{study}_PhiBeta.pkl'
 # ------------------------- CONFIGURATION FILE PATHS ------------------------
 use_test = True
 
-path_data = f'data/{study}/{study}.csv'
-path_model_rnn = f'params/{study}/rnn_{study}_l2_0_00001.pkl'
-path_model_spice = f'params/{study}/spice_{study}_l2_0_00001.pkl'
+path_data = f'weinhardt2025/data/{study}/{study}.csv'
+path_model_rnn = f'weinhardt2025/params/{study}/rnn_{study}.pkl'
+path_model_spice = f'weinhardt2025/params/{study}/spice_{study}.pkl'
 path_model_baseline = None#os.path.join(f'params/{study}/', baseline_file)
 path_model_benchmark = None#os.path.join(f'params/{study}', benchmark_file) if len(models_benchmark) > 0 else None
 path_model_benchmark_lstm = None#f'params/{study}/lstm_{study}.pkl'
@@ -96,9 +105,17 @@ path_model_benchmark_lstm = None#f'params/{study}/lstm_{study}.pkl'
 # MODEL COMPARISON PIPELINE
 # -------------------------------------------------------------------------------
 
-dataset = convert_dataset(path_data, additional_inputs=additional_inputs)[0]
+dataset = convert_dataset(
+    file=path_data, 
+    additional_inputs=additional_inputs,
+    df_participant_id='s_id',
+    df_block='block',
+    df_choice='action',
+    df_reward='reward'
+    )[0]
 # use these participant_ids if not defined later
 participant_ids = dataset.xs[:, 0, -1].unique().cpu().numpy()
+n_actions = dataset.ys.shape[-1]
 
 # ------------------------------------------------------------
 # Setup of agents
@@ -113,8 +130,8 @@ print("Setting up baseline agent from file", path_model_baseline)
 if path_model_baseline:
     agent_baseline = setup_agent_benchmark(path_model=path_model_baseline, model_config=model_config_baseline)
 else:
-    # agent_baseline = [AgentQ(alpha_reward=0.3, beta_reward=1) for _ in range(len(dataset))]
-    agent_baseline = [[AgentQ(alpha_reward=0., beta_reward=1, beta_choice=3) for _ in range(len(dataset))], 2]
+    agent_baseline = [[AgentQ(alpha_reward=0.3, beta_reward=1, n_actions=n_actions) for _ in range(len(dataset))], 2]
+    # agent_baseline = [[AgentQ(alpha_reward=0., beta_reward=1, beta_choice=3) for _ in range(len(dataset))], 2]
 
 n_parameters_baseline = 2
 
@@ -140,7 +157,8 @@ if path_model_rnn is not None:
     print("Setting up RNN agent from file", path_model_rnn)
     agent_rnn = setup_agent_rnn(
         class_rnn=rnn_class,
-        path_model=path_model_rnn, 
+        path_model=path_model_rnn,
+        n_actions=n_actions,
         )
     n_parameters_rnn = sum(p.numel() for p in agent_rnn._model.parameters() if p.requires_grad)
 else:
@@ -155,6 +173,7 @@ if path_model_spice is not None:
         class_rnn=rnn_class,
         path_rnn=path_model_rnn,
         path_spice=path_model_spice,
+        n_actions=n_actions,
     )
 
 n_parameters_spice = 0
@@ -167,7 +186,7 @@ n_parameters_spice = 0
 if isinstance(train_test_ratio, float):
     dataset_train, dataset_test = split_data_along_timedim(dataset, split_ratio=train_test_ratio)
     data_input = dataset.xs
-    data_test = dataset.xs[..., :agent_baseline[0][0]._n_actions]
+    data_test = dataset.xs[..., :n_actions]
     # n_trials_test = dataset_test.xs.shape[1]
     
 elif isinstance(train_test_ratio, list) or isinstance(train_test_ratio, tuple):
@@ -175,7 +194,7 @@ elif isinstance(train_test_ratio, list) or isinstance(train_test_ratio, tuple):
     if not use_test:
         dataset_test = dataset_train
     data_input = dataset_test.xs
-    data_test = dataset_test.xs[..., :agent_baseline[0][0]._n_actions]
+    data_test = dataset_test.xs[..., :n_actions]
     
 else:
     raise TypeError("train_test_raio must be either a float number or a list of integers containing the session/block ids which should be used as test sessions/blocks")

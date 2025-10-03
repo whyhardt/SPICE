@@ -775,6 +775,85 @@ class BanditsDrift(Bandits):
   @property
   def n_actions(self) -> int:
     return self._n_actions
+  
+  
+class BanditsDrift_eckstein2024(Bandits):
+  """Environment for a drifting two-armed bandit task.
+
+  Reward probabilities on each arm are sampled randomly between 0 and 1. On each
+  trial, gaussian random noise is added to each. Reward equals the reward probability.
+
+  Attributes:
+    sigma: A float, between 0 and 1, giving the magnitude of the drift
+    reward_probs: Probability of reward associated with each action
+    n_actions: number of actions available
+  """
+
+  def __init__(
+      self,
+      sigma: float,
+      n_actions: int = 2,
+      counterfactual: bool = False,
+      **kwargs,
+      ):
+    """Initialize the environment."""
+    
+    super().__init__()
+    
+    # Check inputs
+    if sigma < 0:
+      msg = f'Argument sigma but must be greater than 0. Found: {sigma}.'
+      raise ValueError(msg)
+
+    # Initialize persistent properties
+    self._sigma = sigma
+    self._n_actions = n_actions
+    self._counterfactual = counterfactual
+
+    # Sample new reward probabilities
+    self.new_sess()
+
+  def new_sess(self):
+    # Pick new reward probabilities.
+    # Sample randomly between 0 and 1
+    self._reward_probs = np.random.rand(self._n_actions)
+
+  def step(self, choice: int) -> np.ndarray:
+    """Run a single trial of the task.
+
+    Args:
+      choice: integer specifying choice made by the agent (must be less than
+        n_actions.)
+
+    Returns:
+      reward: The reward to be given to the agent. 0 or 1.
+
+    """
+
+    # Sample reward with the probability of the chosen side
+    # reward = np.array([float(np.random.rand() < self._reward_probs[i]) for i in range(self._n_actions)])
+    
+    # Add gaussian noise to reward probabilities
+    drift = np.random.normal(loc=0, scale=self._sigma, size=self._n_actions)
+    self._reward_probs += drift
+    
+    # Fix reward probs that've drifted below 0 or above 1
+    self._reward_probs = np.clip(self._reward_probs, 0, 1)
+
+    # Return the reward
+    choice_onehot = np.eye(self.n_actions)[choice]
+    if self._counterfactual:
+      return self._reward_probs
+    else:
+      return choice_onehot * self._reward_probs[choice] + (1-choice_onehot)*-1
+
+  @property
+  def reward_probs(self) -> np.ndarray:
+    return self._reward_probs.copy()
+
+  @property
+  def n_actions(self) -> int:
+    return self._n_actions
 
 
 class BanditsFlip_eckstein2022(Bandits):
@@ -1085,7 +1164,10 @@ def get_update_dynamics(experiment: Union[np.ndarray, torch.Tensor], agent: Agen
     # track all states
     q[trial] = agent.q
     for signal in additional_signals:
-      values_signal[signal][trial] = agent.get_state_value(signal).cpu().numpy() if signal in agent._state else np.zeros_like(agent.q)
+      value = agent.get_state_value(signal) if signal in agent._state else np.zeros_like(agent.q)
+      if isinstance(value, torch.Tensor):
+        value = value.cpu().numpy()
+      values_signal[signal][trial] = value
     
     choice_probs[trial] = agent.get_choice_probs()
     

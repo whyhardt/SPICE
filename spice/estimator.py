@@ -13,7 +13,7 @@ from .resources.rnn_training import fit_model
 from .resources.rnn_utils import load_checkpoint, DatasetRNN
 from .resources.sindy_utils import load_spice, save_spice, check_library_setup
 from .resources.sindy_training import fit_spice
-from .resources.bandits import AgentNetwork, AgentSpice
+from .resources.bandits import AgentNetwork, AgentSpice, Bandits, BanditsDrift
 from .resources.rnn import BaseRNN, ParameterModule
 
 
@@ -86,6 +86,7 @@ class SpiceEstimator(BaseEstimator):
         spice_optim_threshold: Optional[float] = 0.05,
         spice_optim_regularization: Optional[float] = 1e-2,
         spice_library_polynomial_degree: Optional[int] = 1,
+        simulation_environment: Bandits = None,
         n_trials_off_policy: Optional[int] = 1000,
         n_sessions_off_policy: Optional[int] = 1,
         n_trials_same_action_off_policy: Optional[int] = 5,
@@ -147,11 +148,12 @@ class SpiceEstimator(BaseEstimator):
         self.save_path_spice = save_path_spice
 
         # SPICE training parameters
-        self.fit_spice = fit_spice
+        self.fit_spice_active = fit_spice
         self.spice_optimizer_type = spice_optimizer_type
         self.spice_optim_threshold = spice_optim_threshold
         self.spice_library_polynomial_degree = spice_library_polynomial_degree
         self.spice_optim_regularization = spice_optim_regularization
+        self.simulation_environment = simulation_environment
         self.n_trials_off_policy = n_trials_off_policy
         self.n_sessions_off_policy = n_sessions_off_policy
         self.n_trials_same_action_off_policy = n_trials_same_action_off_policy
@@ -247,7 +249,7 @@ class SpiceEstimator(BaseEstimator):
             print(f'Saving RNN model to {self.save_path_rnn}...')
             self.save_spice(self.save_path_rnn, None)
         
-        if self.fit_spice:
+        if self.fit_spice_active:
             # ------------------------------------------------------------------------
             # Fit SPICE
             # ------------------------------------------------------------------------
@@ -268,6 +270,7 @@ class SpiceEstimator(BaseEstimator):
                 optimizer_threshold=self.spice_optim_threshold,
                 optimizer_alpha=self.spice_optim_regularization,
                 shuffle = False,
+                simulation_environment = self.simulation_environment,
                 n_trials_off_policy = self.n_trials_off_policy,
                 n_sessions_off_policy = self.n_sessions_off_policy,
                 n_trials_same_action_off_policy = self.n_trials_same_action_off_policy,
@@ -288,6 +291,53 @@ class SpiceEstimator(BaseEstimator):
             if self.save_path_spice is not None:
                 print(f'Saving SPICE model to {self.save_path_spice}...')
                 self.save_spice(None, self.save_path_spice)
+                
+    def fit_spice(self, data: np.ndarray, targets: np.ndarray, participant_id: int = None):
+        
+        # ------------------------------------------------------------------------
+        # Fit SPICE
+        # ------------------------------------------------------------------------
+        
+        start_time = time.time()
+        
+        dataset = DatasetRNN(data, targets)
+        self.spice_agent = {}
+        self.spice_features = {}
+        spice_modules = {rnn_module: {} for rnn_module in self.rnn_modules}
+
+        self.spice_agent = fit_spice(
+            rnn_modules=self.rnn_modules,
+            control_signals=self.control_parameters,
+            agent_rnn=self.rnn_agent,
+            data=dataset,
+            polynomial_degree=self.spice_library_polynomial_degree,
+            library_setup=self.spice_library_config,
+            filter_setup=self.spice_filter_config,
+            optimizer_type=self.spice_optimizer_type,
+            optimizer_threshold=self.spice_optim_threshold,
+            optimizer_alpha=self.spice_optim_regularization,
+            shuffle = False,
+            n_trials_off_policy = self.n_trials_off_policy,
+            n_sessions_off_policy = self.n_sessions_off_policy,
+            n_trials_same_action_off_policy = self.n_trials_same_action_off_policy,
+            train_test_ratio = self.train_test_ratio,
+            deterministic = self.deterministic,
+            verbose = self.verbose,
+            use_optuna = self.use_optuna,
+            optuna_threshold = self.optuna_threshold,
+            optuna_n_trials = self.optuna_n_trials,
+            participant_id=participant_id,
+        )[0]
+
+        # self.spice_features = self.spice_agent.get_spice_features()
+        
+        if self.verbose:
+            print('SPICE training finished.')
+            print(f'Training took {time.time() - start_time:.2f} seconds.')
+
+        if self.save_path_spice is not None:
+            print(f'Saving SPICE model to {self.save_path_spice}...')
+            self.save_spice(None, self.save_path_spice)
 
     def predict(self, conditions: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """

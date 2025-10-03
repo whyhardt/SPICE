@@ -233,46 +233,42 @@ def split_data_along_sessiondim(dataset: DatasetRNN, list_test_sessions: List[in
         
         # set training sessions
         if list_test_sessions:
-            n_sessions_test = len(list_test_sessions)
             session_ids_test = torch.tensor(list_test_sessions, dtype=torch.float32)
         else:
-            n_sessions_test = 0
-            session_ids_test = torch.tensor()
-        
-        n_sessions_train = len(session_ids) - n_sessions_test
-            
+            session_ids_test = torch.tensor([])
+
         if all(session_ids[:-1] < 1):
             session_ids_test /= len(session_ids) - 1
-        
-        # set test sessions
-        session_ids_train = torch.zeros(n_sessions_train)
-        index_sid = 0
+
+        # build list of training sessions (only includes sessions that exist in data)
+        session_ids_train = []
         for sid in session_ids:
             if not sid in session_ids_test:
-                session_ids_train[index_sid] = sid
-                index_sid += 1     
+                session_ids_train.append(sid)
+        session_ids_train = torch.tensor(session_ids_train, dtype=torch.float32)     
         
-        # setup new variables
-        train_xs, test_xs, train_ys, test_ys = torch.zeros((len(participants_ids) * n_sessions_train, *xs.shape[1:])), torch.zeros((len(participants_ids) * n_sessions_test, *xs.shape[1:])), torch.zeros((len(participants_ids) * n_sessions_train, *ys.shape[1:]))-1, torch.zeros((len(participants_ids) * n_sessions_test, *ys.shape[1:]))-1
-        train_xs[..., :-1], test_xs[..., :-1] = train_xs[..., :-1]-1, test_xs[..., :-1]-1
-        
-        index_train = 0
-        index_test = 0
+        # setup new variables - use lists to collect only existing participant-session combinations
+        train_xs_list, test_xs_list, train_ys_list, test_ys_list = [], [], [], []
+
         for pid in participants_ids:
             for sid in session_ids:
                 mask_ids = torch.logical_and(xs[:, 0, -3] == sid, xs[:, 0, -1] == pid)
                 if mask_ids.max():
                     if sid in session_ids_train:
-                        train_xs[index_train] = xs[mask_ids]
-                        train_ys[index_train] = ys[mask_ids]
-                        index_train += 1
+                        train_xs_list.append(xs[mask_ids])
+                        train_ys_list.append(ys[mask_ids])
                     elif sid in session_ids_test:
-                        test_xs[index_test] = xs[mask_ids]
-                        test_ys[index_test] = ys[mask_ids]
-                        index_test += 1
+                        test_xs_list.append(xs[mask_ids])
+                        test_ys_list.append(ys[mask_ids])
                     else:
                         raise ValueError("session id was not found in training nor test sessions.")
-        
+
+        # stack into tensors - only includes actual data, no empty rows
+        train_xs = torch.cat(train_xs_list, dim=0) if train_xs_list else torch.zeros((0, *xs.shape[1:]))
+        train_ys = torch.cat(train_ys_list, dim=0) if train_ys_list else torch.zeros((0, *ys.shape[1:]))
+        test_xs = torch.cat(test_xs_list, dim=0) if test_xs_list else torch.zeros((0, *xs.shape[1:]))
+        test_ys = torch.cat(test_ys_list, dim=0) if test_ys_list else torch.zeros((0, *ys.shape[1:]))
+
         return DatasetRNN(train_xs, train_ys, device=device), DatasetRNN(test_xs, test_ys, device=device)
 
     else:
