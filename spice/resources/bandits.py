@@ -404,6 +404,7 @@ class AgentNetwork(Agent):
     n_actions: int = 2,
     device = torch.device('cpu'),
     deterministic: bool = True,
+    use_sindy: bool = False,
     ):
       """Initialize the agent network.
 
@@ -415,7 +416,11 @@ class AgentNetwork(Agent):
       super().__init__(n_actions=n_actions)
 
       self._deterministic = deterministic
-
+      self._use_sindy = use_sindy
+      
+      if hasattr(model_rnn, 'use_sindy'):
+        model_rnn.use_sindy = use_sindy
+            
       self._model = model_rnn
       if model_rnn is not None:
         self._model = self._model.to(device)

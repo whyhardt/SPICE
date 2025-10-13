@@ -15,6 +15,7 @@ from .resources.sindy_utils import load_spice, save_spice, check_library_setup
 from .resources.sindy_training import fit_spice
 from .resources.bandits import AgentNetwork, AgentSpice, Bandits, BanditsDrift
 from .resources.rnn import BaseRNN, ParameterModule
+import pysindy as ps
 
 
 warnings.filterwarnings("ignore")
@@ -60,6 +61,7 @@ class SpiceEstimator(BaseEstimator):
         # RNN class and SPICE configuration. Can be one of the precoded models in rnn.py or a custom implementation.
         rnn_class: BaseRNN,
         spice_config: SpiceConfig,
+        use_sindy: bool = False,
         
         # Data/Environment parameters
         n_actions: int = 2,
@@ -82,6 +84,7 @@ class SpiceEstimator(BaseEstimator):
         dropout: Optional[float] = 0.,
         
         # SPICE training parameters
+        sindy_threshold_frequency = 50,
         spice_optimizer_type: Optional[str] = 'SR3_weighted_l1',
         spice_optim_threshold: Optional[float] = 0.05,
         spice_optim_regularization: Optional[float] = 1e-2,
@@ -93,8 +96,9 @@ class SpiceEstimator(BaseEstimator):
         use_optuna: Optional[bool] = False,
         optuna_threshold: Optional[float] = 0.1,
         optuna_n_trials: Optional[int] = 50,
-        
-        fit_spice: bool = True,
+
+        # Differentiable SINDy parameters (end-to-end training)
+        sindy_weight: Optional[float] = 0.1,  # Weight for SINDy regularization loss
         
         verbose: Optional[bool] = False,
         
@@ -127,6 +131,8 @@ class SpiceEstimator(BaseEstimator):
         
         super(BaseEstimator, self).__init__()
         
+        self.use_sindy = use_sindy
+        
         # Training parameters
         self.epochs = epochs
         self.bagging = bagging
@@ -148,7 +154,6 @@ class SpiceEstimator(BaseEstimator):
         self.save_path_spice = save_path_spice
 
         # SPICE training parameters
-        self.fit_spice_active = fit_spice
         self.spice_optimizer_type = spice_optimizer_type
         self.spice_optim_threshold = spice_optim_threshold
         self.spice_library_polynomial_degree = spice_library_polynomial_degree
@@ -160,6 +165,11 @@ class SpiceEstimator(BaseEstimator):
         self.use_optuna = use_optuna
         self.optuna_threshold = optuna_threshold
         self.optuna_n_trials = optuna_n_trials
+
+        # SINDy regularization parameters (for differentiable end-to-end training)
+        self.sindy_weight = 0.1 if sindy_weight > 0 else 0.0  # Default weight
+        self.sindy_threshold_value = spice_optim_threshold
+        self.sindy_threshold_frequency = sindy_threshold_frequency
 
         # Data parameters
         self.n_actions = n_actions
@@ -173,11 +183,23 @@ class SpiceEstimator(BaseEstimator):
         self.spice_agent = None
         self.spice_features = None
         
+        # Convert SpiceConfig to dict format for RNN initialization
+        sindy_config_dict = {
+            'rnn_modules': spice_config.rnn_modules,
+            'control_parameters': spice_config.control_parameters,
+            'library_setup': spice_config.library_setup,
+            'filter_setup': spice_config.filter_setup,
+        }
+
         self.rnn_model = rnn_class(
             n_actions=n_actions,
             n_participants=n_participants,
             n_experiments=n_experiments,
             dropout=dropout,
+            enable_sindy_reg=(sindy_weight > 0),
+            sindy_config=sindy_config_dict,
+            sindy_polynomial_degree=spice_library_polynomial_degree,
+            use_sindy=use_sindy,
         ).to(device)
 
         self.spice_library_config = spice_config.library_setup
@@ -189,11 +211,13 @@ class SpiceEstimator(BaseEstimator):
 
         # Separate parameters
         individual_params = list(self.rnn_model.participant_embedding.parameters()) + list(self.rnn_model.betas['x_value_reward'].parameters()) + list(self.rnn_model.betas['x_value_choice'].parameters())
-        rnn_params = [p for p in self.rnn_model.parameters() if not any(p is ip for ip in individual_params)]
+        sindy_coefficients = list(self.rnn_model.sindy_coefficients.parameters())
+        rnn_params = list(self.rnn_model.submodules_rnn.parameters())#[p for p in self.rnn_model.parameters() if not any(p is ip for ip in individual_params)]
 
         # if l1_weight_decay != 0:
         self.optimizer_rnn = torch.optim.AdamW([
             {'params': individual_params, 'weight_decay': 0.0},
+            {'params': sindy_coefficients, 'weight_decay': 0.00001},
             {'params': rnn_params, 'weight_decay': l2_weight_decay}
         ], lr=learning_rate)
         # else:
@@ -228,6 +252,10 @@ class SpiceEstimator(BaseEstimator):
             dataset_test=dataset_test,
             optimizer=self.optimizer_rnn,
             convergence_threshold=self.convergence_threshold,
+            l1_weight_decay=self.l1_weight_decay,
+            sindy_weight=self.sindy_weight,
+            sindy_threshold_value=self.sindy_threshold_value,
+            sindy_threshold_frequency=self.sindy_threshold_frequency,
             epochs=self.epochs,
             batch_size=batch_size,
             bagging=self.bagging,
@@ -237,10 +265,10 @@ class SpiceEstimator(BaseEstimator):
             path_save_checkpoints=None,
         )
 
-        rnn_model.eval()
         self.rnn_model = rnn_model
         self.rnn_optimizer = rnn_optimizer
-        self.rnn_agent = AgentNetwork(rnn_model, self.n_actions, deterministic=True, device=self.device)
+        self.rnn_agent = AgentNetwork(rnn_model, self.n_actions, deterministic=True, device=self.device, use_sindy=False)
+        self.spice_agent = AgentNetwork(rnn_model, self.n_actions, deterministic=True, device=self.device, use_sindy=True)
         
         if self.verbose:
             print('\nRNN training finished.')
@@ -248,97 +276,67 @@ class SpiceEstimator(BaseEstimator):
 
         if self.save_path_rnn is not None:
             print(f'Saving RNN model to {self.save_path_rnn}...')
-            self.save_spice(self.save_path_rnn, None)
-        
-        if self.fit_spice_active:
-            # ------------------------------------------------------------------------
-            # Fit SPICE
-            # ------------------------------------------------------------------------
-            
-            self.spice_agent = {}
-            self.spice_features = {}
-            spice_modules = {rnn_module: {} for rnn_module in self.rnn_modules}
-
-            self.spice_agent = fit_spice(
-                rnn_modules=self.rnn_modules,
-                control_signals=self.control_parameters,
-                agent_rnn=self.rnn_agent,
-                data=dataset,
-                polynomial_degree=self.spice_library_polynomial_degree,
-                library_setup=self.spice_library_config,
-                filter_setup=self.spice_filter_config,
-                optimizer_type=self.spice_optimizer_type,
-                optimizer_threshold=self.spice_optim_threshold,
-                optimizer_alpha=self.spice_optim_regularization,
-                shuffle = False,
-                simulation_environment = self.simulation_environment,
-                n_trials_off_policy = self.n_trials_off_policy,
-                n_sessions_off_policy = self.n_sessions_off_policy,
-                n_trials_same_action_off_policy = self.n_trials_same_action_off_policy,
-                train_test_ratio = self.train_test_ratio,
-                deterministic = self.deterministic,
-                verbose = self.verbose,
-                use_optuna = self.use_optuna,
-                optuna_threshold = self.optuna_threshold,
-                optuna_n_trials = self.optuna_n_trials,
-            )[0]
-
-            # self.spice_features = self.spice_agent.get_spice_features()
-            
-            if self.verbose:
-                print('SPICE training finished.')
-                print(f'Training took {time.time() - start_time:.2f} seconds.')
-
-            if self.save_path_spice is not None:
-                print(f'Saving SPICE model to {self.save_path_spice}...')
-                self.save_spice(None, self.save_path_spice)
+            self.save_spice(self.save_path_rnn)
                 
-    def fit_spice(self, data: np.ndarray, targets: np.ndarray, participant_id: int = None):
-        
-        # ------------------------------------------------------------------------
-        # Fit SPICE
-        # ------------------------------------------------------------------------
-        
-        start_time = time.time()
-        
-        dataset = DatasetRNN(data, targets)
-        self.spice_agent = {}
-        self.spice_features = {}
-        spice_modules = {rnn_module: {} for rnn_module in self.rnn_modules}
+    def _extract_sindy_from_rnn(self):
+        """
+        Extract learned SINDy coefficients from RNN and create AgentSpice for compatibility.
+        This is used when end-to-end differentiable training is enabled (sindy_weight > 0).
+        """
+        if not hasattr(self.rnn_model, 'sindy_coefficients') or len(self.rnn_model.sindy_coefficients) == 0:
+            print("Warning: No SINDy coefficients found in RNN model. Skipping SPICE extraction.")
+            return None
 
-        self.spice_agent = fit_spice(
-            rnn_modules=self.rnn_modules,
-            control_signals=self.control_parameters,
-            agent_rnn=self.rnn_agent,
-            data=dataset,
-            polynomial_degree=self.spice_library_polynomial_degree,
-            library_setup=self.spice_library_config,
-            filter_setup=self.spice_filter_config,
-            optimizer_type=self.spice_optimizer_type,
-            optimizer_threshold=self.spice_optim_threshold,
-            optimizer_alpha=self.spice_optim_regularization,
-            shuffle = False,
-            n_trials_off_policy = self.n_trials_off_policy,
-            n_sessions_off_policy = self.n_sessions_off_policy,
-            n_trials_same_action_off_policy = self.n_trials_same_action_off_policy,
-            train_test_ratio = self.train_test_ratio,
-            deterministic = self.deterministic,
-            verbose = self.verbose,
-            use_optuna = self.use_optuna,
-            optuna_threshold = self.optuna_threshold,
-            optuna_n_trials = self.optuna_n_trials,
-            participant_id=participant_id,
-        )[0]
+        print("\nExtracting learned SPICE coefficients from RNN...")
 
-        # self.spice_features = self.spice_agent.get_spice_features()
-        
-        if self.verbose:
-            print('SPICE training finished.')
-            print(f'Training took {time.time() - start_time:.2f} seconds.')
+        sindy_modules = {}
 
-        if self.save_path_spice is not None:
-            print(f'Saving SPICE model to {self.save_path_spice}...')
-            self.save_spice(None, self.save_path_spice)
+        for module_name in self.rnn_modules:
+            if module_name not in self.rnn_model.sindy_coefficients:
+                continue
+
+            sindy_modules[module_name] = {}
+
+            # Get coefficients and masks
+            coeffs = self.rnn_model.sindy_coefficients[module_name].detach().cpu().numpy()
+            masks = self.rnn_model.sindy_masks[module_name].cpu().numpy()
+            feature_names = self.rnn_model.sindy_library_names[module_name]
+
+            # Create pysindy model for each participant
+            for pid in range(self.n_participants):
+                coef_sparse = coeffs[pid] * masks[pid]
+
+                # Create a minimal pysindy model for compatibility
+                # We don't need the full optimizer, just the structure
+                sindy_model = ps.SINDy(
+                    optimizer=ps.STLSQ(threshold=0.0),  # Dummy optimizer
+                    feature_library=ps.PolynomialLibrary(
+                        degree=self.spice_library_polynomial_degree,
+                        interaction_only=False
+                    ),
+                    discrete_time=True,
+                    feature_names=feature_names,
+                )
+
+                # Manually set the learned coefficients
+                sindy_model.model = sindy_model._make_model()
+                sindy_model.model.steps[-1][1].coef_ = coef_sparse.reshape(1, -1)
+                sindy_model.n_input_features_ = len(feature_names)
+                sindy_model.n_output_features_ = 1
+                
+                sindy_modules[module_name][pid] = sindy_model
+
+        # Create AgentSpice
+        agent_spice = AgentSpice(
+            model_rnn=deepcopy(self.rnn_model),
+            sindy_modules=sindy_modules,
+            n_actions=self.n_actions,
+            deterministic=True
+        )
+
+        print(f"Extracted SPICE models for {len(sindy_modules)} modules across {self.n_participants} participants.")
+
+        return agent_spice
 
     def predict(self, conditions: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """
@@ -386,8 +384,15 @@ class SpiceEstimator(BaseEstimator):
         Returns:
             Dictionary containing features and equations for each agent/model
         """
-        print("SPICE modules:")
-        self.spice_agent.print_model(participant_id)
+        for module in self.rnn_model.submodules_rnn:
+            equation_str = module + "[t+1] = "
+            for index_term, term in enumerate(self.rnn_model.sindy_library_names[module]):
+                if self.rnn_model.sindy_coefficients[module][participant_id, index_term] != 0:
+                    if equation_str[-3:] != " = ":
+                        equation_str += "+ "        
+                    equation_str += str(np.round(self.rnn_model.sindy_coefficients[module][participant_id, index_term].item(), 4)) + " " + term
+                    equation_str += "[t] " if term == module else " "
+            print(equation_str)
         
         if hasattr(self.rnn_model, 'betas') and len(self.rnn_model.betas) > 0:
             for key in self.rnn_model.betas:
@@ -439,7 +444,7 @@ class SpiceEstimator(BaseEstimator):
         if path_spice is not None:
             self.load_spice_model(path_spice, deterministic=deterministic)
 
-    def save_spice(self, path_rnn: str = None, path_spice: str = None):
+    def save_spice(self, path_rnn: str):
         """
         Save the RNN and SPICE models to the given paths.
         If path_rnn is None, only the SPICE model will be saved (requires a fitted SPICE model including the RNN).
@@ -449,10 +454,7 @@ class SpiceEstimator(BaseEstimator):
             path_rnn: Path to the RNN model
             path_spice: Path to the SPICE model
         """
-        if path_rnn is not None:
-            # Save RNN model
-            state_dict = {'model': self.rnn_model.state_dict(), 'optimizer': self.rnn_optimizer.state_dict()}
-            torch.save(state_dict, path_rnn)
-        if path_spice is not None:
-            # Save SPICE model
-            save_spice(self.spice_agent, path_spice)
+        
+        # Save RNN model
+        state_dict = {'model': self.rnn_model.state_dict(), 'optimizer': self.rnn_optimizer.state_dict()}
+        torch.save(state_dict, path_rnn)

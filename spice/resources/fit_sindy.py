@@ -90,7 +90,7 @@ def fit_sindy(
                 nu=optimizer_alpha,
                 threshold=optimizer_threshold,
                 verbose=verbose,
-                max_iter=100
+                max_iter=20
             )
         else:  # "SR3_weighted_l1" (default)
             optimizer = ps.SR3(
@@ -99,7 +99,7 @@ def fit_sindy(
                 threshold=optimizer_threshold,
                 thresholds=thresholds,
                 verbose=verbose,
-                max_iter=100
+                max_iter=20
             )
             
         # Setup sindy model for current x-feature

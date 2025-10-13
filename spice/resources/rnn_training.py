@@ -7,6 +7,7 @@ from torch.utils.data import DataLoader, RandomSampler
 
 from .rnn import BaseRNN
 from .rnn_utils import DatasetRNN
+from .sindy_differentiable import threshold_coefficients
 
 
 def gradient_penalty(f: nn.Module, e_i: torch.Tensor, e_j: torch.Tensor, factor=1.0):
@@ -120,34 +121,38 @@ def batch_train(
     ys: torch.Tensor,
     optimizer: torch.optim.Optimizer = None,
     l1_weight_decay: float = 0.,
+    sindy_weight: float = 0.,
     n_steps: int = -1,
     loss_fn: nn.modules.loss._Loss = nn.CrossEntropyLoss(label_smoothing=0.),
     ):
-    
+
     """
     Trains a model with the given batch.
     """
-    
+
     if n_steps == -1:
         n_steps = xs.shape[1]
-        
+
     model.set_initial_state(batch_size=len(xs))
     state = model.get_state(detach=True)
-    
+
     loss_batch = 0
     iterations = 0
     for t in range(0, xs.shape[1], n_steps):
         n_steps = min(xs.shape[1]-t, n_steps)
         xs_step = xs[:, t:t+n_steps]
         ys_step = ys[:, t:t+n_steps]
-        
+
         mask = xs_step[..., :1] > -1
-        
+
         state = model.get_state(detach=True)
-        ys_pred = model(xs_step, state, batch_first=True)[0]
+        model_output = model(xs_step, state, batch_first=True)
+        ys_pred = model_output[0]
+        sindy_loss_step = model_output[2] if len(model_output) > 2 else 0
         
         ys_pred = ys_pred * mask
         ys_step = ys_step * mask
+        sindy_loss_step = sindy_loss_step * mask[..., 0]
         
         loss_step = loss_fn(
             ys_pred.reshape(-1, model._n_actions),
@@ -161,6 +166,10 @@ def batch_train(
             l1_loss = l1_weight_decay * torch.sum(torch.abs(embedding_weights))
             loss_step = loss_step + l1_loss
 
+        # Add SINDy regularization loss
+        if sindy_weight > 0 and sindy_loss_step.sum() != 0:
+            loss_step = loss_step + sindy_weight * sindy_loss_step[sindy_loss_step != 0].mean()
+
         loss_batch += loss_step
         iterations += 1
 
@@ -169,9 +178,9 @@ def batch_train(
             # backpropagation
             optimizer.zero_grad()
             loss_step.backward()
-            # torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
-    
+
     return model, optimizer, loss_batch.item()/iterations
     
 
@@ -182,6 +191,9 @@ def fit_model(
     optimizer: torch.optim.Optimizer = None,
     convergence_threshold: float = 1e-7,
     l1_weight_decay: float = 0.,
+    sindy_weight: float = 0.,
+    sindy_threshold_value: float = 0.01,
+    sindy_threshold_frequency: int = 50,
     epochs: int = 1,
     batch_size: int = -1,
     bagging: bool = False,
@@ -284,7 +296,6 @@ def fit_model(
             loss_train = 0
             loss_test = 0
             t_start = time.time()
-            n_calls_to_train_model += 1
             for _ in range(iterations_per_epoch):
                 # get next batch
                 xs, ys = next(iter(dataloader_train))
@@ -299,8 +310,17 @@ def fit_model(
                     optimizer=optimizer,
                     n_steps=n_steps,
                     l1_weight_decay=l1_weight_decay,
+                    sindy_weight=sindy_weight,
                 )
                 loss_train += loss_i
+            
+            # pruning of sindy coefficients with L0 norm
+            if n_calls_to_train_model % sindy_threshold_frequency == 0:
+                if n_calls_to_train_model != 0:
+                    model.thresholding(threshold=sindy_threshold_value)
+                model.print_spice_model()
+            
+            n_calls_to_train_model += 1
             loss_train /= iterations_per_epoch
             
             if dataset_test is not None:
@@ -346,7 +366,7 @@ def fit_model(
                     msg += '\nModel did not converge yet.'
                         
             if scheduler is not None:
-                if n_calls_to_train_model <= warmup_steps: 
+                if n_calls_to_train_model <= warmup_steps:
                     scheduler_warmup.step()
                 else:
                     if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau) or isinstance(scheduler, ReduceOnPlateauWithRestarts):
@@ -355,7 +375,20 @@ def fit_model(
                     #     scheduler.step(epoch=n_calls_to_train_model)
                     else:
                         scheduler.step()
-            
+
+            # Periodic SINDy coefficient thresholding
+            # if sindy_weight > 0 and n_calls_to_train_model % sindy_threshold_frequency == 0:
+            #     if hasattr(model, 'sindy_coefficients') and len(model.sindy_coefficients) > 0:
+            #         for module_name in model.sindy_coefficients:
+            #             new_mask = threshold_coefficients(
+            #                 model.sindy_coefficients[module_name],
+            #                 model.sindy_masks[module_name],
+            #                 sindy_threshold_value
+            #             )
+            #             model.sindy_masks[module_name] = new_mask
+            #         if verbose:
+            #             print(f'\nApplied coefficient thresholding at epoch {n_calls_to_train_model}')
+
             # save checkpoint
             if path_save_checkpoints and n_calls_to_train_model == save_at_epoch:
                 torch.save(model.state_dict(), path_save_checkpoints.replace('.', f'_ep{n_calls_to_train_model}.'))
@@ -367,5 +400,5 @@ def fit_model(
         
         #if verbose:
         print(msg, end='\r')
-            
-    return model, optimizer, loss_train
+        
+    return model.eval(), optimizer, loss_train

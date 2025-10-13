@@ -4,6 +4,12 @@ from typing import Optional, Tuple, Dict, Iterable, Callable, Union, List
 import pysindy as ps
 import numpy as np
 
+from .sindy_differentiable import (
+    compute_library_size,
+    compute_polynomial_library,
+    get_library_feature_names,
+)
+
 
 class GRUModule(nn.Module):
     def __init__(self, input_size, dropout=0., **kwargs):
@@ -86,30 +92,42 @@ class SparseLeakyReLU(nn.LeakyReLU):
 
 class BaseRNN(nn.Module):
     def __init__(
-        self, 
-        n_actions, 
+        self,
+        n_actions,
         n_participants: int = 0,
         embedding_size: int = 0,
         device=torch.device('cpu'),
+        enable_sindy_reg: bool = False,
+        sindy_config: Dict = None,
+        use_sindy: bool = False,
         ):
         super(BaseRNN, self).__init__()
-        
+
         # define general network parameters
         self.device = device
         self._n_actions = n_actions
         self.embedding_size = embedding_size
         self.n_participants = n_participants
+        self.use_sindy = use_sindy
         
-        # session recording; used for sindy training; training variables start with 'x' and control parameters with 'c' 
+        # session recording; used for sindy training; training variables start with 'x' and control parameters with 'c'
         self.recording = {}
         self.submodules_rnn = nn.ModuleDict()
         self.submodules_eq = dict()
         self.submodules_sindy = dict()
         self.betas = nn.ModuleDict()
-        
+
+        # Differentiable SINDy coefficients (NEW)
+        self.enable_sindy_reg = enable_sindy_reg
+        self.sindy_config = sindy_config
+        self.sindy_coefficients = nn.ParameterDict()
+        self.sindy_masks = {}
+        self.sindy_library_names = {}
+        # self.sindy_ensemble = 20 # TODO: implement ensemble sindy to account for bad initializations
+
         self.state = self.set_initial_state()
         
-    def forward(self, inputs, prev_state, batch_first=False):
+    def forward(self, inputs, prev_state, batch_first=False, use_sindy=False):
         raise NotImplementedError('This method is not implemented.')
     
     def init_forward_pass(self, inputs, prev_state, batch_first):
@@ -131,16 +149,18 @@ class BaseRNN(nn.Module):
         timesteps = torch.arange(actions.shape[0])
         logits = torch.zeros_like(actions)
         
-        return (actions, rewards, blocks, additional_inputs), (participant_ids, experiment_ids), logits, timesteps
+        sindy_loss_timesteps = torch.zeros_like(actions[..., 0])
+        
+        return (actions, rewards, blocks, additional_inputs), (participant_ids, experiment_ids), logits, timesteps, sindy_loss_timesteps
 
-    def post_forward_pass(self, logits, batch_first):
-        # add model dim again and set state
-        # self.set_state(*args)
+
+    def post_forward_pass(self, logits, sindy_loss, batch_first):
         
         if batch_first:
             logits = logits.permute(1, 0, 2)
-            
-        return logits
+            sindy_loss = sindy_loss.permute(1, 0)
+        
+        return logits, sindy_loss
     
     def set_initial_state(self, batch_size=1):
         """this method initializes the hidden state
@@ -186,23 +206,7 @@ class BaseRNN(nn.Module):
         self.device = device
         super().to(device=device)
         return self
-    
-    def record_signal(self, key, value: torch.Tensor):
-        """appends a new timestep sample to the recording. A timestep sample consists of the value at timestep t-1 and the value at timestep t
-
-        Args:
-            key (str): recording key to which append the sample to
-            old_value (_type_): value at timestep t-1 of shape (batch_size, feature_dim)
-            new_value (_type_): value at timestep t of shape (batch_size, feature_dim)
-        """
         
-        if key not in self.recording:
-            self.recording[key] = []
-        self.recording[key].append(value.detach().cpu().numpy())
-        
-    def get_recording(self, key):
-        return self.recording[key]
-    
     def setup_constant(self, embedding_size: int = None, activation: nn.Module = torch.nn.LeakyReLU, kwargs_activation = {'negative_slope': 0.01}):
         if embedding_size is not None:
             return nn.Sequential(nn.Linear(embedding_size, 1), activation(**kwargs_activation))
@@ -283,38 +287,24 @@ class BaseRNN(nn.Module):
         elif inputs.dim()==2:
             inputs = inputs.unsqueeze(-1)
         
-        if key_module in self.submodules_sindy.keys():                
-            # sindy module
-            
-            # convert to numpy
-            value = value.detach().cpu().numpy()
-            inputs = inputs.detach().cpu().numpy()
-            
-            if inputs.shape[-1] == 0:
-                # create dummy control inputs
-                inputs = torch.zeros((*inputs.shape[:-1], 1))
-            
-            if participant_index is None:
-                participant_index = torch.zeros((1, 1), dtype=torch.int32)
-            
-            next_value = np.zeros_like(value)
-            for index_batch in range(value.shape[0]):
-                sindy_model = self.submodules_sindy[key_module][participant_index[index_batch].item()] if isinstance(self.submodules_sindy[key_module], dict) else self.submodules_sindy[key_module]
-                next_value[index_batch] = np.concatenate(
-                    [sindy_model.predict(value[index_batch, index_action], inputs[index_batch, index_action]) for index_action in range(self._n_actions)], 
-                    axis=0,
-                    )
-            next_value = torch.tensor(next_value, dtype=torch.float32, device=self.device)
-
-        elif key_module in self.submodules_rnn.keys():
-            # rnn module
-            
-            inputs = torch.concat((value, inputs, participant_embedding), dim=-1)
-            update_value = self.submodules_rnn[key_module](inputs)
-            next_value = value + update_value
-            
-            if activation_rnn is not None:
-                next_value = activation_rnn(next_value)
+        if key_module in self.submodules_rnn.keys():
+            if not self.use_sindy:
+                # rnn module
+                
+                inputs_rnn = torch.concat((value, inputs, participant_embedding), dim=-1)
+                update_value = self.submodules_rnn[key_module](inputs_rnn)
+                next_value = value + update_value
+                
+                if activation_rnn is not None:
+                    next_value = activation_rnn(next_value)
+            else:
+                next_value = self.forward_sindy(
+                    h_current = self.state[key_state], 
+                    module_name = key_module, 
+                    participant_ids = participant_index.squeeze(), 
+                    controls = inputs, 
+                    polynomial_degree = self.sindy_polynomial_degree,
+                    ).unsqueeze(-1)
             
         elif key_module in self.submodules_eq.keys():
             # hard-coded equation
@@ -327,6 +317,19 @@ class BaseRNN(nn.Module):
             # keep only actions necessary for that update and set others to zero
             next_value = next_value * action
         
+        if self.enable_sindy_reg and self.training:
+            sindy_loss = self.compute_sindy_loss_for_module(
+                    key_module,
+                    self.state[key_state],
+                    next_value.squeeze(-1),
+                    inputs,
+                    action.squeeze(-1),
+                    participant_index.squeeze(),
+                    self.sindy_polynomial_degree,
+                )
+        else:
+            sindy_loss = 0
+        
         # clip next_value to a specific range
         next_value = torch.clip(input=next_value, min=-1e1, max=1e1)
         
@@ -335,7 +338,7 @@ class BaseRNN(nn.Module):
             scaling_factor = self.betas[key_state] if isinstance(self.betas[key_state], nn.Parameter) else self.betas[key_state](participant_embedding)
             next_value = next_value * scaling_factor
         
-        return next_value.squeeze(-1)
+        return next_value.squeeze(-1), sindy_loss
     
     def integrate_sindy(self, modules: Dict[str, Iterable[ps.SINDy]]):
         # check that all provided modules find a place in the RNN
@@ -344,6 +347,145 @@ class BaseRNN(nn.Module):
             if m in self.submodules_rnn.keys():
                 checked += 1
         assert checked == len(modules), f'Not all provided SINDy modules {tuple(modules.keys())} found a corresponding RNN module or vice versa.\nSINDy integration aborted.'
-        
+
         # replace rnn modules with sindy modules
         self.submodules_sindy = modules
+
+    def setup_sindy_coefficients(self, polynomial_degree: int = 2):
+        """
+        Initialize learnable SINDy coefficients for each module.
+        Called after submodules are defined in child class __init__.
+
+        Args:
+            polynomial_degree: Maximum polynomial degree for library
+        """
+        if not self.enable_sindy_reg or self.sindy_config is None:
+            return
+
+        rnn_modules = tuple(self.submodules_rnn.keys())
+        control_parameters = self.sindy_config.get('control_parameters', [])
+        library_setup = self.sindy_config.get('library_setup', {})
+
+        for module_name in rnn_modules:
+            # Count features for this module: state + relevant controls
+            n_state_features = 1  # Current state value
+            control_features = library_setup.get(module_name, [])
+            n_control_features = len(control_features)
+            n_total_features = n_state_features + n_control_features
+
+            # Compute library size
+            n_library_terms = compute_library_size(n_total_features, polynomial_degree)
+
+            # Initialize coefficients [n_participants, n_library_terms]
+            # Use very small initialization to prevent numerical instability
+            init_coeffs = torch.randn(self.n_participants, n_library_terms) * 0.001
+            self.sindy_coefficients[module_name] = nn.Parameter(init_coeffs)
+
+            # Initialize masks (all ones initially)
+            self.sindy_masks[module_name] = torch.ones(
+                self.n_participants, n_library_terms,
+                device=self.device
+            )
+
+            # Store library feature names
+            feature_names = [module_name] + control_features
+            self.sindy_library_names[module_name] = get_library_feature_names(
+                feature_names, polynomial_degree
+            )
+
+    def forward_sindy(self, h_current, module_name, participant_ids, controls, polynomial_degree):
+        coeffs = self.sindy_coefficients[module_name][participant_ids]  # [batch, n_library_terms]
+        # Move masks to same device as participant_ids before indexing
+        masks_device = self.sindy_masks[module_name].to(participant_ids.device)
+        masks = masks_device[participant_ids]  # [batch, n_library_terms]
+        if len(coeffs.shape) == 1:
+            coeffs = coeffs[None]
+            masks = masks[None]
+        coeffs_sparse = coeffs * masks  # Apply sparsity mask
+
+        # Compute polynomial library
+        library = compute_polynomial_library(
+            h_current, controls, degree=polynomial_degree, include_bias=True
+        )  # [batch, n_actions, n_library_terms]
+
+        # Predict next state via SINDy: x_next = x + library @ coeff
+        # library: [batch, n_actions, n_library_terms]
+        # coeffs_sparse: [batch, n_library_terms]
+        # Need to expand for matrix multiply per action
+        delta = torch.einsum('baf,bf->ba', library, coeffs_sparse)  # [batch, n_actions]
+        h_next_sindy = h_current + delta
+        
+        return h_next_sindy     
+    
+    
+    def compute_sindy_loss_for_module(
+        self,
+        module_name: str,
+        h_current: torch.Tensor,
+        h_next_rnn: torch.Tensor,
+        controls: torch.Tensor,
+        action_mask: torch.Tensor,
+        participant_ids: torch.Tensor,
+        polynomial_degree: int = 2,
+    ) -> torch.Tensor:
+        """
+        Compute differentiable SINDy reconstruction loss for one module.
+
+        Args:
+            module_name: Name of the RNN module
+            h_current: Current hidden state [batch, n_actions]
+            h_next_rnn: RNN's predicted next state [batch, n_actions]
+            controls: Control inputs [batch, n_actions, n_controls]
+            action_mask: Binary mask for actions [batch, n_actions]
+            participant_ids: Participant indices [batch]
+            polynomial_degree: Polynomial degree
+
+        Returns:
+            Scalar loss value
+        """
+        if module_name not in self.sindy_coefficients:
+            return torch.tensor(0.0, device=self.device)
+
+        # Get coefficients and masks for this batch
+        batch_size = h_current.shape[0]
+        h_next_sindy = self.forward_sindy(h_current, module_name, participant_ids, controls, polynomial_degree)
+
+        # Reconstruction loss (only for masked actions)
+        diff = (h_next_rnn - h_next_sindy) ** 2
+        masked_diff = diff * action_mask
+        loss = masked_diff.sum(dim=-1)
+
+        # Safety: check for NaN or inf
+        loss = torch.where(torch.logical_or(torch.isnan(loss), torch.isinf(loss)), 0, loss)
+        
+        # Clip loss to prevent explosion
+        loss = torch.clamp(loss, max=1000.0)
+
+        return loss
+        
+    def thresholding(self, threshold, base_threshold=0):
+        for module in self.submodules_rnn:
+            threshold_tensor = torch.full_like(self.sindy_coefficients[module], threshold)
+            # from original sindy-shred implementation - TODO: why this was used
+            # for i in range(self.num_replicates):
+            #     threshold_tensor[i] = threshold_tensor[i] * 10**(0.2 * i - 1) + base_threshold
+            self.sindy_masks[module] = torch.abs(self.sindy_coefficients[module]) > threshold_tensor
+            self.sindy_coefficients[module].data = self.sindy_masks[module] * self.sindy_coefficients[module].data
+            
+    def print_spice_model(self, participant_id: int = 0) -> None:
+        """
+        Get the learned SPICE features and equations.
+        
+        Returns:
+            Dictionary containing features and equations for each agent/model
+        """
+        
+        for module in self.submodules_rnn:
+            equation_str = module + "[t+1] = "
+            for index_term, term in enumerate(self.sindy_library_names[module]):
+                if self.sindy_coefficients[module][participant_id, index_term] != 0:
+                    if equation_str[-3:] != " = ":
+                        equation_str += "+ "        
+                    equation_str += str(np.round(self.sindy_coefficients[module][participant_id, index_term].item(), 4)) + " " + term
+                    equation_str += "[t] " if term == module else " "
+            print(equation_str)

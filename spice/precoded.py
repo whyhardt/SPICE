@@ -748,23 +748,32 @@ class BufferWorkingMemoryRNN(BaseRNN):
     }
 
     def __init__(
-        self, 
-        n_actions: int, 
-        n_participants: int, 
-        embedding_size: int = 32, 
+        self,
+        n_actions: int,
+        n_participants: int,
+        embedding_size: int = 32,
         dropout: float = 0.5,
+        enable_sindy_reg: bool = False,
+        sindy_config: dict = None,
+        sindy_polynomial_degree: int = 2,
+        use_sindy: bool = False,
         **kwargs):
         super().__init__(
-            n_actions=n_actions, 
+            n_actions=n_actions,
             n_participants=n_participants,
             embedding_size=embedding_size,
+            enable_sindy_reg=enable_sindy_reg,
+            sindy_config=sindy_config,
+            use_sindy=use_sindy,
             )
+            
+        self.sindy_polynomial_degree = sindy_polynomial_degree
 
         self.participant_embedding = self.setup_embedding(n_participants, embedding_size, dropout=dropout)
 
         self.betas['x_value_reward'] = self.setup_constant(embedding_size)
         self.betas['x_value_choice'] = self.setup_constant(embedding_size)
-        
+
         # Value learning module (slow updates)
         # Can use recent reward history to modulate learning
         self.submodules_rnn['x_value_reward_chosen'] = self.setup_module(input_size=5 + embedding_size, dropout=dropout)
@@ -772,37 +781,23 @@ class BufferWorkingMemoryRNN(BaseRNN):
         self.submodules_rnn['x_value_choice_chosen'] = self.setup_module(input_size=4 + embedding_size, dropout=dropout)
         self.submodules_rnn['x_value_choice_not_chosen'] = self.setup_module(input_size=4 + embedding_size, dropout=dropout)
 
+        # Setup differentiable SINDy coefficients if enabled
+        if enable_sindy_reg:
+            self.setup_sindy_coefficients(polynomial_degree=sindy_polynomial_degree)
+
     def forward(self, inputs, prev_state=None, batch_first=False):
-        input_variables, ids, logits, timesteps = self.init_forward_pass(inputs, prev_state, batch_first)
+        input_variables, ids, logits, timesteps, sindy_loss_timesteps = self.init_forward_pass(inputs, prev_state, batch_first)
         actions, rewards, _, _ = input_variables
         participant_id, _ = ids
-
+        
         rewards_chosen = (actions * rewards).sum(dim=-1, keepdim=True).repeat(1, 1, self._n_actions)
 
         participant_embedding = self.participant_embedding(participant_id[:, 0].int())
-        
+
         for timestep, action, reward_chosen in zip(timesteps, actions, rewards_chosen):
-
-            # Record for SPICE (including buffer contents as control signals)
-            if not self.training and len(self.submodules_sindy) == 0:
-                self.record_signal('c_action', action)
-                self.record_signal('c_reward', reward_chosen)
-                self.record_signal('c_value_reward', self.state['x_value_reward'])
-                self.record_signal('c_value_choice', self.state['x_value_choice'])
-                # Buffer contents are control signals
-                self.record_signal('c_reward_t_minus_1', self.state['x_reward_buffer_1'])
-                self.record_signal('c_reward_t_minus_2', self.state['x_reward_buffer_2'])
-                self.record_signal('c_reward_t_minus_3', self.state['x_reward_buffer_3'])
-                self.record_signal('c_choice_t_minus_1', self.state['x_choice_buffer_1'])
-                self.record_signal('c_choice_t_minus_2', self.state['x_choice_buffer_2'])
-                self.record_signal('c_choice_t_minus_3', self.state['x_choice_buffer_3'])
-                self.record_signal('x_value_reward_chosen', self.state['x_value_reward'])
-                self.record_signal('x_value_reward_not_chosen', self.state['x_value_reward'])
-                self.record_signal('x_value_choice_chosen', self.state['x_value_choice'])
-                self.record_signal('x_value_choice_not_chosen', self.state['x_value_choice'])
-
+            
             # VALUE UPDATE: Uses buffer contents (working memory)
-            next_value_reward_chosen = self.call_module(
+            next_value_reward_chosen, sindy_loss_module = self.call_module(
                 key_module='x_value_reward_chosen',
                 key_state='x_value_reward',
                 action=action,
@@ -817,8 +812,9 @@ class BufferWorkingMemoryRNN(BaseRNN):
                 participant_index=participant_id,
                 activation_rnn=torch.nn.functional.sigmoid,
             )
+            sindy_loss_timesteps[timestep] = sindy_loss_timesteps[timestep] + sindy_loss_module
 
-            next_value_reward_not_chosen = self.call_module(
+            next_value_reward_not_chosen, sindy_loss_module = self.call_module(
                 key_module='x_value_reward_not_chosen',
                 key_state='x_value_reward',
                 action=1-action,
@@ -833,9 +829,10 @@ class BufferWorkingMemoryRNN(BaseRNN):
                 participant_index=participant_id,
                 activation_rnn=torch.nn.functional.sigmoid,
             )
+            sindy_loss_timesteps[timestep] = sindy_loss_timesteps[timestep] + sindy_loss_module
             
             # CHOICE UPDATE
-            next_value_choice_chosen = self.call_module(
+            next_value_choice_chosen, sindy_loss_module = self.call_module(
                 key_module='x_value_choice_chosen',
                 key_state='x_value_choice',
                 action=action,
@@ -849,8 +846,9 @@ class BufferWorkingMemoryRNN(BaseRNN):
                 participant_index=participant_id,
                 activation_rnn=torch.nn.functional.sigmoid,
             )
-
-            next_value_choice_not_chosen = self.call_module(
+            sindy_loss_timesteps[timestep] = sindy_loss_timesteps[timestep] + sindy_loss_module
+            
+            next_value_choice_not_chosen, sindy_loss_module = self.call_module(
                 key_module='x_value_choice_not_chosen',
                 key_state='x_value_choice',
                 action=1-action,
@@ -864,7 +862,9 @@ class BufferWorkingMemoryRNN(BaseRNN):
                 participant_index=participant_id,
                 activation_rnn=torch.nn.functional.sigmoid,
             )
+            sindy_loss_timesteps[timestep] = sindy_loss_timesteps[timestep] + sindy_loss_module
             
+            # STATE UPDATE
             self.state['x_value_reward'] = next_value_reward_chosen + next_value_reward_not_chosen
             self.state['x_value_choice'] = next_value_choice_chosen + next_value_choice_not_chosen
 
@@ -880,10 +880,11 @@ class BufferWorkingMemoryRNN(BaseRNN):
             # Could add direct influence of buffer on choice
             logits[timestep] = self.state['x_value_reward'] * self.betas['x_value_reward'](participant_embedding) + self.state['x_value_choice'] * self.betas['x_value_choice'](participant_embedding)
 
-        logits = self.post_forward_pass(logits, batch_first)
-        return logits, self.get_state()
-    
-    
+        logits, sindy_loss_timesteps = self.post_forward_pass(logits, sindy_loss_timesteps, batch_first)
+        
+        return logits, self.get_state(), sindy_loss_timesteps
+
+
 BUFFER_WORKING_MEMORY_2_CONFIG = SpiceConfig(
     rnn_modules=[
         'x_value_reward_chosen',
