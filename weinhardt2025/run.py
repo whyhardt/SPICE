@@ -25,9 +25,13 @@ if __name__=='__main__':
     
     args = parser.parse_args()
     
-    args.model = "weinhardt2025/params/eckstein2024/rnn_eckstein2024.pkl"
+    args.model = "weinhardt2025/params/eckstein2024/rnn_eckstein2024_test24.pkl"
     args.data = "weinhardt2025/data/eckstein2024/eckstein2024.csv"
-    args.train_test_ratio = "1,3"
+    # args.time_train_test_ratio = 0.8
+    args.session_train_test_ratio = "2,4"
+    # args.l1 = 0.0001
+    args.l2 = 0.0005
+    args.epochs = 8192
     
     dataset = convert_dataset(
         file=args.data,
@@ -53,45 +57,46 @@ if __name__=='__main__':
     simulation_environment = BanditsDrift_eckstein2024(sigma=0.2, n_actions=4)
     
     estimator = SpiceEstimator(
+        fit_spice=False,
         rnn_class=BufferWorkingMemoryRNN,
         spice_config=BUFFER_WORKING_MEMORY_CONFIG,
         n_actions=n_actions,
         n_participants=n_participants,
         epochs=args.epochs,
         bagging=True,
-        scheduler=True,
+        scheduler=False,
         device=torch.device('cuda' if torch.cuda.is_available() else 'cpu'),
         train_test_ratio=args.time_train_test_ratio if args.time_train_test_ratio else args.session_train_test_ratio,
         l1_weight_decay=args.l1,
         l2_weight_decay=args.l2,
-        dropout=0.25,
+        dropout=0.5,
         learning_rate=1e-3,
         use_optuna=True,
-        fit_spice=True,
         spice_library_polynomial_degree=2,
         simulation_environment=simulation_environment,
         n_sessions_off_policy=1,
         # spice_optim_regularization=0.01,
-        # spice_optim_threshold=0.,
+        # spice_optim_threshold=0.05,
+        optuna_threshold=0.,
         save_path_rnn=args.model,
         save_path_spice=args.model.replace('rnn', 'spice'),
     )
     
-    # estimator.fit(dataset_train.xs, dataset_train.ys)
+    # estimator.fit(dataset_train.xs, dataset_train.ys, data_test=dataset_test.xs, target_test=dataset_test.ys)
     
-    # estimator.load_rnn_model(args.model)
-    # estimator.load_spice_model(args.model.replace('rnn', 'spice'))
+    # # estimator.load_rnn_model(args.model)
+    # # estimator.load_spice_model(args.model.replace('rnn', 'spice'))
     
+    participant_id = None
     estimator.load_rnn_model(args.model)
-    estimator.fit_spice(dataset_train.xs, dataset_train.ys, participant_id=0)
+    estimator.fit_spice(dataset_train.xs, dataset_train.ys, participant_id=participant_id)
     
-    estimator.print_spice_model(participant_id=0)
-    # estimator.print_spice_model(participant_id=130)
-    # estimator.print_spice_model(participant_id=250)
+    estimator.print_spice_model(participant_id=participant_id)
+    # # estimator.print_spice_model(participant_id=130)
+    # # estimator.print_spice_model(participant_id=250)
     
-    import matplotlib.pyplot as plt
-    from spice.utils.plotting import plot_session
-    
-    agents = {'rnn': estimator.rnn_agent, 'spice': estimator.spice_agent}
-    fig, axs = plot_session(agents, dataset_train.xs[0])
-    plt.show()
+    # import matplotlib.pyplot as plt
+    # from spice.utils.plotting import plot_session
+    # agents = {'rnn': estimator.rnn_agent, 'spice': estimator.spice_agent}
+    # fig, axs = plot_session(agents, dataset_train.xs[participant_id])
+    # plt.show()

@@ -121,7 +121,7 @@ def batch_train(
     optimizer: torch.optim.Optimizer = None,
     l1_weight_decay: float = 0.,
     n_steps: int = -1,
-    loss_fn: nn.modules.loss._Loss = nn.CrossEntropyLoss(),
+    loss_fn: nn.modules.loss._Loss = nn.CrossEntropyLoss(label_smoothing=0.),
     ):
     
     """
@@ -169,6 +169,7 @@ def batch_train(
             # backpropagation
             optimizer.zero_grad()
             loss_step.backward()
+            # torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
     
     return model, optimizer, loss_batch.item()/iterations

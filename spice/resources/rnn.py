@@ -6,10 +6,12 @@ import numpy as np
 
 
 class GRUModule(nn.Module):
-    def __init__(self, input_size, **kwargs):
+    def __init__(self, input_size, dropout=0., **kwargs):
         super().__init__()
         
         self.linear_in = nn.Linear(input_size, 8+input_size)
+        # self.dropout = nn.Dropout(p=dropout)
+        # self.relu = nn.LeakyReLU()
         self.gru_in = nn.GRU(8+input_size, 1)
         self.linear_out = nn.Linear(1, 1)
         
@@ -27,7 +29,13 @@ class GRUModule(nn.Module):
     def forward(self, inputs):
         n_actions = inputs.shape[1]
         inputs = inputs.view(inputs.shape[0]*inputs.shape[1], inputs.shape[2]).unsqueeze(0)
-        next_state = self.gru_in(self.linear_in(inputs[..., 1:]), inputs[..., :1].contiguous())[1].view(-1, n_actions, 1)
+        next_state = self.gru_in(
+            # self.dropout(
+            #     self.relu(
+                    self.linear_in(inputs[..., 1:])
+                #     )
+                # )
+            , inputs[..., :1].contiguous())[1].view(-1, n_actions, 1)
         next_state = self.linear_out(next_state)
         return next_state
 
@@ -195,9 +203,9 @@ class BaseRNN(nn.Module):
     def get_recording(self, key):
         return self.recording[key]
     
-    def setup_constant(self, embedding_size: int = None, leaky_relu: float = 0.01):
+    def setup_constant(self, embedding_size: int = None, activation: nn.Module = torch.nn.LeakyReLU, kwargs_activation = {'negative_slope': 0.01}):
         if embedding_size is not None:
-            return nn.Sequential(nn.Linear(embedding_size, 1), nn.LeakyReLU(leaky_relu))
+            return nn.Sequential(nn.Linear(embedding_size, 1), activation(**kwargs_activation))
         else:
             return ParameterModule()
     
@@ -208,7 +216,7 @@ class BaseRNN(nn.Module):
             torch.nn.Dropout(p=dropout),
             )
     
-    def setup_module(self, input_size: int):
+    def setup_module(self, input_size: int, dropout: float = 0.):
         """This method creates the standard RNN-module used in computational discovery of cognitive dynamics
 
         Args:
@@ -221,7 +229,7 @@ class BaseRNN(nn.Module):
         """
         
         # GRU network
-        module = GRUModule(input_size=input_size)
+        module = GRUModule(input_size=input_size, dropout=dropout)
         
         return module 
     

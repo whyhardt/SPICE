@@ -1154,6 +1154,7 @@ def get_update_dynamics(experiment: Union[np.ndarray, torch.Tensor], agent: Agen
   
   # reset agent states according to ID
   agent.new_sess(participant_id=participant_id, experiment_id=experiment_id, additional_embedding_inputs=additional_inputs)
+  betas_available = hasattr(agent, '_betas') and agent._betas is not None
   
   # initialize storages
   q = np.zeros((n_trials, agent._n_actions))
@@ -1164,9 +1165,9 @@ def get_update_dynamics(experiment: Union[np.ndarray, torch.Tensor], agent: Agen
     # track all states
     q[trial] = agent.q
     for signal in additional_signals:
-      value = agent.get_state_value(signal) if signal in agent._state else np.zeros_like(agent.q)
+      value = agent.get_state_value(signal, multiply_with_beta=betas_available) if signal in agent._state else np.zeros_like(agent.q)
       if isinstance(value, torch.Tensor):
-        value = value.cpu().numpy()
+        value = value.detach().cpu().numpy()
       values_signal[signal][trial] = value
     
     choice_probs[trial] = agent.get_choice_probs()

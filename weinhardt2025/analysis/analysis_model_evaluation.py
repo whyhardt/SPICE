@@ -19,9 +19,7 @@ from spice.utils.convert_dataset import convert_dataset
 from spice import precoded
 
 # dataset specific benchmarking models
-from weinhardt2025.benchmarking import benchmarking_dezfouli2019, benchmarking_eckstein2022, benchmarking_lstm
-from weinhardt2025.benchmarking.benchmarking_dezfouli2019 import Dezfouli2019GQL
-
+from weinhardt2025.benchmarking import benchmarking_dezfouli2019, benchmarking_eckstein2022, benchmarking_lstm, benchmarking_eckstein2024, benchmarking_castro2025
 
 # -------------------------------------------------------------------------------
 # AGENT CONFIGURATIONS
@@ -42,16 +40,18 @@ from weinhardt2025.benchmarking.benchmarking_dezfouli2019 import Dezfouli2019GQL
 
 # ------------------- CONFIGURATION ECKSTEIN2024 --------------------
 study = 'eckstein2024'
-models_benchmark = ['ApAnBrBcfBch']#['ApBr', 'ApBrAcfpBcf', 'ApBrAcfpBcfBch', 'ApAnBrBch', 'ApAnBrAcfpAcfnBcfBch', 'ApAnBrBcfBch']
-train_test_ratio = [1,3]
+models_benchmark = ['CogFunSearch']
+train_test_ratio = [2,4]
 sindy_config = precoded.BUFFER_WORKING_MEMORY_CONFIG
 rnn_class = precoded.BufferWorkingMemoryRNN
 additional_inputs = None
-setup_agent_benchmark = benchmarking_eckstein2022.setup_agent_benchmark
-rl_model = benchmarking_eckstein2022.rl_model
-benchmark_file = f'mcmc_{study}_MODEL.nc'
-model_config_baseline = 'ApBr'
-baseline_file = f'mcmc_{study}_ApBr.nc'
+setup_agent_benchmark = benchmarking_eckstein2024.setup_agent_benchmark
+# setup_agent_benchmark = benchmarking_castro2025.setup_agent_benchmark
+Eckstein2024Model = benchmarking_eckstein2024.Eckstein2024Model
+Castro2025Model = benchmarking_castro2025.Castro2025Model
+benchmark_file = f'cogfunsearch_{study}.pkl'
+model_config_baseline = None
+baseline_file = f'benchmark_{study}.pkl'
 
 # ------------------------ CONFIGURATION DEZFOULI2019 -----------------------
 # study = 'dezfouli2019'
@@ -95,10 +95,10 @@ baseline_file = f'mcmc_{study}_ApBr.nc'
 use_test = True
 
 path_data = f'weinhardt2025/data/{study}/{study}.csv'
-path_model_rnn = f'weinhardt2025/params/{study}/rnn_{study}.pkl'
-path_model_spice = f'weinhardt2025/params/{study}/spice_{study}.pkl'
-path_model_baseline = None#os.path.join(f'params/{study}/', baseline_file)
-path_model_benchmark = None#os.path.join(f'params/{study}', benchmark_file) if len(models_benchmark) > 0 else None
+path_model_rnn = f'weinhardt2025/params/{study}/rnn_{study}_test24.pkl'
+path_model_spice = None#f'weinhardt2025/params/{study}/spice_{study}.pkl'
+path_model_baseline = os.path.join(f'weinhardt2025/params/{study}/', baseline_file)
+path_model_benchmark = None#os.path.join(f'weinhardt2025/params/{study}', benchmark_file) if len(models_benchmark) > 0 else None
 path_model_benchmark_lstm = None#f'params/{study}/lstm_{study}.pkl'
 
 # -------------------------------------------------------------------------------
@@ -111,7 +111,7 @@ dataset = convert_dataset(
     df_participant_id='s_id',
     df_block='block',
     df_choice='action',
-    df_reward='reward'
+    df_reward='reward',
     )[0]
 # use these participant_ids if not defined later
 participant_ids = dataset.xs[:, 0, -1].unique().cpu().numpy()

@@ -177,6 +177,7 @@ class SpiceEstimator(BaseEstimator):
             n_actions=n_actions,
             n_participants=n_participants,
             n_experiments=n_experiments,
+            dropout=dropout,
         ).to(device)
 
         self.spice_library_config = spice_config.library_setup
@@ -187,16 +188,16 @@ class SpiceEstimator(BaseEstimator):
         self.spice_feature_list = spice_config.spice_feature_list
 
         # Separate parameters
-        embedding_params = list(self.rnn_model.participant_embedding.parameters())
-        other_params = [p for p in self.rnn_model.parameters() if not any(p is ep for ep in embedding_params)]
+        individual_params = list(self.rnn_model.participant_embedding.parameters()) + list(self.rnn_model.betas['x_value_reward'].parameters()) + list(self.rnn_model.betas['x_value_choice'].parameters())
+        rnn_params = [p for p in self.rnn_model.parameters() if not any(p is ip for ip in individual_params)]
 
-        if l1_weight_decay != 0:
-            self.optimizer_rnn = torch.optim.AdamW([
-                {'params': embedding_params, 'weight_decay': 0.0},
-                {'params': other_params, 'weight_decay': l2_weight_decay}
-            ], lr=learning_rate)
-        else:
-            self.optimizer_rnn = torch.optim.AdamW(self.rnn_model.parameters(), lr=learning_rate, weight_decay=l2_weight_decay)
+        # if l1_weight_decay != 0:
+        self.optimizer_rnn = torch.optim.AdamW([
+            {'params': individual_params, 'weight_decay': 0.0},
+            {'params': rnn_params, 'weight_decay': l2_weight_decay}
+        ], lr=learning_rate)
+        # else:
+            # self.optimizer_rnn = torch.optim.AdamW(self.rnn_model.parameters(), lr=learning_rate, weight_decay=l2_weight_decay)
             
     def fit(self, data: np.ndarray, targets: np.ndarray, data_test: np.ndarray = None, target_test: np.ndarray = None):
         """

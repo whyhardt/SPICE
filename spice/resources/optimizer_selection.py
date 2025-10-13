@@ -102,7 +102,7 @@ def optimize_for_participant(
         # loss_parameter = bayesian_information_criterion(data.xs[0, :len(probs_spice), :agent_spice._n_actions].numpy(), probs_spice, n_parameters=agent_spice.count_parameters()[agent_spice.get_participant_ids()[0]])/len(probs_spice)
         penalty_parameters = 0
         penalty_parameters += np.sum([np.sum(np.abs(sindy_modules[module].coefficients())) for module in sindy_modules])
-        loss = loss_reconstruction + penalty_parameters * 1e-4
+        loss = loss_reconstruction + penalty_parameters * 1e-3
         
         if loss == np.nan:
             loss = 1e3

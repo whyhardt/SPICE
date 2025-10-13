@@ -678,7 +678,10 @@ BUFFER_WORKING_MEMORY_CONFIG = SpiceConfig(
         'c_reward',
         'c_reward_t_minus_1',  # Previous reward (from buffer)
         'c_reward_t_minus_2',  # 2 trials ago (from buffer)
-        'c_reward_t_minus_3',  # 3 trials ago (from buffer)
+        'c_reward_t_minus_3',  # 3 trials ago (from buffer)        
+        'c_choice_t_minus_1',  # Previous choice (from buffer)
+        'c_choice_t_minus_2',  # 2 trials ago (from buffer)
+        'c_choice_t_minus_3',  # 3 trials ago (from buffer)
         'c_value_reward',
         'c_value_choice',
     ],
@@ -686,21 +689,31 @@ BUFFER_WORKING_MEMORY_CONFIG = SpiceConfig(
     library_setup={
         # Value learning can depend on recent reward sequence (working memory)
         'x_value_reward_chosen': [
-            'c_reward',           # Current reward
-            'c_reward_t_minus_1', # Recent history affects learning rate
+            'c_reward',           
+            'c_reward_t_minus_1', 
             'c_reward_t_minus_2',
             'c_reward_t_minus_3',
             'c_value_choice',
         ],
         'x_value_reward_not_chosen': [
             'c_reward', 
-            'c_reward_t_minus_1', # Recent history affects learning rate
+            'c_reward_t_minus_1', 
             'c_reward_t_minus_2',
             'c_reward_t_minus_3',
             'c_value_choice',
             ],
-        'x_value_choice_chosen': ['c_value_reward'],
-        'x_value_choice_not_chosen': ['c_value_reward'],
+        'x_value_choice_chosen': [
+            'c_choice_t_minus_1', 
+            'c_choice_t_minus_2',
+            'c_choice_t_minus_3',
+            'c_value_reward',
+            ],
+        'x_value_choice_not_chosen': [
+            'c_choice_t_minus_1', 
+            'c_choice_t_minus_2',
+            'c_choice_t_minus_3',
+            'c_value_reward',
+            ],
     },
     
     filter_setup={
@@ -729,26 +742,35 @@ class BufferWorkingMemoryRNN(BaseRNN):
         'x_reward_buffer_1': 0.5,   # t-1 reward
         'x_reward_buffer_2': 0.5,   # t-2 reward  
         'x_reward_buffer_3': 0.5,   # t-3 reward
+        'x_choice_buffer_1': 0.5,   # t-1 choice
+        'x_choice_buffer_2': 0.5,   # t-2 choice  
+        'x_choice_buffer_3': 0.5,   # t-3 choice
     }
 
-    def __init__(self, n_actions: int, n_participants: int, 
-                embedding_size: int = 32, **kwargs):
-        super().__init__(n_actions=n_actions, n_participants=n_participants,
-                        embedding_size=embedding_size)
+    def __init__(
+        self, 
+        n_actions: int, 
+        n_participants: int, 
+        embedding_size: int = 32, 
+        dropout: float = 0.5,
+        **kwargs):
+        super().__init__(
+            n_actions=n_actions, 
+            n_participants=n_participants,
+            embedding_size=embedding_size,
+            )
 
-        self.participant_embedding = self.setup_embedding(
-            n_participants, embedding_size, dropout=0.5
-        )
+        self.participant_embedding = self.setup_embedding(n_participants, embedding_size, dropout=dropout)
 
         self.betas['x_value_reward'] = self.setup_constant(embedding_size)
         self.betas['x_value_choice'] = self.setup_constant(embedding_size)
-
+        
         # Value learning module (slow updates)
         # Can use recent reward history to modulate learning
-        self.submodules_rnn['x_value_reward_chosen'] = self.setup_module(input_size=5 + embedding_size)
-        self.submodules_rnn['x_value_reward_not_chosen'] = self.setup_module(input_size=5 + embedding_size)
-        self.submodules_rnn['x_value_choice_chosen'] = self.setup_module(input_size=1 + embedding_size)
-        self.submodules_rnn['x_value_choice_not_chosen'] = self.setup_module(input_size=1 + embedding_size)
+        self.submodules_rnn['x_value_reward_chosen'] = self.setup_module(input_size=5 + embedding_size, dropout=dropout)
+        self.submodules_rnn['x_value_reward_not_chosen'] = self.setup_module(input_size=5 + embedding_size, dropout=dropout)
+        self.submodules_rnn['x_value_choice_chosen'] = self.setup_module(input_size=4 + embedding_size, dropout=dropout)
+        self.submodules_rnn['x_value_choice_not_chosen'] = self.setup_module(input_size=4 + embedding_size, dropout=dropout)
 
     def forward(self, inputs, prev_state=None, batch_first=False):
         input_variables, ids, logits, timesteps = self.init_forward_pass(inputs, prev_state, batch_first)
@@ -771,6 +793,9 @@ class BufferWorkingMemoryRNN(BaseRNN):
                 self.record_signal('c_reward_t_minus_1', self.state['x_reward_buffer_1'])
                 self.record_signal('c_reward_t_minus_2', self.state['x_reward_buffer_2'])
                 self.record_signal('c_reward_t_minus_3', self.state['x_reward_buffer_3'])
+                self.record_signal('c_choice_t_minus_1', self.state['x_choice_buffer_1'])
+                self.record_signal('c_choice_t_minus_2', self.state['x_choice_buffer_2'])
+                self.record_signal('c_choice_t_minus_3', self.state['x_choice_buffer_3'])
                 self.record_signal('x_value_reward_chosen', self.state['x_value_reward'])
                 self.record_signal('x_value_reward_not_chosen', self.state['x_value_reward'])
                 self.record_signal('x_value_choice_chosen', self.state['x_value_choice'])
@@ -806,6 +831,7 @@ class BufferWorkingMemoryRNN(BaseRNN):
                     ),
                 participant_embedding=participant_embedding,
                 participant_index=participant_id,
+                activation_rnn=torch.nn.functional.sigmoid,
             )
             
             # CHOICE UPDATE
@@ -814,6 +840,9 @@ class BufferWorkingMemoryRNN(BaseRNN):
                 key_state='x_value_choice',
                 action=action,
                 inputs=(
+                    self.state['x_choice_buffer_1'],  # Recent choice history
+                    self.state['x_choice_buffer_2'],
+                    self.state['x_choice_buffer_3'],
                     self.state['x_value_reward'],
                 ),
                 participant_embedding=participant_embedding,
@@ -826,12 +855,16 @@ class BufferWorkingMemoryRNN(BaseRNN):
                 key_state='x_value_choice',
                 action=1-action,
                 inputs=(
+                    self.state['x_choice_buffer_1'],  # Recent choice history
+                    self.state['x_choice_buffer_2'],
+                    self.state['x_choice_buffer_3'],
                     self.state['x_value_reward'],
                     ),
                 participant_embedding=participant_embedding,
                 participant_index=participant_id,
+                activation_rnn=torch.nn.functional.sigmoid,
             )
-
+            
             self.state['x_value_reward'] = next_value_reward_chosen + next_value_reward_not_chosen
             self.state['x_value_choice'] = next_value_choice_chosen + next_value_choice_not_chosen
 
@@ -839,6 +872,9 @@ class BufferWorkingMemoryRNN(BaseRNN):
             self.state['x_reward_buffer_3'] = self.state['x_reward_buffer_2'] * action + self.state['x_reward_buffer_3'] * (1-action)
             self.state['x_reward_buffer_2'] = self.state['x_reward_buffer_1'] * action + self.state['x_reward_buffer_2'] * (1-action)
             self.state['x_reward_buffer_1'] = reward_chosen * action + self.state['x_reward_buffer_1'] * (1-action)
+            self.state['x_choice_buffer_3'] = self.state['x_choice_buffer_2']
+            self.state['x_choice_buffer_2'] = self.state['x_choice_buffer_1']
+            self.state['x_choice_buffer_1'] = action
             
             # Decision combines value (long-term) with recent rewards (working memory)
             # Could add direct influence of buffer on choice
@@ -850,90 +886,137 @@ class BufferWorkingMemoryRNN(BaseRNN):
     
 BUFFER_WORKING_MEMORY_2_CONFIG = SpiceConfig(
     rnn_modules=[
-        'x_value_reward_chosen',     # Slow value learning (long-term)
+        'x_value_reward_chosen',
         'x_value_reward_not_chosen',
         'x_value_choice_chosen',
         'x_value_choice_not_chosen',
+        'x_update_reward_buffer_chosen',    
+        'x_update_reward_buffer_not_chosen',
+        'x_update_choice_buffer_chosen',    
+        'x_update_choice_buffer_not_chosen',
     ],
 
     control_parameters=[
         'c_action',
         'c_reward',
-        'c_reward_t_minus_1',  # Previous reward (from buffer)
-        'c_reward_t_minus_2',  # 2 trials ago (from buffer)
-        'c_reward_t_minus_3',  # 3 trials ago (from buffer)
+        'c_reward_t_minus_1',
+        'c_reward_t_minus_2',
+        'c_reward_t_minus_3',
+        'c_choice_t_minus_1',
+        'c_choice_t_minus_2',
+        'c_choice_t_minus_3',
         'c_value_reward',
         'c_value_choice',
     ],
 
     library_setup={
-        # Value learning can depend on recent reward sequence (working memory)
         'x_value_reward_chosen': [
-            'c_reward',           # Current reward
-            'c_reward_t_minus_1', # Recent history affects learning rate
+            'c_reward',
+            'c_reward_t_minus_1',
             'c_reward_t_minus_2',
             'c_reward_t_minus_3',
             'c_value_choice',
         ],
         'x_value_reward_not_chosen': [
-            'c_reward', 
-            'c_reward_t_minus_1', # Recent history affects learning rate
+            'c_reward',
+            'c_reward_t_minus_1',
             'c_reward_t_minus_2',
             'c_reward_t_minus_3',
             'c_value_choice',
-            ],
+        ],
         'x_value_choice_chosen': ['c_value_reward'],
         'x_value_choice_not_chosen': ['c_value_reward'],
+        
+        # TODO: Will probably make problems when recording signals because of static assignment vs dynamic assignment in forward pass
+        # Reward buffer update: receives all buffer values + position encoding
+        'x_update_reward_buffer_chosen': [
+            'c_reward',
+            'c_reward_t_minus_1',
+            'c_reward_t_minus_2',
+            'c_reward_t_minus_3',
+        ],
+        'x_update_reward_buffer_not_chosen': [
+            'c_reward_t_minus_1',
+            'c_reward_t_minus_2',
+            'c_reward_t_minus_3',
+        ],
+        # Choice buffer update: receives all choice buffer values + position encoding
+        'x_update_choice_buffer_chosen': [
+            'c_choice_t_minus_1',
+            'c_choice_t_minus_2',
+            'c_choice_t_minus_3',
+        ],
+        'x_update_choice_buffer_not_chosen': [
+            'c_choice_t_minus_1',
+            'c_choice_t_minus_2',
+            'c_choice_t_minus_3',
+        ],
     },
-    
+
     filter_setup={
         'x_value_reward_chosen': ['c_action', 1, True],
         'x_value_reward_not_chosen': ['c_action', 0, True],
         'x_value_choice_chosen': ['c_action', 1, True],
         'x_value_choice_not_chosen': ['c_action', 0, True],
+        'x_update_reward_buffer_chosen': ['c_action', 1, True],
+        'x_update_reward_buffer_not_chosen': ['c_action', 0, True],
+        'x_update_choice_buffer_chosen': ['c_action', 1, True],
+        'x_update_choice_buffer_not_chosen': ['c_action', 0, True],
     },
 )
 
 
 class BufferWorkingMemoryRNN_2(BaseRNN):
     """
-    Working memory as explicit buffer of recent rewards.
-    
+    Working memory as explicit buffer of recent rewards and choices.
+
     Key difference from value learning:
-    - Stores individual past rewards (not aggregated statistics)
+    - Stores individual past rewards and choices (not aggregated statistics)
     - Fixed capacity (buffer size)
-    - Perfect memory for items in buffer
-    - Items fall out of buffer (discrete forgetting)
+    - Dynamic decay based on buffer contents and position
+    - Position-dependent updates via learnable encodings
     """
 
     init_values = {
         'x_value_reward': 0.5,      # Long-term value (slow learning)
-        'x_value_choice': 0.0,
+        'x_value_choice': 0.5,
         'x_reward_buffer_1': 0.5,   # t-1 reward
-        'x_reward_buffer_2': 0.5,   # t-2 reward  
+        'x_reward_buffer_2': 0.5,   # t-2 reward
         'x_reward_buffer_3': 0.5,   # t-3 reward
+        'x_choice_buffer_1': 0.5,   # t-1 choice
+        'x_choice_buffer_2': 0.5,   # t-2 choice
+        'x_choice_buffer_3': 0.5,   # t-3 choice
     }
 
-    def __init__(self, n_actions: int, n_participants: int, 
+    def __init__(self, n_actions: int, n_participants: int,
                 embedding_size: int = 32, **kwargs):
-        super().__init__(n_actions=n_actions, n_participants=n_participants,
-                        embedding_size=embedding_size)
+        super().__init__(n_actions=n_actions, n_participants=n_participants, embedding_size=embedding_size)
 
-        self.participant_embedding = self.setup_embedding(
-            n_participants, embedding_size, dropout=0.5
-        )
-
+        self.participant_embedding = self.setup_embedding(n_participants, embedding_size, dropout=0.5)
+        
         self.betas['x_value_reward'] = self.setup_constant(embedding_size)
         self.betas['x_value_choice'] = self.setup_constant(embedding_size)
 
-        # Value learning module (slow updates)
-        # Can use recent reward history to modulate learning
+        # Learnable position encodings for buffer positions (participant-specific)
+        self.betas['x_reward_buffer_1'] = self.setup_constant(embedding_size, activation=torch.nn.Sigmoid, kwargs_activation={})
+        self.betas['x_reward_buffer_2'] = self.setup_constant(embedding_size, activation=torch.nn.Sigmoid, kwargs_activation={})
+        self.betas['x_reward_buffer_3'] = self.setup_constant(embedding_size, activation=torch.nn.Sigmoid, kwargs_activation={})
+        self.betas['x_choice_buffer_1'] = self.setup_constant(embedding_size, activation=torch.nn.Sigmoid, kwargs_activation={})
+        self.betas['x_choice_buffer_2'] = self.setup_constant(embedding_size, activation=torch.nn.Sigmoid, kwargs_activation={})
+        self.betas['x_choice_buffer_3'] = self.setup_constant(embedding_size, activation=torch.nn.Sigmoid, kwargs_activation={})
+        
+        # Value learning modules (use buffer contents)
         self.submodules_rnn['x_value_reward_chosen'] = self.setup_module(input_size=5 + embedding_size)
         self.submodules_rnn['x_value_reward_not_chosen'] = self.setup_module(input_size=5 + embedding_size)
         self.submodules_rnn['x_value_choice_chosen'] = self.setup_module(input_size=1 + embedding_size)
         self.submodules_rnn['x_value_choice_not_chosen'] = self.setup_module(input_size=1 + embedding_size)
-        self.submodules_rnn['x_update_buffer_chosen'] = self.setup_module(input_size=2 + embedding_size)
-        self.submodules_rnn['x_update_buffer_not_chosen'] = self.setup_module(input_size=2 + embedding_size)
+
+        # General buffer update modules
+        # TODO: Perhaps add values as inputs
+        self.submodules_rnn['x_update_reward_buffer_chosen'] = self.setup_module(input_size=4 + embedding_size + 1)
+        self.submodules_rnn['x_update_reward_buffer_not_chosen'] = self.setup_module(input_size=4 + embedding_size + 1)
+        self.submodules_rnn['x_update_choice_buffer_chosen'] = self.setup_module(input_size=3 + embedding_size + 1)
+        self.submodules_rnn['x_update_choice_buffer_not_chosen'] = self.setup_module(input_size=3 + embedding_size + 1)
 
     def forward(self, inputs, prev_state=None, batch_first=False):
         input_variables, ids, logits, timesteps = self.init_forward_pass(inputs, prev_state, batch_first)
@@ -943,7 +1026,15 @@ class BufferWorkingMemoryRNN_2(BaseRNN):
         rewards_chosen = (actions * rewards).sum(dim=-1, keepdim=True).repeat(1, 1, self._n_actions)
 
         participant_embedding = self.participant_embedding(participant_id[:, 0].int())
-        
+
+        # Compute learnable position encodings from participant embedding
+        pos_1_reward = self.betas['x_reward_buffer_1'](participant_embedding).unsqueeze(1).repeat(1, 1, self._n_actions)
+        pos_2_reward = self.betas['x_reward_buffer_2'](participant_embedding).unsqueeze(1).repeat(1, 1, self._n_actions)
+        pos_3_reward = self.betas['x_reward_buffer_3'](participant_embedding).unsqueeze(1).repeat(1, 1, self._n_actions)
+        pos_1_choice = self.betas['x_choice_buffer_1'](participant_embedding).unsqueeze(1).repeat(1, 1, self._n_actions)
+        pos_2_choice = self.betas['x_choice_buffer_2'](participant_embedding).unsqueeze(1).repeat(1, 1, self._n_actions)
+        pos_3_choice = self.betas['x_choice_buffer_3'](participant_embedding).unsqueeze(1).repeat(1, 1, self._n_actions)
+
         for timestep, action, reward_chosen in zip(timesteps, actions, rewards_chosen):
 
             # Record for SPICE (including buffer contents as control signals)
@@ -968,7 +1059,7 @@ class BufferWorkingMemoryRNN_2(BaseRNN):
                 action=action,
                 inputs=(
                     reward_chosen,
-                    self.state['x_reward_buffer_1'],  # Recent reward history
+                    self.state['x_reward_buffer_1'],
                     self.state['x_reward_buffer_2'],
                     self.state['x_reward_buffer_3'],
                     self.state['x_value_choice'],
@@ -984,23 +1075,21 @@ class BufferWorkingMemoryRNN_2(BaseRNN):
                 action=1-action,
                 inputs=(
                     reward_chosen,
-                    self.state['x_reward_buffer_1'],  # Recent reward history
+                    self.state['x_reward_buffer_1'],
                     self.state['x_reward_buffer_2'],
                     self.state['x_reward_buffer_3'],
                     self.state['x_value_choice'],
-                    ),
+                ),
                 participant_embedding=participant_embedding,
                 participant_index=participant_id,
             )
-            
+
             # CHOICE UPDATE
             next_value_choice_chosen = self.call_module(
                 key_module='x_value_choice_chosen',
                 key_state='x_value_choice',
                 action=action,
-                inputs=(
-                    self.state['x_value_reward'],
-                ),
+                inputs=(self.state['x_value_reward'],),
                 participant_embedding=participant_embedding,
                 participant_index=participant_id,
                 activation_rnn=torch.nn.functional.sigmoid,
@@ -1010,49 +1099,202 @@ class BufferWorkingMemoryRNN_2(BaseRNN):
                 key_module='x_value_choice_not_chosen',
                 key_state='x_value_choice',
                 action=1-action,
-                inputs=(
-                    self.state['x_value_reward'],
-                    ),
+                inputs=(self.state['x_value_reward'],),
                 participant_embedding=participant_embedding,
                 participant_index=participant_id,
             )
 
-            # BUFFER UPDATE
-            next_value_choice_chosen = self.call_module(
-                key_module='x_update_buffer_chosen',
+            # DYNAMIC BUFFER UPDATE - Chosen action (same module, different positions)
+            # Position 1 (t-1): Gets new reward, modulated by position encoding
+            next_buffer_1_chosen = self.call_module(
+                key_module='x_update_reward_buffer_chosen',
                 key_state='x_reward_buffer_1',
                 action=action,
                 inputs=(
                     reward_chosen,
                     self.state['x_reward_buffer_2'],
                     self.state['x_reward_buffer_3'],
+                    pos_1_reward,
                 ),
                 participant_embedding=participant_embedding,
                 participant_index=participant_id,
-                activation_rnn=torch.nn.functional.sigmoid,
             )
 
-            next_value_choice_not_chosen = self.call_module(
-                key_module='x_value_choice_not_chosen',
-                key_state='x_value_choice',
-                action=1-action,
+            # Position 2 (t-2): Shifts from t-1, modulated by position encoding
+            next_buffer_2_chosen = self.call_module(
+                key_module='x_update_reward_buffer_chosen',
+                key_state='x_reward_buffer_2',
+                action=action,
                 inputs=(
-                    self.state['x_value_reward'],
-                    ),
+                    reward_chosen,
+                    self.state['x_reward_buffer_1'],
+                    self.state['x_reward_buffer_3'],
+                    pos_2_reward,
+                ),
                 participant_embedding=participant_embedding,
                 participant_index=participant_id,
             )
 
+            # Position 3 (t-3): Shifts from t-2, modulated by position encoding
+            next_buffer_3_chosen = self.call_module(
+                key_module='x_update_reward_buffer_chosen',
+                key_state='x_reward_buffer_3',
+                action=action,
+                inputs=(
+                    reward_chosen,
+                    self.state['x_reward_buffer_1'],
+                    self.state['x_reward_buffer_2'],
+                    pos_3_reward,
+                ),
+                participant_embedding=participant_embedding,
+                participant_index=participant_id,
+            )
+
+            # DYNAMIC BUFFER DECAY - Not chosen action (same module, different positions)
+            # Position 1: Decay modulated by position encoding
+            next_buffer_1_not_chosen = self.call_module(
+                key_module='x_update_reward_buffer_not_chosen',
+                key_state='x_reward_buffer_1',
+                action=1-action,
+                inputs=(
+                    reward_chosen,
+                    self.state['x_reward_buffer_2'],
+                    self.state['x_reward_buffer_3'],
+                    pos_1_reward,
+                ),
+                participant_embedding=participant_embedding,
+                participant_index=participant_id,
+            )
+
+            # Position 2: Decay modulated by position encoding
+            next_buffer_2_not_chosen = self.call_module(
+                key_module='x_update_reward_buffer_not_chosen',
+                key_state='x_reward_buffer_2',
+                action=1-action,
+                inputs=(
+                    reward_chosen,
+                    self.state['x_reward_buffer_1'],
+                    self.state['x_reward_buffer_3'],
+                    pos_2_reward,
+                ),
+                participant_embedding=participant_embedding,
+                participant_index=participant_id,
+            )
+
+            # Position 3: Decay modulated by position encoding
+            next_buffer_3_not_chosen = self.call_module(
+                key_module='x_update_reward_buffer_not_chosen',
+                key_state='x_reward_buffer_3',
+                action=1-action,
+                inputs=(
+                    reward_chosen,
+                    self.state['x_reward_buffer_1'],
+                    self.state['x_reward_buffer_2'],
+                    pos_3_reward,
+                ),
+                participant_embedding=participant_embedding,
+                participant_index=participant_id,
+            )
+            
+            # DYNAMIC BUFFER UPDATE - Chosen action (same module, different positions)
+            # Position 1 (t-1): Gets new reward, modulated by position encoding
+            next_choice_buffer_1_chosen = self.call_module(
+                key_module='x_update_choice_buffer_chosen',
+                key_state='x_choice_buffer_1',
+                action=action,
+                inputs=(
+                    self.state['x_choice_buffer_2'],
+                    self.state['x_choice_buffer_3'],
+                    pos_1_choice,
+                ),
+                participant_embedding=participant_embedding,
+                participant_index=participant_id,
+            )
+
+            # Position 2 (t-2): Shifts from t-1, modulated by position encoding
+            next_choice_buffer_2_chosen = self.call_module(
+                key_module='x_update_choice_buffer_chosen',
+                key_state='x_choice_buffer_2',
+                action=action,
+                inputs=(
+                    self.state['x_choice_buffer_1'],
+                    self.state['x_choice_buffer_3'],
+                    pos_2_choice,
+                ),
+                participant_embedding=participant_embedding,
+                participant_index=participant_id,
+            )
+
+            # Position 3 (t-3): Shifts from t-2, modulated by position encoding
+            next_choice_buffer_3_chosen = self.call_module(
+                key_module='x_update_choice_buffer_chosen',
+                key_state='x_choice_buffer_3',
+                action=action,
+                inputs=(
+                    self.state['x_choice_buffer_1'],
+                    self.state['x_choice_buffer_2'],
+                    pos_3_choice,
+                ),
+                participant_embedding=participant_embedding,
+                participant_index=participant_id,
+            )
+
+            # DYNAMIC BUFFER DECAY - Not chosen action (same module, different positions)
+            # Position 1: Decay modulated by position encoding
+            next_choice_buffer_1_not_chosen = self.call_module(
+                key_module='x_update_choice_buffer_not_chosen',
+                key_state='x_choice_buffer_1',
+                action=1-action,
+                inputs=(
+                    self.state['x_choice_buffer_2'],
+                    self.state['x_choice_buffer_3'],
+                    pos_1_choice,
+                ),
+                participant_embedding=participant_embedding,
+                participant_index=participant_id,
+            )
+
+            # Position 2: Decay modulated by position encoding
+            next_choice_buffer_2_not_chosen = self.call_module(
+                key_module='x_update_choice_buffer_not_chosen',
+                key_state='x_choice_buffer_2',
+                action=1-action,
+                inputs=(
+                    self.state['x_choice_buffer_1'],
+                    self.state['x_choice_buffer_3'],
+                    pos_2_choice,
+                ),
+                participant_embedding=participant_embedding,
+                participant_index=participant_id,
+            )
+
+            # Position 3: Decay modulated by position encoding
+            next_choice_buffer_3_not_chosen = self.call_module(
+                key_module='x_update_choice_buffer_not_chosen',
+                key_state='x_choice_buffer_3',
+                action=1-action,
+                inputs=(
+                    self.state['x_choice_buffer_1'],
+                    self.state['x_choice_buffer_2'],
+                    pos_3_choice,
+                ),
+                participant_embedding=participant_embedding,
+                participant_index=participant_id,
+            )
+
+            # Update all states
             self.state['x_value_reward'] = next_value_reward_chosen + next_value_reward_not_chosen
             self.state['x_value_choice'] = next_value_choice_chosen + next_value_choice_not_chosen
-
-            # BUFFER UPDATE: Shift buffer for chosen action (deterministic, not learned by SPICE)
-            self.state['x_reward_buffer_3'] = self.state['x_reward_buffer_2'] * action + self.state['x_reward_buffer_3'] * (1-action)
-            self.state['x_reward_buffer_2'] = self.state['x_reward_buffer_1'] * action + self.state['x_reward_buffer_2'] * (1-action)
-            self.state['x_reward_buffer_1'] = reward_chosen * action + self.state['x_reward_buffer_1'] * (1-action)
             
-            # Decision combines value (long-term) with recent rewards (working memory)
-            # Could add direct influence of buffer on choice
+            # Update buffers with dynamic learned updates
+            self.state['x_reward_buffer_1'] = next_buffer_1_chosen + next_buffer_1_not_chosen
+            self.state['x_reward_buffer_2'] = next_buffer_2_chosen + next_buffer_2_not_chosen
+            self.state['x_reward_buffer_3'] = next_buffer_3_chosen + next_buffer_3_not_chosen
+            self.state['x_choice_buffer_1'] = next_choice_buffer_1_chosen + next_choice_buffer_1_not_chosen
+            self.state['x_choice_buffer_2'] = next_choice_buffer_2_chosen + next_choice_buffer_2_not_chosen
+            self.state['x_choice_buffer_3'] = next_choice_buffer_3_chosen + next_choice_buffer_3_not_chosen
+
+            # Decision combines value (long-term) with choice value
             logits[timestep] = self.state['x_value_reward'] * self.betas['x_value_reward'](participant_embedding) + self.state['x_value_choice'] * self.betas['x_value_choice'](participant_embedding)
 
         logits = self.post_forward_pass(logits, batch_first)
