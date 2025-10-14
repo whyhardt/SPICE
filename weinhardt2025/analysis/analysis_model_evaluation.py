@@ -12,7 +12,7 @@ from weinhardt2025.benchmarking import benchmarking_dezfouli2019
 from spice.resources.model_evaluation import get_scores
 from spice.resources.bandits import get_update_dynamics, AgentQ
 from spice.resources.rnn_utils import split_data_along_timedim, split_data_along_sessiondim
-from spice.utils.setup_agents import setup_agent_rnn, setup_agent_spice
+from spice.utils.setup_agents import setup_agent as setup_agent_spice
 from spice.utils.convert_dataset import convert_dataset
 
 # dataset specific SPICE models
@@ -92,11 +92,11 @@ baseline_file = f'mcmc_{study}_ApBr.nc'
 # additional_inputs = []
 
 # ------------------------- CONFIGURATION FILE PATHS ------------------------
-use_test = True
+use_test = False
 
 path_data = f'weinhardt2025/data/{study}/{study}.csv'
 path_model_rnn = f'weinhardt2025/params/{study}/rnn_{study}.pkl'
-path_model_spice = f'weinhardt2025/params/{study}/spice_{study}.pkl'
+path_model_spice = f'weinhardt2025/params/{study}/rnn_{study}.pkl'
 path_model_baseline = None#os.path.join(f'weinhardt2025/params/{study}/', baseline_file)
 path_model_benchmark = None#os.path.join(f'weinhardt2025/params/{study}', benchmark_file) if len(models_benchmark) > 0 else None
 path_model_benchmark_lstm = None#f'params/{study}/lstm_{study}.pkl'
@@ -154,29 +154,18 @@ else:
     
 # setup rnn agent
 if path_model_rnn is not None:
-    print("Setting up RNN agent from file", path_model_rnn)
-    agent_rnn = setup_agent_rnn(
+    print("Setting up RNN and SPICE agent from file", path_model_rnn)
+    agent_rnn, agent_spice = setup_agent_spice(
         class_rnn=rnn_class,
         path_model=path_model_rnn,
         n_actions=n_actions,
+        sindy_config=sindy_config,
         )
     n_parameters_rnn = sum(p.numel() for p in agent_rnn._model.parameters() if p.requires_grad)
+    n_parameters_spice = 0
 else:
     n_parameters_rnn = 0
-    
-# setup spice agent
-if path_model_spice is not None:
-    print("Setting up SPICE agent from file", path_model_spice)
-    
-    # get SPICE agent
-    agent_spice = setup_agent_spice(
-        class_rnn=rnn_class,
-        path_rnn=path_model_rnn,
-        path_spice=path_model_spice,
-        n_actions=n_actions,
-    )
-
-n_parameters_spice = 0
+    n_parameters_spice = 0
     
 # ------------------------------------------------------------
 # Dataset splitting

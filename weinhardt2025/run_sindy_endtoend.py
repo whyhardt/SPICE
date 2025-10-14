@@ -30,13 +30,14 @@ if __name__=='__main__':
     args = parser.parse_args()
 
     # Default parameters for eckstein2022 dataset
-    args.model = "weinhardt2025/params/eckstein2022/rnn_eckstein2022_sindy_endtoend.pkl"
+    args.model = "weinhardt2025/params/eckstein2022/spice_eckstein2022.pkl"
     args.data = "weinhardt2025/data/eckstein2022/eckstein2022.csv"
     args.time_train_test_ratio = 0.8
-    args.l2 = 0.0005
-    args.epochs = 149  # Further reduced for initial testing
-    args.sindy_weight = 0.001  # Start with very small weight for stability
-
+    args.epochs = 1024  # Further reduced for initial testing
+    args.l2 = 0.
+    args.l1 = 0.0001
+    args.sindy_weight = 1e-1  # Start with very small weight for stability
+    
     print(f"Loading dataset from {args.data}...")
     dataset = convert_dataset(
         file=args.data,
@@ -75,25 +76,26 @@ if __name__=='__main__':
         train_test_ratio=args.time_train_test_ratio if args.time_train_test_ratio else args.session_train_test_ratio,
         l1_weight_decay=args.l1,
         l2_weight_decay=args.l2,
-        dropout=0.5,
+        dropout=0.,
         learning_rate=1e-2,
         sindy_weight=args.sindy_weight,  # Enable end-to-end SINDy regularization
         spice_library_polynomial_degree=2,
-        save_path_rnn=args.model,
-        save_path_spice=args.model.replace('rnn', 'spice'),
-        sindy_threshold_frequency = 50,
+        save_path_spice=args.model,
+        sindy_threshold_frequency = 32,
+        spice_optim_threshold=0.01,
     )
+    
+    estimator.load_spice(args.model)
     
     print(f"\nStarting training on {estimator.device}...")
     print("=" * 80)
-    estimator.fit(dataset_train.xs, dataset_train.ys, data_test=dataset_test.xs, target_test=dataset_test.ys)
+    estimator.fit(dataset_train.xs, dataset_train.ys, data_test=dataset_train.xs, target_test=dataset_train.ys)
+    # estimator.load_spice(args.model)
     print("=" * 80)
     print("\nTraining complete!")
-
-    print(f"\nModel saved to:")
-    print(f"  RNN:   {args.model}")
-    print(f"  SPICE: {args.model.replace('rnn', 'spice')}")
-
+    
+    print(f"\nModel saved to: {args.model}")
+    
     # Print example SPICE model for first participant
     print("\nExample SPICE model (participant 0):")
     print("-" * 80)

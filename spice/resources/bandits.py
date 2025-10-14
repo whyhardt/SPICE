@@ -418,14 +418,8 @@ class AgentNetwork(Agent):
       self._deterministic = deterministic
       self._use_sindy = use_sindy
       
-      if hasattr(model_rnn, 'use_sindy'):
-        model_rnn.use_sindy = use_sindy
-            
-      self._model = model_rnn
-      if model_rnn is not None:
-        self._model = self._model.to(device)
-        self._model.eval()
-
+      self._model = model_rnn.eval(use_sindy=use_sindy).to(device)
+        
   def new_sess(self, participant_id: int = 0, experiment_id: int = 0, additional_embedding_inputs: np.ndarray = torch.zeros(0), **kwargs):
     """Reset the network for the beginning of a new session."""
     if not isinstance(participant_id, torch.Tensor):
@@ -488,6 +482,12 @@ class AgentNetwork(Agent):
   def q(self):
     return self.get_logit()
   
+  def count_parameters(self) -> np.ndarray:
+    n_parameters = np.zeros(self._model.n_participants, dtype=int)
+    for module in self._model.submodules_rnn:
+      n_parameters += np.sum(np.where(self._model.sindy_coefficients[module] > 0, 1, 0), axis=-1)
+      
+    return n_parameters
   
 class AgentSpice(AgentNetwork):
   

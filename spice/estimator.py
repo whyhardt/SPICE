@@ -102,7 +102,6 @@ class SpiceEstimator(BaseEstimator):
         
         verbose: Optional[bool] = False,
         
-        save_path_rnn: Optional[str] = None,
         save_path_spice: Optional[str] = None
     ):
         """
@@ -150,8 +149,7 @@ class SpiceEstimator(BaseEstimator):
         self.l1_weight_decay = l1_weight_decay
 
         # Save parameters
-        self.save_path_rnn = save_path_rnn
-        self.save_path_spice = save_path_spice
+        self.save_path_model = save_path_spice
 
         # SPICE training parameters
         self.spice_optimizer_type = spice_optimizer_type
@@ -217,7 +215,7 @@ class SpiceEstimator(BaseEstimator):
         # if l1_weight_decay != 0:
         self.optimizer_rnn = torch.optim.AdamW([
             {'params': individual_params, 'weight_decay': 0.0},
-            {'params': sindy_coefficients, 'weight_decay': 0.00001},
+            {'params': sindy_coefficients, 'weight_decay': 0.0},
             {'params': rnn_params, 'weight_decay': l2_weight_decay}
         ], lr=learning_rate)
         # else:
@@ -267,16 +265,16 @@ class SpiceEstimator(BaseEstimator):
 
         self.rnn_model = rnn_model
         self.rnn_optimizer = rnn_optimizer
-        self.rnn_agent = AgentNetwork(rnn_model, self.n_actions, deterministic=True, device=self.device, use_sindy=False)
-        self.spice_agent = AgentNetwork(rnn_model, self.n_actions, deterministic=True, device=self.device, use_sindy=True)
+        self.rnn_agent = AgentNetwork(deepcopy(rnn_model), self.n_actions, deterministic=True, device=self.device, use_sindy=False)
+        self.spice_agent = AgentNetwork(deepcopy(rnn_model), self.n_actions, deterministic=True, device=self.device, use_sindy=True)
         
         if self.verbose:
             print('\nRNN training finished.')
             print(f'Training took {time.time() - start_time:.2f} seconds.')
 
-        if self.save_path_rnn is not None:
-            print(f'Saving RNN model to {self.save_path_rnn}...')
-            self.save_spice(self.save_path_rnn)
+        if self.save_path_model is not None:
+            print(f'Saving SPICE model to {self.save_path_model}...')
+            self.save_spice(self.save_path_model)
                 
     def _extract_sindy_from_rnn(self):
         """
@@ -380,27 +378,9 @@ class SpiceEstimator(BaseEstimator):
     def print_spice_model(self, participant_id: int = 0) -> None:
         """
         Get the learned SPICE features and equations.
-        
-        Returns:
-            Dictionary containing features and equations for each agent/model
         """
-        for module in self.rnn_model.submodules_rnn:
-            equation_str = module + "[t+1] = "
-            for index_term, term in enumerate(self.rnn_model.sindy_library_names[module]):
-                if self.rnn_model.sindy_coefficients[module][participant_id, index_term] != 0:
-                    if equation_str[-3:] != " = ":
-                        equation_str += "+ "        
-                    equation_str += str(np.round(self.rnn_model.sindy_coefficients[module][participant_id, index_term].item(), 4)) + " " + term
-                    equation_str += "[t] " if term == module else " "
-            print(equation_str)
         
-        if hasattr(self.rnn_model, 'betas') and len(self.rnn_model.betas) > 0:
-            for key in self.rnn_model.betas:
-                if not isinstance(self.rnn_model.betas[key], ParameterModule):
-                    participant_embedding = self.rnn_model.participant_embedding(torch.tensor(participant_id, device=self.device).int())
-                else:
-                    participant_embedding = None
-                print(f"beta({key}) = {self.rnn_model.betas[key](participant_embedding).item():.4f}")
+        self.rnn_model.print_spice_model(participant_id)
     
     def get_spice_agents(self) -> Dict:
         """
@@ -422,28 +402,11 @@ class SpiceEstimator(BaseEstimator):
             print(f'RNN model has no participant_embedding module.')
             return None
         
-    def load_rnn_model(self, path_model: str, deterministic: bool = True):
+    def load_spice(self, path_model: str, deterministic: bool = True):
         self.rnn_model, self.rnn_optimizer = load_checkpoint(path_model, self.rnn_model, self.optimizer_rnn)
-        self.rnn_agent = AgentNetwork(self.rnn_model, self.n_actions, deterministic=deterministic, device=self.device)
+        self.rnn_agent = AgentNetwork(deepcopy(self.rnn_model), self.n_actions, deterministic=deterministic, device=self.device, use_sindy=False)
+        self.spice_agent = AgentNetwork(deepcopy(self.rnn_model), self.n_actions, deterministic=deterministic, device=self.device, use_sindy=True)
         
-    def load_spice_model(self, path_spice: str, deterministic: bool = True):
-        spice_modules = load_spice(path_spice)
-        self.spice_agent = AgentSpice(model_rnn=self.rnn_agent._model, sindy_modules=spice_modules, n_actions=self.rnn_agent._n_actions, deterministic=deterministic)
-
-    def load_spice(self, path_rnn: str, path_spice: str, deterministic: bool = True):
-        """
-        Load the RNN and SPICE models from the given paths.
-        
-        Args:
-            path_rnn: Path to the RNN model
-            path_spice: Path to the SPICE model
-            deterministic: Whether to use a deterministic model (default: True)
-        """
-        if path_rnn is not None:
-            self.load_rnn_model(path_rnn, deterministic=deterministic)
-        if path_spice is not None:
-            self.load_spice_model(path_spice, deterministic=deterministic)
-
     def save_spice(self, path_rnn: str):
         """
         Save the RNN and SPICE models to the given paths.

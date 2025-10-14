@@ -159,20 +159,16 @@ def batch_train(
             torch.argmax(ys_step.reshape(-1, model._n_actions), dim=1),
             )
 
-        # Add L1 regularization on participant embedding weights
-        if l1_weight_decay > 0 and hasattr(model, 'participant_embedding'):
-            # Get the embedding layer weights (first layer in the Sequential)
-            embedding_weights = model.participant_embedding[0].weight
-            l1_loss = l1_weight_decay * torch.sum(torch.abs(embedding_weights))
-            loss_step = loss_step + l1_loss
-
         # Add SINDy regularization loss
         if sindy_weight > 0 and sindy_loss_step.sum() != 0:
-            loss_step = loss_step + sindy_weight * sindy_loss_step[sindy_loss_step != 0].mean()
-
+            reconstruction_loss = sindy_loss_step[sindy_loss_step != 0].mean()
+            all_sindy_coeffs = torch.cat([p for p in model.sindy_coefficients.values()], dim=-1)  # get all sindy coefficients for each participant across all modules -> (n_participants, n_modules*n_features_per_module)
+            sparsity_regularization = torch.mean(torch.sum(torch.abs(all_sindy_coeffs), dim=-1))
+            loss_step = loss_step + sindy_weight * reconstruction_loss + l1_weight_decay * sparsity_regularization
+            
         loss_batch += loss_step
         iterations += 1
-
+        
         if torch.is_grad_enabled():
 
             # backpropagation
@@ -232,6 +228,8 @@ def fit_model(
     else:
         sampler = None
     dataloader_train = DataLoader(dataset_train, batch_size=batch_size, sampler=sampler, shuffle=True if sampler is None else False)
+    # if dataset_test is None:
+    #     dataset_test = dataset_train
     if dataset_test is not None:
         dataloader_test = DataLoader(dataset_test, batch_size=len(dataset_test))
     
@@ -314,31 +312,28 @@ def fit_model(
                 )
                 loss_train += loss_i
             
-            # pruning of sindy coefficients with L0 norm
-            if n_calls_to_train_model % sindy_threshold_frequency == 0:
-                if n_calls_to_train_model != 0:
-                    model.thresholding(threshold=sindy_threshold_value)
-                model.print_spice_model()
-            
             n_calls_to_train_model += 1
             loss_train /= iterations_per_epoch
             
             if dataset_test is not None:
-                model.eval()
+                model = model.eval(use_sindy=True)
                 with torch.no_grad():
                     xs, ys = next(iter(dataloader_test))
                     if xs.device != model.device:
                         xs = xs.to(model.device)
                         ys = ys.to(model.device)
                     # evaluate model
-                    _, _, loss_test = batch_train(
-                        model=model,
-                        xs=xs,
-                        ys=ys,
-                        optimizer=optimizer,
-                        l1_weight_decay=l1_weight_decay,
-                    )
-                model.train()
+                    _, _, loss_test = batch_train(model=model, xs=xs, ys=ys)
+                model = model.train()
+            
+            # periodic pruning of sindy coefficients with L0 norm
+            if n_calls_to_train_model > warmup_steps and n_calls_to_train_model % sindy_threshold_frequency == 0 and n_calls_to_train_model != 0:
+                model.thresholding(threshold=sindy_threshold_value, n_terms_cutoff=1)
+            # if n_calls_to_train_model % 16 == 0 and n_calls_to_train_model != 0:
+                print("\n"+"="*80)
+                print(f"SPICE model after {n_calls_to_train_model} epochs:")
+                print("="*80)
+                model.print_spice_model()
             
             # check for convergence
             dloss = last_loss - loss_test if dataset_test is not None else last_loss - loss_train

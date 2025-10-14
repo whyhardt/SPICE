@@ -202,9 +202,12 @@ class BaseRNN(nn.Module):
 
         return state
     
-    def to(self, device: torch.device): 
+    def to(self, device: torch.device):
         self.device = device
         super().to(device=device)
+        # Also move sindy_masks to the device
+        for module_name in self.sindy_masks:
+            self.sindy_masks[module_name] = self.sindy_masks[module_name].to(device)
         return self
         
     def setup_constant(self, embedding_size: int = None, activation: nn.Module = torch.nn.LeakyReLU, kwargs_activation = {'negative_slope': 0.01}):
@@ -463,29 +466,88 @@ class BaseRNN(nn.Module):
 
         return loss
         
-    def thresholding(self, threshold, base_threshold=0):
+    def thresholding(self, threshold, n_terms_cutoff: int = None):
+        """Uses hard thresholding at a given threshold of the n_terms_cutoff smallest coefficients (< threshold) of each module to create a sparser model.
+        If n_terms_cutoff is None all terms of one module can be cut off.
+
+        Args:
+            threshold (float): Threshold used for hard thresholding
+            n_terms_cutoff (int, optional): Number of smallest terms below threshold to be cut off at once. Defaults to None.
+        """
+        
         for module in self.submodules_rnn:
-            threshold_tensor = torch.full_like(self.sindy_coefficients[module], threshold)
-            # from original sindy-shred implementation - TODO: why this was used
-            # for i in range(self.num_replicates):
-            #     threshold_tensor[i] = threshold_tensor[i] * 10**(0.2 * i - 1) + base_threshold
-            self.sindy_masks[module] = torch.abs(self.sindy_coefficients[module]) > threshold_tensor
+            threshold_tensor = torch.full_like(self.sindy_coefficients[module], threshold, device=self.device)
+            
+            if n_terms_cutoff is None:
+                # Original behavior: threshold all terms
+                mask = (torch.abs(self.sindy_coefficients[module]) > threshold_tensor).float()
+            else:
+                # implement here cutoff logic
+                # 1. get n_cutoff_max <- min(n_terms_cutoff, n_terms_below_threshold)
+                # 2. cutoff n_cutoff_max terms with smallest value below threshold
+
+                abs_coeffs = torch.abs(self.sindy_coefficients[module])
+
+                # Start with existing mask to accumulate cutoffs over time
+                mask = self.sindy_masks[module].clone()
+
+                # For each participant
+                for p_idx in range(abs_coeffs.shape[0]):
+                    # Only consider coefficients that are currently active (not already masked)
+                    active_mask = mask[p_idx] > 0
+
+                    # Find active coefficients below threshold
+                    below_threshold_mask = (abs_coeffs[p_idx] < threshold) & active_mask
+                    n_below = below_threshold_mask.sum().item()
+
+                    # Determine how many to cutoff
+                    n_cutoff = min(n_terms_cutoff, n_below)
+
+                    if n_cutoff > 0:
+                        # Among active coefficients below threshold, find the n_cutoff smallest
+                        # Create a masked version where coefficients >= threshold or already masked are set to inf
+                        masked_coeffs = abs_coeffs[p_idx].clone()
+                        masked_coeffs[~below_threshold_mask] = float('inf')
+
+                        # Get indices of n_cutoff smallest coefficients
+                        _, cutoff_indices = torch.topk(masked_coeffs, n_cutoff, largest=False)
+
+                        # Set mask to 0 for those indices
+                        mask[p_idx, cutoff_indices] = 0.0
+
+            self.sindy_masks[module] = mask
             self.sindy_coefficients[module].data = self.sindy_masks[module] * self.sindy_coefficients[module].data
             
     def print_spice_model(self, participant_id: int = 0) -> None:
         """
-        Get the learned SPICE features and equations.
-        
-        Returns:
-            Dictionary containing features and equations for each agent/model
+        Get the learned SPICE features and equations for each trained module.
         """
         
         for module in self.submodules_rnn:
             equation_str = module + "[t+1] = "
             for index_term, term in enumerate(self.sindy_library_names[module]):
-                if self.sindy_coefficients[module][participant_id, index_term] != 0:
+                if np.abs(self.sindy_coefficients[module][participant_id, index_term].item()) > 1e-4:
                     if equation_str[-3:] != " = ":
                         equation_str += "+ "        
                     equation_str += str(np.round(self.sindy_coefficients[module][participant_id, index_term].item(), 4)) + " " + term
                     equation_str += "[t] " if term == module else " "
             print(equation_str)
+            
+        if hasattr(self, 'betas') and len(self.betas) > 0:
+            for key in self.betas:
+                if not isinstance(self.betas[key], ParameterModule):
+                    participant_embedding = self.participant_embedding(torch.tensor(participant_id, device=self.device).int())
+                else:
+                    participant_embedding = None
+                print(f"beta({key}) = {self.betas[key](participant_embedding).item():.4f}")
+    
+    def eval(self, use_sindy=True):
+        super().eval()
+        self.use_sindy = use_sindy
+        return self
+        
+    def train(self, mode=True):
+        super().train(mode)
+        # if training mode activate (mode=True) -> do not use sindy for forward pass (self.use_sindy=False)
+        self.use_sindy = not mode
+        return self

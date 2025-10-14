@@ -10,7 +10,7 @@ from copy import deepcopy
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from spice.utils.convert_dataset import convert_dataset
-from spice.utils.setup_agents import setup_agent_spice, setup_agent_rnn
+from spice.utils.setup_agents import setup_agent_spice
 from spice.resources.bandits import get_update_dynamics, AgentSpice, AgentNetwork
 from spice.resources.model_evaluation import log_likelihood, bayesian_information_criterion, akaike_information_criterion
 from spice.resources.sindy_utils import SindyConfig_eckstein2022 as SindyConfig
