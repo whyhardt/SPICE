@@ -6,14 +6,14 @@ from tqdm import tqdm
 import torch
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from resources.bandits import create_dataset, get_update_dynamics, BanditsDrift, BanditsFlip_eckstein2022, Bandits_Standard, Agent
-from resources.rnn_utils import DatasetRNN
-from utils.setup_agents import setup_agent_rnn, setup_agent_spice
-from utils.convert_dataset import convert_dataset
+from spice.resources.bandits import create_dataset, get_update_dynamics, BanditsDrift, BanditsFlip_eckstein2022, Bandits_Standard, Agent
+from spice.resources.spice_utils import SpiceDataset
+from spice.utils.setup_agents import setup_agent_rnn, setup_agent_spice
+from spice.utils.convert_dataset import convert_dataset
 
 # dataset specific SPICE configurations and models
-from resources.rnn import RLRNN, RLRNN_eckstein2022, RLRNN_dezfouli2019
-from resources.sindy_utils import SindyConfig, SindyConfig_eckstein2022, SindyConfig_dezfouli2019
+from spice.resources.rnn import RLRNN, RLRNN_eckstein2022, RLRNN_dezfouli2019
+from spice.resources.sindy_utils import SindyConfig, SindyConfig_eckstein2022, SindyConfig_dezfouli2019
 from benchmarking import benchmarking_dezfouli2019, benchmarking_eckstein2022
 
 

@@ -11,9 +11,8 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '.
 from weinhardt2025.benchmarking import benchmarking_dezfouli2019
 from spice.resources.model_evaluation import get_scores
 from spice.resources.bandits import get_update_dynamics, AgentQ
-from spice.resources.rnn_utils import split_data_along_timedim, split_data_along_sessiondim
 from spice.utils.setup_agents import setup_agent as setup_agent_spice
-from spice.utils.convert_dataset import convert_dataset
+from spice.utils.convert_dataset import convert_dataset, split_data_along_timedim, split_data_along_sessiondim
 
 # dataset specific SPICE models
 from spice import precoded
@@ -41,7 +40,7 @@ baseline_file = f'mcmc_{study}_ApBr.nc'
 # ------------------- CONFIGURATION ECKSTEIN2024 --------------------
 # study = 'eckstein2024'
 # models_benchmark = ['CogFunSearch']
-# train_test_ratio = [2,4]
+# train_test_ratio = [1,3]
 # sindy_config = precoded.BUFFER_WORKING_MEMORY_CONFIG
 # rnn_class = precoded.BufferWorkingMemoryRNN
 # additional_inputs = None
@@ -92,11 +91,11 @@ baseline_file = f'mcmc_{study}_ApBr.nc'
 # additional_inputs = []
 
 # ------------------------- CONFIGURATION FILE PATHS ------------------------
-use_test = False
+use_test = True
 
 path_data = f'weinhardt2025/data/{study}/{study}.csv'
-path_model_rnn = f'weinhardt2025/params/{study}/rnn_{study}.pkl'
-path_model_spice = f'weinhardt2025/params/{study}/rnn_{study}.pkl'
+path_model_rnn = f'weinhardt2025/params/{study}/spice_{study}.pkl'
+path_model_spice = f'weinhardt2025/params/{study}/spice_{study}.pkl'
 path_model_baseline = None#os.path.join(f'weinhardt2025/params/{study}/', baseline_file)
 path_model_benchmark = None#os.path.join(f'weinhardt2025/params/{study}', benchmark_file) if len(models_benchmark) > 0 else None
 path_model_benchmark_lstm = None#f'params/{study}/lstm_{study}.pkl'
@@ -162,7 +161,7 @@ if path_model_rnn is not None:
         sindy_config=sindy_config,
         )
     n_parameters_rnn = sum(p.numel() for p in agent_rnn._model.parameters() if p.requires_grad)
-    n_parameters_spice = 0
+    n_parameters_spice = agent_spice.count_parameters()
 else:
     n_parameters_rnn = 0
     n_parameters_spice = 0
@@ -202,7 +201,7 @@ metric_participant = np.zeros((len(scores), len(dataset_test)))
 parameters_participant = np.zeros((1, len(dataset_test)))
 best_benchmarks_participant, considered_trials_participant = np.array(['' for _ in range(len(dataset_test))]), np.zeros(len(dataset_test))
 
-# from resources.rnn_utils import DatasetRNN
+# from resources.spice_utils import DatasetRNN
 # mask_dataset_test = dataset_test.xs[:, 0, -1] == 45
 # dataset_test = DatasetRNN(dataset_test.xs[mask_dataset_test], dataset_test.ys[mask_dataset_test])
 
@@ -264,16 +263,11 @@ for index_data in tqdm(range(len(dataset_test))):
             
         # SPICE
         if path_model_spice is not None:
-            additional_inputs_embedding = data_input[0, agent_spice._n_actions*2:-3]
-            agent_spice.new_sess(participant_id=pid, additional_embedding_inputs=additional_inputs_embedding)
-            n_params_spice = agent_spice.count_parameters()[pid]
-            
             probs_spice = get_update_dynamics(experiment=data_input[index_data], agent=agent_spice)[1]
-            scores_spice = np.array(get_scores(data=data_ys[index_start:index_end], probs=probs_spice[index_start:index_end], n_parameters=n_params_spice))
-            n_parameters_spice += n_params_spice
-            parameters_participant[0, index_data] = n_params_spice
+            scores_spice = np.array(get_scores(data=data_ys[index_start:index_end], probs=probs_spice[index_start:index_end], n_parameters=n_parameters_spice[pid]))
             metric_participant[4, index_data] = scores_spice[0]        
-        
+            parameters_participant[0, index_data] = n_parameters_spice[pid]
+            
         considered_trials_participant[index_data] += index_end - index_start
         considered_trials += index_end - index_start
         
@@ -306,36 +300,22 @@ if path_model_benchmark:
     print(occurrences)
 
 # compute trial-level metrics (and NLL -> Likelihood)
-scores = scores / (considered_trials)# * agent_baseline[0]._n_actions)
+scores = scores / (considered_trials)
 avg_trial_likelihood = np.exp(- scores[:, 0])
-# avg_trial_likelihood = np.exp(- scores_participant.T / (considered_trials_participant.reshape(-1, 1) * agent_baseline[0]._n_actions))
-# scores[:, 0] = scores[:, 0] / len(dataset)
 
 metric_participant_std = (metric_participant/considered_trials_participant).std(axis=1)
 avg_trial_likelihood_participant = np.exp(- metric_participant / considered_trials_participant)
 avg_trial_likelihood_participant_std = avg_trial_likelihood_participant.std(axis=1)
 parameter_participant_std = parameters_participant.std(axis=1)
 
-# index_sorted = np.argsort(avg_trial_likelihood_participant[3] - avg_trial_likelihood_participant[4])[::-1]
-# index_sorted = np.argsort(avg_trial_likelihood_participant[3])
-# pd.DataFrame({
-#     'INDEX': np.arange(0, 303)[index_sorted],
-#     'SESSION': (np.zeros((101, 3),dtype=int)+np.array((3,6,9),dtype=int).reshape(1, 3)).reshape(-1,)[index_sorted],
-#     'PID':dataset_test.xs[:, 0, -1].numpy()[index_sorted],
-#     'RNN':avg_trial_likelihood_participant[3][index_sorted],
-#     'SPICE':avg_trial_likelihood_participant[4][index_sorted]
-#     }).to_csv('avg_trial_likelihood_participants.csv')
-
-# pd.DataFrame(data=np.concatenate((np.array(best_benchmarks_participant).reshape(-1, 1), avg_trial_likelihood), axis=1), columns=['benchmark model', 'baseline','benchmark', 'lstm', 'rnn', 'spice']+models_benchmark).to_csv('best_scores_benchmark.csv')
-
 # compute average number of parameters
 n_parameters_benchmark_single_models = [agent_benchmark[model][1] for model in models_benchmark] if path_model_benchmark else []
 n_parameters = np.array([
     n_parameters_baseline,
-    n_parameters_benchmark/(len(dataset_test)-failed_attempts) if path_model_benchmark else 0, 
+    n_parameters_benchmark, 
     n_parameters_lstm,
     n_parameters_rnn, 
-    n_parameters_spice/(len(dataset_test)-failed_attempts),
+    np.mean(n_parameters_spice),
     ]+n_parameters_benchmark_single_models)
 
 scores = np.concatenate((avg_trial_likelihood.reshape(-1, 1), avg_trial_likelihood_participant_std.reshape(-1, 1), scores[:, :1], metric_participant_std.reshape(-1, 1), scores[:, 1:], n_parameters.reshape(-1, 1)), axis=1)

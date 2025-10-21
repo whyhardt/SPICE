@@ -3,10 +3,10 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, RandomSampler
-# import tqdm
+from typing import Tuple
 
 from .rnn import BaseRNN
-from .rnn_utils import DatasetRNN
+from .spice_utils import SpiceDataset
 from .sindy_differentiable import threshold_coefficients
 
 
@@ -142,29 +142,27 @@ def batch_train(
         n_steps = min(xs.shape[1]-t, n_steps)
         xs_step = xs[:, t:t+n_steps]
         ys_step = ys[:, t:t+n_steps]
-
-        mask = xs_step[..., :1] > -1
-
-        state = model.get_state(detach=True)
-        model_output = model(xs_step, state, batch_first=True)
-        ys_pred = model_output[0]
-        sindy_loss_step = model_output[2] if len(model_output) > 2 else 0
         
-        ys_pred = ys_pred * mask
-        ys_step = ys_step * mask
-        sindy_loss_step = sindy_loss_step * mask[..., 0]
+        # Mask out padding (NaN values) - valid trials have non-NaN actions
+        mask = ~torch.isnan(xs_step[..., :model.n_actions].sum(dim=-1, keepdim=True).repeat(1, 1, model.n_actions))
+        
+        state = model.get_state(detach=True)
+        ys_pred, _ = model(xs_step, state, batch_first=True)
+        
+        ys_pred = torch.where(mask, ys_pred, torch.zeros_like(ys_pred))
+        ys_step = torch.where(mask, ys_step, torch.zeros_like(ys_step))
         
         loss_step = loss_fn(
-            ys_pred.reshape(-1, model._n_actions),
-            torch.argmax(ys_step.reshape(-1, model._n_actions), dim=1),
+            ys_pred.reshape(-1, model.n_actions),
+            torch.argmax(ys_step.reshape(-1, model.n_actions), dim=1),
             )
 
+        # small l2-regularization on logits to keep the absolute values in the smalles possible range (only diff between values is necessary)
+        loss_step += 0.001 * ys_pred.abs().sum(dim=-1).mean()
+        
         # Add SINDy regularization loss
-        if sindy_weight > 0 and sindy_loss_step.sum() != 0:
-            reconstruction_loss = sindy_loss_step[sindy_loss_step != 0].mean()
-            all_sindy_coeffs = torch.cat([p for p in model.sindy_coefficients.values()], dim=-1)  # get all sindy coefficients for each participant across all modules -> (n_participants, n_modules*n_features_per_module)
-            sparsity_regularization = torch.mean(torch.sum(torch.abs(all_sindy_coeffs), dim=-1))
-            loss_step = loss_step + sindy_weight * reconstruction_loss + l1_weight_decay * sparsity_regularization
+        if sindy_weight > 0 and model.sindy_loss != 0:
+            loss_step = loss_step + sindy_weight * model.sindy_loss
             
         loss_batch += loss_step
         iterations += 1
@@ -180,16 +178,203 @@ def batch_train(
     return model, optimizer, loss_batch.item()/iterations
     
 
+def fit_sindy_second_stage(
+    model: BaseRNN,
+    dataset_train: SpiceDataset,
+    dataset_test: SpiceDataset = None,
+    learning_rate: float = 1e-3,
+    epochs: int = 1,
+    batch_size: int = -1,
+    verbose: bool = True,
+    ):
+    """
+    Second stage SINDy fitting: freeze RNN weights and refit SINDy coefficients
+    on the trained RNN hidden states with no thresholding (threshold=0).
+
+    This follows the approach from sindy-shred where SINDy coefficients are
+    discarded after initial training and refitted on the learned hidden states.
+
+    IMPORTANT: Collapses ensemble to a single SINDy model (ensemble_size=1).
+
+    Args:
+        model (BaseRNN): Trained RNN model with SINDy coefficients
+        dataset_train (DatasetRNN): Training dataset
+        dataset_test (DatasetRNN, optional): Validation dataset. Defaults to None.
+        learning_rate (float): Learning rate for SINDy coefficient optimization
+        epochs (int): Number of epochs for second stage training
+        batch_size (int): Batch size for training
+        verbose (bool): Print progress
+
+    Returns:
+        BaseRNN: Model with refitted SINDy coefficients (single model, no ensemble)
+    """
+
+    # Always print header for second stage (important step)
+    print("\n" + "="*80)
+    print("Starting second stage SINDy fitting (threshold=0, single model)")
+    print("="*80)
+
+    criterion = nn.MSELoss()
+
+    # Freeze all RNN parameters, only train SINDy coefficients
+    for param in model.parameters():
+        param.requires_grad = False
+
+    # COLLAPSE ENSEMBLE TO SINGLE MODEL
+    # Set ensemble size to 1 for stage 2 (no ensemble in second stage)
+    model.sindy_ensemble_size = 1
+
+    # Re-initialize SINDy coefficients with single model (ensemble_size=1)
+    model.setup_sindy_coefficients(model.sindy_polynomial_degree, ensemble_size=1)
+    model.to(model.device)
+    # for module_name in model.sindy_coefficients:
+    #     # Re-initialize with small random values
+    #     n_participants, n_library_terms = model.sindy_coefficients[module_name].shape
+    #     init_coeffs = torch.randn(n_participants, n_library_terms, device=model.device) * 0.001
+    #     model.sindy_coefficients[module_name] = nn.Parameter(init_coeffs)
+    #     model.sindy_coefficients[module_name].requires_grad = True
+
+    #     # Reset masks to all ones (no thresholding in second stage)
+    #     model.sindy_masks[module_name] = torch.ones(
+    #         n_participants, n_library_terms,
+    #         device=model.device
+    #     )
+
+    # Create optimizer for only SINDy coefficients
+    sindy_params = list(model.sindy_coefficients.values())
+    optimizer_sindy = torch.optim.AdamW(sindy_params, lr=learning_rate, weight_decay=0.01)
+    
+    # Set model to training mode for SINDy loss computation
+    model.train()
+    model.use_sindy = False
+    
+    # --------------------------------------------------------
+    # VECTORIZATION OF SINDY TRAINING
+    # --------------------------------------------------------
+    # rnn-weights are frozen -> we can vectorize the whole SINDy training by computing all rnn states for each timestep ad-hoc
+    
+    def vectorize_training_data(dataset):
+        # Initialize model state for correct batch size based on actual dataset
+        # dataset.xs.shape[0] gives the number of sessions/participants in first dimension
+        len_dataset = dataset.xs.shape[0]
+        n_timesteps = dataset.xs.shape[1]
+        model.set_initial_state(batch_size=len_dataset)
+
+        # initialize state buffer with time-flattened batch-dim
+        state_buffer_current = {state: torch.zeros((n_timesteps*len_dataset, model.n_actions), dtype=torch.float32, device=model.device) for state in model.get_state()}
+        state_buffer_next = {state: torch.zeros((n_timesteps*len_dataset, model.n_actions), dtype=torch.float32, device=model.device) for state in model.get_state()}
+
+        with torch.no_grad():
+            for t in range(n_timesteps):
+                # save current state (input to forward-pass) in state buffer
+                for state in state_buffer_next:
+                    state_buffer_current[state][t*len_dataset:(t+1)*len_dataset] = model.get_state()[state]
+
+                # compute updated state
+                updated_state = model(dataset.xs[:, t][:, None].to(model.device), model.get_state(), batch_first=True)[1]
+                
+                # save updated state (training target) in state buffer
+                for state in state_buffer_next:
+                    state_buffer_next[state][t*len_dataset:(t+1)*len_dataset] = updated_state[state]
+        
+        # reshape the dataset to be aligned with state buffer
+        # State buffer is organized as [timestep, batch], so we need to transpose before reshaping
+        # Original: (batch, n_timesteps, features)
+        # Transpose: (n_timesteps, batch, features)
+        # Reshape: (n_timesteps * batch, 1, features)
+        xs = dataset.xs.transpose(0, 1).reshape(n_timesteps*len_dataset, 1, -1)
+        ys = dataset.ys.transpose(0, 1).reshape(n_timesteps*len_dataset, 1, -1)
+        dataset = SpiceDataset(xs, ys)
+        
+        return state_buffer_current, state_buffer_next, dataset
+    
+    input_state_buffer_train, target_state_buffer_train, dataset_train = vectorize_training_data(dataset_train)
+    if dataset_test:
+        input_state_buffer_test, target_state_buffer_test, dataset_test = vectorize_training_data(dataset_test)
+    
+        
+    # --------------------------------------------------------
+    # TRAINING LOOP
+    # --------------------------------------------------------
+    
+    model.use_sindy = True
+    xs = dataset_train.xs
+    nan_mask = ~torch.isnan(xs[:, 0, :model.n_actions].sum(dim=-1))
+    batch_size = dataset_train.xs.shape[0] if batch_size == -1 else batch_size
+    len_dataset = dataset_train.xs.shape[0]
+    
+    for epoch in range(epochs):
+        t_start = time.time()
+        loss_train = 0
+        iterations = 0
+        
+        for idx in range(0, len_dataset, batch_size):
+            
+            optimizer_sindy.zero_grad()
+            
+            batched_nan_mask = nan_mask[idx:idx+batch_size].to(model.device)
+            batched_input_state_buffer, batched_target_state_buffer = {}, {}
+            for state in input_state_buffer_train:
+                batched_input_state_buffer[state] = input_state_buffer_train[state][idx:idx+batch_size][batched_nan_mask]
+                batched_target_state_buffer[state] = target_state_buffer_train[state][idx:idx+batch_size][batched_nan_mask]
+            
+            # get sindy-based state updates from original rnn states
+            state_pred = model(xs[idx:idx+batch_size, :1].to(model.device)[batched_nan_mask], batched_input_state_buffer, batch_first=True)[1]
+            
+            loss_batch = 0
+            for state in ['x_value_reward', 'x_value_choice']:  # TODO: find better solution for hardcoded state keys
+                loss_batch += criterion(batched_target_state_buffer[state], state_pred[state])
+
+            # Backward pass - only update SINDy coefficients
+            loss_batch.backward()
+            optimizer_sindy.step()
+            
+            loss_train += loss_batch.item()
+            iterations += 1
+            
+        loss_train /= iterations
+
+        loss_test = 0
+        
+        # THRESHOLDING STEP
+        if epoch % 100 == 0 and epoch != 0:
+                model.thresholding(threshold=0, base_threshold=0.1, n_terms_cutoff=1)
+        
+        # Print progress
+        msg = f'SINDy Stage 2 - Epoch {epoch+1}/{epochs} --- L(Train): {loss_train:.7f}'
+        if dataset_test is not None:
+            msg += f'; L(Val): {loss_test:.7f}'
+        msg += f'; Time: {time.time()-t_start:.2f}s'
+        print(msg, end='\r' if epoch < epochs-1 else '\n')
+
+    # Restore requires_grad for all parameters
+    for param in model.parameters():
+        param.requires_grad = True
+
+    # Always print completion message
+    print("="*80)
+    print("Second stage SINDy fitting complete!")
+    print("="*80)
+
+    if verbose:
+        print("\nRefitted SPICE model (participant 0):")
+        print("-"*80)
+        model.print_spice_model(participant_id=0)
+        print("-"*80)
+    
+    return model.train()
+
+
 def fit_model(
     model: BaseRNN,
-    dataset_train: DatasetRNN,
-    dataset_test: DatasetRNN = None,
+    dataset_train: SpiceDataset,
+    dataset_test: SpiceDataset = None,
     optimizer: torch.optim.Optimizer = None,
     convergence_threshold: float = 1e-7,
     l1_weight_decay: float = 0.,
     sindy_weight: float = 0.,
     sindy_threshold_value: float = 0.01,
-    sindy_threshold_frequency: int = 50,
+    sindy_threshold_frequency: int = 100,
     epochs: int = 1,
     batch_size: int = -1,
     bagging: bool = False,
@@ -197,7 +382,7 @@ def fit_model(
     n_steps: int = -1,
     verbose: bool = True,
     path_save_checkpoints: str = None,
-    ):
+    ) -> Tuple[BaseRNN, torch.optim.Optimizer, float]:
     """_summary_
 
     Args:
@@ -234,7 +419,7 @@ def fit_model(
         dataloader_test = DataLoader(dataset_test, batch_size=len(dataset_test))
     
     # set up learning rate scheduler
-    warmup_steps = 128
+    warmup_steps = 0
     warmup_steps = warmup_steps if epochs > warmup_steps else 1 #int(epochs * 0.125/16)
     if scheduler and optimizer is not None:
         # Define the LambdaLR scheduler for warm-up
@@ -328,12 +513,12 @@ def fit_model(
             
             # periodic pruning of sindy coefficients with L0 norm
             if n_calls_to_train_model > warmup_steps and n_calls_to_train_model % sindy_threshold_frequency == 0 and n_calls_to_train_model != 0:
-                model.thresholding(threshold=sindy_threshold_value, n_terms_cutoff=1)
+                model.thresholding(threshold=sindy_threshold_value, base_threshold=0.1, n_terms_cutoff=None)
             # if n_calls_to_train_model % 16 == 0 and n_calls_to_train_model != 0:
                 print("\n"+"="*80)
                 print(f"SPICE model after {n_calls_to_train_model} epochs:")
                 print("="*80)
-                model.print_spice_model()
+                model.print_spice_model(ensemble_idx=4)
             
             # check for convergence
             dloss = last_loss - loss_test if dataset_test is not None else last_loss - loss_train
@@ -371,19 +556,6 @@ def fit_model(
                     else:
                         scheduler.step()
 
-            # Periodic SINDy coefficient thresholding
-            # if sindy_weight > 0 and n_calls_to_train_model % sindy_threshold_frequency == 0:
-            #     if hasattr(model, 'sindy_coefficients') and len(model.sindy_coefficients) > 0:
-            #         for module_name in model.sindy_coefficients:
-            #             new_mask = threshold_coefficients(
-            #                 model.sindy_coefficients[module_name],
-            #                 model.sindy_masks[module_name],
-            #                 sindy_threshold_value
-            #             )
-            #             model.sindy_masks[module_name] = new_mask
-            #         if verbose:
-            #             print(f'\nApplied coefficient thresholding at epoch {n_calls_to_train_model}')
-
             # save checkpoint
             if path_save_checkpoints and n_calls_to_train_model == save_at_epoch:
                 torch.save(model.state_dict(), path_save_checkpoints.replace('.', f'_ep{n_calls_to_train_model}.'))
@@ -392,8 +564,22 @@ def fit_model(
         except KeyboardInterrupt:
             continue_training = False
             msg = 'Training interrupted. Continuing with further operations...'
-        
+
         #if verbose:
         print(msg, end='\r')
+    
+    model.rnn_training_finished = True
+
+    # Second stage: Refit SINDy coefficients on trained RNN hidden states (always run when sindy_weight > 0)
+    if sindy_weight > 0:
+        model = fit_sindy_second_stage(
+            model=model,
+            dataset_train=dataset_train,
+            dataset_test=dataset_test,
+            learning_rate=optimizer.param_groups[0]['lr'] if optimizer is not None else 1e-3,
+            epochs=1000,
+            batch_size=-1,
+            verbose=verbose,
+        )
         
     return model.eval(), optimizer, loss_train

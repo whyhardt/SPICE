@@ -4,8 +4,7 @@ import numpy as np
 import pandas as pd
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from resources.rnn_utils import parameter_file_naming
-from resources.bandits import create_dataset, AgentQ, AgentQ_SampleZeros, BanditsDrift, BanditsSwitch, get_update_dynamics
+from spice.resources.bandits import create_dataset, AgentQ, AgentQ_SampleZeros, BanditsDrift, BanditsSwitch, get_update_dynamics
 
 
 n_sessions = [128]#[16, 32, 64, 128, 256]
@@ -96,20 +95,5 @@ for iteration in range(n_iterations_per_n_sessions):
         columns = ['session', 'choice', 'reward', 'choice_prob_0', 'choice_prob_1', 'action_value_0', 'action_value_1', 'reward_value_0', 'reward_value_1', 'choice_value_0', 'choice_value_1', 'beta_reward', 'alpha_reward', 'alpha_penalty', 'confirmation_bias', 'forget_rate', 'beta_choice', 'alpha_choice', 'mean_beta_reward', 'mean_alpha_reward', 'mean_alpha_penalty', 'mean_confirmation_bias', 'mean_forget_rate', 'mean_beta_choice', 'mean_alpha_choice']
         data = np.stack((np.array(session), np.array(choice), np.array(reward), np.array(choice_prob_0), np.array(choice_prob_1), np.array(action_value_0), np.array(action_value_1), np.array(reward_value_0), np.array(reward_value_1), np.array(choice_value_0), np.array(choice_value_1), np.array(beta_reward), np.array(alpha_reward), np.array(alpha_penalty), np.array(confirmation_bias), np.array(forget_rate), np.array(beta_choice), np.array(alpha_choice), np.array(mean_beta_reward), np.array(mean_alpha_reward), np.array(mean_alpha_penalty), np.array(mean_confirmation_bias), np.array(mean_forget_rate), np.array(mean_beta_choice), np.array(mean_alpha_choice)), axis=-1)#.swapaxes(1, 0)
         df = pd.DataFrame(data=data, columns=columns)
-        
-        if dataset_name is None:
-            dataset_name = parameter_file_naming(
-                'data/data', 
-                alpha_reward=np.round(agent._mean_alpha_reward, 2), 
-                beta_reward=np.round(agent._mean_beta_reward, 2), 
-                forget_rate=np.round(agent._mean_forget_rate, 2), 
-                alpha_penalty=np.round(agent._mean_alpha_penalty, 2), 
-                confirmation_bias=np.round(agent._mean_confirmation_bias, 2), 
-                alpha_choice=np.round(agent._mean_alpha_choice, 2), 
-                beta_choice=np.round(agent._mean_beta_choice, 2),
-                alpha_counterfactual=0.00,
-                ).replace('.pkl','.csv')
-        
         df.to_csv(dataset_name, index=False)
-        
         print(f'Data saved to {dataset_name}')

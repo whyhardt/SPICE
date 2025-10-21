@@ -10,7 +10,7 @@ from typing import Tuple, Optional
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from resources.bandits import AgentQ, AgentNetwork, AgentSpice, BanditSession, get_update_dynamics, plot_session as plt_session
-from resources.rnn_utils import DatasetRNN
+from resources.spice_utils import SpiceDataset
 
 
 def plot_dynamics(

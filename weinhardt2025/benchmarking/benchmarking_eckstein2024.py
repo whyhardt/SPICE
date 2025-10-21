@@ -7,10 +7,10 @@ from typing import List
 from joblib import Parallel, delayed
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from spice.resources.rnn_utils import DatasetRNN, split_data_along_sessiondim, reshape_data_along_participantdim
-from spice.utils.convert_dataset import convert_dataset
+from spice.resources.spice_utils import SpiceDataset
+from spice.utils.convert_dataset import convert_dataset, split_data_along_sessiondim, reshape_data_along_participantdim
 from spice.resources.bandits import AgentNetwork
-from spice.resources.rnn_training import batch_train
+from spice.resources.spice_training import batch_train
 
 
 class Eckstein2024Model(torch.nn.Module):
@@ -324,7 +324,7 @@ def train_single_participant(index_participant, xs, ys, xs_test, ys_test, n_acti
     return model_participant
 
 
-def training(n_actions: int, dataset_training: DatasetRNN, epochs: int, lr: float = 0.01, dataset_test: DatasetRNN = None, convergence_threshold: float = 1e-5, n_jobs: int = 1):
+def training(n_actions: int, dataset_training: SpiceDataset, epochs: int, lr: float = 0.01, dataset_test: SpiceDataset = None, convergence_threshold: float = 1e-5, n_jobs: int = 1):
     """Training loop for Eckstein2024 model using MLE (gradient descent)."""
 
     n_participants = len(dataset_training)

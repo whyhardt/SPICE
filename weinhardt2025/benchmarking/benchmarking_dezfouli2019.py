@@ -8,10 +8,10 @@ import pickle
 from typing import List
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from spice.resources.rnn_utils import DatasetRNN, split_data_along_timedim, split_data_along_sessiondim, reshape_data_along_participantdim
-from spice.utils.convert_dataset import convert_dataset
+from spice.resources.spice_utils import SpiceDataset
+from spice.utils.convert_dataset import convert_dataset, split_data_along_sessiondim, reshape_data_along_participantdim
 from spice.resources.bandits import Agent, AgentNetwork
-from spice.resources.rnn_training import batch_train
+from spice.resources.spice_training import batch_train
 
 
 class Dezfouli2019GQL(torch.nn.Module):
@@ -217,7 +217,7 @@ class Dezfouli2019GQL(torch.nn.Module):
         return logits, self.get_state()  # Return all but last timestep
 
 
-def training(model_config: str, n_actions: int, dimensions: int,  dataset_training: DatasetRNN, epochs: int, lr: float = 0.01, dataset_test: DatasetRNN = None):
+def training(model_config: str, n_actions: int, dimensions: int,  dataset_training: SpiceDataset, epochs: int, lr: float = 0.01, dataset_test: SpiceDataset = None):
     """Training loop for GQL model."""
     all_models = []
     

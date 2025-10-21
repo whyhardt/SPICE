@@ -1,17 +1,15 @@
-from typing import NamedTuple, Union, Optional, Dict, Callable, Tuple, List
+from typing import NamedTuple, Union, Optional, Dict, Tuple, List
 
 import matplotlib.pyplot as plt
 import matplotlib as mpl
 import numpy as np
 from copy import copy, deepcopy
 import torch
-import pickle
-import dill
 from tqdm import tqdm
 import pysindy as ps
 
 from .rnn import BaseRNN, ParameterModule
-from .rnn_utils import DatasetRNN
+from .spice_utils import SpiceDataset
 
 # Setup so that plots will look nice
 small = 15
@@ -116,10 +114,12 @@ class Agent:
     
   def get_choice_probs(self) -> np.ndarray:
     """Compute the choice probabilities as softmax over q."""
-    decision_variable = np.exp(self.q)
+    decision_variable = self.q - self.q.min()
+    # decision_variable = np.clip(decision_variable, a_min=0, a_max=50)
+    decision_variable = np.exp(decision_variable)
     choice_probs = decision_variable / np.sum(decision_variable)
     return choice_probs.reshape(self._n_actions)
-
+    
   def get_choice(self):
     """Sample choice."""
     choice_probs = self.get_choice_probs()
@@ -485,7 +485,7 @@ class AgentNetwork(Agent):
   def count_parameters(self) -> np.ndarray:
     n_parameters = np.zeros(self._model.n_participants, dtype=int)
     for module in self._model.submodules_rnn:
-      n_parameters += np.sum(np.where(self._model.sindy_coefficients[module] > 0, 1, 0), axis=-1)
+      n_parameters += np.sum(np.where(self._model.sindy_coefficients[module].abs() > 0.001, 1, 0), axis=-1).squeeze(-1)
       
     return n_parameters
   
@@ -1066,7 +1066,7 @@ def create_dataset(
   sample_parameters: bool = False,
   device=torch.device('cpu'),
   verbose=False,
-  ) -> tuple[DatasetRNN, list[BanditSession], list[dict[str, float]]]:
+  ) -> tuple[SpiceDataset, list[BanditSession], list[dict[str, float]]]:
   """Generates a behavioral dataset from a given agent and environment.
 
   Args:
@@ -1119,7 +1119,7 @@ def create_dataset(
         }
       )
 
-  dataset = DatasetRNN(
+  dataset = SpiceDataset(
     xs=xs, 
     ys=ys,
     sequence_length=sequence_length,
@@ -1129,7 +1129,7 @@ def create_dataset(
   return dataset, experiment_list, parameter_list
 
 
-def get_update_dynamics(experiment: Union[np.ndarray, torch.Tensor], agent: Agent, additional_signals: List[str] = ['x_value_reward', 'x_learing_rate_reward', 'x_value_choice']):
+def get_update_dynamics(experiment: Union[np.ndarray, torch.Tensor], agent: Agent, additional_signals: List[str] = ['x_value_reward', 'x_value_choice']):
   """Compute Q-Values of a specific agent for a specific experiment sequence with given actions and rewards.
 
   Args:
@@ -1175,7 +1175,7 @@ def get_update_dynamics(experiment: Union[np.ndarray, torch.Tensor], agent: Agen
         value = value.detach().cpu().numpy()
       values_signal[signal][trial] = value
     
-    choice_probs[trial] = agent.get_choice_probs()
+    choice_probs[trial] = np.clip(agent.get_choice_probs(), 1e-8, 1)
     
     agent.update(
       choice=np.argmax(choices[trial], axis=-1), 

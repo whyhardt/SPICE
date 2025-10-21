@@ -9,14 +9,13 @@ from copy import copy
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 # standard methods and classes used for every model evaluation
 from benchmarking import benchmarking_dezfouli2019
-from resources.model_evaluation import get_scores
-from resources.bandits import get_update_dynamics, AgentQ
-from resources.rnn_utils import split_data_along_timedim, split_data_along_sessiondim
-from utils.setup_agents import setup_agent_rnn, setup_agent_spice
-from utils.convert_dataset import convert_dataset
+from spice.resources.model_evaluation import get_scores
+from spice.resources.bandits import get_update_dynamics, AgentQ
+from spice.utils.setup_agents import setup_agent_rnn, setup_agent_spice
+from spice.utils.convert_dataset import convert_dataset, split_data_along_timedim, split_data_along_sessiondim
 
 # dataset specific SPICE models
-from resources import rnn, sindy_utils
+from spice.resources import rnn, sindy_utils
 
 # dataset specific benchmarking models
 from benchmarking import benchmarking_dezfouli2019, benchmarking_eckstein2022, benchmarking_lstm

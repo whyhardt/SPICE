@@ -4,8 +4,8 @@ import torch
 from tqdm import tqdm
 import numpy as np
 
-from spice.resources.rnn_utils import DatasetRNN, split_data_along_timedim, split_data_along_sessiondim
-from spice.utils.convert_dataset import convert_dataset
+from spice.resources.spice_utils import SpiceDataset
+from spice.utils.convert_dataset import convert_dataset, split_data_along_timedim, split_data_along_sessiondim
 from spice.resources.bandits import Agent
 
 class RLLSTM(torch.nn.Module):
@@ -102,7 +102,7 @@ def setup_agent_lstm(path_model: str) -> AgentLSTM:
     agent = AgentLSTM(model_rnn=lstm, n_actions=n_actions)
     return agent
 
-def training(dataset_training: DatasetRNN, lstm: RLLSTM, optimizer: torch.optim.Optimizer, epochs = 3000, dataset_test: DatasetRNN = None, criterion = torch.nn.CrossEntropyLoss()):
+def training(dataset_training: SpiceDataset, lstm: RLLSTM, optimizer: torch.optim.Optimizer, epochs = 3000, dataset_test: SpiceDataset = None, criterion = torch.nn.CrossEntropyLoss()):
     
     for e in range(epochs):
         

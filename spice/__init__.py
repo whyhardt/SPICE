@@ -2,7 +2,7 @@
 SPICE: Sparse and Interpretable Cognitive Equations
 """
 
-from .estimator import SpiceEstimator, SpiceConfig
+from .estimator import SpiceEstimator
 from .precoded import (
     RescorlaWagnerRNN,
     ForgettingRNN,
@@ -11,6 +11,7 @@ from .precoded import (
     ChoiceRNN
 )
 from .resources.rnn import BaseRNN
+from .resources.spice_utils import SpiceConfig, SpiceDataset, SpiceSignals
 
 __version__ = "0.1.0"
 __all__ = [
@@ -22,4 +23,7 @@ __all__ = [
     "ParticipantEmbeddingRNN",
     "ChoiceRNN",
     "BaseRNN",
+    "SpiceConfig",
+    "SpiceDataset",
+    "SpiceSignals",
 ]
