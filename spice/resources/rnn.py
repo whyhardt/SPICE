@@ -152,9 +152,9 @@ class BaseRNN(nn.Module):
         spice_signals.actions = inputs[:, :, :self.n_actions].float()
         spice_signals.rewards = inputs[:, :, self.n_actions:2*self.n_actions].float()
         spice_signals.additional_inputs = inputs[:, :, 2*self.n_actions:-3].float()
-        spice_signals.blocks = inputs[:, :, -3:-2].int().repeat(1, 1, 2)
-        spice_signals.experiment_ids = inputs[0, :, -2:-1].int()
-        spice_signals.participant_ids = inputs[0, :, -1:].int()
+        spice_signals.blocks = inputs[:, :, -3].int()
+        spice_signals.experiment_ids = inputs[0, :, -2].int()
+        spice_signals.participant_ids = inputs[0, :, -1].int()
         
         if prev_state is not None:
             self.set_state(prev_state)
@@ -166,7 +166,6 @@ class BaseRNN(nn.Module):
                 
         return spice_signals
 
-    
     def post_forward_pass(self, spice_signals: SpiceSignals, batch_first: bool) -> SpiceSignals:
         
         if batch_first:
@@ -289,10 +288,9 @@ class BaseRNN(nn.Module):
             inputs = torch.zeros((*value.shape, 0), dtype=torch.float32, device=value.device)
             
         if participant_embedding is None:
-            participant_embedding = torch.zeros((*value, 0), dtype=torch.float32, device=value.device)
-        elif participant_embedding.ndim == 2:
-            participant_embedding = participant_embedding.unsqueeze(1).repeat(1, value.shape[1], 1)
-        
+            participant_embedding = torch.zeros((*value.shape, 0), dtype=torch.float32, device=value.device)
+        participant_embedding = participant_embedding.unsqueeze(1).repeat(1, value.shape[1], 1)
+          
         if isinstance(inputs, tuple):
             inputs = torch.concat([inputs_i.unsqueeze(-1) for inputs_i in inputs], dim=-1)
         elif inputs.dim()==2:

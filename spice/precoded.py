@@ -299,7 +299,7 @@ class ParticipantEmbeddingRNN(BaseRNN):
         spice_signals = self.init_forward_pass(inputs, prev_state, batch_first)
 
         # Here we compute now the participant embeddings for each entry in the batch
-        participant_embedding = self.participant_embedding(spice_signals.participant_ids[:, 0].int())
+        participant_embedding = self.participant_embedding(spice_signals.participant_ids)
         
         for timestep in spice_signals.timesteps:
             
@@ -392,7 +392,7 @@ class ChoiceRNN(BaseRNN):
         spice_signals = self.init_forward_pass(inputs, prev_state, batch_first)
         
         # We compute now the participant embeddings and inverse noise temperatures before the for-loop because they are anyways time-invariant
-        participant_embedding = self.participant_embedding(spice_signals.participant_id[:, 0].int())
+        participant_embedding = self.participant_embedding(spice_signals.participant_id)
         beta_reward = self.betas['value_reward'](participant_embedding)
         beta_choice = self.betas['value_choice'](participant_embedding)
         
@@ -505,7 +505,7 @@ class InteractionRNN(BaseRNN):
         spice_signals = self.init_forward_pass(inputs, prev_state, batch_first)
         
         # Here we compute now the participant embeddings for each entry in the batch
-        participant_embedding = self.participant_embedding(spice_signals.participant_ids[:, 0].int())
+        participant_embedding = self.participant_embedding(spice_signals.participant_ids)
         beta_reward = self.betas['value_reward'](participant_embedding)
         beta_choice = self.betas['value_choice'](participant_embedding)
         
@@ -578,27 +578,27 @@ BUFFER_WORKING_MEMORY_CONFIG = SpiceConfig(
         # Value learning can depend on recent reward sequence (working memory)
         'value_reward_chosen': [
             'reward',           
-            'reward_t_minus_1', 
-            'reward_t_minus_2',
-            'reward_t_minus_3',
+            'reward[t-1]', 
+            'reward[t-2]',
+            'reward[t-3]',
             'value_choice',
         ],
         'value_reward_not_chosen': [
-            'reward_t_minus_1', 
-            'reward_t_minus_2',
-            'reward_t_minus_3',
+            'reward[t-1]', 
+            'reward[t-2]',
+            'reward[t-3]',
             'value_choice',
             ],
         'value_choice_chosen': [
-            'choice_t_minus_1', 
-            'choice_t_minus_2',
-            'choice_t_minus_3',
+            'choice[t-1]', 
+            'choice[t-2]',
+            'choice[t-3]',
             'value_reward',
             ],
         'value_choice_not_chosen': [
-            'choice_t_minus_1', 
-            'choice_t_minus_2',
-            'choice_t_minus_3',
+            'choice[t-1]', 
+            'choice[t-2]',
+            'choice[t-3]',
             'value_reward',
             ],
     },
@@ -664,7 +664,7 @@ class BufferWorkingMemoryRNN(BaseRNN):
         spice_signals = self.init_forward_pass(inputs, prev_state, batch_first)
         
         # perform time-invariant computations
-        participant_embedding = self.participant_embedding(spice_signals.participant_ids[:, 0].int())
+        participant_embedding = self.participant_embedding(spice_signals.participant_ids)
         beta_reward = self.betas['value_reward'](participant_embedding)
         beta_choice = self.betas['value_choice'](participant_embedding)
         

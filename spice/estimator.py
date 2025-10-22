@@ -177,7 +177,7 @@ class SpiceEstimator(BaseEstimator):
         #     {'params': rnn_params, 'weight_decay': l2_weight_decay}
         # ], lr=learning_rate)
         # else:
-        self.optimizer_rnn = torch.optim.AdamW(self.rnn_model.parameters(), lr=learning_rate, weight_decay=l2_weight_decay)
+        self.rnn_optimizer = torch.optim.AdamW(self.rnn_model.parameters(), lr=learning_rate, weight_decay=l2_weight_decay)
             
     def fit(self, data: np.ndarray, targets: np.ndarray, data_test: np.ndarray = None, target_test: np.ndarray = None):
         """
@@ -206,7 +206,7 @@ class SpiceEstimator(BaseEstimator):
             model=self.rnn_model,
             dataset_train=dataset,
             dataset_test=dataset_test,
-            optimizer=self.optimizer_rnn,
+            optimizer=self.rnn_optimizer,
             convergence_threshold=self.convergence_threshold,
             l1_weight_decay=self.l1_weight_decay,
             sindy_weight=self.sindy_weight,
@@ -411,7 +411,8 @@ class SpiceEstimator(BaseEstimator):
         state_dict = self.rnn_model.state_dict() 
         for agent_type in [('rnn_agent', False), ('spice_agent', True)]:
             model = self.rnn_class(
-                    n_actions=self.rnn_model._n_actions,
+                    spice_config=self.spice_config,
+                    n_actions=self.rnn_model.n_actions,
                     n_participants=self.rnn_model.n_participants,
                     n_experiments=self.rnn_model.n_experiments,
                     sindy_config=self.rnn_model.spice_config,

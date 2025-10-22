@@ -295,7 +295,7 @@ class AgentQ(Agent):
         alpha_p = self._alpha_counterfactual_penalty
         
       # asymmetric learning rates
-      current_reward = reward[action] if np.min(reward) > -1 else reward[choice]
+      current_reward = reward[action] if not any(np.isnan(reward)) else reward[choice]
       alpha[action] = alpha_r if current_reward > 0.5 else alpha_p
       
       # Reward-prediction-error
@@ -485,69 +485,9 @@ class AgentNetwork(Agent):
   def count_parameters(self) -> np.ndarray:
     n_parameters = np.zeros(self._model.n_participants, dtype=int)
     for module in self._model.submodules_rnn:
-      n_parameters += np.sum(np.where(self._model.sindy_coefficients[module].abs() > 0.001, 1, 0), axis=-1).squeeze(-1)
+      n_parameters += np.sum(np.where(self._model.sindy_coefficients[module].detach().cpu().mean(dim=1, keepdims=True).abs().numpy() > 0.001, 1, 0), axis=-1).squeeze(-1)
       
     return n_parameters
-  
-class AgentSpice(AgentNetwork):
-  
-  def __init__(
-    self,
-    model_rnn: BaseRNN,
-    sindy_modules: Dict,
-    n_actions: int,
-    deterministic: bool = True,
-  ):
-    
-    super().__init__(model_rnn=deepcopy(model_rnn), n_actions=n_actions, deterministic=deterministic)
-    
-    self._model.integrate_sindy(sindy_modules)
-  
-  def get_modules(self) -> Dict[str, Dict[int, ps.SINDy]]:
-    return self._model.submodules_sindy
-  
-  def count_parameters(self, mapping_modules_values: dict = None) -> Dict[int, int]:
-    """Count the number of non-zero parameters in each module for each participant. 
-    Considers also beta values (if mapping_modules_values is given).
-    
-    Args:
-        mapping_modules_values (dict, optional): Defines which module maps onto which value in the memory state (will be deprecated in newer versions because this information will be stored as an attribute in the RNN) 
-
-    Returns:
-        Dict[int, int]: Dictionary which maps the participant ID onto the respective number of parameters
-    """
-    
-    submodules = self.get_modules()
-    keys_submodules = list(submodules.keys())
-    participant_ids = list(submodules[keys_submodules[0]].keys())
-    n_parameters = {participant_id: 0 for participant_id in participant_ids}
-    for participant_id in participant_ids:
-      self.new_sess(participant_id=participant_id, additional_embedding_inputs=self._additional_meta_data)
-      betas = self.get_betas()
-      # count all non-zero coefficients in SINDy modules with considering the corresponding beta value which potentially can set all influences of this module to 0 
-      for submodule in submodules:
-        parameters_module = submodules[submodule][participant_id].coefficients()
-        # n_parameters_module = n_parameters_module * (n_parameters_module > 0.05)
-        if betas:
-          #beta_value_module = betas[mapping_modules_values[submodule]]
-          # n_parameters[participant_id] += (parameters_module * beta_value_module != 0).sum()
-          n_parameters[participant_id] += (parameters_module != 0).sum()
-        else:
-          n_parameters[participant_id] += (parameters_module != 0).sum()
-      if betas:
-        # include beta parameters if non-zero
-        for value in betas:
-          if np.abs(betas[value]) > 1e-2:
-            n_parameters[participant_id] += 1
-    return n_parameters
-  
-  def get_participant_ids(self):
-    modules = self.get_modules()
-    return list(modules[list(modules.keys())[0]].keys())  
-  
-  def print_model(self, participant_id: int):
-    for module in self.get_modules():
-      self._model.submodules_sindy[module][participant_id].print()
 
 
 ################
@@ -1129,7 +1069,7 @@ def create_dataset(
   return dataset, experiment_list, parameter_list
 
 
-def get_update_dynamics(experiment: Union[np.ndarray, torch.Tensor], agent: Agent, additional_signals: List[str] = ['x_value_reward', 'x_value_choice']):
+def get_update_dynamics(experiment: Union[np.ndarray, torch.Tensor], agent: Agent, additional_signals: List[str] = ['value_reward', 'value_choice']):
   """Compute Q-Values of a specific agent for a specific experiment sequence with given actions and rewards.
 
   Args:
@@ -1146,7 +1086,7 @@ def get_update_dynamics(experiment: Union[np.ndarray, torch.Tensor], agent: Agen
     if len(experiment.shape) == 3:
       experiment = experiment.squeeze(0)
     # get number of actual trials
-    n_trials = len(experiment) - np.argmax(experiment[::-1][:, 0] != -1)
+    n_trials = len(experiment) - np.where(~np.isnan(experiment[::-1][:, 0]))[0][0]
     choices = experiment[:n_trials, :agent._n_actions]
     rewards = experiment[:n_trials, agent._n_actions:2*agent._n_actions]
     # TODO: additional_inputs are currently treated as signals and as meta-information for the embedding

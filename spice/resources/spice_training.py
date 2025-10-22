@@ -10,34 +10,6 @@ from .spice_utils import SpiceDataset
 from .sindy_differentiable import threshold_coefficients
 
 
-def gradient_penalty(f: nn.Module, e_i: torch.Tensor, e_j: torch.Tensor, factor=1.0):
-    
-    # one-hot encode
-    e_i = f[0].one_hot_encode(e_i)
-    e_j = f[0].one_hot_encode(e_j)
-    
-    # e_i, e_j: one-hot tensors, shape [batch, P]
-    eps = torch.rand(e_i.size(0), 1).to(e_i.device)
-    eps = eps.expand_as(e_i)
-    
-    # Interpolation in participant‐ID space
-    e_hat = eps*e_i + (1-eps)*e_j
-    e_hat.requires_grad_(True)
-
-    # compute interpolated embedding
-    emb_hat = f[1](f[0].get_embedding(e_hat))
-    
-    # Compute Jacobian norm
-    grads = torch.autograd.grad(
-        outputs=emb_hat,
-        inputs=e_hat,
-        grad_outputs=torch.ones_like(emb_hat),
-        create_graph=True
-    )[0]  # shape [batch, P]
-    gp = (grads.view(grads.size(0), -1).norm(2, dim=1) ** 2).mean()
-    return factor * gp
-
-
 class ReduceOnPlateauWithRestarts:
     def __init__(self, optimizer, min_lr, factor, patience):
         """
@@ -227,18 +199,6 @@ def fit_sindy_second_stage(
     # Re-initialize SINDy coefficients with single model (ensemble_size=1)
     model.setup_sindy_coefficients(model.sindy_polynomial_degree, ensemble_size=1)
     model.to(model.device)
-    # for module_name in model.sindy_coefficients:
-    #     # Re-initialize with small random values
-    #     n_participants, n_library_terms = model.sindy_coefficients[module_name].shape
-    #     init_coeffs = torch.randn(n_participants, n_library_terms, device=model.device) * 0.001
-    #     model.sindy_coefficients[module_name] = nn.Parameter(init_coeffs)
-    #     model.sindy_coefficients[module_name].requires_grad = True
-
-    #     # Reset masks to all ones (no thresholding in second stage)
-    #     model.sindy_masks[module_name] = torch.ones(
-    #         n_participants, n_library_terms,
-    #         device=model.device
-    #     )
 
     # Create optimizer for only SINDy coefficients
     sindy_params = list(model.sindy_coefficients.values())
@@ -278,10 +238,6 @@ def fit_sindy_second_stage(
                     state_buffer_next[state][t*len_dataset:(t+1)*len_dataset] = updated_state[state]
         
         # reshape the dataset to be aligned with state buffer
-        # State buffer is organized as [timestep, batch], so we need to transpose before reshaping
-        # Original: (batch, n_timesteps, features)
-        # Transpose: (n_timesteps, batch, features)
-        # Reshape: (n_timesteps * batch, 1, features)
         xs = dataset.xs.transpose(0, 1).reshape(n_timesteps*len_dataset, 1, -1)
         ys = dataset.ys.transpose(0, 1).reshape(n_timesteps*len_dataset, 1, -1)
         dataset = SpiceDataset(xs, ys)
@@ -292,7 +248,7 @@ def fit_sindy_second_stage(
     if dataset_test:
         input_state_buffer_test, target_state_buffer_test, dataset_test = vectorize_training_data(dataset_test)
     
-        
+    
     # --------------------------------------------------------
     # TRAINING LOOP
     # --------------------------------------------------------
@@ -322,7 +278,7 @@ def fit_sindy_second_stage(
             state_pred = model(xs[idx:idx+batch_size, :1].to(model.device)[batched_nan_mask], batched_input_state_buffer, batch_first=True)[1]
             
             loss_batch = 0
-            for state in ['x_value_reward', 'x_value_choice']:  # TODO: find better solution for hardcoded state keys
+            for state in model.spice_config.states_in_logit:
                 loss_batch += criterion(batched_target_state_buffer[state], state_pred[state])
 
             # Backward pass - only update SINDy coefficients
@@ -338,7 +294,7 @@ def fit_sindy_second_stage(
         
         # THRESHOLDING STEP
         if epoch % 100 == 0 and epoch != 0:
-                model.thresholding(threshold=0, base_threshold=0.1, n_terms_cutoff=1)
+                model.thresholding(threshold=0, base_threshold=0.05, n_terms_cutoff=1)
         
         # Print progress
         msg = f'SINDy Stage 2 - Epoch {epoch+1}/{epochs} --- L(Train): {loss_train:.7f}'
@@ -512,13 +468,19 @@ def fit_model(
                 model = model.train()
             
             # periodic pruning of sindy coefficients with L0 norm
-            if n_calls_to_train_model > warmup_steps and n_calls_to_train_model % sindy_threshold_frequency == 0 and n_calls_to_train_model != 0:
-                model.thresholding(threshold=sindy_threshold_value, base_threshold=0.1, n_terms_cutoff=None)
-            # if n_calls_to_train_model % 16 == 0 and n_calls_to_train_model != 0:
+            if sindy_weight > 0 and n_calls_to_train_model > warmup_steps and n_calls_to_train_model % sindy_threshold_frequency == 0 and n_calls_to_train_model != 0:
+                if n_calls_to_train_model == warmup_steps+sindy_threshold_frequency:
+                    print("\n"+"="*80)
+                    print(f"SPICE model before {n_calls_to_train_model} epochs:")
+                    print("="*80)
+                    model.print_spice_model(ensemble_idx=4)
+                    
+                model.thresholding(threshold=sindy_threshold_value, base_threshold=0.1, n_terms_cutoff=3)
+                
                 print("\n"+"="*80)
                 print(f"SPICE model after {n_calls_to_train_model} epochs:")
                 print("="*80)
-                model.print_spice_model(ensemble_idx=4)
+                model.print_spice_model(ensemble_idx=4)    
             
             # check for convergence
             dloss = last_loss - loss_test if dataset_test is not None else last_loss - loss_train
@@ -576,8 +538,8 @@ def fit_model(
             model=model,
             dataset_train=dataset_train,
             dataset_test=dataset_test,
-            learning_rate=optimizer.param_groups[0]['lr'] if optimizer is not None else 1e-3,
-            epochs=1000,
+            learning_rate=optimizer.param_groups[0]['lr'],
+            epochs=5000,
             batch_size=-1,
             verbose=verbose,
         )

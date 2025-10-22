@@ -25,17 +25,17 @@ from weinhardt2025.benchmarking import benchmarking_dezfouli2019, benchmarking_e
 # -------------------------------------------------------------------------------
 
 # ------------------- CONFIGURATION ECKSTEIN2022 --------------------
-study = 'eckstein2022'
-models_benchmark = ['ApAnBrBcfBch']#['ApBr', 'ApBrAcfpBcf', 'ApBrAcfpBcfBch', 'ApAnBrBch', 'ApAnBrAcfpAcfnBcfBch', 'ApAnBrBcfBch']
-train_test_ratio = 0.8
-sindy_config = precoded.BUFFER_WORKING_MEMORY_CONFIG
-rnn_class = precoded.BufferWorkingMemoryRNN
-additional_inputs = None
-setup_agent_benchmark = benchmarking_eckstein2022.setup_agent_benchmark
-rl_model = benchmarking_eckstein2022.rl_model
-benchmark_file = f'mcmc_{study}_MODEL.nc'
-model_config_baseline = 'ApBr'
-baseline_file = f'mcmc_{study}_ApBr.nc'
+# study = 'eckstein2022'
+# models_benchmark = ['ApAnBrBcfBch']#['ApBr', 'ApBrAcfpBcf', 'ApBrAcfpBcfBch', 'ApAnBrBch', 'ApAnBrAcfpAcfnBcfBch', 'ApAnBrBcfBch']
+# train_test_ratio = 0.8
+# sindy_config = precoded.BUFFER_WORKING_MEMORY_CONFIG
+# rnn_class = precoded.BufferWorkingMemoryRNN
+# additional_inputs = None
+# setup_agent_benchmark = benchmarking_eckstein2022.setup_agent_benchmark
+# rl_model = benchmarking_eckstein2022.rl_model
+# benchmark_file = f'mcmc_{study}_MODEL.nc'
+# model_config_baseline = 'ApBr'
+# baseline_file = f'mcmc_{study}_ApBr.nc'
 
 # ------------------- CONFIGURATION ECKSTEIN2024 --------------------
 # study = 'eckstein2024'
@@ -53,19 +53,19 @@ baseline_file = f'mcmc_{study}_ApBr.nc'
 # baseline_file = f'benchmark_{study}.pkl'
 
 # ------------------------ CONFIGURATION DEZFOULI2019 -----------------------
-# study = 'dezfouli2019'
-# train_test_ratio = [3, 6, 9]
-# models_benchmark = ['PhiChiBetaKappaC']
-# sindy_config = sindy_utils.SindyConfig_eckstein2022
-# rnn_class = rnn.RLRNN_eckstein2022
-# additional_inputs = []
-# # setup_agent_benchmark = benchmarking_dezfouli2019.setup_agent_benchmark
-# # gql_model = benchmarking_dezfouli2019.gql_model
-# setup_agent_benchmark = benchmarking_dezfouli2019.setup_agent_gql
-# gql_model = benchmarking_dezfouli2019.Dezfouli2019GQL
-# benchmark_file = f'gql_{study}_MODEL.pkl'
-# model_config_baseline = 'PhiBeta'
-# baseline_file = f'gql_{study}_PhiBeta.pkl'
+study = 'dezfouli2019'
+train_test_ratio = [3, 6, 9]
+models_benchmark = ['PhiChiBetaKappaC']
+sindy_config = precoded.BUFFER_WORKING_MEMORY_CONFIG
+rnn_class = precoded.BufferWorkingMemoryRNN
+additional_inputs = []
+# setup_agent_benchmark = benchmarking_dezfouli2019.setup_agent_benchmark
+# gql_model = benchmarking_dezfouli2019.gql_model
+setup_agent_benchmark = benchmarking_dezfouli2019.setup_agent_gql
+gql_model = benchmarking_dezfouli2019.Dezfouli2019GQL
+benchmark_file = f'gql_{study}_MODEL.pkl'
+model_config_baseline = 'PhiBeta'
+baseline_file = f'gql_{study}_PhiBeta.pkl'
 
 # ------------------------ CONFIGURATION GERSHMAN2018 -----------------------
 # study = 'gershmanB2018'
@@ -195,6 +195,7 @@ print('Running model evaluation...')
 scores = np.zeros((5+len(models_benchmark), 3))
 
 failed_attempts = 0
+failed_participants = []
 considered_trials = 0
 
 metric_participant = np.zeros((len(scores), len(dataset_test)))
@@ -232,6 +233,16 @@ for index_data in tqdm(range(len(dataset_test))):
         else:
             index_start = 0
             index_end = n_trials
+            
+             
+        # SPICE
+        if path_model_spice is not None:
+            probs_spice = get_update_dynamics(experiment=data_input[index_data], agent=agent_spice)[1]
+            if np.isnan(probs_spice).any():
+                raise ValueError(f"Participant {pid}: computed probabilities contained NaN")
+            scores_spice = np.array(get_scores(data=data_ys[index_start:index_end], probs=probs_spice[index_start:index_end], n_parameters=n_parameters_spice[pid]))
+            metric_participant[4, index_data] = scores_spice[0]        
+            parameters_participant[0, index_data] = n_parameters_spice[pid]
         
         scores_baseline = np.array(get_scores(data=data_ys[index_start:index_end], probs=probs_baseline[index_start:index_end], n_parameters=agent_baseline[1]))
         metric_participant[0, index_data] += scores_baseline[0]
@@ -261,13 +272,6 @@ for index_data in tqdm(range(len(dataset_test))):
             scores_rnn = np.array(get_scores(data=data_ys[index_start:index_end], probs=probs_rnn[index_start:index_end], n_parameters=n_parameters_rnn))
             metric_participant[3, index_data] = scores_rnn[0]
             
-        # SPICE
-        if path_model_spice is not None:
-            probs_spice = get_update_dynamics(experiment=data_input[index_data], agent=agent_spice)[1]
-            scores_spice = np.array(get_scores(data=data_ys[index_start:index_end], probs=probs_spice[index_start:index_end], n_parameters=n_parameters_spice[pid]))
-            metric_participant[4, index_data] = scores_spice[0]        
-            parameters_participant[0, index_data] = n_parameters_spice[pid]
-            
         considered_trials_participant[index_data] += index_end - index_start
         considered_trials += index_end - index_start
         
@@ -283,10 +287,11 @@ for index_data in tqdm(range(len(dataset_test))):
         if path_model_spice is not None:
             scores[4] += scores_spice
         
-    except Exception as e:  
+    except ValueError as e:  
         # print(e)
-        raise e
+        # raise e
         failed_attempts += 1
+        failed_participants.append(pid)
 
 # ------------------------------------------------------------
 # Post processing
@@ -326,6 +331,7 @@ scores = np.concatenate((avg_trial_likelihood.reshape(-1, 1), avg_trial_likeliho
 # ------------------------------------------------------------
 
 print(f'Failed attempts: {failed_attempts}')
+print(f'Failed participants: {failed_participants}')
 
 df = pd.DataFrame(
     data=scores,

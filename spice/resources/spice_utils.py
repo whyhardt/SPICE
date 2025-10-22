@@ -92,6 +92,7 @@ class SpiceConfig():
     def __init__(self,
                  library_setup: Dict[str, Iterable[str]],
                  memory_state: Dict[str, float],
+                 states_in_logit: List[str] = None, 
                  ):
         """
         Config class for SPICE model.
@@ -99,6 +100,7 @@ class SpiceConfig():
         Args:
             library_setup: Dictionary of rnn modules and their input signals (without self-references)
             memory_state: Dictionary of memory state variables and their initial values
+            states_in_logit: List of memory states which are included directly in the logit computation. If None: All states are used. 
         """
         
         self.library_setup = library_setup
@@ -113,6 +115,18 @@ class SpiceConfig():
         
         self.memory_state = memory_state
         
+        if states_in_logit:
+            # check that all states_in_logit actually appear in the memory state
+            invalid_states = []
+            for state in states_in_logit:
+                if not state in memory_state:
+                    invalid_states.append(state)
+            if len(invalid_states) > 0:
+                raise ValueError(f"SpiceConfigError: states_in_logit contains states ({invalid_states}) which are not present in the memory state ({list(memory_state.keys())}).")
+            self.states_in_logit = states_in_logit
+        else:
+            self.states_in_logit = [state for state in memory_state]
+            
         if not self.check_library_setup(self.library_setup, self.all_features):
             raise ValueError('\nLibrary setup does not match feature list.')
         

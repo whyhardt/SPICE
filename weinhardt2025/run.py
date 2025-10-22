@@ -16,10 +16,10 @@ if __name__=='__main__':
 
     parser.add_argument('--model', type=str, default=None, help='Model name to load from and/or save to parameters of RNN')
     parser.add_argument('--data', type=str, default=None, help='Path to dataset')
-
+    
     # data and training parameters
     parser.add_argument('--epochs', type=int, default=1, help='Number of training epochs')
-    parser.add_argument('--l1', type=float, default=0, help='L1 Reg of the RNNs participant embedding')
+    # parser.add_argument('--l1', type=float, default=0, help='L1 Reg of the RNNs participant embedding')
     parser.add_argument('--l2', type=float, default=0, help='L2 Reg of the RNNs flexible modules (excl. embeddings)')
     parser.add_argument('--time_train_test_ratio', type=float, default=None, help='Ratio of training data; Can also be a comma-separated list of integeres to indicate testing sessions.')
     parser.add_argument('--session_train_test_ratio', type=str, default=None, help='Ratio of training data; Can also be a comma-separated list of integeres to indicate testing sessions.')
@@ -35,15 +35,15 @@ if __name__=='__main__':
     # args.data = "weinhardt2025/data/eckstein2024/eckstein2024.csv"
     # args.session_train_test_ratio = "1,3"
     
-    args.model = "weinhardt2025/params/dezfouli2019/spice_dezfouli2019_sindy_1.pkl"
+    args.model = "weinhardt2025/params/dezfouli2019/spice_dezfouli2019.pkl"
     args.data = "weinhardt2025/data/dezfouli2019/dezfouli2019.csv"
     args.session_train_test_ratio = "3,6,9"
     
-    args.epochs = 1000 # Further reduced for initial testing
+    args.epochs = 0 # Further reduced for initial testing
     args.l2 = 0.01
     args.l1 = 0.
     dropout = 0.
-    args.sindy_weight = 1  # Start with very small weight for stability
+    args.sindy_weight = 0.01  # Start with very small weight for stability
     sindy_threshold = 0.1
     sindy_thresholding_frequency = 100
     
@@ -95,23 +95,24 @@ if __name__=='__main__':
     
     print(f"\nStarting training on {estimator.device}...")
     print("=" * 80)
-    estimator.fit(dataset_train.xs, dataset_train.ys)#, data_test=dataset_train.xs, target_test=dataset_train.ys)
+    # estimator.fit(dataset_train.xs, dataset_train.ys)#, data_test=dataset_train.xs, target_test=dataset_train.ys)
     print("=" * 80)
     print("\nTraining complete!")
     
     print(f"\nModel saved to: {args.model}")
     
-    # Print example SPICE model for first participant
-    example_participant = 0
-    print(f"\nExample SPICE model (participant {example_participant}):")
-    print("-" * 80)
-    estimator.print_spice_model(participant_id=example_participant)
-    print("-" * 80)
+    if args.sindy_weight > 0:
+        # Print example SPICE model for first participant
+        example_participant = 66
+        print(f"\nExample SPICE model (participant {example_participant}; n_parameters = {estimator.spice_agent.count_parameters()[example_participant]}):")
+        print("-" * 80)
+        estimator.print_spice_model(participant_id=example_participant)
+        print("-" * 80)
 
-    # from spice.utils.plotting import plot_session
-    # import matplotlib.pyplot as plt
-    # agents = {'rnn': estimator.rnn_agent, 'spice': estimator.spice_agent}
-    # fig, axs = plot_session(agents, dataset_train.xs[example_participant])
-    # plt.show()
+        from spice.utils.plotting import plot_session
+        import matplotlib.pyplot as plt
+        agents = {'rnn': estimator.rnn_agent, 'spice': estimator.spice_agent}
+        fig, axs = plot_session(agents, dataset_train.xs[example_participant])
+        plt.show()
     
     print("\nNext step: Run analysis_model_evaluation.py to evaluate performance!")

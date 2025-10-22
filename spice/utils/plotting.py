@@ -167,7 +167,7 @@ def plot_session(
     save: str = None, 
     display_choice: int = 0,
     reward_range: List[float] = [0, 1],
-    signals_to_plot: List[str] = ['x_value_reward', 'x_value_choice'],
+    signals_to_plot: List[str] = ['value_reward', 'value_choice'],
     ):    
     # plot the dynamcis associated with the first arm
     
