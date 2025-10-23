@@ -217,6 +217,7 @@ class SpiceEstimator(BaseEstimator):
                 dropout=0,
                 spice_config=rnn_model.spice_config,
                 sindy_polynomial_degree=rnn_model.sindy_polynomial_degree,
+                n_items=rnn_model.n_items,
             )
         rnn_agent_model.sindy_ensemble_size = rnn_model.sindy_ensemble_size  # Match trained ensemble size
         rnn_agent_model.setup_sindy_coefficients(rnn_model.sindy_polynomial_degree)
@@ -231,6 +232,7 @@ class SpiceEstimator(BaseEstimator):
                 dropout=0,
                 spice_config=rnn_model.spice_config,
                 sindy_polynomial_degree=rnn_model.sindy_polynomial_degree,
+                n_items=rnn_model.n_items,
             )
         spice_agent_model.sindy_ensemble_size = rnn_model.sindy_ensemble_size  # Match trained ensemble size
         spice_agent_model.setup_sindy_coefficients(rnn_model.sindy_polynomial_degree)

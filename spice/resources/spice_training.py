@@ -533,7 +533,7 @@ def fit_model(
         print(msg, end='\r')
     
     model.rnn_training_finished = True
-
+    
     # Second stage: Refit SINDy coefficients on trained RNN hidden states (always run when sindy_weight > 0)
     if sindy_weight > 0:
         model = fit_sindy_second_stage(
