@@ -84,10 +84,10 @@ if __name__=='__main__':
         dropout=dropout,
         learning_rate=1e-2,
         sindy_weight=args.sindy_weight,  # Enable end-to-end SINDy regularization
-        spice_library_polynomial_degree=2,
+        sindy_library_polynomial_degree=2,
         save_path_spice=args.model,
         sindy_threshold_frequency=sindy_thresholding_frequency,
-        spice_optim_threshold=sindy_threshold,
+        sindy_threshold=sindy_threshold,
     )
     
     if args.epochs == 0:

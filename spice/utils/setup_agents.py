@@ -32,7 +32,7 @@ def setup_agent(
         rnn_class=class_rnn,
         spice_config=sindy_config,
         n_actions=n_actions,
-        spice_library_polynomial_degree=sindy_polynomial_degree,
+        sindy_library_polynomial_degree=sindy_polynomial_degree,
         n_participants=n_participants,
     )
     estimator.load_spice(path_model)

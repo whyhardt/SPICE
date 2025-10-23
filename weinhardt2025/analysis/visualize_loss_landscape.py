@@ -283,7 +283,7 @@ if __name__ == '__main__':
         n_participants=n_participants,
         device=torch.device('cuda' if torch.cuda.is_available() else 'cpu'),
         sindy_weight=10,
-        spice_library_polynomial_degree=2,
+        sindy_library_polynomial_degree=2,
     )
 
     print(f"Loading model from {model_path}...")

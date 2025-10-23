@@ -156,6 +156,7 @@ def fit_sindy_second_stage(
     dataset_test: SpiceDataset = None,
     learning_rate: float = 1e-3,
     epochs: int = 1,
+    threshold: float = 0.05,
     batch_size: int = -1,
     verbose: bool = True,
     ):
@@ -221,8 +222,8 @@ def fit_sindy_second_stage(
         model.set_initial_state(batch_size=len_dataset)
 
         # initialize state buffer with time-flattened batch-dim
-        state_buffer_current = {state: torch.zeros((n_timesteps*len_dataset, model.n_actions), dtype=torch.float32, device=model.device) for state in model.get_state()}
-        state_buffer_next = {state: torch.zeros((n_timesteps*len_dataset, model.n_actions), dtype=torch.float32, device=model.device) for state in model.get_state()}
+        state_buffer_current = {state: torch.zeros((n_timesteps*len_dataset, model.n_items), dtype=torch.float32, device=model.device) for state in model.get_state()}
+        state_buffer_next = {state: torch.zeros((n_timesteps*len_dataset, model.n_items), dtype=torch.float32, device=model.device) for state in model.get_state()}
 
         with torch.no_grad():
             for t in range(n_timesteps):
@@ -294,7 +295,7 @@ def fit_sindy_second_stage(
         
         # THRESHOLDING STEP
         if epoch % 100 == 0 and epoch != 0:
-                model.thresholding(threshold=0, base_threshold=0.01, n_terms_cutoff=1)
+                model.thresholding(threshold=0, base_threshold=threshold, n_terms_cutoff=1)
         
         # Print progress
         msg = f'SINDy Stage 2 - Epoch {epoch+1}/{epochs} --- L(Train): {loss_train:.7f}'
@@ -329,7 +330,8 @@ def fit_model(
     convergence_threshold: float = 1e-7,
     l1_weight_decay: float = 0.,
     sindy_weight: float = 0.,
-    sindy_threshold_value: float = 0.01,
+    sindy_epochs: int = 1000,
+    sindy_threshold: float = 0.01,
     sindy_threshold_frequency: int = 100,
     epochs: int = 1,
     batch_size: int = -1,
@@ -475,7 +477,7 @@ def fit_model(
                     print("="*80)
                     model.print_spice_model(ensemble_idx=4)
                     
-                model.thresholding(threshold=sindy_threshold_value, base_threshold=0.1, n_terms_cutoff=3)
+                model.thresholding(threshold=sindy_threshold, base_threshold=0.1, n_terms_cutoff=3)
                 
                 print("\n"+"="*80)
                 print(f"SPICE model after {n_calls_to_train_model} epochs:")
@@ -539,7 +541,8 @@ def fit_model(
             dataset_train=dataset_train,
             dataset_test=dataset_test,
             learning_rate=optimizer.param_groups[0]['lr'],
-            epochs=5000,
+            epochs=sindy_epochs,
+            threshold=sindy_threshold,
             batch_size=-1,
             verbose=verbose,
         )

@@ -32,12 +32,12 @@ class SpiceEstimator(BaseEstimator):
         # RNN class and SPICE configuration. Can be one of the precoded models in rnn.py or a custom implementation.
         rnn_class: BaseRNN,
         spice_config: SpiceConfig,
-        use_sindy: bool = False,
         
         # Data/Environment parameters
         n_actions: int = 2,
-        n_participants: int = 0,
-        n_experiments: int = 0,
+        n_participants: int = 1,
+        n_experiments: int = 1,
+        n_items: int = None,
         
         # RNN training parameters
         epochs: int = 1,
@@ -51,28 +51,18 @@ class SpiceEstimator(BaseEstimator):
         scheduler: Optional[bool] = False, 
         train_test_ratio: Optional[Union[float, List[int]]] = 1.,
         l2_weight_decay: Optional[float] = 0,
-        l1_weight_decay: Optional[float] = 0,
         dropout: Optional[float] = 0.,
         
         # SPICE training parameters
-        sindy_threshold_frequency = 50,
-        spice_optimizer_type: Optional[str] = 'SR3_weighted_l1',
-        spice_optim_threshold: Optional[float] = 0.05,
-        spice_optim_regularization: Optional[float] = 1e-2,
-        spice_library_polynomial_degree: Optional[int] = 1,
-        simulation_environment: Bandits = None,
-        n_trials_off_policy: Optional[int] = 1000,
-        n_sessions_off_policy: Optional[int] = 1,
-        n_trials_same_action_off_policy: Optional[int] = 5,
-        use_optuna: Optional[bool] = False,
-        optuna_threshold: Optional[float] = 0.1,
-        optuna_n_trials: Optional[int] = 50,
-
-        # Differentiable SINDy parameters (end-to-end training)
         sindy_weight: Optional[float] = 0.1,  # Weight for SINDy regularization loss
-        
+        sindy_epochs: Optional[int] = 1000,
+        sindy_threshold_frequency = 50,
+        sindy_threshold: Optional[float] = 0.05,
+        sindy_regularization: Optional[float] = 1e-2,
+        sindy_library_polynomial_degree: Optional[int] = 1,
+        use_sindy: bool = False,
+
         verbose: Optional[bool] = False,
-        
         save_path_spice: Optional[str] = None
     ):
         """
@@ -81,6 +71,7 @@ class SpiceEstimator(BaseEstimator):
             spice_config: SPICE config
             dropout: Dropout rate of the RNN
             n_actions: Number of actions
+            n_items: Number of total action items (including the ones not selectable at the current trial)
             n_participants: Number of participants
             n_experiments: Number of experiments
             epochs: Number of epochs to train the RNN
@@ -95,7 +86,6 @@ class SpiceEstimator(BaseEstimator):
             train_test_ratio: Ratio of training to test data (default: 1.)
             l2_weight_decay: L2 weight decay for the RNN
             verbose: Whether to print verbose output (default: False)
-            save_path_rnn: File path (.pkl) to save RNN model after training (default: None)
             save_path_spice: File path (.pkl) to save SPICE model after training (default: None)
         """
         
@@ -117,31 +107,21 @@ class SpiceEstimator(BaseEstimator):
         self.verbose = verbose
         self.deterministic = False
         self.l2_weight_decay = l2_weight_decay
-        self.l1_weight_decay = l1_weight_decay
 
         # Save parameters
         self.save_path_model = save_path_spice
 
-        # SPICE training parameters
-        self.spice_optimizer_type = spice_optimizer_type
-        self.spice_optim_threshold = spice_optim_threshold
-        self.spice_library_polynomial_degree = spice_library_polynomial_degree
-        self.spice_optim_regularization = spice_optim_regularization
-        self.simulation_environment = simulation_environment
-        self.n_trials_off_policy = n_trials_off_policy
-        self.n_sessions_off_policy = n_sessions_off_policy
-        self.n_trials_same_action_off_policy = n_trials_same_action_off_policy
-        self.use_optuna = use_optuna
-        self.optuna_threshold = optuna_threshold
-        self.optuna_n_trials = optuna_n_trials
-        
-        # SINDy regularization parameters (for differentiable end-to-end training)
+        # SINDy training parameters
         self.sindy_weight = sindy_weight
-        self.sindy_threshold_value = spice_optim_threshold
         self.sindy_threshold_frequency = sindy_threshold_frequency
-
+        self.sindy_threshold = sindy_threshold
+        self.sindy_library_polynomial_degree = sindy_library_polynomial_degree
+        self.sindy_regularization = sindy_regularization
+        self.sindy_epochs = sindy_epochs
+        
         # Data parameters
         self.n_actions = n_actions
+        self.n_items = n_items
         self.n_participants = n_participants
         self.n_experiments = n_experiments
         
@@ -161,8 +141,9 @@ class SpiceEstimator(BaseEstimator):
             dropout=dropout,
             enable_sindy_reg=(sindy_weight > 0),
             spice_config=spice_config,
-            sindy_polynomial_degree=spice_library_polynomial_degree,
+            sindy_polynomial_degree=sindy_library_polynomial_degree,
             use_sindy=use_sindy,
+            n_items=n_items,
         ).to(device)
         
         # Separate parameters
@@ -208,10 +189,10 @@ class SpiceEstimator(BaseEstimator):
             dataset_test=dataset_test,
             optimizer=self.rnn_optimizer,
             convergence_threshold=self.convergence_threshold,
-            l1_weight_decay=self.l1_weight_decay,
             sindy_weight=self.sindy_weight,
-            sindy_threshold_value=self.sindy_threshold_value,
+            sindy_threshold=self.sindy_threshold,
             sindy_threshold_frequency=self.sindy_threshold_frequency,
+            sindy_epochs=self.sindy_epochs,
             epochs=self.epochs,
             batch_size=batch_size,
             bagging=self.bagging,

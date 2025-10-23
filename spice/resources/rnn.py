@@ -98,6 +98,7 @@ class BaseRNN(nn.Module):
         spice_config: SpiceConfig,
         n_participants: int = 1,
         n_experiments: int = 1,
+        n_items: int = None,
         embedding_size: int = 1,
         use_sindy: bool = False,
         sindy_polynomial_degree: int = 2,
@@ -115,6 +116,7 @@ class BaseRNN(nn.Module):
         self.n_experiments = n_experiments
         self.use_sindy = use_sindy
         self.rnn_training_finished = False
+        self.n_items = n_items if n_items is not None else n_actions
         
         # session recording; used for sindy training; training variables start with 'x' and control parameters with 'c'
         self.recording = {}
@@ -149,21 +151,28 @@ class BaseRNN(nn.Module):
         
         spice_signals = SpiceSignals()
         
+        # item-specific signals
         spice_signals.actions = inputs[:, :, :self.n_actions].float()
         spice_signals.rewards = inputs[:, :, self.n_actions:2*self.n_actions].float()
+        
+        # additional signals (individual pre processing in forward pass possible)
         spice_signals.additional_inputs = inputs[:, :, 2*self.n_actions:-3].float()
+        
+        # static identifiers
         spice_signals.blocks = inputs[:, :, -3].int()
         spice_signals.experiment_ids = inputs[0, :, -2].int()
         spice_signals.participant_ids = inputs[0, :, -1].int()
         
+        # use previous state or initialize state if not given
         if prev_state is not None:
             self.set_state(prev_state)
         else:
             self.set_initial_state(batch_size=inputs.shape[1])
         
+        # output signals
         spice_signals.timesteps = torch.arange(spice_signals.actions.shape[0])
-        spice_signals.logits = torch.zeros_like(spice_signals.actions)
-                
+        spice_signals.logits = torch.zeros((*spice_signals.actions.shape[:-1], self.n_actions))
+        
         return spice_signals
 
     def post_forward_pass(self, spice_signals: SpiceSignals, batch_first: bool) -> SpiceSignals:
@@ -183,7 +192,7 @@ class BaseRNN(nn.Module):
             Tuple[torch.Tensor]: initial hidden state
         """
         
-        state = {key: torch.full(size=[batch_size, self.n_actions], fill_value=self.spice_config.memory_state[key], dtype=torch.float32, device=self.device) for key in self.spice_config.memory_state}
+        state = {key: torch.full(size=[batch_size, self.n_items], fill_value=self.spice_config.memory_state[key], dtype=torch.float32, device=self.device) for key in self.spice_config.memory_state}
         
         self.set_state(state)
         return self.get_state()
@@ -326,7 +335,7 @@ class BaseRNN(nn.Module):
 
         else:
             raise ValueError(f'Invalid module key {key_module}.')
-                
+            
         if self.training and not self.rnn_training_finished:
             self.sindy_loss = self.sindy_loss + self.compute_sindy_loss_for_module(
                     key_module,
