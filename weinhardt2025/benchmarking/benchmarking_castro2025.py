@@ -557,7 +557,7 @@ def main(path_save_model: str, path_data: str, n_actions: int, n_epochs: int, lr
         file=path_data,
         df_participant_id='s_id',
         df_choice='action',
-        )[0]
+        )
 
     if split_ratio is not None:
         dataset_training, dataset_test = split_data_along_sessiondim(

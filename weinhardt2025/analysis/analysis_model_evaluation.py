@@ -111,7 +111,7 @@ dataset = convert_dataset(
     df_block='block',
     df_choice='choice',
     df_reward='reward',
-    )[0]
+    )
 # use these participant_ids if not defined later
 participant_ids = dataset.xs[:, 0, -1].unique().cpu().numpy()
 n_actions = dataset.ys.shape[-1]

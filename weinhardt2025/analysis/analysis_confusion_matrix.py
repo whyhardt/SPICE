@@ -102,7 +102,7 @@ confusion_matrix = {metric: np.zeros((len(models), len(models))) for metric in m
 for index_simulated_model, simulated_model in enumerate(simulated_models):
     
     # get data and choice probabilities from simulated model
-    dataset = convert_dataset(file=path_data.replace('SIMULATED', simulated_model))[0]
+    dataset = convert_dataset(file=path_data.replace('SIMULATED', simulated_model))
     n_sessions = len(dataset)
     metrics_session = {metric: np.zeros((n_sessions, len(models))) for metric in metrics}
 

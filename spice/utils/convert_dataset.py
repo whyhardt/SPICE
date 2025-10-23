@@ -24,8 +24,9 @@ def convert_dataset(
     df_choice: str = 'choice',
     df_reward: str = 'reward',
     additional_inputs: List[str] = None,
+    timeshift_additional_inputs: bool = False,
     remove_failed_trials: bool = True,
-    ):
+    ) -> SpiceDataset:
     df = pd.read_csv(file, index_col=None)
     
     # replace all nan values with -1
@@ -196,7 +197,15 @@ def convert_dataset(
         
         experiment_list.append(experiment)
         
-    return SpiceDataset(xs, ys, device=device, sequence_length=sequence_length), experiment_list, original_df, (probs_choice, values_action, values_reward, values_choice)
+    # move additional inputs one timestep back in order to make the next decision being based on them
+    if timeshift_additional_inputs:
+        xs[:, :-1, n_actions*2:-3] = xs[:, 1:, n_actions*2:-3]
+        xs = xs[:, :-1]
+        ys = ys[:, :-1]
+    
+    dataset = SpiceDataset(xs, ys, device=device, sequence_length=sequence_length)
+    
+    return dataset
 
 
 def split_data_along_timedim(dataset: SpiceDataset, split_ratio: float, device: torch.device = torch.device('cpu')):

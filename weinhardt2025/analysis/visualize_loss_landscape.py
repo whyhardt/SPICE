@@ -266,7 +266,7 @@ if __name__ == '__main__':
     model_path = "weinhardt2025/params/eckstein2022/spice_eckstein2022.pkl"
 
     print("Loading dataset...")
-    dataset = convert_dataset(file=data_path)[0]
+    dataset = convert_dataset(file=data_path)
     dataset_train, dataset_test = split_data_along_timedim(dataset, 0.8)
 
     n_actions = dataset_train.ys.shape[-1]

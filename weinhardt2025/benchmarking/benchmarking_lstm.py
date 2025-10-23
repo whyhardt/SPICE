@@ -149,9 +149,9 @@ def training(dataset_training: SpiceDataset, lstm: RLLSTM, optimizer: torch.opti
 def main(path_save_model:str, path_data: str, n_actions: int, n_cells: int, n_epochs: int, lr: float, split_ratio: float, device=torch.device('cpu')):
     
     if isinstance(split_ratio, float):
-        dataset_training, dataset_test = split_data_along_timedim(convert_dataset(path_data)[0], split_ratio=split_ratio)
+        dataset_training, dataset_test = split_data_along_timedim(convert_dataset(path_data), split_ratio=split_ratio)
     else:
-        dataset_training, dataset_test = split_data_along_sessiondim(convert_dataset(path_data)[0], list_test_sessions=split_ratio)
+        dataset_training, dataset_test = split_data_along_sessiondim(convert_dataset(path_data), list_test_sessions=split_ratio)
         
     lstm = RLLSTM(n_cells=n_cells, n_actions=n_actions).to(device)
     optimizer = torch.optim.Adam(lstm.parameters(), lr=lr)

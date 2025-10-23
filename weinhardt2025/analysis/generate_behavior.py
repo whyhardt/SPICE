@@ -70,7 +70,7 @@ elif agent_type == 'rnn':
 else:
     setup_agent = setup_agent_benchmark
 
-n_participants = len(convert_dataset(path_data)[0].xs[:, 0, -1].unique())
+n_participants = len(convert_dataset(path_data).xs[:, 0, -1].unique())
 
 dataset_xs, dataset_ys = [], []
 for session in range(n_sessions):

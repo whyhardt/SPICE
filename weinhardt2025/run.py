@@ -50,7 +50,7 @@ if __name__=='__main__':
     print(f"Loading dataset from {args.data}...")
     dataset = convert_dataset(
         file=args.data,
-    )[0]
+    )
 
     if args.time_train_test_ratio:
         args.session_train_test_ratio = None

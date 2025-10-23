@@ -393,7 +393,7 @@ def fit_mcmc(data: str, model: str, num_samples: int, num_warmup: int, num_chain
         raise ValueError(f'The provided model {model} is not supported. At least some part of the configuration ({model_checked}) is not valid. Valid configurations may include {valid_config}.')
     
     # Get and prepare the data
-    dataset = convert_dataset(data)[0]
+    dataset = convert_dataset(data)
     if isinstance(train_test_ratio, float):
         dataset = split_data_along_timedim(dataset=dataset, split_ratio=train_test_ratio)[0].xs.numpy()
     else:
@@ -457,6 +457,6 @@ if __name__=='__main__':
         path_model=os.path.join(args.output_dir, 'mcmc_eckstein2022_'+args.model+'.nc'),
         model_config=args.model,
         )
-    experiment = convert_dataset(args.file)[0].xs[0]
+    experiment = convert_dataset(args.file).xs[0]
     fig, axs = plot_session(agents={'benchmark': agent_mcmc[0][0]}, experiment=experiment)
     plt.show()

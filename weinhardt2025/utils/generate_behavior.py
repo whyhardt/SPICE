@@ -75,7 +75,7 @@ else:
     setup_agent = setup_agent_benchmark
 
 if path_data:
-    n_participants = len(convert_dataset(path_data)[0].xs[:, 0, -1].unique())
+    n_participants = len(convert_dataset(path_data).xs[:, 0, -1].unique())
 else:
     n_participants = 100
     

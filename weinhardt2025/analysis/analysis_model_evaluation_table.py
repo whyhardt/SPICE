@@ -66,7 +66,7 @@ path_model_spice = f'params/{study}/spice_{study}_l2_L2VALUE_v2_ep4096.pkl'
 # MODEL COMPARISON PIPELINE
 # -------------------------------------------------------------------------------
 
-dataset = convert_dataset(path_data, additional_inputs=additional_inputs)[0]
+dataset = convert_dataset(path_data, additional_inputs=additional_inputs)
 participant_ids = dataset.xs[:, 0, -1].unique().cpu().numpy()
 
 # ------------------------------------------------------------

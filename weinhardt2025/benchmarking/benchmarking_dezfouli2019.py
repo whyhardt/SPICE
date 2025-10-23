@@ -384,7 +384,7 @@ def main(path_save_model: str, path_data: str, model_config: str, n_actions: int
     
     # Load and split data
     dataset_training, dataset_test = split_data_along_sessiondim(
-        convert_dataset(path_data)[0], 
+        convert_dataset(path_data), 
         list_test_sessions=split_ratio
     )
     dataset_training = reshape_data_along_participantdim(dataset_training)
