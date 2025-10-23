@@ -31,20 +31,20 @@ if __name__=='__main__':
     # args.data = "weinhardt2025/data/eckstein2022/eckstein2022.csv"
     # args.time_train_test_ratio = 0.8
     
-    # args.model = "weinhardt2025/params/eckstein2024/spice_eckstein2024.pkl"
-    # args.data = "weinhardt2025/data/eckstein2024/eckstein2024.csv"
-    # args.session_train_test_ratio = "1,3"
+    args.model = "weinhardt2025/params/eckstein2024/spice_eckstein2024.pkl"
+    args.data = "weinhardt2025/data/eckstein2024/eckstein2024.csv"
+    args.session_train_test_ratio = "1,3"
     
-    args.model = "weinhardt2025/params/dezfouli2019/spice_dezfouli2019.pkl"
-    args.data = "weinhardt2025/data/dezfouli2019/dezfouli2019.csv"
-    args.session_train_test_ratio = "3,6,9"
+    # args.model = "weinhardt2025/params/dezfouli2019/spice_dezfouli2019.pkl"
+    # args.data = "weinhardt2025/data/dezfouli2019/dezfouli2019.csv"
+    # args.session_train_test_ratio = "3,6,9"
     
-    args.epochs = 0 # Further reduced for initial testing
+    args.epochs = 1000 # Further reduced for initial testing
     args.l2 = 0.01
     args.l1 = 0.
     dropout = 0.
     args.sindy_weight = 0.01  # Start with very small weight for stability
-    sindy_threshold = 0.1
+    sindy_threshold = 0.01
     sindy_thresholding_frequency = 100
     
     print(f"Loading dataset from {args.data}...")
@@ -95,7 +95,7 @@ if __name__=='__main__':
     
     print(f"\nStarting training on {estimator.device}...")
     print("=" * 80)
-    # estimator.fit(dataset_train.xs, dataset_train.ys)#, data_test=dataset_train.xs, target_test=dataset_train.ys)
+    estimator.fit(dataset_train.xs, dataset_train.ys)#, data_test=dataset_train.xs, target_test=dataset_train.ys)
     print("=" * 80)
     print("\nTraining complete!")
     

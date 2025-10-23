@@ -584,6 +584,7 @@ BUFFER_WORKING_MEMORY_CONFIG = SpiceConfig(
             'value_choice',
         ],
         'value_reward_not_chosen': [
+            'reward',
             'reward[t-1]', 
             'reward[t-2]',
             'reward[t-3]',
@@ -656,7 +657,7 @@ class BufferWorkingMemoryRNN(BaseRNN):
         # Value learning module (slow updates)
         # Can use recent reward history to modulate learning
         self.submodules_rnn['value_reward_chosen'] = self.setup_module(input_size=5 + embedding_size, dropout=dropout)
-        self.submodules_rnn['value_reward_not_chosen'] = self.setup_module(input_size=4 + embedding_size, dropout=dropout)
+        self.submodules_rnn['value_reward_not_chosen'] = self.setup_module(input_size=4+1 + embedding_size, dropout=dropout)
         self.submodules_rnn['value_choice_chosen'] = self.setup_module(input_size=4 + embedding_size, dropout=dropout)
         self.submodules_rnn['value_choice_not_chosen'] = self.setup_module(input_size=4 + embedding_size, dropout=dropout)
 
@@ -693,6 +694,7 @@ class BufferWorkingMemoryRNN(BaseRNN):
                 key_state='value_reward',
                 action_mask=1-spice_signals.actions[timestep],
                 inputs=(
+                    spice_signals.rewards[timestep],
                     self.state['buffer_reward_1'],  # Recent reward history
                     self.state['buffer_reward_2'],
                     self.state['buffer_reward_3'],

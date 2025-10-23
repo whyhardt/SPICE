@@ -9,7 +9,7 @@ import torch
 from typing import Tuple, Optional
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from resources.bandits import AgentQ, AgentNetwork, AgentSpice, BanditSession, get_update_dynamics, plot_session as plt_session
+from resources.bandits import AgentQ, AgentNetwork, BanditSession, get_update_dynamics, plot_session as plt_session
 from resources.spice_utils import SpiceDataset
 
 
@@ -161,7 +161,7 @@ def plot_dynamics(
 
 
 def plot_session(
-    agents: Dict[str, Union[AgentSpice, AgentNetwork, AgentQ]], 
+    agents: Dict[str, Union[AgentNetwork, AgentQ]], 
     experiment: Union[BanditSession, np.ndarray], 
     labels: List[str] = None, 
     save: str = None, 

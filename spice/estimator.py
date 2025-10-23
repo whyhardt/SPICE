@@ -11,7 +11,7 @@ from copy import deepcopy
 from typing import Dict, Optional, Tuple, Union, List
 
 from .resources.spice_training import fit_model
-from .resources.bandits import AgentNetwork, AgentSpice, Bandits
+from .resources.bandits import AgentNetwork, Bandits
 from .resources.rnn import BaseRNN
 from .resources.spice_utils import SpiceConfig, SpiceDataset
 
@@ -263,67 +263,7 @@ class SpiceEstimator(BaseEstimator):
         if self.save_path_model is not None:
             print(f'Saving SPICE model to {self.save_path_model}...')
             self.save_spice(self.save_path_model)
-                
-    def _extract_sindy_from_rnn(self):
-        """
-        Extract learned SINDy coefficients from RNN and create AgentSpice for compatibility.
-        This is used when end-to-end differentiable training is enabled (sindy_weight > 0).
-        """
-        if not hasattr(self.rnn_model, 'sindy_coefficients') or len(self.rnn_model.sindy_coefficients) == 0:
-            print("Warning: No SINDy coefficients found in RNN model. Skipping SPICE extraction.")
-            return None
-
-        print("\nExtracting learned SPICE coefficients from RNN...")
-
-        sindy_modules = {}
-
-        for module_name in self.rnn_modules:
-            if module_name not in self.rnn_model.sindy_coefficients:
-                continue
-
-            sindy_modules[module_name] = {}
-
-            # Get coefficients and masks
-            coeffs = self.rnn_model.sindy_coefficients[module_name].detach().cpu().numpy()
-            masks = self.rnn_model.sindy_masks[module_name].cpu().numpy()
-            feature_names = self.rnn_model.sindy_library_names[module_name]
-
-            # Create pysindy model for each participant
-            for pid in range(self.n_participants):
-                coef_sparse = coeffs[pid] * masks[pid]
-
-                # Create a minimal pysindy model for compatibility
-                # We don't need the full optimizer, just the structure
-                sindy_model = ps.SINDy(
-                    optimizer=ps.STLSQ(threshold=0.0),  # Dummy optimizer
-                    feature_library=ps.PolynomialLibrary(
-                        degree=self.spice_library_polynomial_degree,
-                        interaction_only=False
-                    ),
-                    discrete_time=True,
-                    feature_names=feature_names,
-                )
-
-                # Manually set the learned coefficients
-                sindy_model.model = sindy_model._make_model()
-                sindy_model.model.steps[-1][1].coef_ = coef_sparse.reshape(1, -1)
-                sindy_model.n_input_features_ = len(feature_names)
-                sindy_model.n_output_features_ = 1
-                
-                sindy_modules[module_name][pid] = sindy_model
-
-        # Create AgentSpice
-        agent_spice = AgentSpice(
-            model_rnn=deepcopy(self.rnn_model),
-            sindy_modules=sindy_modules,
-            n_actions=self.n_actions,
-            deterministic=True
-        )
-
-        print(f"Extracted SPICE models for {len(sindy_modules)} modules across {self.n_participants} participants.")
-
-        return agent_spice
-
+   
     def predict(self, conditions: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """
         Make predictions using both RNN and SPICE models.

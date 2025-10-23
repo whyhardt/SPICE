@@ -294,7 +294,7 @@ def fit_sindy_second_stage(
         
         # THRESHOLDING STEP
         if epoch % 100 == 0 and epoch != 0:
-                model.thresholding(threshold=0, base_threshold=0.05, n_terms_cutoff=1)
+                model.thresholding(threshold=0, base_threshold=0.01, n_terms_cutoff=1)
         
         # Print progress
         msg = f'SINDy Stage 2 - Epoch {epoch+1}/{epochs} --- L(Train): {loss_train:.7f}'
