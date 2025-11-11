@@ -9,7 +9,7 @@ warnings.filterwarnings("ignore")
 cudnn.enabled = False
 
 # --- Repo path ---
-repo_root = r"C:\Users\alleebels\Desktop\malte-uni\SPICE"
+repo_root = r"C:\Users\Malte\Desktop\SPICE"
 if repo_root not in sys.path:
     sys.path.append(repo_root)
 
@@ -27,14 +27,14 @@ np.random.seed(186)
 torch.manual_seed(186)
 
 # --- Configs ---
-datasets = ["eckstein2022", "dezfouli2019"]
-epochs = 8192  # For testing; use 8192 later
+datasets = ["eckstein2022"]
+epochs = 2048 # 8192
 
-lambda_awd_list = [0.022, 0.1, 0.22, 0.5, 1, 5]
-initial_reg_params = [0.0001, 0.001]
-outer_lrs = [0.1, 0.01]
+lambda_awd_list = []
+initial_reg_params = [0.00001, 0.00005, 0.0001, 0.0005, 0.001]
+outer_lrs = [0.0001, 0.001, 0.01, 0.1]
 
-metaopt_order = ["awd", "imaml"]
+metaopt_order = ["imaml"]
 use_test = True  # Match original script's behavior
 
 # --- Helper for filenames ---
@@ -54,15 +54,15 @@ for metaopt_type in metaopt_order:
         class_rnn = RLRNN_eckstein2022 if dataset == 'eckstein2022' else RLRNN_dezfouli2019
         sindy_config = sindy_utils.SindyConfig_eckstein2022 if dataset == 'eckstein2022' else sindy_utils.SindyConfig_dezfouli2019
 
-        os.makedirs(f'params/{dataset}', exist_ok=True)
-        summary_file = f'params/{dataset}/results_summary.csv'
+        os.makedirs(os.path.join(repo_root, 'params', dataset), exist_ok=True)
+        summary_file = os.path.join(repo_root, 'params', dataset, 'results_summary.csv')
         results_summary = pd.read_csv(summary_file).to_dict('records') if os.path.exists(summary_file) else []
 
         # --- AWD loop ---
         if metaopt_type == 'awd':
             for lambda_awd in lambda_awd_list:
                 lam_str = float_to_str(lambda_awd)
-                path_model_rnn = f'params/{dataset}/AWD_{dataset}_ep{epochs}_lawd-{lam_str}_rnn.pkl'
+                path_model_rnn = os.path.join(repo_root, 'params', dataset, f'AWD_{dataset}_ep{epochs}_lawd-{lam_str}_rnn.pkl')
                 path_model_spice = path_model_rnn.replace('_rnn.pkl', '_spice.pkl')
 
                 if any(r.get('lambda_awd') == lambda_awd for r in results_summary if r['metaopt_type'] == 'awd'):
@@ -144,6 +144,11 @@ for metaopt_type in metaopt_order:
                         get_loss=False,
                         **sindy_config
                     )
+
+                    # Debug check for SPICE file
+                    print(f"[DEBUG] SPICE path: {path_model_spice}")
+                    print(f"[DEBUG] Exists: {os.path.exists(path_model_spice)}")
+
                 except Exception as e:
                     print(f"SINDy failed for AWD λ={lambda_awd} on {dataset}: {e}")
                     sindy_status = 'failed'
@@ -162,6 +167,12 @@ for metaopt_type in metaopt_order:
                 agent_rnn = setup_agent_rnn(class_rnn=class_rnn, path_model=path_model_rnn)
                 agent_spice = setup_agent_spice(class_rnn=class_rnn, path_rnn=path_model_rnn, path_spice=path_model_spice) \
                               if sindy_status == 'success' and os.path.exists(path_model_spice) else None
+
+                print(hasattr(agent_spice, '_additional_meta_data'))
+                n_parameters_spice = 0
+
+                if not hasattr(agent_spice, '_additional_meta_data'):
+                    agent_spice._additional_meta_data = None
 
                 # Dynamic slicing
                 n_actions_rnn = agent_rnn._n_actions
@@ -189,7 +200,7 @@ for metaopt_type in metaopt_order:
 
                         # SPICE
                         if agent_spice:
-                            additional_inputs_embedding = data_input[0, agent_spice._n_actions*2:-3]
+                            additional_inputs_embedding = data_input[i, agent_spice._n_actions*2:-3]
                             agent_spice.new_sess(participant_id=pid, additional_embedding_inputs=additional_inputs_embedding)
                             probs_spice = get_update_dynamics(data_input[i], agent_spice)[1]
                             data_ys_spice = data_test_spice[i, :len(probs_spice)].cpu().numpy()
@@ -227,7 +238,7 @@ for metaopt_type in metaopt_order:
             for initial_reg_param in initial_reg_params:
                 for outer_lr in outer_lrs:
                     reg_str, lr_str = float_to_str(initial_reg_param), float_to_str(outer_lr)
-                    path_model_rnn = f'params/{dataset}/iMAML_{dataset}_ep{epochs}_metalr-{lr_str}_in-{reg_str}_rnn.pkl'
+                    path_model_rnn = os.path.join(repo_root, 'params', dataset, f'iMAML_{dataset}_ep{epochs}_metalr-{lr_str}_in-{reg_str}_rnn.pkl')
                     path_model_spice = path_model_rnn.replace('_rnn.pkl', '_spice.pkl')
 
                     if any(r.get('initial_reg_param') == initial_reg_param and r.get('outer_lr') == outer_lr for r in results_summary if r['metaopt_type'] == 'imaml'):
@@ -245,8 +256,8 @@ for metaopt_type in metaopt_order:
                             learning_rate=1e-2,
                             metaopt_type='imaml',
                             lambda_awd=None,
-                            meta_update_interval=50,
-                            inner_steps=3,
+                            meta_update_interval=32,
+                            inner_steps=8,
                             outer_lr=outer_lr,
                             hypergradient_steps=3,
                             initial_reg_param=initial_reg_param,
@@ -309,6 +320,11 @@ for metaopt_type in metaopt_order:
                             get_loss=False,
                             **sindy_config
                         )
+
+                        # Debug check for SPICE file
+                        print(f"[DEBUG] SPICE path: {path_model_spice}")
+                        print(f"[DEBUG] Exists: {os.path.exists(path_model_spice)}")
+
                     except Exception as e:
                         print(f"SINDy failed for iMAML reg={initial_reg_param}, lr={outer_lr} on {dataset}: {e}")
                         sindy_status = 'failed'
@@ -353,7 +369,7 @@ for metaopt_type in metaopt_order:
 
                             # SPICE
                             if agent_spice:
-                                additional_inputs_embedding = data_input[0, agent_spice._n_actions*2:-3]
+                                additional_inputs_embedding = data_input[i, agent_spice._n_actions*2:-3]
                                 agent_spice.new_sess(participant_id=pid, additional_embedding_inputs=additional_inputs_embedding)
                                 probs_spice = get_update_dynamics(data_input[i], agent_spice)[1]
                                 data_ys_spice = data_test_spice[i, :len(probs_spice)].cpu().numpy()
