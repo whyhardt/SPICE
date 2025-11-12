@@ -93,7 +93,7 @@ else:
 if path_model_benchmark_lstm:
     print("Setting up LSTM agent from file", path_model_benchmark_lstm)
     agent_lstm = benchmarking_lstm.setup_agent_lstm(path_model=path_model_benchmark_lstm)
-    n_parameters_lstm = sum(p.numel() for p in agent_lstm._model.parameters() if p.requires_grad)
+    n_parameters_lstm = sum(p.numel() for p in agent_lstm.model.parameters() if p.requires_grad)
 else:
     n_parameters_lstm = 0
     
@@ -107,7 +107,7 @@ if path_model_rnn is not None:
             class_rnn=rnn_class,
             path_model=current_rnn,
             )
-    n_parameters_rnn = sum(p.numel() for p in agent_rnn[value]._model.parameters() if p.requires_grad)
+    n_parameters_rnn = sum(p.numel() for p in agent_rnn[value].model.parameters() if p.requires_grad)
 else:
     n_parameters_rnn = 0
     

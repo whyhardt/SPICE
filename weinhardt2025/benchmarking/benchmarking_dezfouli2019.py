@@ -303,16 +303,16 @@ class AgentGQL(AgentNetwork):
         
         assert isinstance(model, Dezfouli2019GQL), "The passed model is not an instance of Dezfouli2019GQL."
         
-        self._model = model
-        self._model.eval()
+        self.model = model
+        self.model.eval()
 
     # def new_sess(self, *args, **kwargs):
     #     """Reset the network for the beginning of a new session."""
-    #     self._model.set_initial_state(batch_size=1)
+    #     self.model.set_initial_state(batch_size=1)
         
     #     # Extract state as numpy arrays for compatibility with Agent interface
-    #     state = self._model.get_state()
-    #     self._state = {
+    #     state = self.model.get_state()
+    #     self.state = {
     #         'x_value_reward': state['x_value_reward'][0].detach().cpu().numpy(),  # (n_actions, d)
     #         'x_value_choice': state['x_value_choice'][0].detach().cpu().numpy(),  # (n_actions, d)
     #     }
@@ -320,8 +320,8 @@ class AgentGQL(AgentNetwork):
     def get_betas(self):
         """Return beta and kappa values."""
         with torch.no_grad():
-            beta = self._model.beta.squeeze(0)#.detach().cpu().numpy()  # (d,)
-            kappa = self._model.kappa.squeeze(0)#.detach().cpu().numpy()  # (d,)
+            beta = self.model.beta.squeeze(0)#.detach().cpu().numpy()  # (d,)
+            kappa = self.model.kappa.squeeze(0)#.detach().cpu().numpy()  # (d,)
         return beta, kappa
     
     @property
@@ -330,32 +330,32 @@ class AgentGQL(AgentNetwork):
         beta, kappa = self.get_betas()
         
         # Compute weighted values
-        q_weighted = torch.sum(beta * self._state['x_value_reward'].squeeze(0), dim=-1)  # (n_actions,)
-        h_weighted = torch.sum(kappa * self._state['x_value_choice'].squeeze(0), dim=-1)  # (n_actions,)
+        q_weighted = torch.sum(beta * self.state['x_value_reward'].squeeze(0), dim=-1)  # (n_actions,)
+        h_weighted = torch.sum(kappa * self.state['x_value_choice'].squeeze(0), dim=-1)  # (n_actions,)
         
         # Compute interaction terms
-        C = self._model.C#.detach().cpu().numpy()
+        C = self.model.C#.detach().cpu().numpy()
         interaction = torch.zeros(self._n_actions)
         for a in range(self._n_actions):
-            interaction[a] = self._state['x_value_choice'].squeeze(0)[a] @ C @ self._state['x_value_reward'].squeeze(0)[a]
+            interaction[a] = self.state['x_value_choice'].squeeze(0)[a] @ C @ self.state['x_value_reward'].squeeze(0)[a]
         
         return (q_weighted + h_weighted + interaction).detach().cpu().numpy()
     
     @property
     def q_reward(self):
         beta, _ = self.get_betas()
-        q_weighted = torch.sum(beta * self._state['x_value_reward'].squeeze(0), dim=-1)  # (n_actions,)
+        q_weighted = torch.sum(beta * self.state['x_value_reward'].squeeze(0), dim=-1)  # (n_actions,)
         return (q_weighted).detach().cpu().numpy()
     
     @property
     def q_choice(self):
         _, kappa = self.get_betas()
-        q_weighted = torch.sum(kappa * self._state['x_value_choice'].squeeze(0), dim=-1)  # (n_actions,)
+        q_weighted = torch.sum(kappa * self.state['x_value_choice'].squeeze(0), dim=-1)  # (n_actions,)
         return (q_weighted).detach().cpu().numpy()
     
     @property
     def learning_rate_reward(self):
-        return self._state['x_learning_rate_reward'][0, 0]
+        return self.state['x_learning_rate_reward'][0, 0]
 
 
 def setup_agent_gql(path_model: str, model_config: str = "PhiChiBetaKappaC", deterministic: bool = True, **kwargs) -> AgentGQL:

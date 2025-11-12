@@ -164,8 +164,8 @@ def run_training_and_evaluation(dataset, label):
     logger.info("\nEvaluating SINDy models...")
     available_participant_ids = set()
     for module_name in list_rnn_modules:
-        if hasattr(agent_sindy._model, 'submodules_sindy') and module_name in agent_sindy._model.submodules_sindy:
-            available_participant_ids.update(agent_sindy._model.submodules_sindy[module_name].keys())
+        if hasattr(agent_sindy.model, 'submodules_sindy') and module_name in agent_sindy.model.submodules_sindy:
+            available_participant_ids.update(agent_sindy.model.submodules_sindy[module_name].keys())
     logger.info(f"SINDy models are available for participants: {available_participant_ids}")
     
     bic_values = []
@@ -213,10 +213,10 @@ def run_training_and_evaluation(dataset, label):
     for module_name in list_rnn_modules:
         logger.info(f"Module: {module_name}")
         for pid in sorted(available_participant_ids):
-            if (hasattr(agent_sindy._model, 'submodules_sindy') and 
-                module_name in agent_sindy._model.submodules_sindy and 
-                pid in agent_sindy._model.submodules_sindy[module_name]):
-                sindy_model = agent_sindy._model.submodules_sindy[module_name][pid]
+            if (hasattr(agent_sindy.model, 'submodules_sindy') and 
+                module_name in agent_sindy.model.submodules_sindy and 
+                pid in agent_sindy.model.submodules_sindy[module_name]):
+                sindy_model = agent_sindy.model.submodules_sindy[module_name][pid]
                 logger.info(f"  Participant {pid} Equation: {sindy_model}")
                 coeffs = sindy_model.coefficients()
                 if coeffs is not None and len(coeffs) > 0:

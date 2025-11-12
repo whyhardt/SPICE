@@ -136,15 +136,15 @@ def extract_participant_demographics(df, demo_cols):
 
 def get_embeddings(agent_rnn: AgentNetwork):
     """Extract participant embeddings from trained RNN"""
-    participant_ids = torch.arange(agent_rnn._model.n_participants, dtype=torch.int32)
-    embeddings = agent_rnn._model.participant_embedding(participant_ids).detach().numpy()
+    participant_ids = torch.arange(agent_rnn.model.n_participants, dtype=torch.int32)
+    embeddings = agent_rnn.model.participant_embedding(participant_ids).detach().numpy()
     return embeddings
 
 def get_coefficients(agent_spice: AgentSpice):
     """Extract SINDy coefficients from trained SPICE model"""
     coefficients = None
     coefficient_names = []
-    for pid in range(agent_spice._model.n_participants):
+    for pid in range(agent_spice.model.n_participants):
         agent_spice.new_sess(participant_id=pid)
         
         betas = agent_spice.get_betas()
@@ -157,7 +157,7 @@ def get_coefficients(agent_spice: AgentSpice):
             for module in modules:
                 n_coefs += max(modules[module][pid].coefficients().shape)
                 coefficient_names += [module + ' ' + feature for feature in modules[module][pid].get_feature_names()]
-            coefficients = np.zeros((agent_spice._model.n_participants, n_coefs+len(betas)))
+            coefficients = np.zeros((agent_spice.model.n_participants, n_coefs+len(betas)))
         
         for index_beta, beta in enumerate(betas):
             coefficients[pid, index_beta] = betas[beta]

@@ -204,7 +204,7 @@ class BaseRNN(nn.Module):
             state (Dict[str, torch.Tensor]): hidden state
         """
         
-        # self._state = dict(hidden_habit=habit_state, hidden_value=value_state, habit=habit, value=value)
+        # self.state = dict(hidden_habit=habit_state, hidden_value=value_state, habit=habit, value=value)
         self.state = state_dict
       
     def get_state(self, detach=False):
@@ -298,8 +298,9 @@ class BaseRNN(nn.Module):
             
         if participant_embedding is None:
             participant_embedding = torch.zeros((*value.shape, 0), dtype=torch.float32, device=value.device)
-        participant_embedding = participant_embedding.unsqueeze(1).repeat(1, value.shape[1], 1)
-          
+        else:
+            participant_embedding = participant_embedding.unsqueeze(1).repeat(1, value.shape[1], 1)
+        
         if isinstance(inputs, tuple):
             inputs = torch.concat([inputs_i.unsqueeze(-1) for inputs_i in inputs], dim=-1)
         elif inputs.dim()==2:
@@ -321,13 +322,16 @@ class BaseRNN(nn.Module):
                     next_value = activation_rnn(next_value)
             else:
                 # use sindy coefficients
-                next_value = self.forward_sindy(
-                    h_current = value, 
-                    module_name = key_module, 
-                    participant_ids = participant_index.squeeze(), 
-                    controls = inputs, 
-                    polynomial_degree = self.sindy_polynomial_degree,
-                    )
+                if participant_index is not None:
+                    next_value = self.forward_sindy(
+                        h_current = value, 
+                        module_name = key_module, 
+                        participant_ids = participant_index.squeeze(), 
+                        controls = inputs, 
+                        polynomial_degree = self.sindy_polynomial_degree,
+                        )
+                else:
+                    next_value = torch.zeros_like(value)
         
         elif key_module in self.submodules_eq.keys():
             # use hard-coded equation
@@ -336,7 +340,7 @@ class BaseRNN(nn.Module):
         else:
             raise ValueError(f'Invalid module key {key_module}.')
             
-        if self.training and not self.rnn_training_finished:
+        if self.training and not self.rnn_training_finished and participant_index is not None:
             self.sindy_loss = self.sindy_loss + self.compute_sindy_loss_for_module(
                     key_module,
                     self.state[key_state],

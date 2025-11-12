@@ -273,13 +273,13 @@ class SpiceEstimator(BaseEstimator):
         mask = torch.sum(conditions[..., :self.n_actions].reshape(-1, self.n_actions), dim=-1, keepdim=False) != -2
         
         # rnn predictions
-        prediction = self.rnn_agent._model(conditions, batch_first=True)[0].reshape(-1, self.n_actions)
+        prediction = self.rnn_agent.model(conditions, batch_first=True)[0].reshape(-1, self.n_actions)
         prediction = torch.nn.functional.softmax(prediction, dim=-1).detach().cpu().numpy()
         prediction_rnn[mask.detach().cpu().numpy()] = prediction[mask]
         prediction_rnn = prediction_rnn.reshape(*conditions.shape[:-1], self.n_actions)
         
         # SPICE predictions
-        prediction = self.spice_agent._model(conditions, batch_first=True)[0].reshape(-1, self.n_actions)
+        prediction = self.spice_agent.model(conditions, batch_first=True)[0].reshape(-1, self.n_actions)
         prediction = torch.nn.functional.softmax(prediction, dim=-1).detach().cpu().numpy()
         prediction_spice[mask.detach().cpu().numpy()] = prediction[mask]
         prediction_spice = prediction_spice.reshape(*conditions.shape[:-1], self.n_actions)

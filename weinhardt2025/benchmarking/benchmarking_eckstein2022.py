@@ -163,25 +163,25 @@ class Agent_eckstein2022(Agent):
         
         # Use shared update function
         r_values_new, c_values_new, _ = rl_update_step(
-            self._state['x_value_reward'].reshape(-1),
-            self._state['x_value_choice'].reshape(-1),
+            self.state['x_value_reward'].reshape(-1),
+            self.state['x_value_choice'].reshape(-1),
             choice,
             reward_value,
             self._params
         )
         
         # Update state
-        self._state['x_value_reward'] = r_values_new
-        self._state['x_value_choice'] = c_values_new
+        self.state['x_value_reward'] = r_values_new
+        self.state['x_value_choice'] = c_values_new
 
     @property
     def q(self):
-        return (self._state['x_value_reward'] * self._params['beta_r'] + 
-                self._state['x_value_choice'] * self._params['beta_ch']).reshape(-1)
+        return (self.state['x_value_reward'] * self._params['beta_r'] + 
+                self.state['x_value_choice'] * self._params['beta_ch']).reshape(-1)
 
     @property
     def q_choice(self):
-        return (self._state['x_value_choice'] * self._params['beta_ch']).reshape(-1)
+        return (self.state['x_value_choice'] * self._params['beta_ch']).reshape(-1)
     
 
 def setup_agent_benchmark(path_model: str, model_config: str, deterministic: bool = True, **kwargs) -> List[Agent_eckstein2022]:

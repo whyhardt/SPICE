@@ -12,7 +12,7 @@ from spice.utils.convert_dataset import convert_dataset
 
 # dataset specific SPICE configurations and models
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
-from spice.precoded import Weinhardt2025RNN, WEINHARDT_2025_CONFIG
+from spice.precoded import InteractionRNN, INTERACTION_CONFIG
 from weinhardt2025.benchmarking import benchmarking_dezfouli2019, benchmarking_eckstein2022
 
 
@@ -20,21 +20,27 @@ from weinhardt2025.benchmarking import benchmarking_dezfouli2019, benchmarking_e
 agent_type = 'q_agent'  # 'rnn', 'benchmark', 'baseline', 'q_agent'
 n_trials_per_session = 200
 
-dataset = 'None'
+# ------------------- CONFIGURATION SYNTHETIC --------------------
+dataset = 'synthetic'
+class_rnn = InteractionRNN
+sindy_config = INTERACTION_CONFIG
+bandits_environment = BanditsDrift
+n_sessions = 1
+bandits_kwarg = {'sigma': 0.2}
 
 # ------------------- CONFIGURATION ECKSTEIN2022 --------------------
-dataset = 'eckstein2022'
-benchmark_model = 'ApAnBrBcfBch'
-class_rnn = Weinhardt2025RNN
-sindy_config = WEINHARDT_2025_CONFIG
-bandits_environment = BanditsFlip_eckstein2022
-n_sessions = 1
-bandits_kwargs = {}
-setup_agent_benchmark = benchmarking_eckstein2022.setup_agent_benchmark
-rl_model = benchmarking_eckstein2022.rl_model
-path_rnn = f'params/{dataset}/rnn_{dataset}_l2_0_0005.pkl'
-path_spice = f'params/{dataset}/spice_{dataset}_l2_0_0005.pkl'
-path_benchmark = f'params/{dataset}/mcmc_{dataset}_{benchmark_model}.nc'
+# dataset = 'eckstein2022'
+# benchmark_model = 'ApAnBrBcfBch'
+# class_rnn = Weinhardt2025RNN
+# sindy_config = WEINHARDT_2025_CONFIG
+# bandits_environment = BanditsFlip_eckstein2022
+# n_sessions = 1
+# bandits_kwargs = {}
+# setup_agent_benchmark = benchmarking_eckstein2022.setup_agent_benchmark
+# rl_model = benchmarking_eckstein2022.rl_model
+# path_rnn = f'params/{dataset}/rnn_{dataset}_l2_0_0005.pkl'
+# path_spice = f'params/{dataset}/spice_{dataset}_l2_0_0005.pkl'
+# path_benchmark = f'params/{dataset}/mcmc_{dataset}_{benchmark_model}.nc'
 
 # ------------------------ CONFIGURATION DEZFOULI2019 -----------------------
 # dataset = 'dezfouli2019'
@@ -55,7 +61,7 @@ path_benchmark = f'params/{dataset}/mcmc_{dataset}_{benchmark_model}.nc'
 
 generating_model = agent_type if agent_type != 'benchmark' else benchmark_model
 path_data = f'weinhardt2025/data/{dataset}/{dataset}.csv'
-path_save = f'weinhardt2025/data/{dataset}/{dataset}_generated_behavior_{generating_model}_test.csv'
+path_save = f'weinhardt2025/data/{dataset}/{dataset}_generated_behavior_{generating_model}.csv'
 
 if agent_type == 'rnn':
     path_model = path_rnn

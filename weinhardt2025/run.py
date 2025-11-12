@@ -7,7 +7,7 @@ import torch
 
 from spice.estimator import SpiceEstimator
 from spice.utils.convert_dataset import convert_dataset, split_data_along_sessiondim, split_data_along_timedim
-from spice.precoded import BufferWorkingMemoryRNN, BUFFER_WORKING_MEMORY_CONFIG
+from spice.precoded import BufferWorkingMemoryRNN, BUFFER_WORKING_MEMORY_CONFIG, InteractionRNN, INTERACTION_CONFIG
 
 
 if __name__=='__main__':
@@ -31,13 +31,16 @@ if __name__=='__main__':
     # args.data = "weinhardt2025/data/eckstein2022/eckstein2022.csv"
     # args.time_train_test_ratio = 0.8
     
-    args.model = "weinhardt2025/params/eckstein2024/spice_eckstein2024.pkl"
-    args.data = "weinhardt2025/data/eckstein2024/eckstein2024.csv"
-    args.session_train_test_ratio = "1,3"
+    # args.model = "weinhardt2025/params/eckstein2024/spice_eckstein2024.pkl"
+    # args.data = "weinhardt2025/data/eckstein2024/eckstein2024.csv"
+    # args.session_train_test_ratio = "1,3"
     
     # args.model = "weinhardt2025/params/dezfouli2019/spice_dezfouli2019.pkl"
     # args.data = "weinhardt2025/data/dezfouli2019/dezfouli2019.csv"
     # args.session_train_test_ratio = "3,6,9"
+    
+    args.model = "weinhardt2025/params/spice_synthetic.pkl"
+    args.data = "weinhardt2025/data/data_synthetic.csv"
     
     args.epochs = 1000 # Further reduced for initial testing
     args.l2 = 0.01
@@ -46,6 +49,9 @@ if __name__=='__main__':
     args.sindy_weight = 0.01  # Start with very small weight for stability
     sindy_threshold = 0.01
     sindy_thresholding_frequency = 100
+    
+    class_rnn = InteractionRNN
+    spice_config = INTERACTION_CONFIG
     
     print(f"Loading dataset from {args.data}...")
     dataset = convert_dataset(
@@ -70,24 +76,25 @@ if __name__=='__main__':
     
     print(f"\nInitializing SpiceEstimator with end-to-end SINDy training (weight={args.sindy_weight})...")
     estimator = SpiceEstimator(
-        rnn_class=BufferWorkingMemoryRNN,
-        spice_config=BUFFER_WORKING_MEMORY_CONFIG,
+        rnn_class=class_rnn,
+        spice_config=spice_config,
         n_actions=n_actions,
         n_participants=n_participants,
         epochs=args.epochs,
         bagging=True,
         scheduler=False,  # Enable scheduler for better convergence
-        device=torch.device('cuda' if torch.cuda.is_available() else 'cpu'),
+        # device=torch.device('cuda' if torch.cuda.is_available() else 'cpu'),
         train_test_ratio=args.time_train_test_ratio if args.time_train_test_ratio else args.session_train_test_ratio,
-        l1_weight_decay=args.l1,
+        # l1_weight_decay=args.l1,
         l2_weight_decay=args.l2,
         dropout=dropout,
         learning_rate=1e-2,
         sindy_weight=args.sindy_weight,  # Enable end-to-end SINDy regularization
+        sindy_epochs=0,
         sindy_library_polynomial_degree=2,
-        save_path_spice=args.model,
         sindy_threshold_frequency=sindy_thresholding_frequency,
         sindy_threshold=sindy_threshold,
+        save_path_spice=args.model,
     )
     
     if args.epochs == 0:
@@ -95,7 +102,7 @@ if __name__=='__main__':
     
     print(f"\nStarting training on {estimator.device}...")
     print("=" * 80)
-    estimator.fit(dataset_train.xs, dataset_train.ys)#, data_test=dataset_train.xs, target_test=dataset_train.ys)
+    # estimator.fit(dataset_train.xs, dataset_train.ys)#, data_test=dataset_train.xs, target_test=dataset_train.ys)
     print("=" * 80)
     print("\nTraining complete!")
     

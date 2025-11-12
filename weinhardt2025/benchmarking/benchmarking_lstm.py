@@ -59,36 +59,36 @@ class AgentLSTM(Agent):
         
         assert isinstance(model_rnn, RLLSTM), "The passed model is not an instance of RLLSTM."
         
-        self._model = model_rnn
-        self._model = self._model.to(device)
-        self._model.eval()
+        self.model = model_rnn
+        self.model = self.model.to(device)
+        self.model.eval()
 
-        self._state = {'x_value_reward': np.zeros((n_actions))}
+        self.state = {'x_value_reward': np.zeros((n_actions))}
 
     def new_sess(self, *args, **kwargs):
         """Reset the network for the beginning of a new session."""    
-        self._state = {'x_value_reward': np.zeros((self._n_actions))}
-        self._hidden_state = torch.zeros((1, self._model.n_cells)).to(self._model.device)
-        self._cell_state = torch.zeros((1, self._model.n_cells)).to(self._model.device)
+        self.state = {'x_value_reward': np.zeros((self._n_actions))}
+        self._hidden_state = torch.zeros((1, self.model.n_cells)).to(self.model.device)
+        self._cell_state = torch.zeros((1, self.model.n_cells)).to(self.model.device)
 
     def update(self, choice: float, reward: float, **kwargs):
         choice = torch.eye(self._n_actions)[int(choice)]
-        xs = torch.concat([choice, torch.tensor(reward)]).view(1, -1).to(device=self._model.device)
+        xs = torch.concat([choice, torch.tensor(reward)]).view(1, -1).to(device=self.model.device)
         with torch.no_grad():
-            logits, state = self._model(xs, self.get_state())
+            logits, state = self.model(xs, self.get_state())
         self.set_state(logits, *state)
 
     def set_state(self, logits: np.ndarray, hidden_state: torch.Tensor, cell_state: torch.Tensor):
-        self._state['x_value_reward'] = logits.detach().cpu().numpy().reshape(-1)
-        self._hidden_state = hidden_state.to(self._model.device).detach()
-        self._cell_state = cell_state.to(self._model.device).detach()
+        self.state['x_value_reward'] = logits.detach().cpu().numpy().reshape(-1)
+        self._hidden_state = hidden_state.to(self.model.device).detach()
+        self._cell_state = cell_state.to(self.model.device).detach()
 
     def get_state(self):
         return self._hidden_state, self._cell_state
 
     @property
     def q(self):
-        return self._state['x_value_reward']
+        return self.state['x_value_reward']
 
   
 def setup_agent_lstm(path_model: str) -> AgentLSTM:

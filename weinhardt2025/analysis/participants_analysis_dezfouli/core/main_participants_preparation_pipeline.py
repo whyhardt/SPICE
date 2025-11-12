@@ -155,7 +155,7 @@ agent_rnn = setup_agent_rnn(
 
 spice_modules = load_spice(file=model_spice_path)
 agent_spice = AgentSpice(
-    model_rnn=agent_rnn._model,
+    model_rnn=agent_rnn.model,
     sindy_modules=spice_modules,
     n_actions=agent_rnn._n_actions
 )
@@ -177,16 +177,16 @@ print(f"Mapped {len(index_to_session)} indices to actual PIDs")
 # Collect all SINDy feature names
 all_feature_names = set()
 for module in list_rnn_modules:
-    for idx_internal in agent_spice._model.submodules_sindy[module]:
-        sindy_model = agent_spice._model.submodules_sindy[module][idx_internal]
+    for idx_internal in agent_spice.model.submodules_sindy[module]:
+        sindy_model = agent_spice.model.submodules_sindy[module][idx_internal]
         for name in sindy_model.get_feature_names():
             all_feature_names.add(f"{module}_{name}")
 
 # Extract embedding matrix from the SPICE model
-if isinstance(agent_spice._model.participant_embedding, torch.nn.Embedding):
-    embedding_matrix = agent_spice._model.participant_embedding.weight.detach().cpu().numpy()
-elif isinstance(agent_spice._model.participant_embedding, ExtendedEmbedding):
-    embedding_matrix = agent_spice._model.participant_embedding.embedding.weight.detach().cpu().numpy()
+if isinstance(agent_spice.model.participant_embedding, torch.nn.Embedding):
+    embedding_matrix = agent_spice.model.participant_embedding.weight.detach().cpu().numpy()
+elif isinstance(agent_spice.model.participant_embedding, ExtendedEmbedding):
+    embedding_matrix = agent_spice.model.participant_embedding.embedding.weight.detach().cpu().numpy()
 else:
     raise RuntimeError("Unknown embedding type in SPICE model.")
 
@@ -228,8 +228,8 @@ for internal_idx in tqdm(range(n_participants), desc="Extracting SINDy/RNN param
 
     # Fill in each submodule's coefficients
     for module in list_rnn_modules:
-        if internal_idx in agent_spice._model.submodules_sindy[module]:
-            model = agent_spice._model.submodules_sindy[module][internal_idx]
+        if internal_idx in agent_spice.model.submodules_sindy[module]:
+            model = agent_spice.model.submodules_sindy[module][internal_idx]
             coefs = model.model.steps[-1][1].coef_.flatten()
             for i, name in enumerate(model.get_feature_names()):
                 param_dict[f"{module}_{name}"] = coefs[i]

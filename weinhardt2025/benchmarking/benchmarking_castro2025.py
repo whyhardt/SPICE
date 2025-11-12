@@ -514,13 +514,13 @@ class AgentCastro2025(AgentNetwork):
 
         assert isinstance(model, Castro2025Model), "The passed model is not an instance of Castro2025Model."
 
-        self._model = model
-        self._model.eval()
+        self.model = model
+        self.model.eval()
 
     @property
     def q(self):
         """Return the action values."""
-        return self._state['x_value_reward'].squeeze(0).detach().cpu().numpy()
+        return self.state['x_value_reward'].squeeze(0).detach().cpu().numpy()
 
 
 def setup_agent_benchmark(path_model: str, deterministic: bool = True, **kwargs) -> List[AgentCastro2025]:

@@ -147,7 +147,7 @@ n_parameters_benchmark = 0
 if path_model_benchmark_lstm:
     print("Setting up LSTM agent from file", path_model_benchmark_lstm)
     agent_lstm = benchmarking_lstm.setup_agent_lstm(path_model=path_model_benchmark_lstm)
-    n_parameters_lstm = sum(p.numel() for p in agent_lstm._model.parameters() if p.requires_grad)
+    n_parameters_lstm = sum(p.numel() for p in agent_lstm.model.parameters() if p.requires_grad)
 else:
     n_parameters_lstm = 0
     
@@ -160,7 +160,7 @@ if path_model_rnn is not None:
         n_actions=n_actions,
         sindy_config=sindy_config,
         )
-    n_parameters_rnn = sum(p.numel() for p in agent_rnn._model.parameters() if p.requires_grad)
+    n_parameters_rnn = sum(p.numel() for p in agent_rnn.model.parameters() if p.requires_grad)
     n_parameters_spice = agent_spice.count_parameters()
 else:
     n_parameters_rnn = 0

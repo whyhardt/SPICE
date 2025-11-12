@@ -375,27 +375,27 @@ class AgentEckstein2024(AgentNetwork):
 
         assert isinstance(model, Eckstein2024Model), "The passed model is not an instance of Eckstein2024Model."
 
-        self._model = model
-        self._model.eval()
+        self.model = model
+        self.model.eval()
 
     @property
     def q(self):
         """Return the action values including perseveration bonus."""
         with torch.no_grad():
-            q_values = self._state['x_value_reward'].squeeze(0)  # (n_actions,)
-            prev_choice = self._state['x_prev_choice'].item()
+            q_values = self.state['x_value_reward'].squeeze(0)  # (n_actions,)
+            prev_choice = self.state['x_prev_choice'].item()
 
             # Add perseveration bonus
             q_with_persev = q_values.clone()
             if prev_choice >= 0:
-                q_with_persev[prev_choice] += self._model.p.item()
+                q_with_persev[prev_choice] += self.model.p.item()
 
             return q_with_persev.detach().cpu().numpy()
 
     @property
     def q_reward(self):
         """Return the reward-based Q-values (without perseveration)."""
-        return self._state['x_value_reward'].squeeze(0).detach().cpu().numpy()
+        return self.state['x_value_reward'].squeeze(0).detach().cpu().numpy()
 
 
 def setup_agent_benchmark(path_model: str, deterministic: bool = True, **kwargs) -> List[AgentEckstein2024]:
