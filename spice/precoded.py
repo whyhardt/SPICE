@@ -19,24 +19,21 @@ class RescorlaWagnerRNN(BaseRNN):
 
     def __init__(
         self,
+        spice_config: SpiceConfig,
         n_actions: int,
         n_participants: int,
-        spice_config: SpiceConfig,
-        embedding_size: int = 32,
-        dropout: float = 0.5,
         sindy_polynomial_degree: int = 2,
         sindy_ensemble_size: int = 10,
         use_sindy: bool = False,
         **kwargs,
     ):
-        
+
         super().__init__(
+            spice_config=spice_config,
             n_actions=n_actions,
             n_participants=n_participants,
-            embedding_size=embedding_size,
-            spice_config=spice_config,
             use_sindy=use_sindy,
-            sindy_polynomial_degree = sindy_polynomial_degree,
+            sindy_polynomial_degree=sindy_polynomial_degree,
             sindy_ensemble_size=sindy_ensemble_size,
         )
         
@@ -56,7 +53,7 @@ class RescorlaWagnerRNN(BaseRNN):
         spice_signals = self.init_forward_pass(inputs, prev_state, batch_first)
         
         for timestep in spice_signals.timesteps:
-            
+
             # Let's perform the belief update for the reward-based value of the chosen option
             # since all values are given to the rnn-module (independent of each other), the chosen value is selected by setting the action to the chosen one
             # if we would like to perform a similar update by calling a rnn-module for the non-chosen action, we would set the parameter to action=1-action.
@@ -65,8 +62,9 @@ class RescorlaWagnerRNN(BaseRNN):
                 key_state='value_reward',
                 action_mask=spice_signals.actions[timestep],
                 inputs=spice_signals.rewards[timestep],
+                participant_index=spice_signals.participant_ids,
                 )
-            
+
             # Now keep track of this value in the output array
             spice_signals.logits[timestep] = self.state['value_reward']
         
@@ -98,9 +96,20 @@ class ForgettingRNN(BaseRNN):
         self,
         spice_config: SpiceConfig,
         n_actions: int,
+        n_participants: int,
+        sindy_polynomial_degree: int = 2,
+        sindy_ensemble_size: int = 10,
+        use_sindy: bool = False,
         **kwargs,
     ):
-        super().__init__(n_actions=n_actions, spice_config=spice_config, **kwargs)
+        super().__init__(
+            spice_config=spice_config,
+            n_actions=n_actions,
+            n_participants=n_participants,
+            use_sindy=use_sindy,
+            sindy_polynomial_degree=sindy_polynomial_degree,
+            sindy_ensemble_size=sindy_ensemble_size,
+        )
         
         # set up the submodules
         self.submodules_rnn['value_reward_chosen'] = self.setup_module(input_size=1)
@@ -170,10 +179,21 @@ class LearningRateRNN(BaseRNN):
     def __init__(
         self,
         spice_config: SpiceConfig,
-        n_actions,
+        n_actions: int,
+        n_participants: int,
+        sindy_polynomial_degree: int = 2,
+        sindy_ensemble_size: int = 10,
+        use_sindy: bool = False,
         **kwargs,
     ):
-        super(LearningRateRNN, self).__init__(n_actions=n_actions, spice_config=spice_config)
+        super().__init__(
+            spice_config=spice_config,
+            n_actions=n_actions,
+            n_participants=n_participants,
+            use_sindy=use_sindy,
+            sindy_polynomial_degree=sindy_polynomial_degree,
+            sindy_ensemble_size=sindy_ensemble_size,
+        )
         
         # set up the submodules
         self.submodules_rnn['learning_rate_reward'] = self.setup_module(input_size=2)
@@ -282,12 +302,20 @@ class ParticipantEmbeddingRNN(BaseRNN):
         self,
         spice_config: SpiceConfig,
         n_actions: int,
-        # add an additional inputs to set the number of participants in your data in order to initialize the embedding layer correctly
         n_participants: int,
+        sindy_polynomial_degree: int = 2,
+        sindy_ensemble_size: int = 10,
+        use_sindy: bool = False,
         **kwargs,
     ):
-        
-        super().__init__(n_actions=n_actions, embedding_size=8, spice_config=spice_config, **kwargs)
+        super().__init__(
+            spice_config=spice_config,
+            n_actions=n_actions,
+            n_participants=n_participants,
+            use_sindy=use_sindy,
+            sindy_polynomial_degree=sindy_polynomial_degree,
+            sindy_ensemble_size=sindy_ensemble_size,
+        )
         
         # specify here the participant embedding
         self.participant_embedding = self.setup_embedding(n_participants, self.embedding_size)
@@ -373,24 +401,20 @@ class ChoiceRNN(BaseRNN):
     
     def __init__(
         self,
+        spice_config: SpiceConfig,
         n_actions: int,
         n_participants: int,
-        spice_config: SpiceConfig,
-        embedding_size: int = 32,
-        dropout: float = 0.5,
         sindy_polynomial_degree: int = 2,
-        sindy_ensemble_size: int = 10,
+        sindy_ensemble_size: int = 1,
         use_sindy: bool = False,
         **kwargs,
     ):
-        
         super().__init__(
+            spice_config=spice_config,
             n_actions=n_actions,
             n_participants=n_participants,
-            embedding_size=embedding_size,
-            spice_config=spice_config,
             use_sindy=use_sindy,
-            sindy_polynomial_degree = sindy_polynomial_degree,
+            sindy_polynomial_degree=sindy_polynomial_degree,
             sindy_ensemble_size=sindy_ensemble_size,
         )
         
@@ -398,14 +422,14 @@ class ChoiceRNN(BaseRNN):
         self.participant_embedding = self.setup_embedding(n_participants, self.embedding_size)
         
         # Inverse noise temperatures for scaling each variable in the memory state for each participant
-        self.betas['value_reward'] = self.setup_constant(embedding_size=self.embedding_size)
-        self.betas['value_choice'] = self.setup_constant(embedding_size=self.embedding_size)
+        self.betas['value_reward'] = self.setup_constant()#embedding_size=self.embedding_size)
+        self.betas['value_choice'] = self.setup_constant()#embedding_size=self.embedding_size)
         
         # set up the submodules
-        self.submodules_rnn['value_reward_chosen'] = self.setup_module(input_size=1+self.embedding_size)
-        self.submodules_rnn['value_reward_not_chosen'] = self.setup_module(input_size=0+self.embedding_size)
-        self.submodules_rnn['value_choice_chosen'] = self.setup_module(input_size=0+self.embedding_size)
-        self.submodules_rnn['value_choice_not_chosen'] = self.setup_module(input_size=0+self.embedding_size)
+        self.submodules_rnn['value_reward_chosen'] = self.setup_module(input_size=1)#+self.embedding_size)
+        self.submodules_rnn['value_reward_not_chosen'] = self.setup_module(input_size=0)#+self.embedding_size)
+        self.submodules_rnn['value_choice_chosen'] = self.setup_module(input_size=0)#+self.embedding_size)
+        self.submodules_rnn['value_choice_not_chosen'] = self.setup_module(input_size=0)#+self.embedding_size)
         
     def forward(self, inputs, prev_state=None, batch_first=False):
         """Forward pass of the RNN
@@ -420,9 +444,9 @@ class ChoiceRNN(BaseRNN):
         spice_signals = self.init_forward_pass(inputs, prev_state, batch_first)
         
         # We compute now the participant embeddings and inverse noise temperatures before the for-loop because they are anyways time-invariant
-        participant_embedding = self.participant_embedding(spice_signals.participant_ids)
-        beta_reward = self.betas['value_reward'](participant_embedding)
-        beta_choice = self.betas['value_choice'](participant_embedding)
+        # participant_embedding = self.participant_embedding(spice_signals.participant_ids)
+        # beta_reward = self.betas['value_reward']()#participant_embedding)
+        # beta_choice = self.betas['value_choice']()#participant_embedding)
         
         for timestep in spice_signals.timesteps:
             
@@ -433,8 +457,8 @@ class ChoiceRNN(BaseRNN):
                 action_mask=spice_signals.actions[timestep],
                 inputs=spice_signals.rewards[timestep],
                 participant_index=spice_signals.participant_ids,
-                participant_embedding=participant_embedding,
-                activation_rnn=torch.nn.functional.sigmoid,
+                # participant_embedding=participant_embedding,
+                # activation_rnn=torch.nn.functional.sigmoid,
                 )
             
             self.call_module(
@@ -442,8 +466,9 @@ class ChoiceRNN(BaseRNN):
                 key_state='value_reward',
                 action_mask=1-spice_signals.actions[timestep],
                 inputs=None,
-                participant_embedding=participant_embedding,
                 participant_index=spice_signals.participant_ids,
+                # participant_embedding=participant_embedding,
+                # activation_rnn=torch.nn.functional.sigmoid,                
                 )
             
             # updates for value_choice
@@ -452,9 +477,9 @@ class ChoiceRNN(BaseRNN):
                 key_state='value_choice',
                 action_mask=spice_signals.actions[timestep],
                 inputs=None,
-                participant_embedding=participant_embedding,
                 participant_index=spice_signals.participant_ids,
-                activation_rnn=torch.nn.functional.sigmoid,
+                # participant_embedding=participant_embedding,
+                # activation_rnn=torch.nn.functional.sigmoid,
                 )
             
             self.call_module(
@@ -462,13 +487,14 @@ class ChoiceRNN(BaseRNN):
                 key_state='value_choice',
                 action_mask=1-spice_signals.actions[timestep],
                 inputs=None,
-                participant_embedding=participant_embedding,
                 participant_index=spice_signals.participant_ids,
-                activation_rnn=torch.nn.functional.sigmoid,
+                # participant_embedding=participant_embedding,
+                # activation_rnn=torch.nn.functional.sigmoid,
                 )
             
             # Now keep track of the logit in the output array
-            spice_signals.logits[timestep] = self.state['value_reward'] * beta_reward + self.state['value_choice'] * beta_choice
+            # spice_signals.logits[timestep] = self.state['value_reward'] * beta_reward + self.state['value_choice'] * beta_choice
+            spice_signals.logits[timestep] = self.state['value_reward'] + self.state['value_choice']
             
         # post-process the forward pass; give here as inputs the logits, batch_first and all values from the memory state
         spice_signals = self.post_forward_pass(spice_signals, batch_first)

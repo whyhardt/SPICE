@@ -17,7 +17,7 @@ class GRUModule(nn.Module):
         super().__init__()
         
         self.linear_in = nn.Linear(input_size, 8+input_size)
-        # self.dropout = nn.Dropout(p=dropout)
+        self.dropout = nn.Dropout(p=0.)
         # self.relu = nn.LeakyReLU()
         self.gru_in = nn.GRU(8+input_size, 1)
         self.linear_out = nn.Linear(1, 1)
@@ -43,7 +43,7 @@ class GRUModule(nn.Module):
                 #     )
                 # )
             , inputs[..., :1].contiguous())[1].view(-1, n_actions, 1)
-        next_state = self.linear_out(next_state)
+        next_state = self.dropout(self.linear_out(next_state))
         return next_state
 
 
@@ -99,7 +99,7 @@ class BaseRNN(nn.Module):
         n_participants: int = 1,
         n_experiments: int = 1,
         n_items: int = None,
-        embedding_size: int = 1,
+        embedding_size: int = 32,
         use_sindy: bool = False,
         sindy_polynomial_degree: int = 2,
         sindy_ensemble_size: int = 10,
@@ -561,7 +561,7 @@ class BaseRNN(nn.Module):
             for p_idx in range(abs_coeffs.shape[0]):
                 for e_idx in range(abs_coeffs.shape[1]):
                     # Compute threshold for this ensemble member using sindy-shred formula
-                    threshold_e = threshold * (10 ** (0.2 * e_idx - 1)) + base_threshold
+                    threshold_e = threshold + base_threshold #* (10 ** (0.2 * e_idx - 1)) + base_threshold
 
                     if n_terms_cutoff is None:
                         # Threshold all terms at once

@@ -477,7 +477,7 @@ def fit_model(
                     print("="*80)
                     model.print_spice_model(ensemble_idx=4)
                     
-                model.thresholding(threshold=sindy_threshold, base_threshold=0.1, n_terms_cutoff=3)
+                model.thresholding(threshold=sindy_threshold, base_threshold=0.1, n_terms_cutoff=1)
                 
                 print("\n"+"="*80)
                 print(f"SPICE model after {n_calls_to_train_model} epochs:")
