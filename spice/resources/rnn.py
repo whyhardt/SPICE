@@ -605,6 +605,8 @@ class BaseRNN(nn.Module):
             equation_str = module + "[t+1] = "
             for index_term, term in enumerate(self.sindy_library_names[module]):
                 coeff_value = self.sindy_coefficients[module][participant_id, ensemble_idx, index_term].item()
+                if term == module:
+                    coeff_value += 1
                 if np.abs(coeff_value) > 1e-3:
                     if equation_str[-3:] != " = ":
                         equation_str += "+ "

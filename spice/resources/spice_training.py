@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, RandomSampler
 from typing import Tuple
+from collections import defaultdict
 
 from .rnn import BaseRNN
 from .spice_utils import SpiceDataset
@@ -130,13 +131,23 @@ def batch_train(
             )
 
         # small l2-regularization on logits to keep the absolute values in the smalles possible range (only diff between values is necessary)
-        loss_step += 0.001 * ys_pred.abs().sum(dim=-1).mean()
+        # loss_step += 0.01 * torch.pow(ys_pred, 2).mean()
+        
+        # l2 reg on module outputs
+        for module in model.submodules_rnn:
+            input_size_module = model.submodules_rnn[module].linear_in.in_features+1
+            # loss_step += 0.01 * torch.pow(model.submodules_rnn[module](torch.rand((1, 100, input_size_module))), 2).mean()
+            loss_step += 0.01 * torch.abs(model.submodules_rnn[module](torch.ones((1, 100, input_size_module)))).mean()
+        
+        # l2 reg on state values
+        # for state in model.state:
+        #     loss_step += 0.01 * torch.pow(model.state[state], 2).mean()
         
         # Add SINDy regularization loss
         if sindy_weight > 0 and model.sindy_loss != 0:
             loss_step = loss_step + sindy_weight * model.sindy_loss
             
-        loss_batch += loss_step
+        loss_batch += loss_step.item()
         iterations += 1
         
         if torch.is_grad_enabled():
@@ -146,8 +157,8 @@ def batch_train(
             loss_step.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
-
-    return model, optimizer, loss_batch.item()/iterations
+            
+    return model, optimizer, loss_batch/iterations
     
 
 def fit_sindy_second_stage(
@@ -377,7 +388,7 @@ def fit_model(
         dataloader_test = DataLoader(dataset_test, batch_size=len(dataset_test))
     
     # set up learning rate scheduler
-    warmup_steps = 0
+    warmup_steps = 500
     warmup_steps = warmup_steps if epochs > warmup_steps else 1 #int(epochs * 0.125/16)
     if scheduler and optimizer is not None:
         # Define the LambdaLR scheduler for warm-up
@@ -475,14 +486,17 @@ def fit_model(
                     print("\n"+"="*80)
                     print(f"SPICE model before {n_calls_to_train_model} epochs:")
                     print("="*80)
-                    model.print_spice_model(ensemble_idx=4)
+                    model.print_spice_model(ensemble_idx=0)
                     
                 model.thresholding(threshold=sindy_threshold, base_threshold=0.1, n_terms_cutoff=1)
+                
+                # TODO: Try optimizer reset for stability
+                # optimizer.state = defaultdict(dict)
                 
                 print("\n"+"="*80)
                 print(f"SPICE model after {n_calls_to_train_model} epochs:")
                 print("="*80)
-                model.print_spice_model(ensemble_idx=4)    
+                model.print_spice_model(ensemble_idx=0)    
             
             # check for convergence
             dloss = last_loss - loss_test if dataset_test is not None else last_loss - loss_train
