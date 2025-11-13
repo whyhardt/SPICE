@@ -12,28 +12,28 @@ n_trials_per_session = 100
 n_iterations_per_n_sessions = 1
 sigma = 0.2
 base_name = 'weinhardt2025/data/data_synthetic_*.csv'
-sample_parameters = False
+sample_parameters = True
 
 for iteration in range(n_iterations_per_n_sessions):
     for n_sess in n_sessions:
         dataset_name = base_name.replace('*', f'{n_sess}p_{iteration}')
 
-        # agent = AgentQ_SampleZeros(
-        #     beta_reward=3.,
-        #     alpha_reward=0.2,
-        #     alpha_penalty=-1,
-        #     forget_rate=0.2,
-        #     beta_choice=.5,
-        #     zero_threshold=0.1,
-        #     )
-        
-        agent = AgentQ(
+        agent = AgentQ_SampleZeros(
             beta_reward=3.,
             alpha_reward=0.5,
-            alpha_penalty=0.5,
-            forget_rate=0.,
-            beta_choice=0.,
+            alpha_penalty=-1,
+            forget_rate=0.2,
+            beta_choice=1.,
+            zero_threshold=0.1,
             )
+        
+        # agent = AgentQ(
+        #     beta_reward=3.,
+        #     alpha_reward=0.8,
+        #     alpha_penalty=0.2,
+        #     forget_rate=0.,
+        #     beta_choice=1.,
+        #     )
 
         environment = BanditsDrift(sigma=sigma)
 

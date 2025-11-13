@@ -386,11 +386,11 @@ class ParticipantEmbeddingRNN(BaseRNN):
 
 CHOICE_CONFIG = SpiceConfig(
     library_setup = {
-        'value_reward_chosen': ['reward'],
-        'value_reward_not_chosen': [],
-        'value_choice_chosen': [],
-        'value_choice_not_chosen': [],
-        },
+        'value_reward_chosen': ['reward'],  # --> n_terms = 6
+        'value_reward_not_chosen': [],      # --> n_terms = 3
+        'value_choice_chosen': [],          # --> n_terms = 3
+        'value_choice_not_chosen': [],      # --> n_terms = 3 
+        },                                  # --> n_terms_total = 15
     memory_state={
             'value_reward': 0.5,
             'value_choice': 0.,
@@ -422,14 +422,14 @@ class ChoiceRNN(BaseRNN):
         self.participant_embedding = self.setup_embedding(n_participants, self.embedding_size)
         
         # Inverse noise temperatures for scaling each variable in the memory state for each participant
-        self.betas['value_reward'] = self.setup_constant()#embedding_size=self.embedding_size)
-        self.betas['value_choice'] = self.setup_constant()#embedding_size=self.embedding_size)
+        # self.betas['value_reward'] = self.setup_constant()#embedding_size=self.embedding_size)
+        # self.betas['value_choice'] = self.setup_constant()#embedding_size=self.embedding_size)
         
         # set up the submodules
-        self.submodules_rnn['value_reward_chosen'] = self.setup_module(input_size=1)#+self.embedding_size)
-        self.submodules_rnn['value_reward_not_chosen'] = self.setup_module(input_size=0)#+self.embedding_size)
-        self.submodules_rnn['value_choice_chosen'] = self.setup_module(input_size=0)#+self.embedding_size)
-        self.submodules_rnn['value_choice_not_chosen'] = self.setup_module(input_size=0)#+self.embedding_size)
+        self.submodules_rnn['value_reward_chosen'] = self.setup_module(input_size=1+self.embedding_size)
+        self.submodules_rnn['value_reward_not_chosen'] = self.setup_module(input_size=0+self.embedding_size)
+        self.submodules_rnn['value_choice_chosen'] = self.setup_module(input_size=0+self.embedding_size)
+        self.submodules_rnn['value_choice_not_chosen'] = self.setup_module(input_size=0+self.embedding_size)
         
     def forward(self, inputs, prev_state=None, batch_first=False):
         """Forward pass of the RNN
@@ -444,7 +444,7 @@ class ChoiceRNN(BaseRNN):
         spice_signals = self.init_forward_pass(inputs, prev_state, batch_first)
         
         # We compute now the participant embeddings and inverse noise temperatures before the for-loop because they are anyways time-invariant
-        # participant_embedding = self.participant_embedding(spice_signals.participant_ids)
+        participant_embedding = self.participant_embedding(spice_signals.participant_ids)
         # beta_reward = self.betas['value_reward']()#participant_embedding)
         # beta_choice = self.betas['value_choice']()#participant_embedding)
         
@@ -457,7 +457,7 @@ class ChoiceRNN(BaseRNN):
                 action_mask=spice_signals.actions[timestep],
                 inputs=spice_signals.rewards[timestep],
                 participant_index=spice_signals.participant_ids,
-                # participant_embedding=participant_embedding,
+                participant_embedding=participant_embedding,
                 # activation_rnn=torch.nn.functional.sigmoid,
                 )
             
@@ -467,7 +467,7 @@ class ChoiceRNN(BaseRNN):
                 action_mask=1-spice_signals.actions[timestep],
                 inputs=None,
                 participant_index=spice_signals.participant_ids,
-                # participant_embedding=participant_embedding,
+                participant_embedding=participant_embedding,
                 # activation_rnn=torch.nn.functional.sigmoid,                
                 )
             
@@ -478,7 +478,7 @@ class ChoiceRNN(BaseRNN):
                 action_mask=spice_signals.actions[timestep],
                 inputs=None,
                 participant_index=spice_signals.participant_ids,
-                # participant_embedding=participant_embedding,
+                participant_embedding=participant_embedding,
                 # activation_rnn=torch.nn.functional.sigmoid,
                 )
             
@@ -488,7 +488,7 @@ class ChoiceRNN(BaseRNN):
                 action_mask=1-spice_signals.actions[timestep],
                 inputs=None,
                 participant_index=spice_signals.participant_ids,
-                # participant_embedding=participant_embedding,
+                participant_embedding=participant_embedding,
                 # activation_rnn=torch.nn.functional.sigmoid,
                 )
             
