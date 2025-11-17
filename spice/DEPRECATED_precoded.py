@@ -525,13 +525,12 @@ class InteractionRNN(BaseRNN):
     
     def __init__(
         self,
+        spice_config: SpiceConfig,
         n_actions: int,
         n_participants: int,
-        spice_config: SpiceConfig,
         embedding_size: int = 32,
-        dropout: float = 0.5,
         sindy_polynomial_degree: int = 2,
-        sindy_ensemble_size: int = 10,
+        sindy_ensemble_size: int = 1,
         use_sindy: bool = False,
         **kwargs,
     ):
@@ -550,8 +549,8 @@ class InteractionRNN(BaseRNN):
         self.participant_embedding = self.setup_embedding(num_embeddings=self.n_participants, embedding_size=self.embedding_size)
         
         # scaling factor (inverse noise temperature) for each participant for the values which are handled by an hard-coded equation
-        self.betas['value_reward'] = self.setup_constant(embedding_size=self.embedding_size)
-        self.betas['value_choice'] = self.setup_constant(embedding_size=self.embedding_size)
+        # self.betas['value_reward'] = self.setup_constant(embedding_size=self.embedding_size)
+        # self.betas['value_choice'] = self.setup_constant(embedding_size=self.embedding_size)
         
         # set up the submodules
         self.submodules_rnn['value_reward_chosen'] = self.setup_module(input_size=2+self.embedding_size)
@@ -573,8 +572,8 @@ class InteractionRNN(BaseRNN):
         
         # Here we compute now the participant embeddings for each entry in the batch
         participant_embedding = self.participant_embedding(spice_signals.participant_ids)
-        beta_reward = self.betas['value_reward'](participant_embedding)
-        beta_choice = self.betas['value_choice'](participant_embedding)
+        # beta_reward = self.betas['value_reward'](participant_embedding)
+        # beta_choice = self.betas['value_choice'](participant_embedding)
         
         for timestep in spice_signals.timesteps: #, rewards_not_chosen
             
@@ -589,7 +588,7 @@ class InteractionRNN(BaseRNN):
                     ),
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
-                activation_rnn=torch.nn.functional.sigmoid,
+                # activation_rnn=torch.nn.functional.sigmoid,
                 )
             
             self.call_module(
@@ -612,7 +611,7 @@ class InteractionRNN(BaseRNN):
                 inputs=(self.state['value_reward']),
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
-                activation_rnn=torch.nn.functional.sigmoid,
+                # activation_rnn=torch.nn.functional.sigmoid,
                 )
             
             self.call_module(
@@ -622,11 +621,11 @@ class InteractionRNN(BaseRNN):
                 inputs=self.state['value_reward'],
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
-                activation_rnn=torch.nn.functional.sigmoid,
+                # activation_rnn=torch.nn.functional.sigmoid,
                 )
             
             # Now keep track of the logit in the output array
-            spice_signals.logits[timestep] = self.state['value_reward'] * beta_reward + self.state['value_choice'] * beta_choice
+            spice_signals.logits[timestep] = self.state['value_reward'] + self.state['value_choice']
             
         # post-process the forward pass; give here as inputs the logits, batch_first and all values from the memory state
         spice_signals = self.post_forward_pass(spice_signals, batch_first)
@@ -644,14 +643,14 @@ BUFFER_WORKING_MEMORY_CONFIG = SpiceConfig(
     library_setup={
         # Value learning can depend on recent reward sequence (working memory)
         'value_reward_chosen': [
-            'reward',           
+            'reward[t]',           
             'reward[t-1]', 
             'reward[t-2]',
             'reward[t-3]',
             'value_choice',
         ],
         'value_reward_not_chosen': [
-            'reward',
+            'reward[t]',
             'reward[t-1]', 
             'reward[t-2]',
             'reward[t-3]',

@@ -146,18 +146,6 @@ class SpiceEstimator(BaseEstimator):
             n_items=n_items,
         ).to(device)
         
-        # Separate parameters
-        # individual_params = list(self.rnn_model.participant_embedding.parameters()) + list(self.rnn_model.betas['x_value_reward'].parameters()) + list(self.rnn_model.betas['x_value_choice'].parameters())
-        # sindy_coefficients = list(self.rnn_model.sindy_coefficients.parameters())
-        # rnn_params = list(self.rnn_model.submodules_rnn.parameters())#[p for p in self.rnn_model.parameters() if not any(p is ip for ip in individual_params)]
-        
-        # if l1_weight_decay != 0:
-        # self.optimizer_rnn = torch.optim.AdamW([
-        #     {'params': individual_params, 'weight_decay': 0.0},
-        #     {'params': sindy_coefficients, 'weight_decay': l2_weight_decay},
-        #     {'params': rnn_params, 'weight_decay': l2_weight_decay}
-        # ], lr=learning_rate)
-        # else:
         self.rnn_optimizer = torch.optim.AdamW(self.rnn_model.parameters(), lr=learning_rate, weight_decay=l2_weight_decay)
             
     def fit(self, data: np.ndarray, targets: np.ndarray, data_test: np.ndarray = None, target_test: np.ndarray = None):

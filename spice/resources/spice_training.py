@@ -137,11 +137,11 @@ def batch_train(
         for module in model.submodules_rnn:
             input_size_module = model.submodules_rnn[module].linear_in.in_features+1
             # loss_step += 0.01 * torch.pow(model.submodules_rnn[module](torch.rand((1, 100, input_size_module))), 2).mean()
-            loss_step += 0.01 * torch.abs(model.submodules_rnn[module](torch.ones((1, 100, input_size_module)))).mean()
+            loss_step += 0.01 * torch.abs(model.submodules_rnn[module](torch.ones((1, 100, input_size_module), device=model.device))).mean()
         
         # l2 reg on state values
-        # for state in model.state:
-        #     loss_step += 0.01 * torch.pow(model.state[state], 2).mean()
+        for state in model.state:
+            loss_step += 0.01 * torch.pow(model.state[state], 2).mean()
         
         # Add SINDy regularization loss
         if sindy_weight > 0 and model.sindy_loss != 0:

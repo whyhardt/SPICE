@@ -170,8 +170,8 @@ class BaseRNN(nn.Module):
             self.set_initial_state(batch_size=inputs.shape[1])
         
         # output signals
-        spice_signals.timesteps = torch.arange(spice_signals.actions.shape[0])
-        spice_signals.logits = torch.zeros((*spice_signals.actions.shape[:-1], self.n_actions))
+        spice_signals.timesteps = torch.arange(spice_signals.actions.shape[0], device=self.device)
+        spice_signals.logits = torch.zeros((*spice_signals.actions.shape[:-1], self.n_actions), device=self.device)
         
         return spice_signals
 

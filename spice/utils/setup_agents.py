@@ -9,7 +9,7 @@ from spice.estimator import SpiceEstimator
 def setup_agent(
     class_rnn,
     path_model,
-    sindy_config,
+    spice_config,
     n_actions=2,
     sindy_polynomial_degree=2,
     counterfactual=False,
@@ -30,7 +30,7 @@ def setup_agent(
     
     estimator = SpiceEstimator(
         rnn_class=class_rnn,
-        spice_config=sindy_config,
+        spice_config=spice_config,
         n_actions=n_actions,
         sindy_library_polynomial_degree=sindy_polynomial_degree,
         n_participants=n_participants,

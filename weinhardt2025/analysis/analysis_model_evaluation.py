@@ -8,7 +8,6 @@ from copy import copy
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 # standard methods and classes used for every model evaluation
-from weinhardt2025.benchmarking import benchmarking_dezfouli2019
 from spice.resources.model_evaluation import get_scores
 from spice.resources.bandits import get_update_dynamics, AgentQ
 from spice.utils.setup_agents import setup_agent as setup_agent_spice
@@ -38,34 +37,32 @@ from weinhardt2025.benchmarking import benchmarking_dezfouli2019, benchmarking_e
 # baseline_file = f'mcmc_{study}_ApBr.nc'
 
 # ------------------- CONFIGURATION ECKSTEIN2024 --------------------
-study = 'eckstein2024'
-models_benchmark = ['CogFunSearch']
-train_test_ratio = [1,3]
-sindy_config = precoded.BUFFER_WORKING_MEMORY_CONFIG
-rnn_class = precoded.BufferWorkingMemoryRNN
-additional_inputs = None
-setup_agent_benchmark = benchmarking_eckstein2024.setup_agent_benchmark
-# setup_agent_benchmark = benchmarking_castro2025.setup_agent_benchmark
-Eckstein2024Model = benchmarking_eckstein2024.Eckstein2024Model
-Castro2025Model = benchmarking_castro2025.Castro2025Model
-benchmark_file = f'cogfunsearch_{study}.pkl'
-model_config_baseline = None
-baseline_file = f'benchmark_{study}.pkl'
-
-# ------------------------ CONFIGURATION DEZFOULI2019 -----------------------
-# study = 'dezfouli2019'
-# train_test_ratio = [3, 6, 9]
-# models_benchmark = ['PhiChiBetaKappaC']
+# study = 'eckstein2024'
+# models_benchmark = ['CogFunSearch']
+# train_test_ratio = [1,3]
 # sindy_config = precoded.BUFFER_WORKING_MEMORY_CONFIG
 # rnn_class = precoded.BufferWorkingMemoryRNN
-# additional_inputs = []
-# # setup_agent_benchmark = benchmarking_dezfouli2019.setup_agent_benchmark
-# # gql_model = benchmarking_dezfouli2019.gql_model
-# setup_agent_benchmark = benchmarking_dezfouli2019.setup_agent_gql
-# gql_model = benchmarking_dezfouli2019.Dezfouli2019GQL
-# benchmark_file = f'gql_{study}_MODEL.pkl'
-# model_config_baseline = 'PhiBeta'
-# baseline_file = f'gql_{study}_PhiBeta.pkl'
+# additional_inputs = None
+# setup_agent_benchmark = benchmarking_eckstein2024.setup_agent_benchmark
+# # setup_agent_benchmark = benchmarking_castro2025.setup_agent_benchmark
+# Eckstein2024Model = benchmarking_eckstein2024.Eckstein2024Model
+# Castro2025Model = benchmarking_castro2025.Castro2025Model
+# benchmark_file = f'cogfunsearch_{study}.pkl'
+# model_config_baseline = None
+# baseline_file = f'benchmark_{study}.pkl'
+
+# ------------------------ CONFIGURATION DEZFOULI2019 -----------------------
+study = 'dezfouli2019'
+train_test_ratio = [3, 6, 9]
+models_benchmark = ['PhiChiBetaKappaC']
+sindy_config = precoded.CHOICE_CONFIG
+rnn_class = precoded.ChoiceRNN
+additional_inputs = []
+setup_agent_benchmark = benchmarking_dezfouli2019.setup_agent_gql
+gql_model = benchmarking_dezfouli2019.Dezfouli2019GQL
+benchmark_file = f'benchmark_{study}_MODEL.pkl'
+model_config_baseline = 'PhiBeta'
+baseline_file = f'benchmark_{study}_PhiBeta.pkl'
 
 # ------------------------ CONFIGURATION GERSHMAN2018 -----------------------
 # study = 'gershmanB2018'
@@ -82,16 +79,9 @@ baseline_file = f'benchmark_{study}.pkl'
 # model_config_baseline = 'PhiBeta'
 # baseline_file = f'ql_{study}_PhiBeta.pkl'
 
-# ------------------------ CONFIGURATION DEZFOULI2019 w/ blocks -----------------------
-# study = 'dezfouli2019'
-# train_test_ratio = [3, 6, 9]
-# models_benchmark = ['ApAnBrBcfAchBch']#['ApBr', 'ApBrBch', 'ApAnBrBcfAchBch']
-# sindy_config = SindyConfig_dezfouli2019
-# rnn_class = RLRNN_dezfouli2019
-# additional_inputs = []
 
 # ------------------------- CONFIGURATION FILE PATHS ------------------------
-use_test = True
+use_test = False
 
 path_data = f'weinhardt2025/data/{study}/{study}.csv'
 path_model_rnn = f'weinhardt2025/params/{study}/spice_{study}.pkl'
@@ -158,7 +148,7 @@ if path_model_rnn is not None:
         class_rnn=rnn_class,
         path_model=path_model_rnn,
         n_actions=n_actions,
-        sindy_config=sindy_config,
+        spice_config=sindy_config,
         )
     n_parameters_rnn = sum(p.numel() for p in agent_rnn.model.parameters() if p.requires_grad)
     n_parameters_spice = agent_spice.count_parameters()

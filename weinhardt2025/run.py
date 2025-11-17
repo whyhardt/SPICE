@@ -4,10 +4,15 @@ This runs the full pipeline with SINDy regularization during RNN training.
 """
 import argparse
 import torch
+import matplotlib.pyplot as plt
+import pandas as pd
+    
 
 from spice.estimator import SpiceEstimator
 from spice.utils.convert_dataset import convert_dataset, split_data_along_sessiondim, split_data_along_timedim
-from spice.precoded import BufferWorkingMemoryRNN, BUFFER_WORKING_MEMORY_CONFIG, InteractionRNN, INTERACTION_CONFIG
+from spice.utils.plotting import plot_session
+from spice.resources.bandits import AgentQ
+from spice.precoded import choice as spice_model
 
 
 if __name__=='__main__':
@@ -35,23 +40,25 @@ if __name__=='__main__':
     # args.data = "weinhardt2025/data/eckstein2024/eckstein2024.csv"
     # args.session_train_test_ratio = "1,3"
     
-    # args.model = "weinhardt2025/params/dezfouli2019/spice_dezfouli2019.pkl"
-    # args.data = "weinhardt2025/data/dezfouli2019/dezfouli2019.csv"
-    # args.session_train_test_ratio = "3,6,9"
+    args.model = "weinhardt2025/params/dezfouli2019/spice_dezfouli2019.pkl"
+    args.data = "weinhardt2025/data/dezfouli2019/dezfouli2019.csv"
+    args.session_train_test_ratio = "3,6,9"
     
-    args.model = "weinhardt2025/params/spice_synthetic.pkl"
-    args.data = "weinhardt2025/data/data_synthetic.csv"
+    # args.model = "weinhardt2025/params/spice_synthetic.pkl"
+    # args.data = "weinhardt2025/data/data_synthetic.csv"
     
     args.epochs = 1000 # Further reduced for initial testing
     args.l2 = 0.01
     args.l1 = 0.
     dropout = 0.
     args.sindy_weight = 0.01  # Start with very small weight for stability
-    sindy_threshold = 0.01
+    sindy_epochs = 1000
+    sindy_threshold = 0.05
     sindy_thresholding_frequency = 100
+    class_rnn = spice_model.SpiceModel
+    spice_config = spice_model.CONFIG
     
-    class_rnn = InteractionRNN
-    spice_config = INTERACTION_CONFIG
+    example_participant = 66
     
     print(f"Loading dataset from {args.data}...")
     dataset = convert_dataset(
@@ -76,24 +83,33 @@ if __name__=='__main__':
     
     print(f"\nInitializing SpiceEstimator with end-to-end SINDy training (weight={args.sindy_weight})...")
     estimator = SpiceEstimator(
+        
+        # model paramaeters
         rnn_class=class_rnn,
         spice_config=spice_config,
-        n_actions=n_actions,
         n_participants=n_participants,
+        n_actions=2,
+        
+        # rnn training parameters
         epochs=args.epochs,
-        bagging=True,
-        scheduler=False,  # Enable scheduler for better convergence
-        # device=torch.device('cuda' if torch.cuda.is_available() else 'cpu'),
-        train_test_ratio=args.time_train_test_ratio if args.time_train_test_ratio else args.session_train_test_ratio,
-        # l1_weight_decay=args.l1,
         l2_weight_decay=args.l2,
-        dropout=dropout,
-        learning_rate=1e-2,
-        sindy_weight=args.sindy_weight,  # Enable end-to-end SINDy regularization
-        sindy_epochs=0,
-        sindy_library_polynomial_degree=2,
-        sindy_threshold_frequency=sindy_thresholding_frequency,
+        learning_rate=0.01,
+        train_test_ratio=args.time_train_test_ratio if args.time_train_test_ratio else args.session_train_test_ratio,
+        
+        # sindy fitting parameters
+        sindy_weight=args.sindy_weight,
         sindy_threshold=sindy_threshold,
+        sindy_threshold_frequency=sindy_thresholding_frequency,
+        sindy_library_polynomial_degree=2,
+        sindy_epochs=sindy_epochs,
+        
+        # additional generalization parameters
+        bagging=True,
+        # scheduler=True,
+        
+        # other parameters
+        verbose=True,
+        device=torch.device('cuda' if torch.cuda.is_available() else 'cpu'),
         save_path_spice=args.model,
     )
     
@@ -102,24 +118,48 @@ if __name__=='__main__':
     
     print(f"\nStarting training on {estimator.device}...")
     print("=" * 80)
-    # estimator.fit(dataset_train.xs, dataset_train.ys)#, data_test=dataset_train.xs, target_test=dataset_train.ys)
+    estimator.fit(dataset_train.xs, dataset_train.ys)#, data_test=dataset_train.xs, target_test=dataset_train.ys)
     print("=" * 80)
     print("\nTraining complete!")
     
     print(f"\nModel saved to: {args.model}")
     
+    agents={
+        'rnn': estimator.rnn_agent,
+        }
+    
     if args.sindy_weight > 0:
+        
+        agents['spice'] = estimator.spice_agent
+        
         # Print example SPICE model for first participant
-        example_participant = 66
         print(f"\nExample SPICE model (participant {example_participant}; n_parameters = {estimator.spice_agent.count_parameters()[example_participant]}):")
         print("-" * 80)
         estimator.print_spice_model(participant_id=example_participant)
         print("-" * 80)
 
-        from spice.utils.plotting import plot_session
-        import matplotlib.pyplot as plt
-        agents = {'rnn': estimator.rnn_agent, 'spice': estimator.spice_agent}
-        fig, axs = plot_session(agents, dataset_train.xs[example_participant])
-        plt.show()
+    if 'synthetic' in args.data:
+        dataset_df = pd.read_csv(args.data)
+
+        # get the parameters for the selected participant and set up the ground truth model
+        n_trials = 100
+        dataset_df = dataset_df[dataset_df['session'] == example_participant]
+
+        agents['groundtruth'] = AgentQ(
+            n_actions=2,
+            beta_reward=dataset_df['beta_reward'][example_participant * n_trials],
+            alpha_reward=dataset_df['alpha_reward'][example_participant * n_trials],
+            alpha_penalty=dataset_df['alpha_penalty'][example_participant * n_trials],
+            forget_rate=dataset_df['forget_rate'][example_participant * n_trials],
+            beta_choice=dataset_df['beta_choice'][example_participant * n_trials],
+            alpha_choice=dataset_df['alpha_choice'][example_participant * n_trials],
+        )
+        
+    fig, axs = plot_session(
+        agents,
+        experiment=dataset.xs[example_participant]
+        )
+
+    plt.show()
     
     print("\nNext step: Run analysis_model_evaluation.py to evaluate performance!")
