@@ -55,8 +55,8 @@ from weinhardt2025.benchmarking import benchmarking_dezfouli2019, benchmarking_e
 study = 'dezfouli2019'
 train_test_ratio = [3, 6, 9]
 models_benchmark = ['PhiChiBetaKappaC']
-sindy_config = precoded.CHOICE_CONFIG
-rnn_class = precoded.ChoiceRNN
+sindy_config = precoded.choice.CONFIG
+rnn_class = precoded.choice.SpiceModel
 additional_inputs = []
 setup_agent_benchmark = benchmarking_dezfouli2019.setup_agent_gql
 gql_model = benchmarking_dezfouli2019.Dezfouli2019GQL
@@ -81,7 +81,7 @@ baseline_file = f'benchmark_{study}_PhiBeta.pkl'
 
 
 # ------------------------- CONFIGURATION FILE PATHS ------------------------
-use_test = False
+use_test = True
 
 path_data = f'weinhardt2025/data/{study}/{study}.csv'
 path_model_rnn = f'weinhardt2025/params/{study}/spice_{study}.pkl'
@@ -169,6 +169,7 @@ if isinstance(train_test_ratio, float):
     
 elif isinstance(train_test_ratio, list) or isinstance(train_test_ratio, tuple):
     dataset_train, dataset_test = split_data_along_sessiondim(dataset, list_test_sessions=train_test_ratio)
+    
     if not use_test:
         dataset_test = dataset_train
     data_input = dataset_test.xs

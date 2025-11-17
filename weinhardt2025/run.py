@@ -25,7 +25,8 @@ if __name__=='__main__':
     # data and training parameters
     parser.add_argument('--epochs', type=int, default=1, help='Number of training epochs')
     # parser.add_argument('--l1', type=float, default=0, help='L1 Reg of the RNNs participant embedding')
-    parser.add_argument('--l2', type=float, default=0, help='L2 Reg of the RNNs flexible modules (excl. embeddings)')
+    parser.add_argument('--l2_rnn', type=float, default=0, help='L2 Reg of the RNN parameters')
+    parser.add_argument('--l2_sindy', type=float, default=0, help='L2 Reg of the SINDy coefficients')
     parser.add_argument('--time_train_test_ratio', type=float, default=None, help='Ratio of training data; Can also be a comma-separated list of integeres to indicate testing sessions.')
     parser.add_argument('--session_train_test_ratio', type=str, default=None, help='Ratio of training data; Can also be a comma-separated list of integeres to indicate testing sessions.')
     parser.add_argument('--sindy_weight', type=float, default=0.1, help='Weight for SINDy regularization during RNN training')
@@ -47,18 +48,19 @@ if __name__=='__main__':
     # args.model = "weinhardt2025/params/spice_synthetic.pkl"
     # args.data = "weinhardt2025/data/data_synthetic.csv"
     
-    args.epochs = 1000 # Further reduced for initial testing
-    args.l2 = 0.01
-    args.l1 = 0.
-    dropout = 0.
-    args.sindy_weight = 0.01  # Start with very small weight for stability
-    sindy_epochs = 1000
+    args.epochs = 4000 # Further reduced for initial testing
+    args.l2_rnn = 0.00001
+    learning_rate = 0.001
+    
+    args.sindy_weight = 0.1  # Start with very small weight for stability
+    sindy_epochs = 4000
+    args.l2_sindy = 0.001 
     sindy_threshold = 0.05
-    sindy_thresholding_frequency = 100
+    sindy_thresholding_frequency = 250
     class_rnn = spice_model.SpiceModel
     spice_config = spice_model.CONFIG
     
-    example_participant = 66
+    example_participant = 0
     
     print(f"Loading dataset from {args.data}...")
     dataset = convert_dataset(
@@ -73,6 +75,7 @@ if __name__=='__main__':
         args.session_train_test_ratio = [int(item) for item in args.session_train_test_ratio]
         dataset_train, dataset_test = split_data_along_sessiondim(dataset, [int(item) for item in args.session_train_test_ratio])
     else:
+        print("No split into training and test data.")
         dataset_train, dataset_test = dataset, dataset
 
     n_actions = dataset_train.ys.shape[-1]
@@ -92,8 +95,8 @@ if __name__=='__main__':
         
         # rnn training parameters
         epochs=args.epochs,
-        l2_weight_decay=args.l2,
-        learning_rate=0.01,
+        l2_rnn=args.l2_rnn,
+        learning_rate=learning_rate,
         train_test_ratio=args.time_train_test_ratio if args.time_train_test_ratio else args.session_train_test_ratio,
         
         # sindy fitting parameters
@@ -102,6 +105,7 @@ if __name__=='__main__':
         sindy_threshold_frequency=sindy_thresholding_frequency,
         sindy_library_polynomial_degree=2,
         sindy_epochs=sindy_epochs,
+        l2_sindy=args.l2_sindy,
         
         # additional generalization parameters
         bagging=True,

@@ -133,15 +133,16 @@ def batch_train(
         # small l2-regularization on logits to keep the absolute values in the smalles possible range (only diff between values is necessary)
         # loss_step += 0.01 * torch.pow(ys_pred, 2).mean()
         
-        # l2 reg on module outputs
-        for module in model.submodules_rnn:
-            input_size_module = model.submodules_rnn[module].linear_in.in_features+1
-            # loss_step += 0.01 * torch.pow(model.submodules_rnn[module](torch.rand((1, 100, input_size_module))), 2).mean()
-            loss_step += 0.01 * torch.abs(model.submodules_rnn[module](torch.ones((1, 100, input_size_module), device=model.device))).mean()
-        
-        # l2 reg on state values
-        for state in model.state:
-            loss_step += 0.01 * torch.pow(model.state[state], 2).mean()
+        if False:
+            # l2 reg on module outputs
+            for module in model.submodules_rnn:
+                input_size_module = model.submodules_rnn[module].linear_in.in_features+1
+                # loss_step += 0.01 * torch.pow(model.submodules_rnn[module](torch.rand((1, 100, input_size_module))), 2).mean()
+                loss_step += 0.01 * torch.abs(model.submodules_rnn[module](torch.ones((1, 100, input_size_module), device=model.device))).mean()
+            
+            # l2 reg on state values
+            for state in model.state:
+                loss_step += 0.01 * torch.pow(model.state[state], 2).mean()
         
         # Add SINDy regularization loss
         if sindy_weight > 0 and model.sindy_loss != 0:
@@ -448,6 +449,7 @@ def fit_model(
             loss_train = 0
             loss_test = 0
             t_start = time.time()
+            sindy_weight_epoch = min(n_calls_to_train_model / warmup_steps, 1) * sindy_weight
             for _ in range(iterations_per_epoch):
                 # get next batch
                 xs, ys = next(iter(dataloader_train))
@@ -462,7 +464,7 @@ def fit_model(
                     optimizer=optimizer,
                     n_steps=n_steps,
                     l1_weight_decay=l1_weight_decay,
-                    sindy_weight=sindy_weight,
+                    sindy_weight=sindy_weight_epoch,
                 )
                 loss_train += loss_i
             
@@ -481,10 +483,10 @@ def fit_model(
                 model = model.train()
             
             # periodic pruning of sindy coefficients with L0 norm
-            if sindy_weight > 0 and n_calls_to_train_model > warmup_steps and n_calls_to_train_model % sindy_threshold_frequency == 0 and n_calls_to_train_model != 0:
-                if n_calls_to_train_model == warmup_steps+sindy_threshold_frequency:
+            if sindy_weight > 0 and n_calls_to_train_model >= warmup_steps and n_calls_to_train_model % sindy_threshold_frequency == 0 and n_calls_to_train_model != 0:
+                if n_calls_to_train_model == warmup_steps:
                     print("\n"+"="*80)
-                    print(f"SPICE model before {n_calls_to_train_model} epochs:")
+                    print(f"(WARMUP) SPICE model after {n_calls_to_train_model} epochs:")
                     print("="*80)
                     model.print_spice_model(ensemble_idx=0)
                     
@@ -494,7 +496,7 @@ def fit_model(
                 # optimizer.state = defaultdict(dict)
                 
                 print("\n"+"="*80)
-                print(f"SPICE model after {n_calls_to_train_model} epochs:")
+                print(f"(THRESHOLDING) SPICE model after {n_calls_to_train_model} epochs:")
                 print("="*80)
                 model.print_spice_model(ensemble_idx=0)    
             

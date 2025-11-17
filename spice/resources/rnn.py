@@ -527,11 +527,11 @@ class BaseRNN(nn.Module):
         # 1. Sum over actions (i.e. remove masked out values by action_mask)
         # 2. Mean over ensemble dimension
         # 3. Mean over batch dimension only for finite values to get scalar loss
-        sindy_loss = masked_diff.sum(dim=-1).mean()
-        sindy_loss = sindy_loss[sindy_loss.isfinite()].mean()
+        sindy_loss = masked_diff.sum(dim=-1).mean() #/ len(self.submodules_rnn)
+        # sindy_loss = sindy_loss[sindy_loss.isfinite()].mean()
         
         # Clip loss to prevent explosion
-        sindy_loss = torch.clamp(sindy_loss, max=1000.0)
+        sindy_loss = torch.clamp(sindy_loss, max=100.0)
         
         return sindy_loss
         
@@ -628,7 +628,7 @@ class BaseRNN(nn.Module):
             equation_str = module + "[t+1] = "
             for index_term, term in enumerate(self.sindy_library_names[module]):
                 coeff_value = self.sindy_coefficients[module][participant_id, ensemble_idx, index_term].item()
-                if term == module and self.sindy_coefficients[module][participant_id, ensemble_idx].sum() != 0:
+                if term == module:
                     coeff_value += 1
                 if np.abs(coeff_value) > 1e-3:
                     if equation_str[-3:] != " = ":

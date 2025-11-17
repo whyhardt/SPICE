@@ -50,7 +50,7 @@ class SpiceEstimator(BaseEstimator):
         device: Optional[torch.device] = torch.device('cpu'),
         scheduler: Optional[bool] = False, 
         train_test_ratio: Optional[Union[float, List[int]]] = 1.,
-        l2_weight_decay: Optional[float] = 0,
+        l2_rnn: Optional[float] = 0,
         dropout: Optional[float] = 0.,
         
         # SPICE training parameters
@@ -60,6 +60,7 @@ class SpiceEstimator(BaseEstimator):
         sindy_threshold: Optional[float] = 0.05,
         sindy_regularization: Optional[float] = 1e-2,
         sindy_library_polynomial_degree: Optional[int] = 1,
+        l2_sindy: Optional[float] = 0,
         use_sindy: bool = False,
 
         verbose: Optional[bool] = False,
@@ -106,7 +107,7 @@ class SpiceEstimator(BaseEstimator):
         self.device = device
         self.verbose = verbose
         self.deterministic = False
-        self.l2_weight_decay = l2_weight_decay
+        self.l2_weight_decay = l2_rnn
 
         # Save parameters
         self.save_path_model = save_path_spice
@@ -146,7 +147,22 @@ class SpiceEstimator(BaseEstimator):
             n_items=n_items,
         ).to(device)
         
-        self.rnn_optimizer = torch.optim.AdamW(self.rnn_model.parameters(), lr=learning_rate, weight_decay=l2_weight_decay)
+        sindy_params = []
+        rnn_params = []
+        for name, param in self.rnn_model.named_parameters():
+            if 'sindy' in name:
+                sindy_params.append(param)
+            else:
+                rnn_params.append(param)
+        self.rnn_optimizer = torch.optim.AdamW(
+            [
+            {'params': sindy_params, 'weight_decay': l2_sindy, 'lr': learning_rate/sindy_weight if sindy_weight > 0 else learning_rate},
+            {'params': rnn_params, 'weight_decay': l2_rnn, 'lr': learning_rate},
+            ], 
+            # lr=learning_rate,
+            )
+        
+        # self.rnn_optimizer = torch.optim.AdamW(self.rnn_model.parameters(), lr=learning_rate, weight_decay=l2_weight_decay)
             
     def fit(self, data: np.ndarray, targets: np.ndarray, data_test: np.ndarray = None, target_test: np.ndarray = None):
         """
