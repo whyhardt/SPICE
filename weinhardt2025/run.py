@@ -6,7 +6,7 @@ import argparse
 import torch
 import matplotlib.pyplot as plt
 import pandas as pd
-    
+
 
 from spice.estimator import SpiceEstimator
 from spice.utils.convert_dataset import convert_dataset, split_data_along_sessiondim, split_data_along_timedim
@@ -50,9 +50,9 @@ if __name__=='__main__':
     
     args.epochs = 4000 # Further reduced for initial testing
     args.l2_rnn = 0.00001
-    learning_rate = 0.001
+    learning_rate = 0.01
     
-    args.sindy_weight = 0.1  # Start with very small weight for stability
+    args.sindy_weight = 0.#1  # Start with very small weight for stability
     sindy_epochs = 4000
     args.l2_sindy = 0.001 
     sindy_threshold = 0.05

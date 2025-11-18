@@ -163,3 +163,4 @@ class SpiceSignals:
         self.logits = None
         self.timesteps = None
         self.sindy_loss_timesteps = None
+        self.mask_valid_trials = None

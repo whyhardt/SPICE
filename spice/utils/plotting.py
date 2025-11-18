@@ -177,7 +177,7 @@ def plot_session(
     # valid keys in agent dictionary
     valid_keys_color_pairs = {'groundtruth': 'tab:blue', 'rnn': 'tab:orange', 'sindy': 'tab:pink', 'spice': 'tab:pink', 'benchmark':'tab:grey'}
     
-    n_actions = agents[list(agents.keys())[0]]._n_actions
+    n_actions = agents[list(agents.keys())[0]].n_actions
     if isinstance(experiment, BanditSession):
         choices = np.eye(n_actions)[experiment.choices.astype(int)][:, display_choice]
         rewards = experiment.rewards[:, display_choice]

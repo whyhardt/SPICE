@@ -76,7 +76,7 @@ class Agent:
     self.betas = {}
     self.betas['value_reward'] = beta_reward
     
-    self._n_actions = n_actions
+    self.n_actions = n_actions
     self._q_init = 0.5
     self._parameter_variance = self.check_parameter_variance(parameter_variance)
     self._deterministic = deterministic
@@ -107,9 +107,9 @@ class Agent:
     """Reset the agent for the beginning of a new session."""
     
     self.state = {
-      'value_reward': np.full((self._n_actions, 1), self._q_init),
-      'value_choice': np.zeros((self._n_actions, 1)),
-      'learning_rate_reward': np.zeros((self._n_actions, 1)),
+      'value_reward': np.full((self.n_actions, 1), self._q_init),
+      'value_choice': np.zeros((self.n_actions, 1)),
+      'learning_rate_reward': np.zeros((self.n_actions, 1)),
     }
     
   def get_choice_probs(self) -> np.ndarray:
@@ -118,7 +118,7 @@ class Agent:
     # decision_variable = np.clip(decision_variable, a_min=0, a_max=50)
     decision_variable = np.exp(decision_variable)
     choice_probs = decision_variable / np.sum(decision_variable)
-    return choice_probs.reshape(self._n_actions)
+    return choice_probs.reshape(self.n_actions)
     
   def get_choice(self):
     """Sample choice."""
@@ -126,7 +126,7 @@ class Agent:
     if self._deterministic:
       return np.argmax(choice_probs)
     else:
-      return np.random.choice(self._n_actions, p=choice_probs)
+      return np.random.choice(self.n_actions, p=choice_probs)
 
   def update(self, choice: int, reward: np.ndarray, *args, **kwargs):
     """Update the agent after one step of the task.
@@ -139,7 +139,7 @@ class Agent:
     # adjust learning rates for every received reward
     alpha = np.zeros_like(self.state['learning_rate_reward'])
     rpe = np.zeros_like(self.state['learning_rate_reward'])
-    for action in range(self._n_actions):
+    for action in range(self.n_actions):
       if action == choice:
         current_reward = reward[action] if np.min(reward) > -1 else reward[choice]
         alpha[action] = self._alpha_reward
@@ -156,13 +156,13 @@ class Agent:
   
   def get_state_value(self, state: str, multiply_with_beta: bool = True):
     if multiply_with_beta and state in self.betas:
-      return (self.state[state] * self.betas[state]).reshape(self._n_actions)
+      return (self.state[state] * self.betas[state]).reshape(self.n_actions)
     else:
-      return self.state[state].reshape(self._n_actions)
+      return self.state[state].reshape(self.n_actions)
 
   @property
   def q(self):
-    return (self.state['value_reward']*self.betas['value_reward']).reshape(self._n_actions)
+    return (self.state['value_reward']*self.betas['value_reward']).reshape(self.n_actions)
 
 
 class AgentQ(Agent):
@@ -224,7 +224,7 @@ class AgentQ(Agent):
     self.betas['value_reward'] = beta_reward
     self.betas['value_choice'] = beta_choice
     
-    self._n_actions = n_actions
+    self.n_actions = n_actions
     self._parameter_variance = self.check_parameter_variance(parameter_variance)
     self._q_init = 0.5
     
@@ -245,9 +245,9 @@ class AgentQ(Agent):
     # self._alpha = np.zeros(self._n_actions)
     
     self.state = {
-      'value_reward': np.full(self._n_actions, self._q_init),
-      'value_choice': np.zeros(self._n_actions),
-      'learning_rate_reward': np.zeros(self._n_actions),
+      'value_reward': np.full(self.n_actions, self._q_init),
+      'value_choice': np.zeros(self.n_actions),
+      'learning_rate_reward': np.zeros(self.n_actions),
     }
 
   def update(self, choice: int, reward: np.ndarray, *args, **kwargs):
@@ -259,12 +259,12 @@ class AgentQ(Agent):
     """
     
     # Reward-based updates
-    non_chosen_action = np.arange(self._n_actions) != choice
+    non_chosen_action = np.arange(self.n_actions) != choice
     
     # adjust learning rates for every received reward
     alpha = np.zeros_like(reward)
     rpe = np.zeros_like(reward)
-    for action in range(self._n_actions):
+    for action in range(self.n_actions):
       if action == choice:
         # factual case
         alpha_r = self._alpha_reward
@@ -291,7 +291,7 @@ class AgentQ(Agent):
     forget_update = self._forget_rate * (self._q_init - self.state['value_reward'][non_chosen_action])
 
     # Choice-Perseverance: Action-based updates
-    cpe = np.eye(self._n_actions)[choice] - self.state['value_choice']
+    cpe = np.eye(self.n_actions)[choice] - self.state['value_choice']
     
     # Update memory state
     self.state['value_reward'][non_chosen_action] += reward_update[non_chosen_action] + forget_update
@@ -301,7 +301,7 @@ class AgentQ(Agent):
 
   @property
   def q(self):
-    return (self.state['value_reward']*self.betas['value_reward'] + self.state['value_choice']*self.betas['value_choice']).reshape(self._n_actions)
+    return (self.state['value_reward']*self.betas['value_reward'] + self.state['value_choice']*self.betas['value_choice']).reshape(self.n_actions)
 
 
 class AgentQ_SampleZeros(AgentQ):
@@ -433,7 +433,7 @@ class AgentNetwork(Agent):
     return logits
 
   def update(self, choice: float, reward: float, block: int = 0, additional_inputs: np.ndarray = torch.zeros(0), **kwargs):
-    choice = torch.eye(self._n_actions)[int(choice)]
+    choice = torch.eye(self.n_actions)[int(choice)]
     xs = torch.concat([choice, torch.tensor(reward), torch.tensor(additional_inputs), torch.tensor(block).view(1), self._meta_data.view(-1)]).view(1, 1, -1).to(device=self.model.device)
     with torch.no_grad():
       self.model(xs, self.model.get_state(detach=True))
@@ -946,7 +946,7 @@ def run_experiment(
   """
   
   choices = np.zeros((n_trials+1)) - 1
-  rewards = np.zeros((n_trials+1, agent._n_actions)) - 1
+  rewards = np.zeros((n_trials+1, agent.n_actions)) - 1
   # qs = np.zeros((n_trials+1, agent._n_actions, agent.state['value_reward'].shape[-1])) - 1
   # reward_probs = np.zeros((n_trials+1, agent._n_actions)) - 1
 
@@ -1003,7 +1003,7 @@ def create_dataset(
   """
   
   agent_original = agent
-  n_actions = agent[0]._n_actions if isinstance(agent_original, list) else agent._n_actions
+  n_actions = agent[0]._n_actions if isinstance(agent_original, list) else agent.n_actions
   xs = np.zeros((n_sessions, n_trials, n_actions*2 + 1))
   ys = np.zeros((n_sessions, n_trials, n_actions))
   experiment_list = []
@@ -1021,7 +1021,7 @@ def create_dataset(
     experiment_list.append(experiment)
     
     # one-hot encoding of choices
-    choices = np.eye(agent._n_actions)[choices]
+    choices = np.eye(agent.n_actions)[choices]
     ys[session] = choices[1:]
     xs[session] = np.concatenate((choices[:-1], rewards[:-1], experiment.session[:, None]), axis=-1)
     
@@ -1066,10 +1066,10 @@ def get_update_dynamics(experiment: Union[np.ndarray, torch.Tensor], agent: Agen
       experiment = experiment.squeeze(0)
     # get number of actual trials
     n_trials = len(experiment) - np.where(~np.isnan(experiment[::-1][:, 0]))[0][0]
-    choices = experiment[:n_trials, :agent._n_actions]
-    rewards = experiment[:n_trials, agent._n_actions:2*agent._n_actions]
+    choices = experiment[:n_trials, :agent.n_actions]
+    rewards = experiment[:n_trials, agent.n_actions:2*agent.n_actions]
     # TODO: additional_inputs are currently treated as signals and as meta-information for the embedding
-    additional_inputs = experiment[0, 2*agent._n_actions:-3]
+    additional_inputs = experiment[0, 2*agent.n_actions:-3]
     current_block = int(experiment[0, -3])
     experiment_id = int(experiment[0, -2])
     participant_id = int(experiment[0, -1])
@@ -1081,9 +1081,9 @@ def get_update_dynamics(experiment: Union[np.ndarray, torch.Tensor], agent: Agen
   betas_available = hasattr(agent, 'betas') and agent.betas is not None
   
   # initialize storages
-  q = np.zeros((n_trials, agent._n_actions))
-  values_signal = {signal: np.zeros((n_trials, agent._n_actions)) for signal in additional_signals}
-  choice_probs = np.zeros((n_trials, agent._n_actions))
+  q = np.zeros((n_trials, agent.n_actions))
+  values_signal = {signal: np.zeros((n_trials, agent.n_actions)) for signal in additional_signals}
+  choice_probs = np.zeros((n_trials, agent.n_actions))
   
   for trial in range(n_trials):
     # track all states

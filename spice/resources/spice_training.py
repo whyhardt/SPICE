@@ -388,9 +388,13 @@ def fit_model(
     if dataset_test is not None:
         dataloader_test = DataLoader(dataset_test, batch_size=len(dataset_test))
     
-    # set up learning rate scheduler
+    # set up warmup phase characteristics and learning rate scheduler
     warmup_steps = 500
     warmup_steps = warmup_steps if epochs > warmup_steps else 1 #int(epochs * 0.125/16)
+    
+    warmup_scaler = torch.exp(torch.linspace(0, 5, warmup_steps))
+    warmup_scaler = (warmup_scaler - warmup_scaler.min()) / (warmup_scaler.max() - warmup_scaler.min())
+    
     if scheduler and optimizer is not None:
         # Define the LambdaLR scheduler for warm-up
         # def warmup_lr_lambda(current_step):
@@ -449,7 +453,8 @@ def fit_model(
             loss_train = 0
             loss_test = 0
             t_start = time.time()
-            sindy_weight_epoch = min(n_calls_to_train_model / warmup_steps, 1) * sindy_weight
+            # sindy_weight_epoch = min(n_calls_to_train_model / warmup_steps, 1) * sindy_weight
+            sindy_weight_epoch = sindy_weight * (1 if n_calls_to_train_model >= warmup_steps else warmup_scaler[n_calls_to_train_model])
             for _ in range(iterations_per_epoch):
                 # get next batch
                 xs, ys = next(iter(dataloader_train))
@@ -483,18 +488,15 @@ def fit_model(
                 model = model.train()
             
             # periodic pruning of sindy coefficients with L0 norm
-            if sindy_weight > 0 and n_calls_to_train_model >= warmup_steps and n_calls_to_train_model % sindy_threshold_frequency == 0 and n_calls_to_train_model != 0:
+            if sindy_weight > 0 and n_calls_to_train_model >= warmup_steps:
                 if n_calls_to_train_model == warmup_steps:
                     print("\n"+"="*80)
                     print(f"(WARMUP) SPICE model after {n_calls_to_train_model} epochs:")
                     print("="*80)
                     model.print_spice_model(ensemble_idx=0)
                     
+            if sindy_weight > 0 and n_calls_to_train_model >= warmup_steps+sindy_threshold_frequency and n_calls_to_train_model % sindy_threshold_frequency == 0 and n_calls_to_train_model != 0:   
                 model.thresholding(threshold=sindy_threshold, base_threshold=0.1, n_terms_cutoff=1)
-                
-                # TODO: Try optimizer reset for stability
-                # optimizer.state = defaultdict(dict)
-                
                 print("\n"+"="*80)
                 print(f"(THRESHOLDING) SPICE model after {n_calls_to_train_model} epochs:")
                 print("="*80)

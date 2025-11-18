@@ -151,6 +151,11 @@ class BaseRNN(nn.Module):
         
         spice_signals = SpiceSignals()
         
+        inputs = inputs.nan_to_num(0.)
+        
+        # create a mask of valid trials
+        spice_signals.mask_valid_trials = inputs[:, :, :self.n_actions].sum(dim=-1, keepdim=True) > 0
+        
         # item-specific signals
         spice_signals.actions = inputs[:, :, :self.n_actions].float()
         spice_signals.rewards = inputs[:, :, self.n_actions:2*self.n_actions].float()
@@ -527,7 +532,7 @@ class BaseRNN(nn.Module):
         # 1. Sum over actions (i.e. remove masked out values by action_mask)
         # 2. Mean over ensemble dimension
         # 3. Mean over batch dimension only for finite values to get scalar loss
-        sindy_loss = masked_diff.sum(dim=-1).mean() #/ len(self.submodules_rnn)
+        sindy_loss = masked_diff.sum(dim=-1).mean() / len(self.submodules_rnn)
         # sindy_loss = sindy_loss[sindy_loss.isfinite()].mean()
         
         # Clip loss to prevent explosion

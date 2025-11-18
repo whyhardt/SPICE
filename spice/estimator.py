@@ -154,9 +154,15 @@ class SpiceEstimator(BaseEstimator):
                 sindy_params.append(param)
             else:
                 rnn_params.append(param)
+        # setting up different optimizer parameters for rnn parameters and sindy coefficients
+        # rnn parameters: use default learning rate
+        # sindy coefficients: 
+        #   learning rate needs rescaling based on sindy weight; 
+        #   sindy weight diminishes the sindy coefficient gradient in the loss computation -> small updates; 
+        #   rescaling brings the gradient back to normal size -> desired updates;
         self.rnn_optimizer = torch.optim.AdamW(
             [
-            {'params': sindy_params, 'weight_decay': l2_sindy, 'lr': learning_rate/sindy_weight if sindy_weight > 0 else learning_rate},
+            {'params': sindy_params, 'weight_decay': l2_sindy, 'lr': learning_rate/sindy_weight * len(self.rnn_model.submodules_rnn) if sindy_weight > 0 else learning_rate},
             {'params': rnn_params, 'weight_decay': l2_rnn, 'lr': learning_rate},
             ], 
             # lr=learning_rate,

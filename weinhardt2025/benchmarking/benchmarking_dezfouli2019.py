@@ -335,8 +335,8 @@ class AgentGQL(AgentNetwork):
         
         # Compute interaction terms
         C = self.model.C#.detach().cpu().numpy()
-        interaction = torch.zeros(self._n_actions)
-        for a in range(self._n_actions):
+        interaction = torch.zeros(self.n_actions)
+        for a in range(self.n_actions):
             interaction[a] = self.state['x_value_choice'].squeeze(0)[a] @ C @ self.state['x_value_reward'].squeeze(0)[a]
         
         return (q_weighted + h_weighted + interaction).detach().cpu().numpy()

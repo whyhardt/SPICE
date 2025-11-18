@@ -67,12 +67,12 @@ class AgentLSTM(Agent):
 
     def new_sess(self, *args, **kwargs):
         """Reset the network for the beginning of a new session."""    
-        self.state = {'x_value_reward': np.zeros((self._n_actions))}
+        self.state = {'x_value_reward': np.zeros((self.n_actions))}
         self._hidden_state = torch.zeros((1, self.model.n_cells)).to(self.model.device)
         self._cell_state = torch.zeros((1, self.model.n_cells)).to(self.model.device)
 
     def update(self, choice: float, reward: float, **kwargs):
-        choice = torch.eye(self._n_actions)[int(choice)]
+        choice = torch.eye(self.n_actions)[int(choice)]
         xs = torch.concat([choice, torch.tensor(reward)]).view(1, -1).to(device=self.model.device)
         with torch.no_grad():
             logits, state = self.model(xs, self.get_state())

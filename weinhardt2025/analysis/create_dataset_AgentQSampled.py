@@ -61,8 +61,8 @@ for iteration in range(n_iterations_per_n_sessions):
             
             # append behavioral data
             session += list(experiment[:, -1])
-            choice += list(np.argmax(experiment[:, :agent._n_actions], axis=-1))
-            reward += list(np.max(experiment[:, agent._n_actions:agent._n_actions*2], axis=-1))
+            choice += list(np.argmax(experiment[:, :agent.n_actions], axis=-1))
+            reward += list(np.max(experiment[:, agent.n_actions:agent.n_actions*2], axis=-1))
             
             # append update dynamics
             choice_prob_0 += list(choice_probs[:, 0])
