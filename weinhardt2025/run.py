@@ -27,34 +27,34 @@ if __name__=='__main__':
     # parser.add_argument('--l1', type=float, default=0, help='L1 Reg of the RNNs participant embedding')
     parser.add_argument('--l2_rnn', type=float, default=0, help='L2 Reg of the RNN parameters')
     parser.add_argument('--l2_sindy', type=float, default=0, help='L2 Reg of the SINDy coefficients')
-    parser.add_argument('--time_train_test_ratio', type=float, default=None, help='Ratio of training data; Can also be a comma-separated list of integeres to indicate testing sessions.')
-    parser.add_argument('--session_train_test_ratio', type=str, default=None, help='Ratio of training data; Can also be a comma-separated list of integeres to indicate testing sessions.')
+    parser.add_argument('--train_ratio_time', type=float, default=None, help='Ratio of data used for training. Split along time dimension. Not combinable with test_sessions')
+    parser.add_argument('--test_sessions', type=str, default=None, help='Comma-separated list of integeres which indicate test sessions. Not combinable with train_ratio_time')
     parser.add_argument('--sindy_weight', type=float, default=0.1, help='Weight for SINDy regularization during RNN training')
-
+    
     args = parser.parse_args()
 
     # args.model = "weinhardt2025/params/eckstein2022/spice_eckstein2022.pkl"
     # args.data = "weinhardt2025/data/eckstein2022/eckstein2022.csv"
-    # args.time_train_test_ratio = 0.8
+    # args.train_ratio_time = 0.8
     
     # args.model = "weinhardt2025/params/eckstein2024/spice_eckstein2024.pkl"
     # args.data = "weinhardt2025/data/eckstein2024/eckstein2024.csv"
-    # args.session_train_test_ratio = "1,3"
+    # args.test_sessions = "1,3"
     
-    args.model = "weinhardt2025/params/dezfouli2019/spice_dezfouli2019.pkl"
-    args.data = "weinhardt2025/data/dezfouli2019/dezfouli2019.csv"
-    args.session_train_test_ratio = "3,6,9"
+    # args.model = "weinhardt2025/params/dezfouli2019/spice_dezfouli2019.pkl"
+    # args.data = "weinhardt2025/data/dezfouli2019/dezfouli2019.csv"
+    # args.test_sessions = "3,6,9"
     
     # args.model = "weinhardt2025/params/spice_synthetic.pkl"
     # args.data = "weinhardt2025/data/data_synthetic.csv"
     
-    args.epochs = 4000 # Further reduced for initial testing
-    args.l2_rnn = 0.00001
+    # args.epochs = 4000 # Further reduced for initial testing
+    # args.l2_rnn = 0.00001
     learning_rate = 0.001
     
-    args.sindy_weight = 0.1  # Start with very small weight for stability
-    args.l2_sindy = 0.001
-    sindy_epochs = 4000 
+    # args.sindy_weight = 0.1  # Start with very small weight for stability
+    # args.l2_sindy = 0.001
+    sindy_epochs = args.epochs#4000 
     sindy_threshold = 0.05
     sindy_thresholding_frequency = 100
     sindy_threshold_terms = 2
@@ -68,13 +68,13 @@ if __name__=='__main__':
         file=args.data,
     )
 
-    if args.time_train_test_ratio:
-        args.session_train_test_ratio = None
-        dataset_train, dataset_test = split_data_along_timedim(dataset, args.time_train_test_ratio)
-    elif args.session_train_test_ratio:
-        args.session_train_test_ratio = args.session_train_test_ratio.split(',')
-        args.session_train_test_ratio = [int(item) for item in args.session_train_test_ratio]
-        dataset_train, dataset_test = split_data_along_sessiondim(dataset, [int(item) for item in args.session_train_test_ratio])
+    if args.train_ratio_time:
+        args.test_sessions = None
+        dataset_train, dataset_test = split_data_along_timedim(dataset, args.train_ratio_time)
+    elif args.test_sessions:
+        args.test_sessions = args.test_sessions.split(',')
+        args.test_sessions = [int(item) for item in args.test_sessions]
+        dataset_train, dataset_test = split_data_along_sessiondim(dataset, [int(item) for item in args.test_sessions])
     else:
         print("No split into training and test data.")
         dataset_train, dataset_test = dataset, dataset
@@ -83,7 +83,7 @@ if __name__=='__main__':
     n_participants = len(dataset_train.xs[..., -1].unique())
 
     print(f"Dataset: {n_participants} participants, {n_actions} actions")
-    print(f"Train/Test split: {args.time_train_test_ratio}")
+    print(f"Train/Test split: {args.train_ratio_time}")
     
     print(f"\nInitializing SpiceEstimator with end-to-end SINDy training (weight={args.sindy_weight})...")
     estimator = SpiceEstimator(
@@ -98,7 +98,7 @@ if __name__=='__main__':
         epochs=args.epochs,
         l2_rnn=args.l2_rnn,
         learning_rate=learning_rate,
-        train_test_ratio=args.time_train_test_ratio if args.time_train_test_ratio else args.session_train_test_ratio,
+        train_test_ratio=args.train_ratio_time if args.train_ratio_time else args.test_sessions,
         
         # sindy fitting parameters
         sindy_weight=args.sindy_weight,
