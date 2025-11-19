@@ -32,6 +32,7 @@ if __name__=='__main__':
     parser.add_argument('--sindy_weight', type=float, default=0.1, help='Weight for SINDy regularization during RNN training')
     parser.add_argument('--additional_columns', type=str, default=None, help='Comma-separated list of columns which are added to the dataset.')
     parser.add_argument('--timeshift_additional_columns', action='store_true', help='Shifts additional columns (defined by the kwarg "additional_columns") [t]->[t-1]; Necessary for e.g. predictor stimuli which are usually listed in the trial of which SPICE has to predict the action.')
+    parser.add_argument('--n_items', type=int, default=-1, help='Number of items in dataset; Default -1: As many items as actions;')
     
     args = parser.parse_args()
 
@@ -46,6 +47,13 @@ if __name__=='__main__':
     # args.model = "weinhardt2025/params/dezfouli2019/spice_dezfouli2019.pkl"
     # args.data = "weinhardt2025/data/dezfouli2019/dezfouli2019.csv"
     # args.test_sessions = "3,6,9"
+    
+    # args.data="weinhardt2025/data/sugawara2021/sugawara2021.csv" 
+    # args.model="weinhardt2025/params/sugawara2021/spice_sugawara2021.pkl" 
+    # args.epochs=10
+    # args.n_items=8
+    # args.test_sessions="1"
+    # args.additional_columns="shown_at_0,shown_at_1,shown_at_0_next,shown_at_1_next"
     
     # args.model = "weinhardt2025/params/spice_synthetic.pkl"
     # args.data = "weinhardt2025/data/data_synthetic.csv"
@@ -68,8 +76,8 @@ if __name__=='__main__':
     print(f"Loading dataset from {args.data}...")
     dataset = convert_dataset(
         file=args.data,
-        additional_inputs=args.additional_inputs.split(','),
-        timeshift_additional_inputs=args.timeshift_additional_inputs,
+        additional_inputs=args.additional_columns.split(','),
+        timeshift_additional_inputs=args.timeshift_additional_columns,
     )
 
     if args.train_ratio_time:
@@ -86,17 +94,21 @@ if __name__=='__main__':
     n_actions = dataset_train.ys.shape[-1]
     n_participants = len(dataset_train.xs[..., -1].unique())
 
-    print(f"Dataset: {n_participants} participants, {n_actions} actions")
+    n_items = args.n_items if args.n_items != -1 else n_actions
+
+    print(f"Dataset: {n_participants} participants, {n_actions} actions, {n_items} items")
     print(f"Train/Test split: {args.train_ratio_time}")
-    
+    print(f"DEBUG: args.n_items={args.n_items}, n_items={n_items}")
+
     print(f"\nInitializing SpiceEstimator with end-to-end SINDy training (weight={args.sindy_weight})...")
     estimator = SpiceEstimator(
-        
+
         # model paramaeters
         rnn_class=class_rnn,
         spice_config=spice_config,
         n_participants=n_participants,
         n_actions=n_actions,
+        n_items=n_items,
         
         # rnn training parameters
         epochs=args.epochs,
@@ -114,12 +126,12 @@ if __name__=='__main__':
         l2_sindy=args.l2_sindy,
         
         # additional generalization parameters
-        bagging=True,
+        # bagging=True,
         # scheduler=True,
         
         # other parameters
         verbose=True,
-        device=torch.device('cuda' if torch.cuda.is_available() else 'cpu'),
+        # device=torch.device('cuda' if torch.cuda.is_available() else 'cpu'),
         save_path_spice=args.model,
     )
     

@@ -86,6 +86,7 @@ class SpiceModel(BaseRNN):
         sindy_polynomial_degree: int = 2,
         sindy_ensemble_size: int = 10,
         use_sindy: bool = False,
+        n_items: int = None,
         **kwargs):
         super().__init__(
             n_actions=n_actions,
@@ -95,17 +96,15 @@ class SpiceModel(BaseRNN):
             use_sindy=use_sindy,
             sindy_polynomial_degree = sindy_polynomial_degree,
             sindy_ensemble_size=sindy_ensemble_size,
+            n_items=n_items,
             )
             
         self.participant_embedding = self.setup_embedding(n_participants, embedding_size, dropout=dropout)
-
-        self.betas['value_reward'] = self.setup_constant(embedding_size)
-        self.betas['value_choice'] = self.setup_constant(embedding_size)
-
+        
         # Value learning module (slow updates)
         # Can use recent reward history to modulate learning
         self.submodules_rnn['value_reward_chosen'] = self.setup_module(input_size=4 + embedding_size, dropout=dropout)  # -> 21 terms
-        self.submodules_rnn['value_reward_not_chosen'] = self.setup_module(input_size=4 + embedding_size, dropout=dropout)  # -> 15 terms
+        self.submodules_rnn['value_reward_not_chosen'] = self.setup_module(input_size=3 + embedding_size, dropout=dropout)  # -> 15 terms
         self.submodules_rnn['value_reward_not_displayed'] = self.setup_module(input_size=3 + embedding_size, dropout=dropout)  # -> 15 terms
         self.submodules_rnn['value_choice_chosen'] = self.setup_module(input_size=3 + embedding_size, dropout=dropout) # -> 15 terms
         self.submodules_rnn['value_choice_not_chosen'] = self.setup_module(input_size=3 + embedding_size, dropout=dropout) # -> 15 terms -> 21+15+15+15 = 66 terms in total
@@ -113,7 +112,7 @@ class SpiceModel(BaseRNN):
 
     def forward(self, inputs, prev_state=None, batch_first=False):
         spice_signals = self.init_forward_pass(inputs, prev_state, batch_first)
-        
+
         # Get shown items (raw indices) - these are time-shifted, so they refer to the NEXT trial
         shown_at_0_current = spice_signals.additional_inputs[..., 0].long()
         shown_at_1_current = spice_signals.additional_inputs[..., 1].long()
@@ -158,7 +157,7 @@ class SpiceModel(BaseRNN):
                 key_state='value_reward',
                 action_mask=item_chosen_onehot,
                 inputs=(
-                    spice_signals.rewards[timestep],
+                    reward_item,
                     self.state['buffer_reward_1'],  # Recent reward history
                     self.state['buffer_reward_2'],
                     self.state['buffer_reward_3'],
@@ -242,12 +241,12 @@ class SpiceModel(BaseRNN):
             # BUFFER UPDATES: 
             # REWARD BUFFER UPDATES: Shift reward buffer for chosen action, keep for not chosen action (NOTE: deterministic; not learned by SPICE -> Could be made learnable: e.g. decay-rate for not chosen action)
             # CHOICE BUFFER UPDATES: Shift all buffer entries according to action
-            self.state['buffer_reward_3'] = self.state['buffer_reward_2'] * spice_signals.actions[timestep] + self.state['buffer_reward_3'] * (1-spice_signals.actions[timestep])
-            self.state['buffer_reward_2'] = self.state['buffer_reward_1'] * spice_signals.actions[timestep] + self.state['buffer_reward_2'] * (1-spice_signals.actions[timestep])
-            self.state['buffer_reward_1'] = torch.where(spice_signals.actions[timestep]==1, spice_signals.rewards[timestep], 0) + torch.where(spice_signals.actions[timestep]==0, self.state['buffer_reward_1'], 0)  # updating buffer_reward[t-1] with reward for chosen action and keeping values for not-chosen actions
+            self.state['buffer_reward_3'] = self.state['buffer_reward_2'] * item_chosen_onehot + self.state['buffer_reward_3'] * (item_not_chosen_onehot+item_not_displayed_onehot)
+            self.state['buffer_reward_2'] = self.state['buffer_reward_1'] * item_chosen_onehot + self.state['buffer_reward_2'] * (item_not_chosen_onehot+item_not_displayed_onehot)
+            self.state['buffer_reward_1'] = torch.where(item_chosen_onehot==1, item_chosen_onehot, 0) + torch.where(item_chosen_onehot==0, self.state['buffer_reward_1'], 0)  # updating buffer_reward[t-1] with reward for chosen action and keeping values for not-chosen actions
             self.state['buffer_choice_3'] = self.state['buffer_choice_2']
             self.state['buffer_choice_2'] = self.state['buffer_choice_1']
-            self.state['buffer_choice_1'] = spice_signals.actions[timestep]
+            self.state['buffer_choice_1'] = item_chosen_onehot
             
             # Transform values from item space to action space for NEXT trial (for prediction)
             # Use the time-shifted items (next trial's items)
