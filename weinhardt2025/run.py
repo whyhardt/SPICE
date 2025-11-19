@@ -44,9 +44,9 @@ if __name__=='__main__':
     # args.data = "weinhardt2025/data/eckstein2024/eckstein2024.csv"
     # args.test_sessions = "1,3"
     
-    # args.model = "weinhardt2025/params/dezfouli2019/spice_dezfouli2019.pkl"
-    # args.data = "weinhardt2025/data/dezfouli2019/dezfouli2019.csv"
-    # args.test_sessions = "3,6,9"
+    args.model = "weinhardt2025/params/dezfouli2019/spice_dezfouli2019.pkl"
+    args.data = "weinhardt2025/data/dezfouli2019/dezfouli2019.csv"
+    args.test_sessions = "3,6,9"
     
     # args.data="weinhardt2025/data/sugawara2021/sugawara2021.csv" 
     # args.model="weinhardt2025/params/sugawara2021/spice_sugawara2021.pkl" 
@@ -74,7 +74,7 @@ if __name__=='__main__':
     print(f"Loading dataset from {args.data}...")
     dataset = convert_dataset(
         file=args.data,
-        additional_inputs=args.additional_columns.split(','),
+        additional_inputs=args.additional_columns.split(',') if args.additional_columns else None,
         timeshift_additional_inputs=args.timeshift_additional_columns,
     )
 
@@ -103,7 +103,6 @@ if __name__=='__main__':
 
     print(f"Dataset: {n_participants} participants, {n_actions} actions, {n_items} items")
     print(f"Train/Test split: {args.train_ratio_time}")
-    print(f"DEBUG: args.n_items={args.n_items}, n_items={n_items}")
 
     print(f"\nInitializing SpiceEstimator with end-to-end SINDy training (weight={args.sindy_weight})...")
     estimator = SpiceEstimator(
