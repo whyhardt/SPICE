@@ -12,7 +12,7 @@ from spice.estimator import SpiceEstimator
 from spice.utils.convert_dataset import convert_dataset, split_data_along_sessiondim, split_data_along_timedim
 from spice.utils.plotting import plot_session
 from spice.resources.bandits import AgentQ
-from spice.precoded import workingmemory_multiitem as spice_model
+from spice.precoded import workingmemory_multiitem, workingmemory
 
 
 if __name__=='__main__':
@@ -32,7 +32,7 @@ if __name__=='__main__':
     parser.add_argument('--sindy_weight', type=float, default=0.1, help='Weight for SINDy regularization during RNN training')
     parser.add_argument('--additional_columns', type=str, default=None, help='Comma-separated list of columns which are added to the dataset.')
     parser.add_argument('--timeshift_additional_columns', action='store_true', help='Shifts additional columns (defined by the kwarg "additional_columns") [t]->[t-1]; Necessary for e.g. predictor stimuli which are usually listed in the trial of which SPICE has to predict the action.')
-    parser.add_argument('--n_items', type=int, default=-1, help='Number of items in dataset; Default -1: As many items as actions;')
+    parser.add_argument('--n_items', type=int, default=None, help='Number of items in dataset; Default None: As many items as actions (automatically detected from dataset);')
     
     args = parser.parse_args()
 
@@ -68,8 +68,6 @@ if __name__=='__main__':
     sindy_threshold = 0.05
     sindy_thresholding_frequency = 100
     sindy_threshold_terms = 3
-    class_rnn = spice_model.SpiceModel
-    spice_config = spice_model.CONFIG
     
     example_participant = 0
     
@@ -93,8 +91,15 @@ if __name__=='__main__':
 
     n_actions = dataset_train.ys.shape[-1]
     n_participants = len(dataset_train.xs[..., -1].unique())
-
-    n_items = args.n_items if args.n_items != -1 else n_actions
+    n_items = args.n_items if args.n_items else n_actions
+    
+    if n_items == n_actions:
+        spice_model = workingmemory
+    else:
+        spice_model = workingmemory_multiitem
+        
+    class_rnn = spice_model.SpiceModel
+    spice_config = spice_model.CONFIG
 
     print(f"Dataset: {n_participants} participants, {n_actions} actions, {n_items} items")
     print(f"Train/Test split: {args.train_ratio_time}")
