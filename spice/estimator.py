@@ -40,8 +40,8 @@ class SpiceEstimator(BaseEstimator):
         n_items: int = None,
         
         # RNN training parameters
-        epochs: int = 1,
-        bagging: bool = False,
+        epochs: Optional[int] = 1,
+        bagging: Optional[bool] = False,
         sequence_length: Optional[int] = -1,  # -1 for keeping the sequence length in the data to its original length, otherwise strided windows of length sequence_length,
         n_steps_per_call: Optional[int] = -1,  # number of timesteps in one backward-call; -1 for full sequence
         batch_size: Optional[int] = -1,  # -1 for a batch-size equal to the number of participants in the data
@@ -56,12 +56,13 @@ class SpiceEstimator(BaseEstimator):
         # SPICE training parameters
         sindy_weight: Optional[float] = 0.1,  # Weight for SINDy regularization loss
         sindy_epochs: Optional[int] = 1000,
-        sindy_threshold_frequency = 50,
+        sindy_threshold_frequency: Optional[int] = 50,
         sindy_threshold: Optional[float] = 0.05,
+        sindy_threshold_terms: Optional[int] = 1,
         sindy_regularization: Optional[float] = 1e-2,
         sindy_library_polynomial_degree: Optional[int] = 1,
         l2_sindy: Optional[float] = 0,
-        use_sindy: bool = False,
+        use_sindy: Optional[bool] = False,
 
         verbose: Optional[bool] = False,
         save_path_spice: Optional[str] = None
@@ -116,6 +117,7 @@ class SpiceEstimator(BaseEstimator):
         self.sindy_weight = sindy_weight
         self.sindy_threshold_frequency = sindy_threshold_frequency
         self.sindy_threshold = sindy_threshold
+        self.sindy_threshold_terms = sindy_threshold_terms
         self.sindy_library_polynomial_degree = sindy_library_polynomial_degree
         self.sindy_regularization = sindy_regularization
         self.sindy_epochs = sindy_epochs
@@ -202,6 +204,7 @@ class SpiceEstimator(BaseEstimator):
             sindy_weight=self.sindy_weight,
             sindy_threshold=self.sindy_threshold,
             sindy_threshold_frequency=self.sindy_threshold_frequency,
+            sindy_threshold_terms=self.sindy_threshold_terms,
             sindy_epochs=self.sindy_epochs,
             epochs=self.epochs,
             batch_size=batch_size,

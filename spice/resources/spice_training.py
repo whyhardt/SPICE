@@ -169,6 +169,7 @@ def fit_sindy_second_stage(
     learning_rate: float = 1e-3,
     epochs: int = 1,
     threshold: float = 0.05,
+    n_terms_cutoff: int = -1,
     batch_size: int = -1,
     verbose: bool = True,
     ):
@@ -307,7 +308,7 @@ def fit_sindy_second_stage(
         
         # THRESHOLDING STEP
         if epoch % 100 == 0 and epoch != 0:
-                model.thresholding(threshold=0, base_threshold=threshold, n_terms_cutoff=1)
+                model.thresholding(threshold=0, base_threshold=threshold, n_terms_cutoff=n_terms_cutoff)
         
         # Print progress
         msg = f'SINDy Stage 2 - Epoch {epoch+1}/{epochs} --- L(Train): {loss_train:.7f}'
@@ -345,6 +346,7 @@ def fit_model(
     sindy_epochs: int = 1000,
     sindy_threshold: float = 0.01,
     sindy_threshold_frequency: int = 100,
+    sindy_threshold_terms: int = -1,
     epochs: int = 1,
     batch_size: int = -1,
     bagging: bool = False,
@@ -496,7 +498,7 @@ def fit_model(
                     model.print_spice_model(ensemble_idx=0)
                     
             if sindy_weight > 0 and n_calls_to_train_model >= warmup_steps+sindy_threshold_frequency and n_calls_to_train_model % sindy_threshold_frequency == 0 and n_calls_to_train_model != 0:   
-                model.thresholding(threshold=sindy_threshold, base_threshold=0.1, n_terms_cutoff=1)
+                model.thresholding(threshold=sindy_threshold, base_threshold=0.1, n_terms_cutoff=sindy_threshold_terms)
                 print("\n"+"="*80)
                 print(f"(THRESHOLDING) SPICE model after {n_calls_to_train_model} epochs:")
                 print("="*80)
@@ -561,6 +563,7 @@ def fit_model(
             learning_rate=optimizer.param_groups[0]['lr'],
             epochs=sindy_epochs,
             threshold=sindy_threshold,
+            n_terms_cutoff=sindy_threshold_terms,
             batch_size=-1,
             verbose=verbose,
         )

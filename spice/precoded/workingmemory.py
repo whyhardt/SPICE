@@ -18,26 +18,25 @@ CONFIG = SpiceConfig(
             'reward[t-1]', 
             'reward[t-2]',
             'reward[t-3]',
-            'value_choice',
+            # 'value_choice',
         ],
         'value_reward_not_chosen': [
-            'reward[t]',
             'reward[t-1]', 
             'reward[t-2]',
             'reward[t-3]',
-            'value_choice',
+            # 'value_choice',
             ],
         'value_choice_chosen': [
             'choice[t-1]', 
             'choice[t-2]',
             'choice[t-3]',
-            'value_reward',
+            # 'value_reward',
             ],
         'value_choice_not_chosen': [
             'choice[t-1]', 
             'choice[t-2]',
             'choice[t-3]',
-            'value_reward',
+            # 'value_reward',
             ],
     },
     
@@ -93,18 +92,16 @@ class SpiceModel(BaseRNN):
 
         # Value learning module (slow updates)
         # Can use recent reward history to modulate learning
-        self.submodules_rnn['value_reward_chosen'] = self.setup_module(input_size=5 + embedding_size, dropout=dropout)
-        self.submodules_rnn['value_reward_not_chosen'] = self.setup_module(input_size=4+1 + embedding_size, dropout=dropout)
-        self.submodules_rnn['value_choice_chosen'] = self.setup_module(input_size=4 + embedding_size, dropout=dropout)
-        self.submodules_rnn['value_choice_not_chosen'] = self.setup_module(input_size=4 + embedding_size, dropout=dropout)
+        self.submodules_rnn['value_reward_chosen'] = self.setup_module(input_size=4 + embedding_size, dropout=dropout)  # -> 21 terms
+        self.submodules_rnn['value_reward_not_chosen'] = self.setup_module(input_size=3 + embedding_size, dropout=dropout)  # -> 15 terms
+        self.submodules_rnn['value_choice_chosen'] = self.setup_module(input_size=3 + embedding_size, dropout=dropout) # -> 15 terms
+        self.submodules_rnn['value_choice_not_chosen'] = self.setup_module(input_size=3 + embedding_size, dropout=dropout) # -> 15 terms -> 21+15+15+15 = 66 terms in total
 
     def forward(self, inputs, prev_state=None, batch_first=False):
         spice_signals = self.init_forward_pass(inputs, prev_state, batch_first)
         
         # perform time-invariant computations
         participant_embedding = self.participant_embedding(spice_signals.participant_ids)
-        beta_reward = self.betas['value_reward'](participant_embedding)
-        beta_choice = self.betas['value_choice'](participant_embedding)
         
         # perform time-variant computations
         for timestep in spice_signals.timesteps:
@@ -119,11 +116,10 @@ class SpiceModel(BaseRNN):
                     self.state['buffer_reward_1'],  # Recent reward history
                     self.state['buffer_reward_2'],
                     self.state['buffer_reward_3'],
-                    self.state['value_choice'],
+                    # self.state['value_choice'],
                 ),
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
-                activation_rnn=torch.nn.functional.sigmoid,
             )
 
             self.call_module(
@@ -131,15 +127,13 @@ class SpiceModel(BaseRNN):
                 key_state='value_reward',
                 action_mask=1-spice_signals.actions[timestep],
                 inputs=(
-                    spice_signals.rewards[timestep],
                     self.state['buffer_reward_1'],  # Recent reward history
                     self.state['buffer_reward_2'],
                     self.state['buffer_reward_3'],
-                    self.state['value_choice'],
+                    # self.state['value_choice'],
                     ),
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
-                activation_rnn=torch.nn.functional.sigmoid,
             )
             
             # CHOICE VALUE UPDATES
@@ -151,11 +145,10 @@ class SpiceModel(BaseRNN):
                     self.state['buffer_choice_1'],  # Recent choice history
                     self.state['buffer_choice_2'],
                     self.state['buffer_choice_3'],
-                    self.state['value_reward'],
+                    # self.state['value_reward'],
                 ),
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
-                activation_rnn=torch.nn.functional.sigmoid,
             )
 
             self.call_module(
@@ -166,13 +159,13 @@ class SpiceModel(BaseRNN):
                     self.state['buffer_choice_1'],  # Recent choice history
                     self.state['buffer_choice_2'],
                     self.state['buffer_choice_3'],
-                    self.state['value_reward'],
+                    # self.state['value_reward'],
                     ),
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
                 activation_rnn=torch.nn.functional.sigmoid,
             )
-
+            
             # BUFFER UPDATES: 
             # REWARD BUFFER UPDATES: Shift reward buffer for chosen action, keep for not chosen action (NOTE: deterministic; not learned by SPICE -> Could be made learnable: e.g. decay-rate for not chosen action)
             # CHOICE BUFFER UPDATES: Shift all buffer entries according to action
@@ -184,7 +177,7 @@ class SpiceModel(BaseRNN):
             self.state['buffer_choice_1'] = spice_signals.actions[timestep]
             
             # compute logits for current timestep
-            spice_signals.logits[timestep] = self.state['value_reward'] * beta_reward + self.state['value_choice'] * beta_choice
+            spice_signals.logits[timestep] = self.state['value_reward'] + self.state['value_choice']
 
         spice_signals = self.post_forward_pass(spice_signals, batch_first)
         

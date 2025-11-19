@@ -12,7 +12,7 @@ from spice.estimator import SpiceEstimator
 from spice.utils.convert_dataset import convert_dataset, split_data_along_sessiondim, split_data_along_timedim
 from spice.utils.plotting import plot_session
 from spice.resources.bandits import AgentQ
-from spice.precoded import choice as spice_model
+from spice.precoded import workingmemory as spice_model
 
 
 if __name__=='__main__':
@@ -50,13 +50,14 @@ if __name__=='__main__':
     
     args.epochs = 4000 # Further reduced for initial testing
     args.l2_rnn = 0.00001
-    learning_rate = 0.0001
+    learning_rate = 0.001
     
     args.sindy_weight = 0.1  # Start with very small weight for stability
-    sindy_epochs = 4000
-    args.l2_sindy = 0.001 
+    args.l2_sindy = 0.001
+    sindy_epochs = 4000 
     sindy_threshold = 0.05
-    sindy_thresholding_frequency = 250
+    sindy_thresholding_frequency = 100
+    sindy_threshold_terms = 2
     class_rnn = spice_model.SpiceModel
     spice_config = spice_model.CONFIG
     
@@ -103,6 +104,7 @@ if __name__=='__main__':
         sindy_weight=args.sindy_weight,
         sindy_threshold=sindy_threshold,
         sindy_threshold_frequency=sindy_thresholding_frequency,
+        sindy_threshold_terms=sindy_threshold_terms,
         sindy_library_polynomial_degree=2,
         sindy_epochs=sindy_epochs,
         l2_sindy=args.l2_sindy,
