@@ -50,9 +50,9 @@ if __name__=='__main__':
     
     args.epochs = 4000 # Further reduced for initial testing
     args.l2_rnn = 0.00001
-    learning_rate = 0.01
+    learning_rate = 0.0001
     
-    args.sindy_weight = 0.#1  # Start with very small weight for stability
+    args.sindy_weight = 0.1  # Start with very small weight for stability
     sindy_epochs = 4000
     args.l2_sindy = 0.001 
     sindy_threshold = 0.05

@@ -545,7 +545,7 @@ def fit_model(
                 
         except KeyboardInterrupt:
             continue_training = False
-            msg = 'Training interrupted. Continuing with further operations...'
+            msg = '\nTraining interrupted. Continuing with further operations...'
 
         #if verbose:
         print(msg, end='\r')
