@@ -44,9 +44,9 @@ if __name__=='__main__':
     # args.data = "weinhardt2025/data/eckstein2024/eckstein2024.csv"
     # args.test_sessions = "1,3"
     
-    args.model = "weinhardt2025/params/dezfouli2019/spice_dezfouli2019.pkl"
-    args.data = "weinhardt2025/data/dezfouli2019/dezfouli2019.csv"
-    args.test_sessions = "3,6,9"
+    # args.model = "weinhardt2025/params/dezfouli2019/spice_dezfouli2019.pkl"
+    # args.data = "weinhardt2025/data/dezfouli2019/dezfouli2019.csv"
+    # args.test_sessions = "3,6,9"
     
     # args.data="weinhardt2025/data/sugawara2021/sugawara2021.csv" 
     # args.model="weinhardt2025/params/sugawara2021/spice_sugawara2021.pkl" 
@@ -58,15 +58,15 @@ if __name__=='__main__':
     # args.model = "weinhardt2025/params/spice_synthetic.pkl"
     # args.data = "weinhardt2025/data/data_synthetic.csv"
     
-    args.epochs = 100
+    # args.epochs = 100
     # args.l2_rnn = 0.00001
     learning_rate = 0.001
     
     # args.sindy_weight = 0.1  # Start with very small weight for stability
     # args.l2_sindy = 0.001
-    sindy_epochs = 1000#args.epochs#4000 
+    sindy_epochs = args.epochs 
     sindy_threshold = 0.05
-    sindy_thresholding_frequency = 20
+    sindy_thresholding_frequency = 100
     sindy_threshold_terms = 3
     
     example_participant = 0
