@@ -104,6 +104,7 @@ class BaseRNN(nn.Module):
         sindy_polynomial_degree: int = 2,
         sindy_ensemble_size: int = 10,
         device=torch.device('cpu'),
+        **kwargs,
         ):
         super(BaseRNN, self).__init__()
         

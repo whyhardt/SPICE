@@ -12,7 +12,7 @@ from spice.estimator import SpiceEstimator
 from spice.utils.convert_dataset import convert_dataset, split_data_along_sessiondim, split_data_along_timedim
 from spice.utils.plotting import plot_session
 from spice.resources.bandits import AgentQ
-from spice.precoded import workingmemory_multiitem, workingmemory
+from spice.precoded import workingmemory_multiitem, workingmemory, choice
 
 
 if __name__=='__main__':
@@ -70,7 +70,7 @@ if __name__=='__main__':
     sindy_epochs = args.epochs 
     sindy_threshold = 0.05
     sindy_thresholding_frequency = 100
-    sindy_threshold_terms = 3
+    sindy_threshold_terms = 2
     
     example_participant = 0
     
@@ -103,7 +103,9 @@ if __name__=='__main__':
         spice_model = workingmemory
     else:
         spice_model = workingmemory_multiitem
-        
+
+    # spice_model = choice
+    
     class_rnn = spice_model.SpiceModel
     spice_config = spice_model.CONFIG
 
