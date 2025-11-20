@@ -61,6 +61,7 @@ class SpiceEstimator(BaseEstimator):
         sindy_threshold_terms: Optional[int] = 1,
         sindy_regularization: Optional[float] = 1e-2,
         sindy_library_polynomial_degree: Optional[int] = 1,
+        sindy_ensemble_size: Optional[int] = 10,
         l2_sindy: Optional[float] = 0,
         use_sindy: Optional[bool] = False,
 
@@ -121,6 +122,7 @@ class SpiceEstimator(BaseEstimator):
         self.sindy_library_polynomial_degree = sindy_library_polynomial_degree
         self.sindy_regularization = sindy_regularization
         self.sindy_epochs = sindy_epochs
+        self.sindy_ensemble_size = sindy_ensemble_size
         
         # Data parameters
         self.n_actions = n_actions
@@ -145,6 +147,7 @@ class SpiceEstimator(BaseEstimator):
             enable_sindy_reg=(sindy_weight > 0),
             spice_config=spice_config,
             sindy_polynomial_degree=sindy_library_polynomial_degree,
+            sindy_ensemble_size = sindy_ensemble_size,
             use_sindy=use_sindy,
             n_items=n_items,
         ).to(device)

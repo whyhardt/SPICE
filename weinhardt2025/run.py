@@ -58,18 +58,21 @@ if __name__=='__main__':
     # args.model = "weinhardt2025/params/spice_synthetic.pkl"
     # args.data = "weinhardt2025/data/data_synthetic.csv"
     
-    # args.epochs = 4000 # Further reduced for initial testing
+    args.epochs = 100
     # args.l2_rnn = 0.00001
     learning_rate = 0.001
     
     # args.sindy_weight = 0.1  # Start with very small weight for stability
     # args.l2_sindy = 0.001
-    sindy_epochs = args.epochs#4000 
+    sindy_epochs = 1000#args.epochs#4000 
     sindy_threshold = 0.05
-    sindy_thresholding_frequency = 100
+    sindy_thresholding_frequency = 20
     sindy_threshold_terms = 3
     
     example_participant = 0
+    
+    if args.train_ratio_time and args.test_sessions:
+        raise ValueError("kwargs train_ratio_time and test_sessions cannot be assigned at the same time.")
     
     print(f"Loading dataset from {args.data}...")
     dataset = convert_dataset(

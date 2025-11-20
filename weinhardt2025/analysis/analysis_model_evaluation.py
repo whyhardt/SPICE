@@ -55,8 +55,8 @@ from weinhardt2025.benchmarking import benchmarking_dezfouli2019, benchmarking_e
 study = 'dezfouli2019'
 train_test_ratio = [3, 6, 9]
 models_benchmark = ['PhiChiBetaKappaC']
-sindy_config = precoded.choice.CONFIG
-rnn_class = precoded.choice.SpiceModel
+sindy_config = precoded.workingmemory.CONFIG
+rnn_class = precoded.workingmemory.SpiceModel
 additional_inputs = []
 setup_agent_benchmark = benchmarking_dezfouli2019.setup_agent_gql
 gql_model = benchmarking_dezfouli2019.Dezfouli2019GQL

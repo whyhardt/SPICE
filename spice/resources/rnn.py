@@ -396,7 +396,6 @@ class BaseRNN(nn.Module):
             ensemble_size = self.sindy_ensemble_size
             
         rnn_modules = self.spice_config.modules#get('rnn_modules', [])
-        control_parameters = self.spice_config.control_signals#get('control_parameters', [])
         library_setup = self.spice_config.library_setup#get('library_setup', {})
         
         for module_name in rnn_modules:
@@ -547,78 +546,59 @@ class BaseRNN(nn.Module):
         Args:
             threshold (float): Base threshold value
             n_terms_cutoff (int, optional): Number of smallest terms below threshold to be cut off across all modules
-                                           for each participant. If None, all terms below threshold are cut.
+                                        for each participant and ensemble member. If None, all terms below threshold are cut.
             base_threshold (float): Additive base threshold (default: 0.0)
         """
-
         threshold_e = threshold + base_threshold
+        module_list = list(self.submodules_rnn.keys())
 
         if n_terms_cutoff is None:
-            # Threshold all terms at once per module
-            for module in self.submodules_rnn:
-                abs_coeffs = torch.abs(self.sindy_coefficients[module])  # [n_participants, n_ensemble, n_library_terms]
-                # Use first ensemble member (index 0)
-                mask = (abs_coeffs[:, 0, :] > threshold_e).float()  # [n_participants, n_library_terms]
-                self.sindy_masks[module][:, 0, :] = mask
-                self.sindy_coefficients[module].data = self.sindy_masks[module] * self.sindy_coefficients[module].data
+            # Simple thresholding: mask all terms below threshold
+            for module in module_list:
+                abs_coeffs = torch.abs(self.sindy_coefficients[module])
+                mask = (abs_coeffs > threshold_e).float()
+                self.sindy_masks[module] = mask
+                self.sindy_coefficients[module].data *= mask
         else:
-            # Vectorized: for each participant, find weakest n_terms_cutoff terms across ALL modules
-            module_list = list(self.submodules_rnn.keys())
-            n_participants = self.sindy_coefficients[module_list[0]].shape[0]
-
-            # Collect all coefficients and masks from all modules
-            all_module_coeffs = []
-            all_module_masks = []
-            module_sizes = []
-
-            for module in module_list:
-                abs_coeffs = torch.abs(self.sindy_coefficients[module][:, 0, :])  # [n_participants, n_library_terms]
-                mask = self.sindy_masks[module][:, 0, :]  # [n_participants, n_library_terms]
-                all_module_coeffs.append(abs_coeffs)
-                all_module_masks.append(mask)
-                module_sizes.append(abs_coeffs.shape[1])
-
-            # Concatenate all modules: [n_participants, total_terms_across_all_modules]
-            all_coeffs = torch.cat(all_module_coeffs, dim=1)  # [n_participants, sum(n_library_terms)]
-            all_masks = torch.cat(all_module_masks, dim=1)  # [n_participants, sum(n_library_terms)]
-
-            # Find active coefficients below threshold
-            active_mask = all_masks > 0
-            below_threshold_mask = (all_coeffs < threshold_e) & active_mask
-
-            # Set non-candidate coefficients to inf so they won't be selected by topk
-            coeffs_for_selection = all_coeffs.clone()
-            coeffs_for_selection[~below_threshold_mask] = float('inf')
-
-            # Find the n_terms_cutoff smallest coefficients per participant
-            # If there are fewer than n_terms_cutoff candidates, topk will return what's available
-            k = min(n_terms_cutoff, coeffs_for_selection.shape[1])
-            _, indices = torch.topk(coeffs_for_selection, k, dim=1, largest=False)  # [n_participants, k]
-
-            # Create a mask of terms to cut off
-            cutoff_mask = torch.zeros_like(all_coeffs, dtype=torch.bool)
-            cutoff_mask.scatter_(1, indices, True)
-
-            # Only cut off terms that are actually below threshold (in case topk returned inf values)
-            cutoff_mask = cutoff_mask & below_threshold_mask
-
-            # Split the cutoff mask back into individual modules and apply
-            start_idx = 0
-            for i, module in enumerate(module_list):
-                end_idx = start_idx + module_sizes[i]
-                module_cutoff_mask = cutoff_mask[:, start_idx:end_idx]  # [n_participants, n_library_terms]
-
-                # Set mask to 0 for terms to be cut off
-                self.sindy_masks[module][:, 0, :] = torch.where(
-                    module_cutoff_mask,
-                    torch.zeros_like(self.sindy_masks[module][:, 0, :]),
-                    self.sindy_masks[module][:, 0, :]
-                )
-                start_idx = end_idx
-
-            # Update coefficients with new masks
-            for module in module_list:
-                self.sindy_coefficients[module].data = self.sindy_masks[module] * self.sindy_coefficients[module].data
+            # Collect all coefficients and masks across modules
+            all_coeffs = torch.cat([self.sindy_coefficients[m] for m in module_list], dim=-1)
+            all_masks = torch.cat([self.sindy_masks[m] for m in module_list], dim=-1)
+            # Shape: [n_participants, n_ensemble, total_library_terms]
+            
+            # Identify candidates: active coefficients below threshold
+            # is_candidate = (all_masks > 0) & (torch.abs(all_coeffs) < threshold_e)
+            is_candidate = torch.abs(all_coeffs) < threshold_e
+            
+            # For each participant and ensemble member, find k smallest candidates
+            # Set non-candidates to inf so they're ignored by topk
+            coeffs_for_selection = torch.abs(all_coeffs).clone()
+            coeffs_for_selection[~is_candidate] = float('inf')
+            
+            # Find k smallest per [participant, ensemble]
+            k = min(n_terms_cutoff, is_candidate.sum(dim=-1).min().item())
+            if k > 0:
+                _, indices = torch.topk(coeffs_for_selection, k, dim=-1, largest=False)
+                # Shape: [n_participants, n_ensemble, k]
+                
+                # Create cutoff mask
+                cutoff_mask = torch.zeros_like(all_coeffs, dtype=torch.bool)
+                cutoff_mask.scatter_(-1, indices, True)
+                cutoff_mask &= is_candidate  # Safety: only cut actual candidates
+                
+                # Apply cutoff by zeroing masks
+                all_masks[cutoff_mask] = 0.0
+                
+                # Split masks back to modules
+                start_idx = 0
+                for module in module_list:
+                    n_terms = self.sindy_coefficients[module].shape[-1]
+                    self.sindy_masks[module] = all_masks[..., start_idx:start_idx + n_terms]
+                    start_idx += n_terms
+            
+            # Apply updated masks to coefficients
+            with torch.no_grad():
+                for module in module_list:
+                    self.sindy_coefficients[module] *= self.sindy_masks[module]
             
     def print_spice_model(self, participant_id: int = 0, ensemble_idx: int = 0) -> None:
         """

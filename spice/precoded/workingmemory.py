@@ -64,38 +64,17 @@ class SpiceModel(BaseRNN):
     - Items fall out of buffer (discrete forgetting)
     """
     
-    def __init__(
-        self,
-        n_actions: int,
-        n_participants: int,
-        spice_config: SpiceConfig,
-        embedding_size: int = 32,
-        dropout: float = 0.5,
-        sindy_polynomial_degree: int = 2,
-        sindy_ensemble_size: int = 10,
-        use_sindy: bool = False,
-        **kwargs):
-        super().__init__(
-            n_actions=n_actions,
-            n_participants=n_participants,
-            embedding_size=embedding_size,
-            spice_config=spice_config,
-            use_sindy=use_sindy,
-            sindy_polynomial_degree = sindy_polynomial_degree,
-            sindy_ensemble_size=sindy_ensemble_size,
-            )
-            
-        self.participant_embedding = self.setup_embedding(n_participants, embedding_size, dropout=dropout)
-
-        self.betas['value_reward'] = self.setup_constant(embedding_size)
-        self.betas['value_choice'] = self.setup_constant(embedding_size)
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        
+        self.participant_embedding = self.setup_embedding(self.n_participants, self.embedding_size)
 
         # Value learning module (slow updates)
         # Can use recent reward history to modulate learning
-        self.submodules_rnn['value_reward_chosen'] = self.setup_module(input_size=4 + embedding_size, dropout=dropout)  # -> 21 terms
-        self.submodules_rnn['value_reward_not_chosen'] = self.setup_module(input_size=3 + embedding_size, dropout=dropout)  # -> 15 terms
-        self.submodules_rnn['value_choice_chosen'] = self.setup_module(input_size=3 + embedding_size, dropout=dropout) # -> 15 terms
-        self.submodules_rnn['value_choice_not_chosen'] = self.setup_module(input_size=3 + embedding_size, dropout=dropout) # -> 15 terms -> 21+15+15+15 = 66 terms in total
+        self.submodules_rnn['value_reward_chosen'] = self.setup_module(input_size=4 + self.embedding_size)  # -> 21 terms
+        self.submodules_rnn['value_reward_not_chosen'] = self.setup_module(input_size=3 + self.embedding_size)  # -> 15 terms
+        self.submodules_rnn['value_choice_chosen'] = self.setup_module(input_size=3 + self.embedding_size) # -> 15 terms
+        self.submodules_rnn['value_choice_not_chosen'] = self.setup_module(input_size=3 + self.embedding_size) # -> 15 terms -> 21+15+15+15 = 66 terms in total
 
     def forward(self, inputs, prev_state=None, batch_first=False):
         spice_signals = self.init_forward_pass(inputs, prev_state, batch_first)
@@ -163,7 +142,6 @@ class SpiceModel(BaseRNN):
                     ),
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
-                activation_rnn=torch.nn.functional.sigmoid,
             )
             
             # BUFFER UPDATES: 
