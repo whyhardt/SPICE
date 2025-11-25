@@ -93,7 +93,6 @@ def batch_train(
     xs: torch.Tensor,
     ys: torch.Tensor,
     optimizer: torch.optim.Optimizer = None,
-    l1_weight_decay: float = 0.,
     sindy_weight: float = 0.,
     n_steps: int = -1,
     loss_fn: nn.modules.loss._Loss = nn.CrossEntropyLoss(label_smoothing=0.),
@@ -122,8 +121,8 @@ def batch_train(
         state = model.get_state(detach=True)
         ys_pred, _ = model(xs_step, state, batch_first=True)
         
-        ys_pred = torch.where(mask, ys_pred, torch.zeros_like(ys_pred))
-        ys_step = torch.where(mask, ys_step, torch.zeros_like(ys_step))
+        ys_pred = ys_pred * mask
+        ys_step = ys_step * mask
         
         loss_step = loss_fn(
             ys_pred.reshape(-1, model.n_actions),
@@ -156,6 +155,8 @@ def batch_train(
             # backpropagation
             optimizer.zero_grad()
             loss_step.backward()
+            # Apply gradient masks to prevent updating zeroed coefficients
+            # model.apply_gradient_masks()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
             
@@ -297,6 +298,8 @@ def fit_sindy_second_stage(
 
             # Backward pass - only update SINDy coefficients
             loss_batch.backward()
+            # Apply gradient masks to prevent updating zeroed coefficients
+            # model.apply_gradient_masks()
             optimizer_sindy.step()
             
             loss_train += loss_batch.item()
@@ -321,12 +324,10 @@ def fit_sindy_second_stage(
     for param in model.parameters():
         param.requires_grad = True
 
-    # Always print completion message
-    print("="*80)
-    print("Second stage SINDy fitting complete!")
-    print("="*80)
-
     if verbose:
+        print("="*80)
+        print("Second stage SINDy fitting complete!")
+        print("="*80)
         print("\nRefitted SPICE model (participant 0):")
         print("-"*80)
         model.print_spice_model(participant_id=0)
@@ -341,7 +342,6 @@ def fit_model(
     dataset_test: SpiceDataset = None,
     optimizer: torch.optim.Optimizer = None,
     convergence_threshold: float = 1e-7,
-    l1_weight_decay: float = 0.,
     sindy_weight: float = 0.,
     sindy_epochs: int = 1000,
     sindy_threshold: float = 0.01,
@@ -391,7 +391,7 @@ def fit_model(
         dataloader_test = DataLoader(dataset_test, batch_size=len(dataset_test))
     
     # set up warmup phase characteristics and learning rate scheduler
-    warmup_steps = 500
+    warmup_steps = 100
     warmup_steps = warmup_steps if epochs > warmup_steps else 1 #int(epochs * 0.125/16)
     
     warmup_scaler = torch.exp(torch.linspace(0, 5, warmup_steps))
@@ -470,7 +470,6 @@ def fit_model(
                     ys=ys,
                     optimizer=optimizer,
                     n_steps=n_steps,
-                    l1_weight_decay=l1_weight_decay,
                     sindy_weight=sindy_weight_epoch,
                 )
                 loss_train += loss_i
@@ -479,7 +478,7 @@ def fit_model(
             loss_train /= iterations_per_epoch
             
             if dataset_test is not None:
-                model = model.eval(use_sindy=True)
+                model = model.eval(use_sindy=sindy_weight > 0)
                 with torch.no_grad():
                     xs, ys = next(iter(dataloader_test))
                     if xs.device != model.device:
@@ -490,7 +489,7 @@ def fit_model(
                 model = model.train()
             
             # print SINDy model after warmup phase (np pruning; gradually increasing sindy_weight (see warmup_scaler))
-            if sindy_weight > 0 and n_calls_to_train_model >= warmup_steps:
+            if verbose and sindy_weight > 0 and n_calls_to_train_model >= warmup_steps:
                 if n_calls_to_train_model == warmup_steps:
                     print("\n"+"="*80)
                     print(f"(WARMUP) SPICE model after {n_calls_to_train_model} epochs:")
@@ -498,12 +497,13 @@ def fit_model(
                     model.print_spice_model(ensemble_idx=0)
             
             # periodic pruning of sindy coefficients with L0 norm        
-            if sindy_weight > 0 and n_calls_to_train_model >= warmup_steps+sindy_threshold_frequency and n_calls_to_train_model % sindy_threshold_frequency == 0 and n_calls_to_train_model != 0:   
+            if verbose and sindy_weight > 0 and n_calls_to_train_model >= sindy_threshold_frequency and n_calls_to_train_model % sindy_threshold_frequency == 0 and n_calls_to_train_model != 0:   
                 model.thresholding(threshold=sindy_threshold, base_threshold=0., n_terms_cutoff=sindy_threshold_terms)
                 print("\n"+"="*80)
                 print(f"(THRESHOLDING) SPICE model after {n_calls_to_train_model} epochs:")
+                print(f"Present SINDy coefficients: {model.count_sindy_coefficients().mean()}")
                 print("="*80)
-                model.print_spice_model(ensemble_idx=0)    
+                model.print_spice_model(ensemble_idx=0)
             
             # check for convergence
             dloss = last_loss - loss_test if dataset_test is not None else last_loss - loss_train

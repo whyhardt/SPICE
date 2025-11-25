@@ -462,11 +462,7 @@ class AgentNetwork(Agent):
     return self.get_logit()
   
   def count_parameters(self) -> np.ndarray:
-    n_parameters = np.zeros(self.model.n_participants, dtype=int)
-    for module in self.model.submodules_rnn:
-      n_parameters += np.sum(np.where(self.model.sindy_coefficients[module].detach().cpu().mean(dim=1, keepdims=True).abs().numpy() > 0.001, 1, 0), axis=-1).squeeze(-1)
-      
-    return n_parameters
+    return self.model.count_sindy_coefficients().detach().cpu().numpy()
 
 
 ################

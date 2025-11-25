@@ -49,7 +49,6 @@ class SpiceEstimator(BaseEstimator):
         convergence_threshold: Optional[float] = 0,
         device: Optional[torch.device] = torch.device('cpu'),
         scheduler: Optional[bool] = False, 
-        train_test_ratio: Optional[Union[float, List[int]]] = 1.,
         l2_rnn: Optional[float] = 0,
         dropout: Optional[float] = 0.,
         
@@ -105,7 +104,6 @@ class SpiceEstimator(BaseEstimator):
         self.learning_rate = learning_rate
         self.convergence_threshold = convergence_threshold
         self.scheduler = scheduler
-        self.train_test_ratio = train_test_ratio
         self.device = device
         self.verbose = verbose
         self.deterministic = False
@@ -253,6 +251,7 @@ class SpiceEstimator(BaseEstimator):
         spice_agent_model.sindy_ensemble_size = rnn_model.sindy_ensemble_size  # Match trained ensemble size
         spice_agent_model.setup_sindy_coefficients(rnn_model.sindy_polynomial_degree)
         spice_agent_model.load_state_dict(state_dict)
+        spice_agent_model.sindy_coefficient_masks = rnn_model.sindy_coefficient_masks
         self.spice_agent = AgentNetwork(spice_agent_model, self.n_actions, device=self.device, use_sindy=True)
         
         if self.verbose:
@@ -334,12 +333,12 @@ class SpiceEstimator(BaseEstimator):
         # LOAD RNN MODEL AND OPTIMIZER
                 
         # load trained parameters
-        state_dict = torch.load(path_model, map_location=torch.device('cpu'))
+        loaded_model = torch.load(path_model, map_location=torch.device('cpu'))
         
-        self.rnn_model.sindy_ensemble_size = state_dict['model']['sindy_coefficients.'+next(iter(self.rnn_model.submodules_rnn))].shape[1]
+        self.rnn_model.sindy_ensemble_size = loaded_model['model']['sindy_coefficients.'+next(iter(self.rnn_model.submodules_rnn))].shape[1]
         self.rnn_model.setup_sindy_coefficients()
         
-        self.rnn_model.load_state_dict(state_dict['model'])
+        self.rnn_model.load_state_dict(loaded_model['model'])
         self.rnn_model.set_initial_state(batch_size=self.rnn_model.n_participants)
         # optimizer.load_state_dict(state_dict['optimizer'])
 
@@ -357,11 +356,13 @@ class SpiceEstimator(BaseEstimator):
                     sindy_config=self.rnn_model.spice_config,
                     sindy_polynomial_degree=self.rnn_model.sindy_polynomial_degree,
                     sindy_ensemble_size=self.rnn_model.sindy_ensemble_size,
+                    use_sindy=agent_type[1],
                 )
             model.load_state_dict(state_dict)
+            model.sindy_coefficient_masks = loaded_model['sindy_coefficient_masks']
             agent = AgentNetwork(model, self.n_actions, device=self.device, use_sindy=agent_type[1], deterministic=deterministic)
             setattr(self, agent_type[0], agent)
-        
+            
     def save_spice(self, path_rnn: str):
         """
         Save the RNN and SPICE models to the given paths.
@@ -374,5 +375,5 @@ class SpiceEstimator(BaseEstimator):
         """
         
         # Save RNN model
-        state_dict = {'model': self.rnn_model.state_dict(), 'optimizer': self.rnn_optimizer.state_dict()}
+        state_dict = {'model': self.rnn_model.state_dict(), 'optimizer': self.rnn_optimizer.state_dict(), 'sindy_coefficient_masks': self.rnn_model.sindy_coefficient_masks}
         torch.save(state_dict, path_rnn)

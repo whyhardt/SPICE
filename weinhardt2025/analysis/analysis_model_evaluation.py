@@ -24,24 +24,24 @@ from weinhardt2025.benchmarking import benchmarking_dezfouli2019, benchmarking_e
 # -------------------------------------------------------------------------------
 
 # ------------------- CONFIGURATION ECKSTEIN2022 --------------------
-# study = 'eckstein2022'
-# models_benchmark = ['ApAnBrBcfBch']#['ApBr', 'ApBrAcfpBcf', 'ApBrAcfpBcfBch', 'ApAnBrBch', 'ApAnBrAcfpAcfnBcfBch', 'ApAnBrBcfBch']
-# train_test_ratio = 0.8
-# sindy_config = precoded.BUFFER_WORKING_MEMORY_CONFIG
-# rnn_class = precoded.BufferWorkingMemoryRNN
-# additional_inputs = None
-# setup_agent_benchmark = benchmarking_eckstein2022.setup_agent_benchmark
-# rl_model = benchmarking_eckstein2022.rl_model
-# benchmark_file = f'mcmc_{study}_MODEL.nc'
-# model_config_baseline = 'ApBr'
-# baseline_file = f'mcmc_{study}_ApBr.nc'
+study = 'eckstein2022'
+models_benchmark = ['ApAnBrBcfBch']
+train_test_ratio = 0.8
+sindy_config = precoded.choice.CONFIG
+rnn_class = precoded.choice.SpiceModel
+additional_inputs = None
+setup_agent_benchmark = benchmarking_eckstein2022.setup_agent_benchmark
+rl_model = benchmarking_eckstein2022.rl_model
+benchmark_file = f'mcmc_{study}_MODEL.nc'
+model_config_baseline = 'ApBr'
+baseline_file = f'mcmc_{study}_ApBr.nc'
 
 # ------------------- CONFIGURATION ECKSTEIN2024 --------------------
 # study = 'eckstein2024'
 # models_benchmark = ['CogFunSearch']
 # train_test_ratio = [1,3]
-# sindy_config = precoded.BUFFER_WORKING_MEMORY_CONFIG
-# rnn_class = precoded.BufferWorkingMemoryRNN
+# sindy_config = precoded.workingmemory.CONFIG
+# rnn_class = precoded.workingmemory.SpiceModel
 # additional_inputs = None
 # setup_agent_benchmark = benchmarking_eckstein2024.setup_agent_benchmark
 # # setup_agent_benchmark = benchmarking_castro2025.setup_agent_benchmark
@@ -52,17 +52,17 @@ from weinhardt2025.benchmarking import benchmarking_dezfouli2019, benchmarking_e
 # baseline_file = f'benchmark_{study}.pkl'
 
 # ------------------------ CONFIGURATION DEZFOULI2019 -----------------------
-study = 'dezfouli2019'
-train_test_ratio = [3, 6, 9]
-models_benchmark = ['PhiChiBetaKappaC']
-sindy_config = precoded.choice.CONFIG
-rnn_class = precoded.choice.SpiceModel
-additional_inputs = []
-setup_agent_benchmark = benchmarking_dezfouli2019.setup_agent_gql
-gql_model = benchmarking_dezfouli2019.Dezfouli2019GQL
-benchmark_file = f'benchmark_{study}_MODEL.pkl'
-model_config_baseline = 'PhiBeta'
-baseline_file = f'benchmark_{study}_PhiBeta.pkl'
+# study = 'dezfouli2019'
+# train_test_ratio = [3, 6, 9]
+# models_benchmark = ['PhiChiBetaKappaC']
+# sindy_config = precoded.choice.CONFIG
+# rnn_class = precoded.choice.SpiceModel
+# additional_inputs = []
+# setup_agent_benchmark = benchmarking_dezfouli2019.setup_agent_gql
+# gql_model = benchmarking_dezfouli2019.Dezfouli2019GQL
+# benchmark_file = f'benchmark_{study}_MODEL.pkl'
+# model_config_baseline = 'PhiBeta'
+# baseline_file = f'benchmark_{study}_PhiBeta.pkl'
 
 # ------------------------ CONFIGURATION GERSHMAN2018 -----------------------
 # study = 'gershmanB2018'

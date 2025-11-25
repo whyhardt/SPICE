@@ -24,8 +24,9 @@ if __name__=='__main__':
     parser.add_argument('--data', type=str, default=None, help='Path to dataset')
     
     # data and training parameters
-    parser.add_argument('--epochs', type=int, default=4000, help='Number of training epochs')
+    parser.add_argument('--epochs', type=int, default=1000, help='Number of training epochs')
     
+    parser.add_argument('--lr', type=float, default=0.01, help='Learning rate')
     parser.add_argument('--l2_rnn', type=float, default=0.00001, help='L2 Reg of the RNN parameters')
     parser.add_argument('--l2_sindy', type=float, default=0.001, help='L2 Reg of the SINDy coefficients')
     parser.add_argument('--sindy_weight', type=float, default=0.1, help='Weight for SINDy regularization during RNN training')
@@ -53,6 +54,7 @@ if __name__=='__main__':
     
     # args.data="weinhardt2025/data/sugawara2021/sugawara2021.csv" 
     # args.model="weinhardt2025/params/sugawara2021/spice_sugawara2021.pkl" 
+    
     # args.epochs=10
     # args.n_items=8
     # args.test_sessions="1"
@@ -61,16 +63,17 @@ if __name__=='__main__':
     # args.model = "weinhardt2025/params/spice_synthetic.pkl"
     # args.data = "weinhardt2025/data/data_synthetic.csv"
     
-    # args.epochs = 100
+    # args.epochs = 10
     # args.l2_rnn = 0.00001
-    learning_rate = 0.001
+    # args.l2_sindy 0 001
+    # args.lr = 0.001
     
     # args.sindy_weight = 0.1  # Start with very small weight for stability
     # args.l2_sindy = 0.001
     sindy_epochs = args.epochs 
     sindy_threshold = 0.05
     sindy_thresholding_frequency = 100
-    sindy_threshold_terms = 2
+    sindy_threshold_terms = 1
     
     example_participant = 0
     
@@ -88,9 +91,8 @@ if __name__=='__main__':
         args.test_sessions = None
         dataset_train, dataset_test = split_data_along_timedim(dataset, args.train_ratio_time)
     elif args.test_sessions:
-        args.test_sessions = args.test_sessions.split(',')
-        args.test_sessions = [int(item) for item in args.test_sessions]
-        dataset_train, dataset_test = split_data_along_sessiondim(dataset, [int(item) for item in args.test_sessions])
+        args.test_sessions = [int(item) for item in args.test_sessions.split(',')]
+        dataset_train, dataset_test = split_data_along_sessiondim(dataset, args.test_sessions)
     else:
         print("No split into training and test data.")
         dataset_train, dataset_test = dataset, dataset
@@ -104,13 +106,13 @@ if __name__=='__main__':
     else:
         spice_model = workingmemory_multiitem
 
-    # spice_model = choice
+    spice_model = choice
     
     class_rnn = spice_model.SpiceModel
     spice_config = spice_model.CONFIG
 
     print(f"Dataset: {n_participants} participants, {n_actions} actions, {n_items} items")
-    print(f"Train/Test split: {args.train_ratio_time}")
+    print(f"Test data: {1-args.train_ratio_time if args.train_ratio_time else args.test_sessions}")
 
     print(f"\nInitializing SpiceEstimator with end-to-end SINDy training (weight={args.sindy_weight})...")
     estimator = SpiceEstimator(
@@ -125,8 +127,7 @@ if __name__=='__main__':
         # rnn training parameters
         epochs=args.epochs,
         l2_rnn=args.l2_rnn,
-        learning_rate=learning_rate,
-        train_test_ratio=args.train_ratio_time if args.train_ratio_time else args.test_sessions,
+        learning_rate=args.lr,
         
         # sindy fitting parameters
         sindy_weight=args.sindy_weight,
@@ -143,7 +144,7 @@ if __name__=='__main__':
         
         # other parameters
         verbose=True,
-        # device=torch.device('cuda' if torch.cuda.is_available() else 'cpu'),
+        device=torch.device('cuda' if torch.cuda.is_available() else 'cpu'),
         save_path_spice=args.model,
     )
     
@@ -152,7 +153,7 @@ if __name__=='__main__':
     
     print(f"\nStarting training on {estimator.device}...")
     print("=" * 80)
-    estimator.fit(dataset_train.xs, dataset_train.ys)#, data_test=dataset_train.xs, target_test=dataset_train.ys)
+    estimator.fit(dataset_train.xs, dataset_train.ys, data_test=dataset_test.xs, target_test=dataset_test.ys)
     print("=" * 80)
     print("\nTraining complete!")
     

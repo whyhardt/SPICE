@@ -24,32 +24,12 @@ CONFIG = SpiceConfig(
 
 class SpiceModel(BaseRNN):
     
-    def __init__(
-        self,
-        spice_config: SpiceConfig,
-        n_actions: int,
-        n_participants: int,
-        sindy_polynomial_degree: int = 2,
-        sindy_ensemble_size: int = 1,
-        use_sindy: bool = False,
-        **kwargs,
-    ):
-        super().__init__(
-            spice_config=spice_config,
-            n_actions=n_actions,
-            n_participants=n_participants,
-            use_sindy=use_sindy,
-            sindy_polynomial_degree=sindy_polynomial_degree,
-            sindy_ensemble_size=sindy_ensemble_size,
-        )
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
         
         # set up the participant-embedding layer
-        self.participant_embedding = self.setup_embedding(n_participants, self.embedding_size)
-        
-        # Inverse noise temperatures for scaling each variable in the memory state for each participant
-        # self.betas['value_reward'] = self.setup_constant()#embedding_size=self.embedding_size)
-        # self.betas['value_choice'] = self.setup_constant()#embedding_size=self.embedding_size)
-        
+        self.participant_embedding = self.setup_embedding(self.n_participants, self.embedding_size)
+
         # set up the submodules
         self.submodules_rnn['value_reward_chosen'] = self.setup_module(input_size=1+self.embedding_size)
         self.submodules_rnn['value_reward_not_chosen'] = self.setup_module(input_size=0+self.embedding_size)

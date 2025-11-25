@@ -12,6 +12,7 @@ from spice.resources.spice_utils import SpiceDataset
 from spice.utils.convert_dataset import convert_dataset, split_data_along_sessiondim, reshape_data_along_participantdim
 from spice.resources.bandits import Agent, AgentNetwork
 from spice.resources.spice_training import batch_train
+from weinhardt2025.utils.config_model_comparison import ConfigModelComparison
 
 
 class Dezfouli2019GQL(torch.nn.Module):
