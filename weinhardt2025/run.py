@@ -30,6 +30,8 @@ if __name__=='__main__':
     parser.add_argument('--l2_rnn', type=float, default=0.00001, help='L2 Reg of the RNN parameters')
     parser.add_argument('--l2_sindy', type=float, default=0.001, help='L2 Reg of the SINDy coefficients')
     parser.add_argument('--sindy_weight', type=float, default=0.1, help='Weight for SINDy regularization during RNN training')
+    parser.add_argument('--sindy_cutoff', type=int, default=1, help='Number of thresholded terms')
+    parser.add_argument('--sindy_threshold', type=float, default=0.05, help='Threshold value for cutting off sindy terms')
     
     parser.add_argument('--train_ratio_time', type=float, default=None, help='Ratio of data used for training. Split along time dimension. Not combinable with test_sessions')
     parser.add_argument('--test_sessions', type=str, default=None, help='Comma-separated list of integeres which indicate test sessions. Not combinable with train_ratio_time')
@@ -71,9 +73,9 @@ if __name__=='__main__':
     # args.sindy_weight = 0.1  # Start with very small weight for stability
     # args.l2_sindy = 0.001
     sindy_epochs = args.epochs 
-    sindy_threshold = 0.05
+    sindy_threshold = args.sindy_threshold
     sindy_thresholding_frequency = 100
-    sindy_threshold_terms = 1
+    sindy_threshold_terms = args.sindy_cutoff
     
     example_participant = 0
     
@@ -106,7 +108,7 @@ if __name__=='__main__':
     else:
         spice_model = workingmemory_multiitem
 
-    spice_model = choice
+    # spice_model = choice
     
     class_rnn = spice_model.SpiceModel
     spice_config = spice_model.CONFIG

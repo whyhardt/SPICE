@@ -27,8 +27,8 @@ from weinhardt2025.benchmarking import benchmarking_dezfouli2019, benchmarking_e
 study = 'eckstein2022'
 models_benchmark = ['ApAnBrBcfBch']
 train_test_ratio = 0.8
-sindy_config = precoded.choice.CONFIG
-rnn_class = precoded.choice.SpiceModel
+sindy_config = precoded.workingmemory.CONFIG
+rnn_class = precoded.workingmemory.SpiceModel
 additional_inputs = None
 setup_agent_benchmark = benchmarking_eckstein2022.setup_agent_benchmark
 rl_model = benchmarking_eckstein2022.rl_model
