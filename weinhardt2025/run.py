@@ -12,7 +12,7 @@ from spice.estimator import SpiceEstimator
 from spice.utils.convert_dataset import convert_dataset, split_data_along_sessiondim, split_data_along_timedim
 from spice.utils.plotting import plot_session
 from spice.resources.bandits import AgentQ
-from spice.precoded import workingmemory_multiitem, workingmemory, choice
+from spice.precoded import workingmemory_multiitem, workingmemory, choice, rescorlawagner, forgetting
 
 
 if __name__=='__main__':
@@ -108,7 +108,7 @@ if __name__=='__main__':
     else:
         spice_model = workingmemory_multiitem
 
-    # spice_model = choice
+    spice_model = choice
     
     class_rnn = spice_model.SpiceModel
     spice_config = spice_model.CONFIG

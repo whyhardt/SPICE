@@ -28,7 +28,7 @@ class SpiceModel(BaseRNN):
         super().__init__(**kwargs)
         
         # set up the participant-embedding layer
-        self.participant_embedding = self.setup_embedding(self.n_participants, self.embedding_size)
+        self.participant_embedding = self.setup_embedding(self.n_participants, self.embedding_size, dropout=0.1)
 
         # set up the submodules
         self.submodules_rnn['value_reward_chosen'] = self.setup_module(input_size=1+self.embedding_size)
@@ -50,8 +50,6 @@ class SpiceModel(BaseRNN):
         
         # We compute now the participant embeddings and inverse noise temperatures before the for-loop because they are anyways time-invariant
         participant_embedding = self.participant_embedding(spice_signals.participant_ids)
-        # beta_reward = self.betas['value_reward']()#participant_embedding)
-        # beta_choice = self.betas['value_choice']()#participant_embedding)
         
         for timestep in spice_signals.timesteps:
             
@@ -63,7 +61,6 @@ class SpiceModel(BaseRNN):
                 inputs=spice_signals.rewards[timestep],
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
-                # activation_rnn=torch.nn.functional.sigmoid,
                 )
             
             self.call_module(
@@ -73,7 +70,6 @@ class SpiceModel(BaseRNN):
                 inputs=None,
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
-                # activation_rnn=torch.nn.functional.sigmoid,                
                 )
             
             # updates for value_choice
@@ -84,7 +80,6 @@ class SpiceModel(BaseRNN):
                 inputs=None,
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
-                # activation_rnn=torch.nn.functional.sigmoid,
                 )
             
             self.call_module(
@@ -94,7 +89,6 @@ class SpiceModel(BaseRNN):
                 inputs=None,
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
-                # activation_rnn=torch.nn.functional.sigmoid,
                 )
             
             # Now keep track of the logit in the output array

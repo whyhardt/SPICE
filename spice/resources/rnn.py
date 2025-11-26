@@ -13,7 +13,7 @@ from .spice_utils import SpiceConfig, SpiceSignals
 
 
 class GRUModule(nn.Module):
-    def __init__(self, input_size, dropout=0., **kwargs):
+    def __init__(self, input_size, dropout=0.1, **kwargs):
         super().__init__()
         
         self.linear_in = nn.Linear(input_size, 8+input_size)
@@ -243,12 +243,12 @@ class BaseRNN(nn.Module):
             return ParameterModule()
     
     def setup_embedding(self, num_embeddings: int, embedding_size: int, leaky_relu: float = 0.01, dropout: float = 0.):
-        # return torch.nn.Sequential(
-        #     torch.nn.Embedding(num_embeddings=num_embeddings, embedding_dim=embedding_size),
-        #     torch.nn.LeakyReLU(leaky_relu),
-        #     torch.nn.Dropout(p=dropout),
-        #     )
-        return torch.nn.Embedding(num_embeddings=num_embeddings, embedding_dim=embedding_size)
+        return torch.nn.Sequential(
+            torch.nn.Embedding(num_embeddings=num_embeddings, embedding_dim=embedding_size),
+            # torch.nn.LeakyReLU(leaky_relu),
+            torch.nn.Dropout(p=dropout),
+            )
+        # return torch.nn.Embedding(num_embeddings=num_embeddings, embedding_dim=embedding_size)
     
     def setup_module(self, input_size: int, dropout: float = 0.):
         """This method creates the standard RNN-module used in computational discovery of cognitive dynamics

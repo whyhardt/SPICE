@@ -17,28 +17,14 @@ CONFIG = SpiceConfig(
 
 class SpiceModel(BaseRNN):
 
-    def __init__(
-        self,
-        spice_config: SpiceConfig,
-        n_actions: int,
-        n_participants: int,
-        sindy_polynomial_degree: int = 2,
-        sindy_ensemble_size: int = 10,
-        use_sindy: bool = False,
-        **kwargs,
-    ):
+    def __init__(self, **kwargs):
 
-        super().__init__(
-            spice_config=spice_config,
-            n_actions=n_actions,
-            n_participants=n_participants,
-            use_sindy=use_sindy,
-            sindy_polynomial_degree=sindy_polynomial_degree,
-            sindy_ensemble_size=sindy_ensemble_size,
-        )
+        super().__init__(**kwargs)
+        
+        self.participant_embedding = self.setup_embedding(num_embeddings=self.n_participants, embedding_size=self.embedding_size, dropout=0.1)
         
         # set up the submodules
-        self.submodules_rnn['value_reward_chosen'] = self.setup_module(input_size=1)
+        self.submodules_rnn['value_reward_chosen'] = self.setup_module(input_size=1+self.embedding_size)
         
     def forward(self, inputs, prev_state=None, batch_first=False):
         """Forward pass of the RNN
@@ -52,6 +38,8 @@ class SpiceModel(BaseRNN):
         # First, we have to initialize all the inputs and outputs (i.e. logits)
         spice_signals = self.init_forward_pass(inputs, prev_state, batch_first)
         
+        participant_embedding = self.participant_embedding(spice_signals.participant_ids)
+        
         for timestep in spice_signals.timesteps:
 
             # Let's perform the belief update for the reward-based value of the chosen option
@@ -63,6 +51,7 @@ class SpiceModel(BaseRNN):
                 action_mask=spice_signals.actions[timestep],
                 inputs=spice_signals.rewards[timestep],
                 participant_index=spice_signals.participant_ids,
+                participant_embedding=participant_embedding,
                 )
 
             # Now keep track of this value in the output array

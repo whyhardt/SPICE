@@ -489,12 +489,12 @@ def fit_model(
                 model = model.train()
             
             # print SINDy model after warmup phase (np pruning; gradually increasing sindy_weight (see warmup_scaler))
-            if verbose and sindy_weight > 0 and n_calls_to_train_model >= warmup_steps:
-                if n_calls_to_train_model == warmup_steps:
-                    print("\n"+"="*80)
-                    print(f"(WARMUP) SPICE model after {n_calls_to_train_model} epochs:")
-                    print("="*80)
-                    model.print_spice_model(ensemble_idx=0)
+            if verbose and sindy_weight > 0 and n_calls_to_train_model == warmup_steps:
+                print("\n"+"="*80)
+                print(f"(WARMUP) SPICE model after {n_calls_to_train_model} epochs:")
+                print(f"Present SINDy coefficients: {model.count_sindy_coefficients().mean()}")
+                print("="*80)
+                model.print_spice_model(ensemble_idx=0)
             
             # periodic pruning of sindy coefficients with L0 norm        
             if verbose and sindy_weight > 0 and n_calls_to_train_model >= sindy_threshold_frequency and n_calls_to_train_model % sindy_threshold_frequency == 0 and n_calls_to_train_model != 0:   

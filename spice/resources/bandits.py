@@ -1,4 +1,4 @@
-from typing import NamedTuple, Union, Optional, Dict, Tuple, List
+from typing import NamedTuple, Union, Optional, Dict, Tuple, List, Iterable
 
 import matplotlib.pyplot as plt
 import matplotlib as mpl
@@ -480,7 +480,7 @@ class Bandits:
   
   def new_sess(self):
     pass
-
+  
 
 class BanditsFlip(Bandits):
   """Env for 2-armed bandit task with reward probs that flip in blocks."""
@@ -494,7 +494,7 @@ class BanditsFlip(Bandits):
       **kwargs,
   ):
     
-    super(BanditsFlip, self).__init__()
+    super().__init__()
     
     # Assign the input parameters as properties
     self._block_flip_prob = block_flip_prob
@@ -551,7 +551,7 @@ class BanditsSwitch(Bandits):
       **kwargs,
   ):
     
-    super(BanditsSwitch, self).__init__()
+    super().__init__()
     
     # Assign the input parameters as properties
     self._block_flip_prob = block_flip_prob
@@ -639,7 +639,7 @@ class BanditsDrift(Bandits):
       ):
     """Initialize the environment."""
     
-    super(BanditsDrift, self).__init__()
+    super().__init__()
     
     # Check inputs
     if sigma < 0:

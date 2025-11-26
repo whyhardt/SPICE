@@ -26,24 +26,8 @@ CONFIG = SpiceConfig(
 
 class SpiceModel(BaseRNN):
     
-    def __init__(
-        self,
-        spice_config: SpiceConfig,
-        n_actions: int,
-        n_participants: int,
-        sindy_polynomial_degree: int = 2,
-        sindy_ensemble_size: int = 10,
-        use_sindy: bool = False,
-        **kwargs,
-    ):
-        super().__init__(
-            spice_config=spice_config,
-            n_actions=n_actions,
-            n_participants=n_participants,
-            use_sindy=use_sindy,
-            sindy_polynomial_degree=sindy_polynomial_degree,
-            sindy_ensemble_size=sindy_ensemble_size,
-        )
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
         
         # set up the submodules
         self.submodules_rnn['learning_rate_reward'] = self.setup_module(input_size=2)
