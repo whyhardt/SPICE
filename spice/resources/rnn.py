@@ -346,17 +346,6 @@ class BaseRNN(nn.Module):
             
         return next_value
     
-    def integrate_sindy(self, modules: Dict[str, Iterable[ps.SINDy]]):
-        # check that all provided modules find a place in the RNN
-        checked = 0
-        for m in modules:
-            if m in self.submodules_rnn.keys():
-                checked += 1
-        assert checked == len(modules), f'Not all provided SINDy modules {tuple(modules.keys())} found a corresponding RNN module or vice versa.\nSINDy integration aborted.'
-
-        # replace rnn modules with sindy modules
-        self.submodules_sindy = modules
-
     def setup_sindy_coefficients(self, polynomial_degree: int = None, ensemble_size: int = None):
         """
         Initialize learnable SINDy coefficients for each module with ensemble support.

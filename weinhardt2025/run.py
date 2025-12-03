@@ -76,6 +76,7 @@ if __name__=='__main__':
     warmup_steps = 100
     
     example_participant = 1
+    plot_coef_dist = False
     
     if args.train_ratio_time and args.test_sessions:
         raise ValueError("kwargs train_ratio_time and test_sessions cannot be assigned at the same time.")
@@ -192,10 +193,99 @@ if __name__=='__main__':
             beta_choice=dataset_df['beta_choice'][example_participant * n_trials],
             alpha_choice=dataset_df['alpha_choice'][example_participant * n_trials],
         )
-        
+
     fig, axs = plot_session(
         agents,
         experiment=dataset.xs[example_participant]
         )
 
     plt.show()
+
+    # =====================================================================
+    # Plotting section: SINDy coefficients across participants
+    # =====================================================================
+    if args.sindy_weight > 0 and plot_coef_dist:
+        print("\nGenerating coefficient variance plots across participants...")
+
+        # Extract coefficients for all participants
+        ensemble_idx = 0  # Use first ensemble member
+        coeff_data = {}
+
+        for module_name in estimator.rnn_model.submodules_rnn:
+            # Get coefficients: [n_participants, n_ensemble, n_library_terms]
+            coeffs = estimator.rnn_model.sindy_coefficients[module_name][:, ensemble_idx, :].detach().cpu().numpy()
+            mask = estimator.rnn_model.sindy_coefficients_presence[module_name][:, ensemble_idx, :].cpu().numpy()
+
+            # Apply mask and adjust identity terms
+            sparse_coeffs = coeffs * mask
+
+            # Add 1 to the identity term (where term == module_name)
+            term_names = estimator.rnn_model.sindy_candidate_terms[module_name]
+            for idx, term in enumerate(term_names):
+                if term == module_name:
+                    sparse_coeffs[:, idx] += 1
+
+            coeff_data[module_name] = {
+                'coeffs': sparse_coeffs,
+                'terms': term_names
+            }
+
+        # Collect all coefficients for one figure
+        all_terms = []
+        all_coeffs_list = []
+
+        for module_name, data in coeff_data.items():
+            coeffs = data['coeffs']
+            terms = data['terms']
+
+            for idx, term in enumerate(terms):
+                all_terms.append(f"{module_name}: {term}")
+                all_coeffs_list.append(coeffs[:, idx])
+
+        n_total_terms = len(all_terms)
+
+        # Create single figure with all coefficient histograms
+        n_cols = min(4, n_total_terms)
+        n_rows = (n_total_terms + n_cols - 1) // n_cols
+
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=(4*n_cols, 3*n_rows))
+        fig.suptitle('Coefficient Distribution Across Participants (Normalized)', fontsize=14, fontweight='bold')
+
+        if n_total_terms == 1:
+            axes = [axes]
+        else:
+            axes = axes.flatten()
+
+        for idx, (term_name, coeff_values) in enumerate(zip(all_terms, all_coeffs_list)):
+            ax = axes[idx]
+
+            # Calculate mean and std for normalization
+            mean_val = coeff_values.mean()
+            std_val = coeff_values.std()
+
+            # Normalize coefficients: (x - mean) / std
+            if std_val > 0:
+                normalized_coeffs = (coeff_values - mean_val) / std_val
+            else:
+                normalized_coeffs = coeff_values - mean_val
+
+            # Create histogram
+            ax.hist(normalized_coeffs, bins=15, color='steelblue', alpha=0.7, edgecolor='black')
+
+            # Add vertical line at mean (which should be 0 after normalization)
+            ax.axvline(x=0, color='red', linestyle='--', linewidth=2, label='Mean')
+
+            # ax.set_xlabel('Normalized Coefficient Value')
+            # ax.set_ylabel('Frequency')
+            ax.set_title(f'{term_name}', fontsize=9)  # \nμ={mean_val:.3f}, σ={std_val:.3f}
+            ax.grid(True, alpha=0.3, axis='y')
+            ax.legend(fontsize=8)
+
+        # Hide unused subplots
+        for idx in range(n_total_terms, len(axes)):
+            axes[idx].axis('off')
+
+        plt.tight_layout()
+        plt.show()
+
+        print(f"Coefficient distribution plot generated with {n_total_terms} coefficients from {len(coeff_data)} modules.")
