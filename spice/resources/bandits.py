@@ -404,7 +404,7 @@ class AgentNetwork(Agent):
     if not isinstance(participant_id, torch.Tensor):
       participant_id = torch.tensor(participant_id, dtype=int, device=self.model.device)[None]
     
-    self.model.set_initial_state(batch_size=1)
+    self.model.init_state(batch_size=1)
     
     self._meta_data = torch.zeros((1, 2))
     self._meta_data[0, -1] = participant_id

@@ -67,14 +67,16 @@ class SpiceModel(BaseRNN):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         
-        self.participant_embedding = self.setup_embedding(self.n_participants, self.embedding_size)
+        dropout = 0.1
+        
+        self.participant_embedding = self.setup_embedding(self.n_participants, self.embedding_size, dropout=dropout)
 
         # Value learning module (slow updates)
         # Can use recent reward history to modulate learning
-        self.submodules_rnn['value_reward_chosen'] = self.setup_module(input_size=4 + self.embedding_size)  # -> 21 terms
-        self.submodules_rnn['value_reward_not_chosen'] = self.setup_module(input_size=3 + self.embedding_size)  # -> 15 terms
-        self.submodules_rnn['value_choice_chosen'] = self.setup_module(input_size=3 + self.embedding_size) # -> 15 terms
-        self.submodules_rnn['value_choice_not_chosen'] = self.setup_module(input_size=3 + self.embedding_size) # -> 15 terms -> 21+15+15+15 = 66 terms in total
+        self.submodules_rnn['value_reward_chosen'] = self.setup_module(input_size=4 + self.embedding_size, dropout=dropout)  # -> 21 terms
+        self.submodules_rnn['value_reward_not_chosen'] = self.setup_module(input_size=3 + self.embedding_size, dropout=dropout)  # -> 15 terms
+        self.submodules_rnn['value_choice_chosen'] = self.setup_module(input_size=3 + self.embedding_size, dropout=dropout) # -> 15 terms
+        self.submodules_rnn['value_choice_not_chosen'] = self.setup_module(input_size=3 + self.embedding_size, dropout=dropout) # -> 15 terms -> 21+15+15+15 = 66 terms in total
 
     def forward(self, inputs, prev_state=None, batch_first=False):
         spice_signals = self.init_forward_pass(inputs, prev_state, batch_first)

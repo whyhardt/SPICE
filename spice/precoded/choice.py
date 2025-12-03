@@ -27,14 +27,16 @@ class SpiceModel(BaseRNN):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         
+        dropout = 0.1
+        
         # set up the participant-embedding layer
-        self.participant_embedding = self.setup_embedding(self.n_participants, self.embedding_size, dropout=0.1)
+        self.participant_embedding = self.setup_embedding(self.n_participants, self.embedding_size, dropout=dropout)
 
         # set up the submodules
-        self.submodules_rnn['value_reward_chosen'] = self.setup_module(input_size=1+self.embedding_size)
-        self.submodules_rnn['value_reward_not_chosen'] = self.setup_module(input_size=0+self.embedding_size)
-        self.submodules_rnn['value_choice_chosen'] = self.setup_module(input_size=0+self.embedding_size)
-        self.submodules_rnn['value_choice_not_chosen'] = self.setup_module(input_size=0+self.embedding_size)
+        self.submodules_rnn['value_reward_chosen'] = self.setup_module(input_size=1+self.embedding_size, dropout=dropout)
+        self.submodules_rnn['value_reward_not_chosen'] = self.setup_module(input_size=0+self.embedding_size, dropout=dropout)
+        self.submodules_rnn['value_choice_chosen'] = self.setup_module(input_size=0+self.embedding_size, dropout=dropout)
+        self.submodules_rnn['value_choice_not_chosen'] = self.setup_module(input_size=0+self.embedding_size, dropout=dropout)
         
     def forward(self, inputs, prev_state=None, batch_first=False):
         """Forward pass of the RNN

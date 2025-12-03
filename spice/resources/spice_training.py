@@ -9,6 +9,98 @@ from collections import defaultdict
 from .rnn import BaseRNN
 from .spice_utils import SpiceDataset
 from .sindy_differentiable import threshold_coefficients
+import sys
+
+
+# === DEBUG MODE: Set to False for live-updating display, True for line-by-line output ===
+DEBUG_MODE = False
+
+
+def print_training_status(
+    len_last_print: int,
+    model: BaseRNN,
+    n_calls: int,
+    epochs: int,
+    loss_train: float,
+    loss_test: float,
+    time_elapsed: float,
+    convergence_value: float,
+    sindy_weight: float,
+    scheduler=None,
+    warmup_steps: int = 0,
+    converged: bool = False,
+    finished: bool = False,
+    debug_mode: bool = False,
+):
+    """
+    Print live-updating training status block.
+    Args:
+        model: The SPICE model being trained
+        n_calls: Current epoch number
+        epochs: Total number of epochs
+        loss_train: Training loss
+        loss_test: Validation loss (or None)
+        time_elapsed: Time for this epoch
+        convergence_value: Current convergence metric
+        sindy_weight: SINDy regularization weight
+        scheduler: Learning rate scheduler (optional)
+        warmup_steps: Number of warmup steps
+        converged: Whether model has converged
+        finished: Whether training is finished
+        debug_mode: If True, print line-by-line; if False, live-update
+    """
+    # Build comprehensive status display
+    status_lines = []
+    status_lines.append("=" * 80)
+    
+    # Training progress line
+    progress_msg = f'Epoch {n_calls}/{epochs} --- L(Train): {loss_train:.7f}'
+    progress_msg += f' --- L(Val): {loss_test:.7f}' if loss_test is not None else ''
+    progress_msg += f' --- Time: {time_elapsed:.2f}s;' if time_elapsed is not None else ''
+    progress_msg += f' --- Convergence: {convergence_value:.2e}' if convergence_value is not None else ''
+    
+    if scheduler is not None:
+        from torch.optim.lr_scheduler import ReduceLROnPlateau
+        progress_msg += f'; LR: {scheduler.get_last_lr()[-1]:.2e}'
+        if isinstance(scheduler, ReduceLROnPlateau) or isinstance(scheduler, ReduceOnPlateauWithRestarts):
+            progress_msg += f"; Metric: {scheduler.best:.7f}; Bad epochs: {scheduler.num_bad_epochs}/{scheduler.patience}"
+    
+    status_lines.append(progress_msg)
+    
+    # Add SPICE model equations if SINDy is active
+    if sindy_weight > 0:
+        status_lines.append("-" * 80)
+        status_lines.append(f"SPICE Model (Coefficients: {model.count_sindy_coefficients().mean():.0f}):")
+        status_lines.append(model.get_spice_model_string(participant_id=0, ensemble_idx=0))
+        
+        # Add patience summary
+        status_lines.append("-" * 80)
+        status_lines.append("Cutoff patience:")
+        for m in model.submodules_rnn:
+            status_lines.append(m + f": {[p.item() for p in model.sindy_cutoff_patience_counters[m][0,0]]}")
+    
+    status_lines.append("=" * 80)
+    
+    # Convergence messages
+    if converged:
+        status_lines.append('Model converged!')
+    elif finished:
+        status_lines.append('Maximum number of training epochs reached.')
+        if not converged:
+            status_lines.append('Model did not converge yet.')
+    
+    msg = "\n".join(status_lines)
+    
+    # Clear previous block if not in debug mode and not first epoch
+    if not debug_mode and n_calls > 1:
+        # Move cursor up and clear each line from previous print
+        for _ in range(len_last_print):
+            print('\033[F\033[K', end='')
+    
+    # Print the new status
+    print(msg, flush=True)
+    
+    return len(msg.split("\n"))
 
 
 class ReduceOnPlateauWithRestarts:
@@ -94,7 +186,8 @@ def batch_train(
     ys: torch.Tensor,
     optimizer: torch.optim.Optimizer = None,
     sindy_weight: float = 0.,
-    n_steps: int = -1,
+    sindy_alpha: float = 0.,
+    n_steps: int = None,
     loss_fn: nn.modules.loss._Loss = nn.CrossEntropyLoss(label_smoothing=0.),
     ):
 
@@ -102,10 +195,10 @@ def batch_train(
     Trains a model with the given batch.
     """
 
-    if n_steps == -1:
+    if n_steps is None:
         n_steps = xs.shape[1]
 
-    model.set_initial_state(batch_size=len(xs))
+    model.init_state(batch_size=len(xs))
     state = model.get_state(detach=True)
 
     loss_batch = 0
@@ -128,37 +221,36 @@ def batch_train(
             ys_pred.reshape(-1, model.n_actions),
             torch.argmax(ys_step.reshape(-1, model.n_actions), dim=1),
             )
-
-        # small l2-regularization on logits to keep the absolute values in the smalles possible range (only diff between values is necessary)
-        # loss_step += 0.01 * torch.pow(ys_pred, 2).mean()
-        
-        if False:
-            # l2 reg on module outputs
-            for module in model.submodules_rnn:
-                input_size_module = model.submodules_rnn[module].linear_in.in_features+1
-                # loss_step += 0.01 * torch.pow(model.submodules_rnn[module](torch.rand((1, 100, input_size_module))), 2).mean()
-                loss_step += 0.01 * torch.abs(model.submodules_rnn[module](torch.ones((1, 100, input_size_module), device=model.device))).mean()
-            
-            # l2 reg on state values
-            for state in model.state:
-                loss_step += 0.01 * torch.pow(model.state[state], 2).mean()
-        
-        # Add SINDy regularization loss
-        if sindy_weight > 0 and model.sindy_loss != 0:
-            loss_step = loss_step + sindy_weight * model.sindy_loss
-            
-        loss_batch += loss_step.item()
-        iterations += 1
         
         if torch.is_grad_enabled():
+            # Add SINDy regularization loss
+            if sindy_weight > 0 and model.sindy_loss != 0:
+                loss_step = loss_step + sindy_weight * model.sindy_loss
+
+            # # l1 regularization (unweighted)
+            # for module in model.submodules_rnn:
+            #     loss_step += model.sindy_coefficients[module].abs().sum() * 0.00001
+
+            # # Polynomial degree weighted coefficient penalty for SINDy coefficients
+            if sindy_alpha > 0:
+                coefficient_penalty = model.compute_weighted_coefficient_penalty(sindy_alpha=sindy_alpha, norm=1)
+                loss_step = loss_step + coefficient_penalty
 
             # backpropagation
             optimizer.zero_grad()
             loss_step.backward()
+
+            # Track gradient history for noise injection (if enabled)
+            if model.sindy_noise_std > 0:
+                model.update_gradient_history()
+
             # Apply gradient masks to prevent updating zeroed coefficients
             # model.apply_gradient_masks()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
+            
+        loss_batch += loss_step.item()
+        iterations += 1
             
     return model, optimizer, loss_batch/iterations
     
@@ -169,9 +261,13 @@ def fit_sindy_second_stage(
     dataset_test: SpiceDataset = None,
     learning_rate: float = 1e-3,
     epochs: int = 1,
-    threshold: float = 0.05,
-    n_terms_cutoff: int = -1,
-    batch_size: int = -1,
+    cutoff_threshold: float = 0.05,
+    cutoff_frequency: int = 1,
+    cutoff_n_terms: int = None,
+    cutoff_patience: int = 1,
+    cutoff_warmup: int = 0,
+    sindy_alpha: float = 0.,
+    batch_size: int = None,
     verbose: bool = True,
     ):
     """
@@ -198,7 +294,7 @@ def fit_sindy_second_stage(
 
     # Always print header for second stage (important step)
     print("\n" + "="*80)
-    print("Starting second stage SINDy fitting (threshold=0, single model)")
+    print(f"Starting second stage SINDy fitting (threshold={cutoff_threshold}, single model)")
     print("="*80)
 
     criterion = nn.MSELoss()
@@ -206,22 +302,18 @@ def fit_sindy_second_stage(
     # Freeze all RNN parameters, only train SINDy coefficients
     for param in model.parameters():
         param.requires_grad = False
-
-    # COLLAPSE ENSEMBLE TO SINGLE MODEL
-    # Set ensemble size to 1 for stage 2 (no ensemble in second stage)
+    
+    # COLLAPSE ENSEMBLE TO SINGLE MODEL -> Set ensemble size to 1 for stage 2 (no ensemble in second stage)
     model.sindy_ensemble_size = 1
 
     # Re-initialize SINDy coefficients with single model (ensemble_size=1)
-    model.setup_sindy_coefficients(model.sindy_polynomial_degree, ensemble_size=1)
+    model.setup_sindy_coefficients(model.sindy_polynomial_degree)
     model.to(model.device)
 
     # Create optimizer for only SINDy coefficients
-    sindy_params = list(model.sindy_coefficients.values())
-    optimizer_sindy = torch.optim.AdamW(sindy_params, lr=learning_rate, weight_decay=0.01)
+    optimizer_sindy = torch.optim.AdamW(list(model.sindy_coefficients.values()), lr=learning_rate)
     
-    # Set model to training mode for SINDy loss computation
-    model.train()
-    model.use_sindy = False
+    model.eval(use_sindy=False)
     
     # --------------------------------------------------------
     # VECTORIZATION OF SINDY TRAINING
@@ -233,7 +325,7 @@ def fit_sindy_second_stage(
         # dataset.xs.shape[0] gives the number of sessions/participants in first dimension
         len_dataset = dataset.xs.shape[0]
         n_timesteps = dataset.xs.shape[1]
-        model.set_initial_state(batch_size=len_dataset)
+        model.init_state(batch_size=len_dataset)
 
         # initialize state buffer with time-flattened batch-dim
         state_buffer_current = {state: torch.zeros((n_timesteps*len_dataset, model.n_items), dtype=torch.float32, device=model.device) for state in model.get_state()}
@@ -265,19 +357,23 @@ def fit_sindy_second_stage(
     
     
     # --------------------------------------------------------
-    # TRAINING LOOP
+    # SINDY TRAINING LOOP
     # --------------------------------------------------------
     
     model.use_sindy = True
     xs = dataset_train.xs
     nan_mask = ~torch.isnan(xs[:, 0, :model.n_actions].sum(dim=-1))
-    batch_size = dataset_train.xs.shape[0] if batch_size == -1 else batch_size
+    batch_size = dataset_train.xs.shape[0] if batch_size is None else batch_size
     len_dataset = dataset_train.xs.shape[0]
+    len_last_print = 0
     
-    for epoch in range(epochs):
+    for epoch in range(epochs+1):
         t_start = time.time()
         loss_train = 0
         iterations = 0
+        
+        if epoch+1 == epochs:
+            final_run = True
         
         for idx in range(0, len_dataset, batch_size):
             
@@ -290,18 +386,27 @@ def fit_sindy_second_stage(
                 batched_target_state_buffer[state] = target_state_buffer_train[state][idx:idx+batch_size][batched_nan_mask]
             
             # get sindy-based state updates from original rnn states
-            state_pred = model(xs[idx:idx+batch_size, :1].to(model.device)[batched_nan_mask], batched_input_state_buffer, batch_first=True)[1]
+            _, state_pred = model(xs[idx:idx+batch_size, :1].to(model.device)[batched_nan_mask], batched_input_state_buffer, batch_first=True)
             
             loss_batch = 0
             for state in model.spice_config.states_in_logit:
                 loss_batch += criterion(batched_target_state_buffer[state], state_pred[state])
+
+            # l1 regularization (unweighted)
+            # for module in model.submodules_rnn:
+            #     loss_batch += model.sindy_coefficients[module].abs().sum() * sindy_alpha
+
+            # Polynomial degree weighted coefficient penalty for SINDy coefficients
+            if sindy_alpha > 0:
+                coefficient_penalty = model.compute_weighted_coefficient_penalty(sindy_alpha)
+                loss_batch += coefficient_penalty
 
             # Backward pass - only update SINDy coefficients
             loss_batch.backward()
             # Apply gradient masks to prevent updating zeroed coefficients
             # model.apply_gradient_masks()
             optimizer_sindy.step()
-            
+                
             loss_train += loss_batch.item()
             iterations += 1
             
@@ -310,28 +415,28 @@ def fit_sindy_second_stage(
         loss_test = 0
         
         # THRESHOLDING STEP
-        if epoch % 100 == 0 and epoch != 0:
-                model.thresholding(threshold=0, base_threshold=threshold, n_terms_cutoff=n_terms_cutoff)
+        if epoch >= cutoff_warmup and epoch % cutoff_frequency == 0 and epoch != 0:
+            model.sindy_coefficient_cutoff(threshold=0, base_threshold=cutoff_threshold, n_terms_cutoff=cutoff_n_terms, patience=cutoff_patience)
         
-        # Print progress
-        msg = f'SINDy Stage 2 - Epoch {epoch+1}/{epochs} --- L(Train): {loss_train:.7f}'
-        if dataset_test is not None:
-            msg += f'; L(Val): {loss_test:.7f}'
-        msg += f'; Time: {time.time()-t_start:.2f}s'
-        print(msg, end='\r' if epoch < epochs-1 else '\n')
-
+        # Print training progress
+        len_last_print = print_training_status(
+            len_last_print=len_last_print,
+            model=model,
+            n_calls=epoch+1,
+            epochs=epochs,
+            loss_train=loss_train,
+            loss_test=loss_test,
+            time_elapsed=time.time()-t_start,
+            convergence_value=None,
+            sindy_weight=1,
+            scheduler=None,
+            warmup_steps=cutoff_warmup,
+            debug_mode=DEBUG_MODE,
+        )    
+        
     # Restore requires_grad for all parameters
     for param in model.parameters():
         param.requires_grad = True
-
-    if verbose:
-        print("="*80)
-        print("Second stage SINDy fitting complete!")
-        print("="*80)
-        print("\nRefitted SPICE model (participant 0):")
-        print("-"*80)
-        model.print_spice_model(participant_id=0)
-        print("-"*80)
     
     return model.train()
 
@@ -343,16 +448,19 @@ def fit_model(
     optimizer: torch.optim.Optimizer = None,
     convergence_threshold: float = 1e-7,
     sindy_weight: float = 0.,
+    sindy_alpha: float = 0.,
     sindy_epochs: int = 1000,
     sindy_threshold: float = 0.01,
-    sindy_threshold_frequency: int = 100,
-    sindy_threshold_terms: int = -1,
+    sindy_threshold_frequency: int = 1,
+    sindy_threshold_terms: int = None,
+    sindy_threshold_patience: int = 0,
     epochs: int = 1,
-    batch_size: int = -1,
+    batch_size: int = None,
     bagging: bool = False,
     scheduler: bool = False,
-    n_steps: int = -1,
+    n_steps: int = None,
     verbose: bool = True,
+    n_warmup_steps: int = 0,
     path_save_checkpoints: str = None,
     ) -> Tuple[BaseRNN, torch.optim.Optimizer, float]:
     """_summary_
@@ -372,10 +480,9 @@ def fit_model(
     Returns:
         (BaseRNN, Optimizer, float): (Trained RNN, Optimizer with last state, Training loss)
     """
-    
-    
+
     # initialize dataloader
-    if batch_size == -1:
+    if batch_size is None:
         batch_size = len(dataset_train)
     
     # use random sampling with replacement
@@ -391,46 +498,16 @@ def fit_model(
         dataloader_test = DataLoader(dataset_test, batch_size=len(dataset_test))
     
     # set up warmup phase characteristics and learning rate scheduler
-    warmup_steps = 100
-    warmup_steps = warmup_steps if epochs > warmup_steps else 1 #int(epochs * 0.125/16)
+    def setup_warmup_scaler(exp_max: float = 1):
+        warmup_scaler = torch.exp(torch.linspace(0, exp_max, n_warmup_steps))
+        warmup_scaler = (warmup_scaler - warmup_scaler.min()) / (warmup_scaler.max() - warmup_scaler.min()) + 1e-4 if n_warmup_steps > 0 else None
+        return warmup_scaler
     
-    warmup_scaler = torch.exp(torch.linspace(0, 5, warmup_steps))
-    warmup_scaler = (warmup_scaler - warmup_scaler.min()) / (warmup_scaler.max() - warmup_scaler.min())
+    warmup_scaler_sindy_weight = setup_warmup_scaler(5)
     
-    if scheduler and optimizer is not None:
-        # Define the LambdaLR scheduler for warm-up
-        # def warmup_lr_lambda(current_step):
-        #     if current_step < warmup_steps / 0.8:
-        #         return min(1e-1, float(current_step) / float(max(1, warmup_steps))) / (optimizer.param_groups[0]['lr']) / 100
-        #     else:
-        #         return 1 - float(current_step) / float(max(1, warmup_steps)) / (optimizer.param_groups[0]['lr']) / 100
-        #     return 1.0  # No change after warm-up phase
-        default_lr = optimizer.param_groups[0]['lr'] + 0
-        def warmup_lr_lambda(current_step):
-            scale = 1e-1 / default_lr
-            # if current_step < warmup_steps * 0.8:
-            #     return 0.1 * scale  # Scaling factor during the first 80% of warmup
-            # elif current_step < warmup_steps:
-            #     # Linearly anneal towards 1.0 in the last 20% of warmup steps
-            #     progress = (current_step - warmup_steps * 0.8) / (warmup_steps * 0.2)
-            #     return (0.1 + progress * (1.0 - 0.1)) * scale
-            if current_step < warmup_steps:
-                # Linearly anneal towards 1.0 in the last 20% of warmup steps
-                # progress = (current_step - warmup_steps) / (warmup_steps)
-                # return (0.1 + progress * (1.0 - 0.1)) * scale
-                return current_step / warmup_steps
-            else:
-                return 1.0  # Default learning rate scaling after warmup
-
-        # Create the scheduler with the Lambda function
-        scheduler_warmup = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=warmup_lr_lambda)
-                
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer=optimizer, T_0=warmup_steps if warmup_steps > 0 else 64, T_mult=2)
-        # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer=optimizer, factor=0.1, patience=10, threshold=0, cooldown=64, min_lr=1e-6)
-        # scheduler = ReduceOnPlateauWithRestarts(optimizer=optimizer, min_lr=1e-6, factor=0.1, patience=8)
-    else:
-        scheduler_warmup, scheduler = None, None
-        
+    # original learning rates
+    original_lr = optimizer.param_groups[1]['lr']
+    
     if epochs == 0:
         continue_training = False
         msg = 'No training epochs specified. Model will not be trained.'
@@ -444,10 +521,12 @@ def fit_model(
         last_loss = 1
         recency_factor = 0.5
     
+    len_last_print = 0
     loss_train = 0
     loss_test = 0
     iterations_per_epoch = max(len(dataset_train), 64) // batch_size
-    save_at_epoch = warmup_steps
+    
+    # save_at_epoch = warmup_steps
     
     # start training
     while continue_training:
@@ -455,8 +534,11 @@ def fit_model(
             loss_train = 0
             loss_test = 0
             t_start = time.time()
-            # sindy_weight_epoch = min(n_calls_to_train_model / warmup_steps, 1) * sindy_weight
-            sindy_weight_epoch = sindy_weight * (1 if n_calls_to_train_model >= warmup_steps else warmup_scaler[n_calls_to_train_model])
+            
+            # warmup updates
+            sindy_weight_epoch = sindy_weight * (1 if n_calls_to_train_model >= n_warmup_steps else warmup_scaler_sindy_weight[n_calls_to_train_model])
+            # optimizer.param_groups[1]['lr'] = original_lr if n_calls_to_train_model >= n_warmup_steps else original_lr * 10
+            
             for _ in range(iterations_per_epoch):
                 # get next batch
                 xs, ys = next(iter(dataloader_train))
@@ -471,6 +553,7 @@ def fit_model(
                     optimizer=optimizer,
                     n_steps=n_steps,
                     sindy_weight=sindy_weight_epoch,
+                    sindy_alpha=sindy_alpha,
                 )
                 loss_train += loss_i
             
@@ -488,22 +571,9 @@ def fit_model(
                     _, _, loss_test = batch_train(model=model, xs=xs, ys=ys)
                 model = model.train()
             
-            # print SINDy model after warmup phase (np pruning; gradually increasing sindy_weight (see warmup_scaler))
-            if verbose and sindy_weight > 0 and n_calls_to_train_model == warmup_steps:
-                print("\n"+"="*80)
-                print(f"(WARMUP) SPICE model after {n_calls_to_train_model} epochs:")
-                print(f"Present SINDy coefficients: {model.count_sindy_coefficients().mean()}")
-                print("="*80)
-                model.print_spice_model(ensemble_idx=0)
-            
-            # periodic pruning of sindy coefficients with L0 norm        
-            if verbose and sindy_weight > 0 and n_calls_to_train_model >= sindy_threshold_frequency and n_calls_to_train_model % sindy_threshold_frequency == 0 and n_calls_to_train_model != 0:   
-                model.thresholding(threshold=sindy_threshold, base_threshold=0., n_terms_cutoff=sindy_threshold_terms)
-                print("\n"+"="*80)
-                print(f"(THRESHOLDING) SPICE model after {n_calls_to_train_model} epochs:")
-                print(f"Present SINDy coefficients: {model.count_sindy_coefficients().mean()}")
-                print("="*80)
-                model.print_spice_model(ensemble_idx=0)
+            # periodic pruning of sindy coefficients with L0 norm
+            if sindy_weight > 0 and n_calls_to_train_model >= n_warmup_steps and n_calls_to_train_model % sindy_threshold_frequency == 0:
+                model.sindy_coefficient_cutoff(threshold=sindy_threshold, base_threshold=0., n_terms_cutoff=sindy_threshold_terms, patience=sindy_threshold_patience)
             
             # check for convergence
             dloss = last_loss - loss_test if dataset_test is not None else last_loss - loss_train
@@ -512,61 +582,101 @@ def fit_model(
             continue_training = not converged and n_calls_to_train_model < epochs
             last_loss = 0
             last_loss += loss_test if dataset_test is not None else loss_train
-            
-            msg = None
-            # if verbose:
-            msg = f'Epoch {n_calls_to_train_model}/{epochs} --- L(Train): {loss_train:.7f}'                
-            if dataset_test is not None:
-                msg += f'; L(Val): {loss_test:.7f}'
-            msg += f'; Time: {time.time()-t_start:.2f}s; Convergence: {convergence_value:.2e}'
-            if scheduler is not None:
-                msg += f'; LR: {scheduler_warmup.get_last_lr()[-1] if n_calls_to_train_model < warmup_steps else scheduler.get_last_lr()[-1]:.2e}'
-                if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau) or isinstance(scheduler, ReduceOnPlateauWithRestarts):
-                    msg += f"; Metric: {scheduler.best:.7f}; Bad epochs: {scheduler.num_bad_epochs}/{scheduler.patience}"
-            if converged:
-                msg += '\nModel converged!'
-            elif n_calls_to_train_model >= epochs:
-                msg += '\nMaximum number of training epochs reached.'
-                if not converged:
-                    msg += '\nModel did not converge yet.'
-                        
-            if scheduler is not None:
-                if n_calls_to_train_model <= warmup_steps:
-                    scheduler_warmup.step()
-                else:
-                    if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau) or isinstance(scheduler, ReduceOnPlateauWithRestarts):
-                        scheduler.step(metrics=loss_test if dataset_test is not None else loss_train)
-                    # elif isinstance(scheduler, torch.optim.lr_scheduler.CosineAnnealingWarmRestarts):
-                    #     scheduler.step(epoch=n_calls_to_train_model)
-                    else:
-                        scheduler.step()
 
             # save checkpoint
             if path_save_checkpoints and n_calls_to_train_model == save_at_epoch:
                 torch.save(model.state_dict(), path_save_checkpoints.replace('.', f'_ep{n_calls_to_train_model}.'))
                 save_at_epoch *= 2
-                
+
+            # Display training status
+            if verbose:
+                # current_scheduler = scheduler_warmup if n_calls_to_train_model <= n_warmup_steps else scheduler
+                len_last_print = print_training_status(
+                    len_last_print=len_last_print,
+                    model=model,
+                    n_calls=n_calls_to_train_model,
+                    epochs=epochs,
+                    loss_train=loss_train,
+                    loss_test=loss_test if dataset_test is not None else None,
+                    time_elapsed=time.time() - t_start,
+                    convergence_value=convergence_value,
+                    sindy_weight=sindy_weight,
+                    scheduler=None,#current_scheduler,
+                    warmup_steps=n_warmup_steps,
+                    converged=converged,
+                    finished=not continue_training,
+                    debug_mode=DEBUG_MODE,
+                )
+
         except KeyboardInterrupt:
             continue_training = False
-            msg = '\nTraining interrupted. Continuing with further operations...'
-
-        #if verbose:
-        print(msg, end='\r')
+            if verbose:
+                print('\nTraining interrupted. Continuing with further operations...')
     
     model.rnn_training_finished = True
     
     # Second stage: Refit SINDy coefficients on trained RNN hidden states (always run when sindy_weight > 0)
-    if sindy_weight > 0:
+    if sindy_weight > 0 and sindy_epochs > 0:
         model = fit_sindy_second_stage(
             model=model,
             dataset_train=dataset_train,
             dataset_test=dataset_test,
-            learning_rate=optimizer.param_groups[0]['lr'],
+            learning_rate=optimizer.param_groups[0]['lr']*10,
             epochs=sindy_epochs,
-            threshold=sindy_threshold,
-            n_terms_cutoff=sindy_threshold_terms,
-            batch_size=-1,
+            cutoff_threshold=sindy_threshold,
+            cutoff_n_terms=sindy_threshold_terms,
+            cutoff_patience=sindy_threshold_patience,
+            cutoff_warmup=n_warmup_steps,
+            sindy_alpha=sindy_alpha,
+            batch_size=None,
             verbose=verbose,
         )
         
     return model.eval(), optimizer, loss_train
+
+
+# Old lr-scheduler logic for fit_model
+"""if scheduler and optimizer is not None:
+        # Define the LambdaLR scheduler for warm-up
+        # def warmup_lr_lambda(current_step):
+        #     if current_step < warmup_steps / 0.8:
+        #         return min(1e-1, float(current_step) / float(max(1, warmup_steps))) / (optimizer.param_groups[0]['lr']) / 100
+        #     else:
+        #         return 1 - float(current_step) / float(max(1, warmup_steps)) / (optimizer.param_groups[0]['lr']) / 100
+        #     return 1.0  # No change after warm-up phase
+        default_lr = optimizer.param_groups[0]['lr'] + 0
+        def warmup_lr_lambda(current_step):
+            scale = 1e-1 / default_lr
+            # if current_step < warmup_steps * 0.8:
+            #     return 0.1 * scale  # Scaling factor during the first 80% of warmup
+            # elif current_step < warmup_steps:
+            #     # Linearly anneal towards 1.0 in the last 20% of warmup steps
+            #     progress = (current_step - warmup_steps * 0.8) / (warmup_steps * 0.2)
+            #     return (0.1 + progress * (1.0 - 0.1)) * scale
+            if current_step < n_warmup_steps:
+                # Linearly anneal towards 1.0 in the last 20% of warmup steps
+                # progress = (current_step - warmup_steps) / (warmup_steps)
+                # return (0.1 + progress * (1.0 - 0.1)) * scale
+                return current_step / n_warmup_steps
+            else:
+                return 1.0  # Default learning rate scaling after warmup
+
+        # Create the scheduler with the Lambda function
+        scheduler_warmup = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=warmup_lr_lambda)
+                
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer=optimizer, T_0=n_warmup_steps if n_warmup_steps > 0 else 64, T_mult=2)
+        # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer=optimizer, factor=0.1, patience=10, threshold=0, cooldown=64, min_lr=1e-6)
+        # scheduler = ReduceOnPlateauWithRestarts(optimizer=optimizer, min_lr=1e-6, factor=0.1, patience=8)
+    else:
+        scheduler_warmup, scheduler = None, None
+        
+    # Update learning rate scheduler
+            if scheduler is not None:
+                if n_calls_to_train_model <= n_warmup_steps:
+                    scheduler_warmup.step()
+                else:
+                    if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau) or isinstance(scheduler, ReduceOnPlateauWithRestarts):
+                        scheduler.step(metrics=loss_test if dataset_test is not None else loss_train)
+                    else:
+                        scheduler.step()
+    """

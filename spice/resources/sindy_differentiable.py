@@ -63,6 +63,59 @@ def get_library_feature_names(feature_names: List[str], degree: int) -> List[str
     return library_names
 
 
+def get_polynomial_degree_from_term(term: str) -> int:
+    """
+    Extract the polynomial degree from a library term string.
+
+    Args:
+        term: Library term string (e.g., '1', 'x', 'x^2', 'x*u', 'x^2*u', etc.)
+
+    Returns:
+        Polynomial degree of the term
+    """
+    # Constant term
+    if term == '1':
+        return 0
+
+    # Default degree for single variable terms without exponent
+    degree = 1
+
+    # Count multiplicative terms (separated by '*')
+    if '*' in term:
+        parts = term.split('*')
+        degree = 0
+        for part in parts:
+            # Check if this part has an exponent
+            if '^' in part:
+                # Extract the number after '^'
+                exponent = int(part.split('^')[1])
+                degree += exponent
+            else:
+                # Single variable without exponent contributes degree 1
+                degree += 1
+    else:
+        # Single term, check for exponent
+        if '^' in term:
+            degree = int(term.split('^')[1])
+        else:
+            degree = 1
+
+    return degree
+
+
+def get_library_term_degrees(library_names: List[str]) -> List[int]:
+    """
+    Compute the polynomial degree for each term in the library from term names.
+
+    Args:
+        library_names: List of library term names
+
+    Returns:
+        List of degrees for each library term (e.g., [0, 1, 1, 2, 2, 2, ...])
+    """
+    return [get_polynomial_degree_from_term(term) for term in library_names]
+
+
 def compute_polynomial_library(
     x: torch.Tensor,
     controls: torch.Tensor,

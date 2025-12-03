@@ -8,12 +8,13 @@ from .sindy_differentiable import (
     compute_library_size,
     compute_polynomial_library,
     get_library_feature_names,
+    get_library_term_degrees,
 )
 from .spice_utils import SpiceConfig, SpiceSignals
 
 
 class GRUModule(nn.Module):
-    def __init__(self, input_size, dropout=0.1, **kwargs):
+    def __init__(self, input_size, dropout=0., **kwargs):
         super().__init__()
         
         self.linear_in = nn.Linear(input_size, 8+input_size)
@@ -45,15 +46,6 @@ class GRUModule(nn.Module):
             , inputs[..., :1].contiguous())[1].view(-1, n_actions, 1)
         next_state = self.linear_out(next_state)
         return next_state
-
-
-class DummyModule(nn.Module):
-    def __init__(self):
-        super().__init__()
-        
-    def forward(self, inputs: torch.Tensor):
-        return torch.ones((*inputs.shape[:-1], 1), device=inputs.device, dtype=torch.float)
-    
     
 class ParameterModule(nn.Module):
     def __init__(self):
@@ -63,33 +55,7 @@ class ParameterModule(nn.Module):
         
     def forward(self, *args, **kwargs):
         return self.parameter
-    
-    
 
-class SparseLeakyReLU(nn.LeakyReLU):
-    
-    def __init__(self, negative_slope = 0.01, inplace = False, threshold=0.01):
-        """Leaky ReLU which in training-mode behaves like the standard LeakyReLU-module.
-        In eval-mode it compares the activation value against a threshold and sets it to 0 if it is below.
-
-        Args:
-            negative_slope (float, optional): _description_. Defaults to 0.01.
-            inplace (bool, optional): _description_. Defaults to False.
-            threshold (float, optional): _description_. Defaults to 0.01.
-        """
-        super().__init__(negative_slope, inplace)
-        self.threshold = threshold
-    
-    def forward(self, input):
-        activation = super().forward(input)
-        if self.training:
-            return activation
-        else:
-            if activation < self.threshold:
-                return torch.zeros_like(activation)
-            else:
-                activation
-        
         
 class BaseRNN(nn.Module):
     def __init__(
@@ -129,18 +95,25 @@ class BaseRNN(nn.Module):
         # Differentiable SINDy coefficients (NEW)
         self.sindy_polynomial_degree = sindy_polynomial_degree
         self.sindy_coefficients = nn.ParameterDict()
-        self.sindy_coefficient_masks = {}  # Binary masks to permanently zero out coefficients
-        self.sindy_library_names = {}
-
+        self.sindy_coefficients_presence = {}  # Binary masks to permanently zero out coefficients
+        self.sindy_candidate_terms = {}
+        self.sindy_degree_weights = {}  # Weights for coefficient penalty based on polynomial degree
+        self.sindy_cutoff_patience_counters = {}  # Patience counters for thresholding
+        
         # Ensemble SINDy for stage 1 training (helps RNN learn better representations)
         self.sindy_ensemble_size = sindy_ensemble_size  # Number of ensemble members (num_replicates in sindy-shred)
+
+        # Noise injection for exploration (helps escape stagnant local minima)
+        self.sindy_noise_std = 0.0  # Standard deviation of noise (0 = disabled)
+        self.sindy_grad_history = {}  # Rolling window of recent gradient magnitudes
+        self.sindy_grad_history_size = 10  # Number of recent gradients to track
         
         # Setup initial values of RNN
         self.sindy_loss = torch.tensor(0, requires_grad=True, device=device, dtype=torch.float32)
         self.state = None
-        self.set_initial_state()  # initial memory state
+        self.init_state()  # initial memory state
         self.setup_sindy_coefficients()  # differentiable SINDy coefficients
-        
+                
     def forward(self, inputs, prev_state, batch_first=False):
         raise NotImplementedError('This method is not implemented.')
     
@@ -173,7 +146,7 @@ class BaseRNN(nn.Module):
         if prev_state is not None:
             self.set_state(prev_state)
         else:
-            self.set_initial_state(batch_size=inputs.shape[1])
+            self.init_state(batch_size=inputs.shape[1])
         
         # output signals
         spice_signals.timesteps = torch.arange(spice_signals.actions.shape[0], device=self.device)
@@ -188,7 +161,7 @@ class BaseRNN(nn.Module):
         
         return spice_signals
     
-    def set_initial_state(self, batch_size=1):
+    def init_state(self, batch_size=1):
         """this method initializes the hidden state
         
         Args:
@@ -230,9 +203,11 @@ class BaseRNN(nn.Module):
         self.device = device
         super().to(device=device)
         self.sindy_loss = self.sindy_loss.to(device)
-        # Move masks to the correct device
-        for module_name in self.sindy_coefficient_masks:
-            self.sindy_coefficient_masks[module_name] = self.sindy_coefficient_masks[module_name].to(device)
+        # Move masks, weights, and patience counters to the correct device
+        for module_name in self.sindy_coefficients_presence:
+            self.sindy_coefficients_presence[module_name] = self.sindy_coefficients_presence[module_name].to(device)
+            self.sindy_degree_weights[module_name] = self.sindy_degree_weights[module_name].to(device)
+            self.sindy_cutoff_patience_counters[module_name] = self.sindy_cutoff_patience_counters[module_name].to(device)
 
         return self
         
@@ -306,11 +281,11 @@ class BaseRNN(nn.Module):
         if participant_embedding is None:
             participant_embedding = torch.zeros((*value.shape, 0), dtype=torch.float32, device=value.device)
         else:
-            participant_embedding = participant_embedding.unsqueeze(1).repeat(1, value.shape[1], 1)
+            participant_embedding = participant_embedding.unsqueeze(1).repeat(1, value.shape[-1], 1)
         
         if isinstance(inputs, tuple):
             inputs = torch.concat([inputs_i.unsqueeze(-1) for inputs_i in inputs], dim=-1)
-        elif inputs.dim()==2:
+        elif isinstance(inputs, torch.Tensor):
             inputs = inputs.unsqueeze(-1)
 
         # Replace NaN in inputs with 0 to prevent NaN propagation through the network
@@ -344,7 +319,7 @@ class BaseRNN(nn.Module):
         
         elif key_module in self.submodules_eq.keys():
             # use hard-coded equation
-            next_value = self.submodules_eq[key_module](value, inputs)
+            next_value = self.submodules_eq[key_module](value, inputs).unsqueeze(1)
 
         else:
             raise ValueError(f'Invalid module key {key_module}.')
@@ -416,17 +391,28 @@ class BaseRNN(nn.Module):
             # Use very small initialization to prevent numerical instability
             init_coeffs = torch.randn(self.n_participants, ensemble_size, n_library_terms) * 0.001
             self.sindy_coefficients[module_name] = nn.Parameter(init_coeffs)
-
+            
             # Initialize mask to all ones (all coefficients active)
-            self.sindy_coefficient_masks[module_name] = torch.ones(
+            self.sindy_coefficients_presence[module_name] = torch.ones(
                 self.n_participants, ensemble_size, n_library_terms,
                 dtype=torch.bool, device=self.device
             )
 
             # Store library feature names
             feature_names = tuple([module_name]) + control_features
-            self.sindy_library_names[module_name] = get_library_feature_names(
+            self.sindy_candidate_terms[module_name] = get_library_feature_names(
                 feature_names, polynomial_degree
+            )
+
+            # Compute degree-based weights for coefficient penalty: d=0 -> 1, d=1 -> 2, d=2 -> 3, etc.
+            term_degrees = get_library_term_degrees(self.sindy_candidate_terms[module_name])
+            degree_weights = torch.tensor([max(1,d*2) for d in term_degrees], dtype=torch.float32, device=self.device)
+            self.sindy_degree_weights[module_name] = degree_weights
+
+            # Initialize patience counters to zero
+            self.sindy_cutoff_patience_counters[module_name] = torch.zeros(
+                self.n_participants, ensemble_size, n_library_terms,
+                dtype=torch.int32, device=self.device
             )
     
     def forward_sindy(self, h_current: torch.Tensor, module_name: str, participant_ids: torch.Tensor, controls: torch.Tensor, polynomial_degree: int, ensemble_idx: int = None):
@@ -445,60 +431,31 @@ class BaseRNN(nn.Module):
         Returns:t_sindy: Next hidden state [batch, n_actions]
         """
         
-        if ensemble_idx is None:        
+        if ensemble_idx is None:
             # Get coefficients and masks for all ensemble members
             sindy_coeffs = self.sindy_coefficients[module_name][participant_ids]  # [batch, n_ensemble, n_library_terms]
-            mask = self.sindy_coefficient_masks[module_name][participant_ids]  # [batch, n_ensemble, n_library_terms]
+            mask = self.sindy_coefficients_presence[module_name][participant_ids]  # [batch, n_ensemble, n_library_terms]
         else:
             # Get coefficients and masks for all ensemble members
             sindy_coeffs = self.sindy_coefficients[module_name][participant_ids, ensemble_idx].unsqueeze(1)  # [batch, n_ensemble, n_library_terms]
-            mask = self.sindy_coefficient_masks[module_name][participant_ids, ensemble_idx].unsqueeze(1)  # [batch, n_ensemble, n_library_terms]
-        
-        # if isinstance(participant_ids, int) or len(participant_ids) == 1:
-        #     sindy_coeffs = sindy_coeffs.unsqueeze(0)# [1, n_ensemble, n_library_terms]
-        #     mask = mask.unsqueeze(0)
-        
-        # if isinstance(ensemble_idx, int):
-        #     sindy_coeffs = sindy_coeffs.unsqueeze(1)# [1, n_ensemble, n_library_terms]
-        #     mask = mask.unsqueeze(1)
-        
-        # Apply the mask to enforce sparsity during loss computation
-        sindy_coeffs = sindy_coeffs * mask.float()
+            mask = self.sindy_coefficients_presence[module_name][participant_ids, ensemble_idx].unsqueeze(1)  # [batch, n_ensemble, n_library_terms]
 
+        # custom dropout layer for sindy coefficients
+        # if hasattr(self, 'dropout') and self.training:
+        #     dropout_mask = (torch.rand_like(sindy_coeffs) > self.dropout).float()
+        #     sindy_coeffs = sindy_coeffs * dropout_mask / (1 - self.dropout)
+        
+        # Apply the mask to enforce sparsity during loss computation    
+        sindy_coeffs = sindy_coeffs * mask.float()
+        
         # Compute polynomial library (shared across ensemble)
         library = compute_polynomial_library(h_current, controls, degree=polynomial_degree, include_bias=True)  # [batch, n_actions, n_library_terms]
 
         # Compute predictions for all ensemble members
-        # library: [batch, n_actions, n_library_terms]
-        # coeffs_sparse: [batch, n_ensemble, n_library_terms]
-        # We want: [batch, n_ensemble, n_actions]
-        # delta = torch.einsum('baf,bef->bea', library, coeffs_sparse)  # [batch, n_ensemble, n_actions]
-        # h_next_sindy_ensemble = h_current.unsqueeze(1) + delta  # [batch, n_ensemble, n_actions]
-        h_next_sindy = torch.einsum('baf,bef->bea', library, sindy_coeffs)
-        
-        # # Get coefficients and masks for first ensemble member only
-        # sindy_coeffs = self.sindy_coefficients[module_name][participant_ids, ensemble_idx]  # [batch, n_library_terms]
-        # if len(sindy_coeffs.shape) == 1:
-        #     sindy_coeffs = sindy_coeffs[None]
-
-        # # Apply the mask to enforce sparsity
-        # mask = self.sindy_coefficient_masks[module_name][participant_ids, 0]  # [batch, n_library_terms]
-        # if len(mask.shape) == 1:
-        #     mask = mask[None]
-        # sindy_coeffs = sindy_coeffs * mask.float()
-
-        # # Compute polynomial library
-        # library = compute_polynomial_library(
-        #     h_current, controls, degree=polynomial_degree, include_bias=True
-        # )  # [batch, n_actions, n_library_terms]
-
-        # # Predict next state via SINDy: x_next = x + library @ coeff
-        # # library: [batch, n_actions, n_library_terms]
-        # # coeffs_sparse: [batch, n_library_terms]
-        # # Need to expand for matrix multiply per action
-        # # delta = torch.einsum('baf,bf->ba', library, coeffs_sparse)  # [batch, n_actions]
-        # # h_next_sindy = h_current + delta
-        # h_next_sindy = torch.einsum('baf,bf->ba', library, sindy_coeffs)
+        # library: [batch, actions, library_terms]
+        # coeffs_sparse: [batch, ensemble, library_terms]
+        # We want: [batch, ensemble, actions]
+        h_next_sindy = h_current.unsqueeze(1) + torch.einsum('bax,bex->bea', library, sindy_coeffs)
 
         return h_next_sindy     
     
@@ -564,41 +521,67 @@ class BaseRNN(nn.Module):
         
         return sindy_loss
         
-    def thresholding(self, threshold, n_terms_cutoff: int = None, base_threshold: float = 0.0):
+    def sindy_coefficient_cutoff(self, threshold, n_terms_cutoff: int = None, base_threshold: float = 0.0, patience: int = 1):
         """
-        Apply hard thresholding to SINDy coefficients and update the permanent masks.
+        Apply hard thresholding to SINDy coefficients with patience counter.
+        A coefficient is only thresholded out if it has been below threshold for 'patience' consecutive calls.
 
         Args:
             threshold (float): Base threshold value
             n_terms_cutoff (int, optional): Number of smallest terms below threshold to be cut off across all modules
                                         for each participant and ensemble member. If None, all terms below threshold are cut.
             base_threshold (float): Additive base threshold (default: 0.0)
+            patience (int): Number of consecutive epochs a coefficient must be below threshold before being cut (default: 1)
         """
         threshold_e = threshold + base_threshold
         module_list = list(self.submodules_rnn.keys())
 
         if n_terms_cutoff is None:
-            # Simple thresholding: mask all terms below threshold
+            # Simple thresholding: mask all terms below threshold with patience
             for module in module_list:
                 abs_coeffs = torch.abs(self.sindy_coefficients[module])
-                mask = (abs_coeffs > threshold_e)
+                below_threshold = (abs_coeffs <= threshold_e)
+
+                # Update patience counters
+                # Increment counter where coefficient is below threshold
+                self.sindy_cutoff_patience_counters[module] = torch.where(
+                    below_threshold,
+                    self.sindy_cutoff_patience_counters[module] + 1,
+                    torch.zeros_like(self.sindy_cutoff_patience_counters[module])  # Reset to 0 if above threshold
+                )
+
+                # Only threshold if patience exceeded
+                mask = (self.sindy_cutoff_patience_counters[module] < patience)
                 # Update the permanent mask
-                self.sindy_coefficient_masks[module] &= mask
+                self.sindy_coefficients_presence[module] &= mask
                 # Zero out the coefficients
                 self.sindy_coefficients[module].data *= mask.float()
+                # Reset patience counters for thresholded coefficients
+                self.sindy_cutoff_patience_counters[module] *= mask.int()
         else:
-            # Collect all coefficients and masks across modules
+            # Collect all coefficients, masks, and patience counters across modules
             # Shape: [n_participants, n_ensemble, total_library_terms]
             all_coeffs = torch.cat([self.sindy_coefficients[m].abs() for m in module_list], dim=-1)
-            all_masks = torch.cat([self.sindy_coefficient_masks[m] for m in module_list], dim=-1)
+            all_masks = torch.cat([self.sindy_coefficients_presence[m] for m in module_list], dim=-1)
+            all_patience = torch.cat([self.sindy_cutoff_patience_counters[m] for m in module_list], dim=-1)
+
+            # Update patience counters for all coefficients
+            below_threshold = (all_coeffs <= threshold_e) & (all_masks == 1)
+            all_patience = torch.where(
+                below_threshold,
+                all_patience + 1,
+                torch.zeros_like(all_patience)  # Reset to 0 if above threshold
+            )
             
-            # Identify candidates: active coefficients below threshold
-            # is_candidate = (all_masks > 0) & (torch.abs(all_coeffs) < threshold_e)
-            is_candidate = torch.logical_and(all_coeffs < threshold_e, all_masks == 1)
-            all_coeffs[~is_candidate] = torch.inf
-            
+            # Identify candidates: active coefficients that have exceeded patience
+            is_candidate = (all_patience >= patience) & (all_masks == 1)
+
+            # For n_terms_cutoff, only consider coefficients that exceed patience
+            temp_coeffs = all_coeffs.clone()
+            temp_coeffs[~is_candidate] = torch.inf
+
             # Find k smallest per [participant, ensemble]
-            _, indices = torch.topk(all_coeffs, n_terms_cutoff, dim=-1, largest=False)
+            _, indices = torch.topk(temp_coeffs, min(n_terms_cutoff, is_candidate.sum().item()), dim=-1, largest=False)
             # Shape: [n_participants, n_ensemble, k]
 
             # Create cutoff mask
@@ -606,49 +589,96 @@ class BaseRNN(nn.Module):
             cutoff_mask.scatter_(-1, indices, torch.ones_like(indices, dtype=torch.bool))
             cutoff_mask &= is_candidate  # Safety: only cut actual candidates
 
-            # Split masks back to modules and update both the coefficients and permanent masks
+            # Split back to modules and update
             start_idx = 0
             with torch.no_grad():
                 for module in module_list:
                     n_terms = self.sindy_coefficients[module].shape[-1]
+
+                    # Update patience counters for this module
+                    self.sindy_cutoff_patience_counters[module] = all_patience[..., start_idx:start_idx + n_terms]
+
                     keep_mask = ~cutoff_mask[..., start_idx:start_idx + n_terms]
                     # Update the permanent mask
-                    self.sindy_coefficient_masks[module] &= keep_mask
+                    self.sindy_coefficients_presence[module] &= keep_mask
                     # Zero out the coefficients
                     self.sindy_coefficients[module] *= keep_mask.float()
+                    # Reset patience counters for thresholded coefficients
+                    self.sindy_cutoff_patience_counters[module] *= keep_mask.int()
+
                     start_idx += n_terms
             
     def count_sindy_coefficients(self) -> torch.Tensor:
         coefficients = torch.zeros(self.n_participants, device=self.device)
         for module in self.submodules_rnn:
-            coefficients += (self.sindy_coefficient_masks[module] != 0).sum(dim=-1).float().mean(dim=1)
+            coefficients += (self.sindy_coefficients_presence[module] != 0).sum(dim=-1).float().mean(dim=1)
         return coefficients
 
-    def apply_gradient_masks(self):
+    def compute_weighted_coefficient_penalty(self, sindy_alpha: float = 0.0, norm: int = 1) -> torch.Tensor:
         """
-        Zero out gradients for masked coefficients.
-        This should be called after backward() but before optimizer.step().
-        """
-        for module in self.submodules_rnn:
-            if module in self.sindy_coefficients and self.sindy_coefficients[module].grad is not None:
-                # Zero out gradients for masked coefficients
-                self.sindy_coefficients[module].grad *= self.sindy_coefficient_masks[module].float()
-                    
-    def print_spice_model(self, participant_id: int = 0, ensemble_idx: int = 0) -> None:
-        """
-        Get the learned SPICE features and equations for each trained module.
+        Compute weighted coefficient penalty on SINDy coefficients based on polynomial degree.
+        Each term is penalized according to its degree: d=0 -> 1*coeff^2, d=1 -> 2*coeff^2, d=2 -> 3*coeff^2, etc.
 
         Args:
-            participant_id: Participant index to print
-            ensemble_idx: Ensemble member index to print (default: 0, the first member)
+            sindy_alpha: Base coefficient regularization weight
+            norm: Norm type (1 for L1, 2 for L2)
+
+        Returns:
+            Weighted coefficient penalty (scalar tensor)
         """
 
+        assert norm == 1 or norm == 2, "Only L1-norm or L2-norm are allowed."
+
+        if sindy_alpha == 0.0:
+            return torch.tensor(0.0, device=self.device)
+
+        penalty = torch.tensor(0.0, device=self.device)
+
+        for module_name in self.submodules_rnn:
+            if module_name not in self.sindy_coefficients:
+                continue
+
+            # Get coefficients: [n_participants, n_ensemble, n_library_terms]
+            coeffs = self.sindy_coefficients[module_name]
+
+            # Get degree weights: [n_library_terms]
+            degree_weights = self.sindy_degree_weights[module_name]
+
+            # Compute weighted coefficient penalty for each term
+            # For each coefficient, penalty = (degree + 1) * |coeff|^norm
+            # degree_weights already contains (degree + 1) for each term
+            if norm == 2:
+                # Sum across coefficient dimension, mean over participants and ensemble
+                weighted_penalty = ((coeffs ** 2) * degree_weights).sum(dim=-1).mean()
+            else:
+                # Sum across coefficient dimension, mean over participants and ensemble
+                weighted_penalty = (coeffs.abs() * degree_weights).sum(dim=-1).mean()
+
+            penalty += weighted_penalty
+
+        # Apply base coefficient weight
+        penalty = sindy_alpha * penalty
+
+        return penalty
+                    
+    def get_spice_model_string(self, participant_id: int = 0, ensemble_idx: int = 0) -> str:
+        """
+        Get the learned SPICE features and equations as a string.
+
+        Args:
+            participant_id: Participant index
+            ensemble_idx: Ensemble member index to print (default: 0, the first member)
+
+        Returns:
+            String representation of the SPICE model equations
+        """
+        lines = []
         for module in self.submodules_rnn:
-            sparse_coeffs = (self.sindy_coefficients[module][participant_id, ensemble_idx] * self.sindy_coefficient_masks[module][participant_id, ensemble_idx]).detach().cpu().numpy()
+            sparse_coeffs = (self.sindy_coefficients[module][participant_id, ensemble_idx] * self.sindy_coefficients_presence[module][participant_id, ensemble_idx]).detach().cpu().numpy()
             equation_str = module + "[t+1] = "
-            for index_term, term in enumerate(self.sindy_library_names[module]):
-                # if term == module:
-                #     coeff_value += 1
+            for index_term, term in enumerate(self.sindy_candidate_terms[module]):
+                if term == module:
+                    sparse_coeffs[index_term] += 1
                 if np.abs(sparse_coeffs[index_term]) != 0:
                     if equation_str[-3:] != " = ":
                         equation_str += "+ "
@@ -656,8 +686,19 @@ class BaseRNN(nn.Module):
                     equation_str += "[t] " if term == module else " "
             if equation_str[-3:] == " = ":
                 equation_str += "0"
-            print(equation_str)
-    
+            lines.append(equation_str)
+        return "\n".join(lines)
+
+    def print_spice_model(self, participant_id: int = 0, ensemble_idx: int = 0) -> None:
+        """
+        Print the learned SPICE features and equations for each trained module.
+
+        Args:
+            participant_id: Participant index to print
+            ensemble_idx: Ensemble member index to print (default: 0, the first member)
+        """
+        print(self.get_spice_model_string(participant_id, ensemble_idx))
+
     def eval(self, use_sindy=True):
         super().eval()
         self.use_sindy = use_sindy
