@@ -76,8 +76,8 @@ if __name__=='__main__':
     warmup_steps = 100
     
     example_participant = 1
-    plot_coef_dist = False
-    
+    plot_coef_dist = True
+        
     if args.train_ratio_time and args.test_sessions:
         raise ValueError("kwargs train_ratio_time and test_sessions cannot be assigned at the same time.")
     
