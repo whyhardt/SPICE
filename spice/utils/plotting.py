@@ -2,6 +2,7 @@ import sys, os
 from typing import List, Union, Dict
 
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.colors import Normalize
 import matplotlib.cm as cm
@@ -273,3 +274,40 @@ def plot_session(
         plt.savefig(save, dpi=300)
     
     return fig, axs
+
+
+def plot_reward_probs(datasets: List[Tuple[str, pd.DataFrame, np.ndarray]]):
+    fig, axes = plt.subplots(len(datasets), 1, figsize=(12, 3.5 * len(datasets)), sharex=True)
+    if len(datasets) == 1:
+        axes = [axes]
+
+    colors = ['#1f77b4', '#ff7f0e']
+    linestyles = ['-', '--']
+
+    for ax, (title, df, reward_probs) in zip(axes, datasets):
+        # Convert list of arrays to 2D numpy array: shape (n_trials, n_arms)
+        reward_prob_array = np.array(reward_probs)
+        n_arms = reward_prob_array.shape[1]
+
+        # Plot each arm's time series
+        for arm_idx in range(n_arms):
+            label = f"Arm {arm_idx}"
+            ax.plot(
+                reward_prob_array[:, arm_idx],  # Time series for this arm
+                label=label,
+                color=colors[arm_idx % len(colors)],
+                linestyle=linestyles[arm_idx % len(linestyles)],
+                linewidth=2,
+            )
+
+        ax.set_title(title, fontsize=12, fontweight="bold")
+        ax.set_ylabel("Reward Probability")
+        ax.set_ylim(0, 1)
+        ax.grid(alpha=0.3)
+        ax.legend()
+
+    axes[-1].set_xlabel("Trial")
+    fig.suptitle("Reward Probabilities per Dataset (Session 0)", fontsize=14, fontweight="bold")
+    fig.tight_layout(rect=[0, 0, 1, 0.97])
+
+    return fig, axes    
