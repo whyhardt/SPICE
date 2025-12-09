@@ -7,7 +7,6 @@ import torch
 import matplotlib.pyplot as plt
 import pandas as pd
 
-
 from spice.estimator import SpiceEstimator
 from spice.utils.convert_dataset import convert_dataset, split_data_along_sessiondim, split_data_along_timedim
 from spice.utils.plotting import plot_session
@@ -63,17 +62,17 @@ if __name__=='__main__':
     # args.n_items=8
     # args.test_sessions="1"
     
-    args.data = "weinhardt2025/data/synthetic/synthetic_ApAnBcF_var.csv"
-    args.model = "weinhardt2025/params/spice_synthetic.pkl"
+    # args.data = "weinhardt2025/data/synthetic/synthetic_256p_0.csv"
+    # args.model = args.data.replace("data", "params").replace("/synthetic_", "/spice_synthetic_").replace(".csv", "_2.pkl")
     
-    args.epochs = 0
+    args.epochs = 4000
     args.lr = 0.01
     args.sindy_cutoff_freq = 1
     args.sindy_cutoff = 1
     args.sindy_cutoff_patience = 100
     args.sindy_threshold = 0.05
-    args.sindy_alpha = 0.001
-    warmup_steps = 100
+    args.sindy_alpha = 0.0001
+    warmup_steps = 1000
     
     example_participant = 1
     plot_coef_dist = True
@@ -107,7 +106,7 @@ if __name__=='__main__':
     else:
         spice_model = workingmemory_multiitem
 
-    # spice_model = choice
+    # spice_model = rescorlawagner
     
     class_rnn = spice_model.SpiceModel
     spice_config = spice_model.CONFIG
@@ -147,7 +146,7 @@ if __name__=='__main__':
         
         # other parameters
         verbose=True,
-        device=torch.device('cuda' if torch.cuda.is_available() else 'cpu'),
+        device=torch.device('cpu'),#torch.device('cuda' if torch.cuda.is_available() else 'cpu'),
         save_path_spice=args.model,
     )
     
@@ -181,17 +180,17 @@ if __name__=='__main__':
         dataset_df = pd.read_csv(args.data)
 
         # get the parameters for the selected participant and set up the ground truth model
-        n_trials = 100
+        n_trials = 200
         dataset_df = dataset_df[dataset_df['session'] == example_participant]
 
         agents['groundtruth'] = AgentQ(
             n_actions=2,
-            beta_reward=dataset_df['beta_reward'][example_participant * n_trials],
-            alpha_reward=dataset_df['alpha_reward'][example_participant * n_trials],
-            alpha_penalty=dataset_df['alpha_penalty'][example_participant * n_trials],
-            forget_rate=dataset_df['forget_rate'][example_participant * n_trials],
-            beta_choice=dataset_df['beta_choice'][example_participant * n_trials],
-            alpha_choice=dataset_df['alpha_choice'][example_participant * n_trials],
+            beta_reward=dataset_df['beta_reward'].values[0],
+            alpha_reward=dataset_df['alpha_reward'].values[0],
+            alpha_penalty=dataset_df['alpha_penalty'].values[0],
+            forget_rate=dataset_df['forget_rate'].values[0],
+            beta_choice=dataset_df['beta_choice'].values[0],
+            alpha_choice=dataset_df['alpha_choice'].values[0],
         )
 
     fig, axs = plot_session(

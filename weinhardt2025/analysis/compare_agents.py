@@ -5,18 +5,25 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from resources.bandits import Agent, AgentQ, BanditsDrift, BanditsSwitch, plot_session, create_dataset, get_update_dynamics
-from utils.plotting import plot_session
-from benchmarking import benchmarking_dezfouli2019, benchmarking_eckstein2022
-from utils.convert_dataset import convert_dataset
+from spice.resources.bandits import Agent, AgentQ, AgentQ_alternative, BanditsDrift, BanditsSwitch, plot_session, create_dataset, get_update_dynamics
+from spice.utils.plotting import plot_session
+from spice.utils.convert_dataset import convert_dataset
 
 
-path_data = 'data/data_128p_0.csv'
+path_data = 'weinhardt2025/data/synthetic/synthetic_ApAnBc.csv'
 path_model = 'benchmarking/params/mcmc_eckstein2022_ApAnBrBcfBch.nc'
 
 agent1 = AgentQ(
     beta_reward=3.,
-    alpha_reward=0.25,
+    alpha_reward=0.,
+    alpha_penalty=0.5,
+    beta_choice=1.,
+    )
+
+agent2 = AgentQ_alternative(
+    beta_reward=3.,
+    alpha_reward=0.,
+    alpha_penalty=0.5,
     beta_choice=1.,
     )
 
@@ -31,17 +38,18 @@ agent1 = AgentQ(
 #     deterministic=False,
 # )
 
-rl_model = benchmarking_eckstein2022.rl_model
-agent2 = benchmarking_eckstein2022.setup_agent_benchmark(path_model=path_model, model_config='ApBr')
+# rl_model = benchmarking_eckstein2022.rl_model
+# agent2 = benchmarking_eckstein2022.setup_agent_benchmark(path_model=path_model, model_config='ApBr')
 
 # env = EnvironmentBanditsSwitch(0.05, reward_prob_high=1.0, reward_prob_low=0.5)
 # env = BanditsDrift(0.2)
 # trajectory = create_dataset(agent1, env, 128, 1)[0]
-trajectory = convert_dataset(path_data)[0]
+
+trajectory = convert_dataset(path_data)
 
 agents = {
     'groundtruth': agent1, 
-    'benchmark': agent2[0][0],
+    'benchmark': agent2,
     }
 fig, axs = plot_session(agents, trajectory.xs[0])
 plt.show()

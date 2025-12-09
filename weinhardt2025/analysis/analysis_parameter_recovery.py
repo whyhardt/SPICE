@@ -8,106 +8,50 @@ import seaborn as sns
 from copy import copy
 from sklearn.linear_model import LinearRegression
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from utils.setup_agents import setup_agent_spice
-from resources.bandits import AgentSpice
-from resources.rnn import RLRNN_eckstein2022 as RLRNN
-from resources.sindy_utils import SindyConfig_eckstein2022 as SindyConfig
+from spice.utils.setup_agents import setup_agent
+from spice.precoded import workingmemory, choice
 
 
 save_plots = False
+spice_model = workingmemory
 
 # -----------------------------------------------------------------------------------------------
 # create a mapping of ground truth parameters to library parameters
 # -----------------------------------------------------------------------------------------------
 
-mapping_x_learning_rate_reward = {
-    '1': lambda alpha_reward, alpha_penalty: alpha_penalty,
-     
-    'x_learning_rate_reward': lambda alpha_reward, alpha_penalty: 0,
-    
-    'c_reward_chosen': lambda alpha_reward, alpha_penalty: alpha_reward,
-    
-    'c_value_reward': lambda alpha_reward, alpha_penalty: 0,
+mapping_value_reward_chosen = {
+    'value_reward_chosen': lambda alpha_reward, alpha_penalty, beta_reward: 1-alpha_penalty if beta_reward > 0 else 0,
+    'reward[t]': lambda alpha_reward, alpha_penalty, beta_reward: beta_reward*alpha_reward,
+    'value_reward_chosen*reward[t]': lambda alpha_reward, alpha_penalty, beta_reward: alpha_reward-alpha_penalty if beta_reward > 0 else 0,
+    }
 
-    'c_value_choice': lambda alpha_reward, alpha_penalty: 0,
-    
-    # 'x_learning_rate_reward c_value_reward': lambda alpha_reward, alpha_penalty: 0,
-    # 'c_value_reward x_learning_rate_reward': lambda alpha_reward, alpha_penalty: 0,
-    
-    # 'x_learning_rate_reward c_reward': lambda alpha_reward, alpha_penalty: 0,
-    # 'c_reward x_learning_rate_reward': lambda alpha_reward, alpha_penalty: 0,
-    
-    # 'x_learning_rate_reward^2': lambda alpha_reward, alpha_penalty: 0,
-    
-    # 'c_value_reward c_reward': lambda alpha_reward, alpha_penalty: 0,
-    # 'c_reward c_value_reward': lambda alpha_reward, alpha_penalty: 0,
-    
-    # 'c_value_reward^2': lambda alpha_reward, alpha_penalty: 0,
-    
-    # 'c_reward^2': lambda alpha_reward, alpha_penalty: 0,
-}
+mapping_value_reward_not_chosen = {
+    '1': lambda forget_rate, beta_reward: beta_reward*0.5*forget_rate,
+    'value_reward_not_chosen': lambda forget_rate, beta_reward: 1-forget_rate if beta_reward > 0 else 0,
+    }
 
-mapping_x_value_reward_not_chosen = {
-    '1': lambda forget_rate: 0.5*forget_rate,
-    
-    'x_value_reward_not_chosen': lambda forget_rate: 1-forget_rate,
-    
-    'c_reward_chosen': lambda forget_rate: 0,
-    
-    'c_value_choice': lambda forget_rate: 0,
-    
-    # 'x_value_reward_not_chosen c_reward': lambda forget_rate: 0,
-    # 'c_reward x_value_reward_not_chosen': lambda forget_rate: 0,
-    
-    # 'x_value_reward_not_chosen^2': lambda forget_rate: 0,
-    
-    # 'c_reward^2': lambda forget_rate: 0,
-}
+mapping_value_choice_chosen = {
+    '1': lambda alpha_choice, beta_choice: beta_choice*1,
+    }
 
-mapping_x_value_choice_chosen = {
-    '1': lambda alpha_choice: 1, #alpha_choice,
-    
-    'x_value_choice_chosen': lambda alpha_choice: 0,
-    
-    'c_value_reward': lambda alpha_choice: 0,
-    
-    # 'x_value_choice_chosen^2': lambda alpha_choice: 0,
-}
-
-mapping_x_value_choice_not_chosen = {
-    '1': lambda alpha_choice: 0,
-    
-    'x_value_choice_not_chosen': lambda alpha_choice: 0,
-    
-    'c_value_reward': lambda alpha_choice: 0,    
-    
-    # 'x_value_choice_not_chosen^2': lambda alpha_choice: 0,
-}
-
-mapping_betas = {
-    'x_learning_rate_reward': lambda agent_or_data: agent_or_data.get_betas()['x_value_reward'] if isinstance(agent_or_data, AgentSpice) else agent_or_data['beta_reward'], # Question: no scaling of learning rate?
-    'x_value_reward_not_chosen': lambda agent_or_data: agent_or_data.get_betas()['x_value_reward'] if isinstance(agent_or_data, AgentSpice) else agent_or_data['beta_reward'],
-    'x_value_choice_chosen': lambda agent_or_data: agent_or_data.get_betas()['x_value_choice'] if isinstance(agent_or_data, AgentSpice) else agent_or_data['beta_choice'],
-    'x_value_choice_not_chosen': lambda agent_or_data: agent_or_data.get_betas()['x_value_choice'] if isinstance(agent_or_data, AgentSpice) else agent_or_data['beta_choice'],
-}
+mapping_value_choice_not_chosen = {
+    '1': lambda alpha_choice, beta_choice: 0,
+    }
 
 mapping_libraries = {
-    'x_learning_rate_reward': mapping_x_learning_rate_reward,
-    'x_value_reward_not_chosen': mapping_x_value_reward_not_chosen,
-    'x_value_choice_chosen': mapping_x_value_choice_chosen,
-    'x_value_choice_not_chosen': mapping_x_value_choice_not_chosen,
+    'value_reward_chosen': mapping_value_reward_chosen,
+    'value_reward_not_chosen': mapping_value_reward_not_chosen,
+    'value_choice_chosen': mapping_value_choice_chosen,
+    'value_choice_not_chosen': mapping_value_choice_not_chosen,
 }
 
 mapping_variable_names = {
     '1': '1',
-    'x_learning_rate_reward': r'$\alpha_{t}$',
-    'x_value_reward_not_chosen': r'$q_{r,t}$',
-    'x_value_choice_chosen': r'$q_{c,t}$',
-    'x_value_choice_not_chosen': r'$q_{c,t}$',
-    'c_reward_chosen': r'$r$',
-    'c_value_reward': r'$q_{r}$',
-    'c_value_choice': r'$q_{c}$',
+    'value_reward_chosen': r'$q_{t}$',
+    'value_reward_not_chosen': r'$q_{t}$',
+    'value_choice_chosen': r'$c_{t}$',
+    'value_choice_not_chosen': r'$c_{t}$',
+    'reward': r'$r$',
 }
 
 
@@ -115,33 +59,21 @@ mapping_variable_names = {
 # analysis auxiliary functions
 # -----------------------------------------------------------------------------------------------
 
-# special-cases-handles
-# necessary because some sindy notations in the mappings interpet the parameters differently than AgentQ
-def handle_asymmetric_learning_rates(alpha_reward, alpha_penalty):
-    # in AgentQ: alpha = alpha_reward if reward > 0.5 else alpha_penalty
-    # in SINDy: alpha = alpha_penalty 1 - alpha_reward r 
-    if alpha_reward == alpha_penalty:
-        # same learning rates -> 'c_reward' in SINDy is 0 in simplest model
-        alpha_reward = 0
-    elif alpha_reward > alpha_penalty:
-        alpha_reward = alpha_reward - alpha_penalty
-    elif alpha_reward < alpha_penalty:
-        alpha_reward = -1 * (alpha_penalty - alpha_reward)
-    return alpha_reward, alpha_penalty
-
 def argument_extractor(data, library: str):
-    if library == 'x_learning_rate_reward':
-        return handle_asymmetric_learning_rates(data['alpha_reward'], data['alpha_penalty'])
-    elif library == 'x_value_reward_not_chosen':
-        return tuple([data['forget_rate']])
-    elif library == 'x_value_choice_chosen':
-        return tuple([data['alpha_choice']])
-    elif library == 'x_value_choice_not_chosen':
-        return tuple([data['alpha_choice']])
+    if library == 'value_reward_chosen':
+        return data['alpha_reward'], data['alpha_penalty'], data['beta_reward']
+    elif library == 'value_reward_not_chosen':
+        return data['forget_rate'], data['beta_reward']
+    elif library == 'value_choice_chosen':
+        return data['alpha_choice'], data['beta_choice']
+    elif library == 'value_choice_not_chosen':
+        return data['alpha_choice'], data['beta_choice']
     else:
         raise ValueError(f'The argument extractor for the library {library} is not implemented.')
-    
+
 def identified_params(true_coefs: np.ndarray, recovered_coefs: np.ndarray):
+    zero_division_offset = 1e-9
+    
     # check which true coefficients are zeros and non-zeros
     non_zero_features = true_coefs != 0
     zero_features = true_coefs == 0
@@ -153,10 +85,10 @@ def identified_params(true_coefs: np.ndarray, recovered_coefs: np.ndarray):
     false_pos = np.sum(recovered_coefs[zero_features] != 0)
     
     # get identification rates of correctly and non-correctly identified parameters
-    true_pos_rel = true_pos / np.sum(non_zero_features) if np.sum(non_zero_features) > 0 else np.nan
-    false_neg_rel = false_neg / np.sum(non_zero_features) if np.sum(non_zero_features) > 0 else np.nan
-    true_neg_rel = true_neg / np.sum(zero_features) if np.sum(zero_features) > 0 else np.nan
-    false_pos_rel = false_pos / np.sum(zero_features) if np.sum(zero_features) > 0 else np.nan
+    true_pos_rel = (true_pos+zero_division_offset) / (np.sum(non_zero_features)+zero_division_offset)
+    false_neg_rel = (false_neg+zero_division_offset) / (np.sum(non_zero_features)+zero_division_offset)
+    true_neg_rel = (true_neg+zero_division_offset) / (np.sum(zero_features)+zero_division_offset)
+    false_pos_rel = (false_pos+zero_division_offset) / (np.sum(zero_features)+zero_division_offset)
     
     return (true_pos, true_neg, false_pos, false_neg), (true_pos_rel, true_neg_rel, false_pos_rel, false_neg_rel)
 
@@ -197,18 +129,15 @@ def n_true_params(true_coefs):
 # -----------------------------------------------------------------------------------------------
 
 random_sampling = [0.25, 0.5, 0.75]
-n_sessions = [128]#[16, 32, 64, 128, 256]
+n_sessions = [256]#[16, 32, 64, 128, 256]
 iterations = 1
 
-base_name_data = 'data/parameter_recovery/data_SESSp_IT.csv'
-base_name_params = 'params'#/parameter_recovery'#/rnn_SESSp_IT.pkl'
+base_name_data = 'weinhardt2025/data/synthetic/synthetic_SESSp_IT.csv'
+base_name_params = 'weinhardt2025/params/synthetic/spice_synthetic_SESSp_IT_1.pkl'
 kw_participant_id = 'session'
 path_plots = 'analysis/plots_parameter_recovery'
 
-# meta parameters
-# mapping_lens = {'x_V_LR': 10, 'x_V_nc': 3, 'x_C': 3, 'x_C_nc': 3}
-mapping_lens = {'x_V_LR': 5, 'x_V_nc': 4, 'x_C': 3, 'x_C_nc': 3}
-n_candidate_terms = np.sum([mapping_lens[key] for key in mapping_lens])
+# ground truth parameters (alpha_reward, alpha_penalty, forget_rate, beta_reward, beta_choice)
 n_params_q = 5
 
 # -----------------------------------------------------------------------------------------------
@@ -244,40 +173,26 @@ random_sampling, n_sessions = tuple(random_sampling), tuple(n_sessions)
 for index_sess, sess in enumerate(n_sessions):
     for it in range(iterations):
         path_data = base_name_data.replace('SESS', str(sess)).replace('IT', str(it))
-        # path_rnn = base_name_params.replace('SESS', str(sess)).replace('IT', str(it))
-        path_rnn = os.path.join(base_name_params, path_data.split(os.path.sep)[-1].replace('.csv', '.pkl').replace('data', 'rnn'))
-        path_spice = path_rnn.replace('rnn', 'spice')
-        
-        if not os.path.isfile(path_rnn):
-            continue
+        path_spice = base_name_params.replace('SESS', str(sess)).replace('IT', str(it))
             
         # setup of ground truth model from current dataset
         data = pd.read_csv(path_data)
         participant_ids = np.unique(data[kw_participant_id].values)
         
         # setup of sindy agent for current dataset
-        sindy_agent = setup_agent_spice(
-            class_rnn=RLRNN,
-            path_rnn=path_rnn, 
-            path_data=path_data,
-            path_spice=path_spice,
-            rnn_modules=SindyConfig['rnn_modules'], 
-            control_parameters=SindyConfig['control_parameters'], 
-            sindy_library_setup=SindyConfig['library_setup'],
-            sindy_filter_setup=SindyConfig['filter_setup'],
-            sindy_dataprocessing=SindyConfig['dataprocessing_setup'],
-            sindy_library_polynomial_degree=1,
-            use_optuna=True,
-            )
-        sindy_models = sindy_agent.get_modules()
+        spice_agent = setup_agent(
+            class_rnn=spice_model.SpiceModel,
+            path_model=path_spice, 
+            spice_config=spice_model.CONFIG,
+            )[0]
         
         for index_participant, participant in enumerate(participant_ids):
-            sindy_agent.new_sess(participant_id=participant)
+            spice_agent.new_sess(participant_id=participant)
             
             # get all true parameters of current participant from dataset
             data_coefs_all = data.loc[data[kw_participant_id]==participant].iloc[-1]
             index_params = n_true_params(copy(data_coefs_all)) - 1
-            
+
             sindy_coefs_array = []
             data_coefs_array = []
             feature_names = []
@@ -285,21 +200,20 @@ for index_sess, sess in enumerate(n_sessions):
             index_all_candidate_terms = 0
             for index_library, library in enumerate(mapping_libraries):
                 # get sindy coefficients
-                sindy_coefs_library = sindy_models[library][participant].coefficients()[0]
-                # drop every entry feature that contains a u-feature (i.e. dummy-feature)
-                feature_names_library = sindy_models[library][participant].get_feature_names()
-                index_keep = ['dummy' not in feature for feature in feature_names_library]
-                sindy_coefs_array += (sindy_coefs_library[index_keep] * mapping_betas[library](sindy_agent)).tolist()
-                feature_names_library = np.array(feature_names_library)[index_keep]
-                feature_names += feature_names_library.tolist()
+                sindy_coefs_library = spice_agent.model.sindy_coefficients[library][index_participant][0].detach().cpu().numpy()
+                delta = np.zeros_like(sindy_coefs_library)
+                delta[1] += 1
+                sindy_coefs_presence_library = spice_agent.model.sindy_coefficients_presence[library][index_participant][0].detach().cpu().numpy()
+                feature_names_library = spice_agent.model.sindy_candidate_terms[library]
+                sindy_coefs_array += ((delta+sindy_coefs_library) * sindy_coefs_presence_library).tolist()
+                feature_names += feature_names_library
                 
                 # translate data coefficient to sindy coefficients
-                data_coefs_library = np.zeros(len(feature_names_library))
+                data_coefs_library = np.zeros_like(sindy_coefs_library)
                 for index_feature, feature in enumerate(feature_names_library):
-                    # data_coefs[feature] = mapping_libraries[library][feature](*argument_extractor(data_coefs_all, library)) 
-                    data_coefs_library[index_feature] = mapping_libraries[library][feature](*argument_extractor(data_coefs_all, library)) * mapping_betas[library](data_coefs_all)
+                    data_coefs_library[index_feature] = mapping_libraries[library].get(feature, lambda *args: 0)(*argument_extractor(data_coefs_all, library))
                 data_coefs_array += data_coefs_library.tolist()
-            
+
             sindy_coefs_array = np.array(sindy_coefs_array)
             data_coefs_array = np.array(data_coefs_array)
             
@@ -325,16 +239,16 @@ for index_sess, sess in enumerate(n_sessions):
             false_neg_count[index_sess, index_params] += false_neg
             
             # add identification rates
-            true_pos_rates[index_sess, it, index_params] += true_pos_rel if not np.isnan(true_pos_rel) else 0
-            true_neg_rates[index_sess, it, index_params] += true_neg_rel if not np.isnan(true_neg_rel) else 0
-            false_pos_rates[index_sess, it, index_params] += false_pos_rel if not np.isnan(false_pos_rel) else 0
-            false_neg_rates[index_sess, it, index_params] += false_neg_rel if not np.isnan(false_neg_rel) else 0
+            true_pos_rates[index_sess, it, index_params] += true_pos_rel
+            true_neg_rates[index_sess, it, index_params] += true_neg_rel
+            false_pos_rates[index_sess, it, index_params] += false_pos_rel
+            false_neg_rates[index_sess, it, index_params] += false_neg_rel
             
             # add identification rate counter
-            true_pos_rates_count[index_sess, it, index_params] += 1 if not np.isnan(true_pos_rel) else 0
-            true_neg_rates_count[index_sess, it, index_params] += 1 if not np.isnan(true_neg_rel) else 0
-            false_pos_rates_count[index_sess, it, index_params] += 1 if not np.isnan(false_pos_rel) else 0
-            false_neg_rates_count[index_sess, it, index_params] += 1 if not np.isnan(false_neg_rel) else 0
+            true_pos_rates_count[index_sess, it, index_params] += 1
+            true_neg_rates_count[index_sess, it, index_params] += 1
+            false_pos_rates_count[index_sess, it, index_params] += 1
+            false_neg_rates_count[index_sess, it, index_params] += 1
             
             # sample random coefficients for biggest dataset
             if sess == max(n_sessions):
@@ -384,44 +298,19 @@ for index_sess in range(len(n_sessions)):
     # Filter out the rows exceeding the threshold
     true_params[index_sess] = true_params[index_sess][mask_keep]
     recovered_params[index_sess] = recovered_params[index_sess][mask_keep]
-    
-print(f'excluded parameters because of high values: {removed_params}')
 
-# get all features across all libraries; remove dummy features with are named 'dummy'
-feature_names = []
-for library in mapping_libraries:
-    feature_names += sindy_models[library][participant].get_feature_names()
-index_keep = ['dummy' not in feature for feature in feature_names]
-feature_names = np.array(feature_names)[index_keep]
+if removed_params > 0:
+    print(f'excluded parameters because of high values: {removed_params}')
 
-correlation_matrix, recovery_errors, recovery_errors_median, recovery_errors_std = [], [], [], []
+zero_division_offset = 1e-9
 for index_sess in range(len(n_sessions)):
-#     correlation_matrix.append(
-#         pd.DataFrame(
-#             np.corrcoef(
-#                 true_params[index_sess], 
-#                 recovered_params[index_sess], 
-#                 rowvar=False,
-#                 )[len(feature_names):, :len(feature_names)],
-#             columns=feature_names,
-#             index=feature_names,
-#             )
-#         )
 
     # normalizing params
-    v_max = np.nanmax(true_params[index_sess], axis=0)
-    v_min = np.nanmin(true_params[index_sess], axis=0)
-    index_normalize = v_max-v_min != 0
+    v_max = np.max(true_params[index_sess], axis=0) + zero_division_offset
+    v_min = np.min(true_params[index_sess], axis=0)
     
-    true_params[index_sess] = (true_params[index_sess] - v_min)
-    true_params[index_sess][:, index_normalize] = true_params[index_sess][:, index_normalize] / (v_max - v_min)[index_normalize]
-    
-    recovered_params[index_sess] = (recovered_params[index_sess] - v_min) 
-    recovered_params[index_sess][:, index_normalize] = recovered_params[index_sess][:, index_normalize]/ (v_max - v_min)[index_normalize]
-    
-    recovery_errors.append(
-        true_params[index_sess] - recovered_params[index_sess]
-        )
+    true_params[index_sess] = (true_params[index_sess] - v_min) / (v_max - v_min)
+    recovered_params[index_sess] = (recovered_params[index_sess] - v_min) / (v_max - v_min)
 
 
 # ------------------------------------------------
@@ -438,16 +327,20 @@ true_neg_rates[true_neg_rates_count == 0] = np.nan
 false_pos_rates[false_pos_rates_count == 0] = np.nan
 false_neg_rates[false_neg_rates_count == 0] = np.nan
 
-true_pos_sessions_mean = np.nanmean(true_pos_rates, axis=1)
-true_neg_sessions_mean = np.nanmean(true_neg_rates, axis=1)
-false_pos_sessions_mean = np.nanmean(false_pos_rates, axis=1)
-false_neg_sessions_mean = np.nanmean(false_neg_rates, axis=1)
+true_pos_rates_sessions_mean = np.nanmean(true_pos_rates, axis=1)
+true_neg_rates_sessions_mean = np.nanmean(true_neg_rates, axis=1)
+false_pos_rates_sessions_mean = np.nanmean(false_pos_rates, axis=1)
+false_neg_rates_sessions_mean = np.nanmean(false_neg_rates, axis=1)
 
-true_pos_sessions_std = np.nanstd(true_pos_rates, axis=1)
-true_neg_sessions_std = np.nanstd(true_neg_rates, axis=1)
-false_pos_sessions_std = np.nanstd(false_pos_rates, axis=1)
-false_neg_sessions_std = np.nanstd(false_neg_rates, axis=1)
+true_pos_rates_sessions_std = np.nanstd(true_pos_rates, axis=1)
+true_neg_rates_sessions_std = np.nanstd(true_neg_rates, axis=1)
+false_pos_rates_sessions_std = np.nanstd(false_pos_rates, axis=1)
+false_neg_rates_sessions_std = np.nanstd(false_neg_rates, axis=1)
 
+# true_pos_count_sessions_mean = np.nanmean(true_pos_count, axis=1)
+# true_neg_count_sessions_mean = np.nanmean(true_neg_count, axis=1)
+# false_pos_count_sessions_mean = np.nanmean(false_pos_count, axis=1)
+# false_neg_count_sessions_mean = np.nanmean(false_neg_count, axis=1)
 
 # ------------------------------------------------
 # post-processing identification counts
@@ -467,14 +360,19 @@ v_min = 0
 v_max = 1#np.nanmax(np.stack((true_pos_sessions_mean, false_pos_sessions_mean, true_neg_sessions_mean, false_neg_sessions_mean)), axis=(-1, -2, -3))
 
 identification_matrix_mean = [
-    [true_pos_sessions_mean , false_pos_sessions_mean], 
-    [false_neg_sessions_mean , true_neg_sessions_mean],
+    [true_pos_rates_sessions_mean , false_pos_rates_sessions_mean], 
+    [false_neg_rates_sessions_mean , true_neg_rates_sessions_mean],
 ]
 
 identification_matrix_std = [
-    [true_pos_sessions_std, false_pos_sessions_std], 
-    [false_neg_sessions_std, true_neg_sessions_std],
+    [true_pos_rates_sessions_std, false_pos_rates_sessions_std], 
+    [false_neg_rates_sessions_std, true_neg_rates_sessions_std],
     ]
+
+# identification_matrix_mean = [
+#     [true_pos_count, false_pos_count], 
+#     [false_neg_count, true_neg_count],
+# ]
 
 identification_metrics_matrix = [
     [accuracy, precision],
@@ -558,53 +456,6 @@ if save_plots:
 else:
     plt.show()
 
-# line plots
-
-fig, axs = plt.subplots(
-    nrows=len(identification_matrix_mean), 
-    ncols=len(identification_matrix_mean[0]),
-    sharey=True,
-    )
-
-for index_row, row in enumerate(identification_matrix_mean):
-    for index_col, col in enumerate(row):
-        if col is not None:
-            ax = axs[index_row, index_col]
-            for index_sample_size, sample_size in enumerate(y_tick_labels):
-                std = np.std(col[index_sample_size])
-                ax.fill_between(
-                    x=np.arange(0, n_params_q),
-                    y1=col[index_sample_size] + identification_matrix_std[index_row][index_col][index_sample_size],
-                    y2=col[index_sample_size] - identification_matrix_std[index_row][index_col][index_sample_size],
-                    alpha=alphas[index_sample_size]
-                    )
-                ax.plot(
-                    np.arange(0, n_params_q),
-                    col[index_sample_size],
-                    marker='.',
-                    linestyle=linestyles[index_sample_size],
-                    label=sample_size,
-                    markersize=10,
-                    )
-                # Set titles for individual subplots
-                ax.set_title(identification_headers[index_row][index_col])
-                
-                # Configure x-axis labels and ticks only for the lowest row
-                if index_row == len(identification_matrix_mean) - 1:
-                    ax.set_xlabel('$n_{parameters}$')
-                    ax.set_xticks(bin_edges_params)
-                    ax.tick_params(axis='x', labelsize=8)
-                else:
-                    ax.set_xticklabels([])
-
-                ax.set_ylim([0, 1])
-axs[0, 0].legend()
-plt.tight_layout()
-
-if save_plots:
-    plt.savefig(os.path.join(path_plots, 'ident_rates_lines'), dpi=500)
-else:
-    plt.show()
 
 # heatmap of accuracy, precision, true positive rate, false positive rate
 
@@ -646,175 +497,7 @@ else:
 # parameter correlation coefficients
 # ------------------------------------------------
 
-# heatmaps per dataset size
-
-# v_min, v_max = -1, 1
-# fig, axs = plt.subplots(
-#     nrows=1, 
-#     ncols=len(n_sessions)+1,
-#     gridspec_kw={
-#         'width_ratios': [10]*len(n_sessions) + [1],
-#         },
-#     )
-
-# for index_sess in range(len(n_sessions)):
-#     sns.heatmap(
-#         correlation_matrix[index_sess],
-#         annot=True,
-#         cmap='viridis',
-#         center=0,
-#         ax=axs[index_sess],
-#         cbar=True if index_sess == len(n_sessions)-1 else False,
-#         cbar_ax=axs[index_sess+1],
-#         xticklabels=feature_names,
-#         yticklabels=feature_names if index_sess == 0 else ['']*len(feature_names),
-#         vmin=v_min,
-#         vmax=v_max,
-#         )
-# plt.show()
-
 # box plot
-
-# fig, axs = plt.subplots(
-#     nrows=1, 
-#     ncols=max((len(n_sessions), 2)),
-#     sharey=True,
-#     )
-
-# for index_sess in range(len(n_sessions)):
-#     ax = axs[index_sess]
-#     sns.boxplot(
-#         pd.DataFrame(
-#             recovery_errors[index_sess],
-#             columns=feature_names,
-#         ),
-#         ax=ax,
-#         showfliers=False,
-#     )
-#     ax.plot(feature_names[-1], 0, '--', color='tab:gray', linewidth=0.5)
-#     ax.tick_params(axis='x', labelrotation=45, labelsize=8)
-#     ax.tick_params(axis='y', labelsize=8)
-#     ax.set_title(n_sessions[index_sess])
-# plt.show()
-
-# #  scatter plot
-
-# fig, axs = plt.subplots(
-#     nrows=max((len(n_sessions), 2)),
-#     ncols=len(feature_names),
-#     )
-
-# for index_sess in range(len(n_sessions)):
-#     for index_feature in range(len(feature_names)):
-#         ax = axs[index_sess, index_feature]
-        
-#         ax.scatter(
-#             true_params[index_sess][:, index_feature], 
-#             recovered_params[index_sess][:, index_feature], 
-#             marker='o', 
-#             color='tab:red', 
-#             alpha=0.2,
-#             )
-#         ax.plot(np.linspace(0, 1, 100), np.linspace(0, 1, 100), '--', color='tab:gray')
-        
-#         # Axes settings
-#         ax.set_ylim(0, 1)
-#         ax.set_xlim(0, 1)
-        
-#         if index_sess != len(n_sessions) - 1:
-#             ax.tick_params(axis='x', which='both', labelbottom=False)  # No x-axis ticks
-#         else:
-#             ax.set_xlabel('True', fontsize=10)
-#             ax.tick_params(axis='x', labelsize=8)
-        
-#         if index_feature != 0:
-#             ax.tick_params(axis='y', which='both', labelleft=False)  # No y-axis ticks
-#         else:
-#             ax.set_ylabel(f'{n_sessions[index_sess]} participants\nRecovered', fontsize=10)
-#             ax.tick_params(axis='y', labelsize=8)
-        
-#         if index_sess == 0:
-#             ax.set_title(feature_names[index_feature], fontsize=10)
-        
-# plt.show()
-
-# scatter plot
-
-# Adjust the width of each column
-col_width_ratios = []
-for index_feature in range(len(feature_names)):
-    feature_ranges = [
-        np.max(true_params[index_sess][:, index_feature]) - np.min(true_params[index_sess][:, index_feature])
-        for index_sess in range(len(n_sessions))
-    ]
-    # Use a fallback small value for zero ranges
-    col_width_ratios.append(max(max(feature_ranges), 0.1))  # Ensure non-zero width
-
-# Normalize width ratios
-col_width_ratios = [r / max(col_width_ratios) for r in col_width_ratios]
-
-fig = plt.figure(figsize=(10, 5))
-gs = GridSpec(len(n_sessions), len(feature_names), width_ratios=col_width_ratios)
-
-for index_sess in range(len(n_sessions)):
-    for index_feature in range(len(feature_names)):
-        # ax = axs[index_sess, index_feature]
-        ax = fig.add_subplot(gs[index_sess, index_feature])
-        
-        # Scatter plot
-        ax.scatter(
-            true_params[index_sess][:, index_feature], 
-            recovered_params[index_sess][:, index_feature], 
-            marker='o', 
-            color='cadetblue', 
-            alpha=0.2,
-            # markersize=0.1,
-        )
-
-        # Calculate linear regression for trend line
-        index_not_nan = (1-(np.isnan(true_params[index_sess][:, index_feature]) + np.isnan(recovered_params[index_sess][:, index_feature]))).astype(bool)
-        model = LinearRegression()
-        model.fit(true_params[index_sess][:, index_feature].reshape(-1, 1)[index_not_nan], recovered_params[index_sess][:, index_feature][index_not_nan])
-        trend_line = model.predict(np.linspace(0, 1, 100).reshape(-1, 1))
-        
-        # Reference line
-        if true_params[index_sess][:, index_feature].max() > 0:
-            ax.plot([0, 1], [0, 1], '--', color='tab:gray', linewidth=1)
-            # Plot dashed trend line
-            ax.plot(np.linspace(0, 1, 100), trend_line, '--', color='tab:blue', label='Trend line')
-            # Axes settings
-            ax.set_ylim(0, 1)
-            ax.set_xlim(0, 1)
-        else:
-            # Axes settings
-            ax.set_ylim(-.1, .1)
-            ax.set_xlim(-.1, .1)
-            # Plot dashed trend line
-            ax.plot(np.linspace(-1, 1, 100), trend_line, '--', color='tab:blue', label='Trend line')
-            
-        if index_sess != len(n_sessions) - 1:
-            ax.tick_params(axis='x', which='both', labelbottom=False)  # No x-axis ticks
-        else:
-            ax.set_xlabel('True', fontsize=10)
-            ax.tick_params(axis='x', labelsize=8)
-
-        if index_feature != 0:
-            ax.tick_params(axis='y', which='both', labelleft=False)  # No y-axis ticks
-        else:
-            ax.set_ylabel(f'{n_sessions[index_sess]} participants\nRecovered', fontsize=10)
-            ax.tick_params(axis='y', labelsize=8)
-
-        if index_sess == 0:
-            ax.set_title(feature_names[index_feature], fontsize=10)
-
-if save_plots:
-    plt.savefig(os.path.join(path_plots, 'param_recovery_scatter'), dpi=500)
-else:
-    plt.show()
-
-
-# box plot
-# like scatter plot before but with box-whisker per true-parameter range (e.g. 0.1) instead of single dots
 
 # Parameters for binning
 num_bins = 10  # Number of bins for 5% width (0.05 * 100 = 20 bins)

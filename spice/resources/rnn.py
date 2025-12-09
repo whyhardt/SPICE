@@ -67,7 +67,7 @@ class BaseRNN(nn.Module):
         n_items: int = None,
         embedding_size: int = 32,
         use_sindy: bool = False,
-        sindy_polynomial_degree: int = 2,
+        sindy_polynomial_degree: int = 1,
         sindy_ensemble_size: int = 10,
         device=torch.device('cpu'),
         **kwargs,
@@ -447,7 +447,7 @@ class BaseRNN(nn.Module):
         h_next_sindy = h_current.unsqueeze(1) + torch.einsum('bax,bex->bea', library, sindy_coeffs)
 
         return h_next_sindy     
-    
+
     
     def compute_sindy_loss_for_module(
         self,

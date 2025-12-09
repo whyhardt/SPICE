@@ -226,23 +226,15 @@ def batch_train(
             # Add SINDy regularization loss
             if sindy_weight > 0 and model.sindy_loss != 0:
                 loss_step = loss_step + sindy_weight * model.sindy_loss
-
-            # # l1 regularization (unweighted)
-            # for module in model.submodules_rnn:
-            #     loss_step += model.sindy_coefficients[module].abs().sum() * 0.00001
-
+                
             # # Polynomial degree weighted coefficient penalty for SINDy coefficients
-            if sindy_alpha > 0:
+            if sindy_weight > 0 and sindy_alpha > 0:
                 coefficient_penalty = model.compute_weighted_coefficient_penalty(sindy_alpha=sindy_alpha, norm=1)
                 loss_step = loss_step + coefficient_penalty
 
             # backpropagation
             optimizer.zero_grad()
             loss_step.backward()
-
-            # Track gradient history for noise injection (if enabled)
-            if model.sindy_noise_std > 0:
-                model.update_gradient_history()
 
             # Apply gradient masks to prevent updating zeroed coefficients
             # model.apply_gradient_masks()
@@ -622,11 +614,11 @@ def fit_model(
             dataset_train=dataset_train,
             dataset_test=dataset_test,
             learning_rate=optimizer.param_groups[0]['lr']*10,
-            epochs=sindy_epochs,
+            epochs=1000,#sindy_epochs,
             cutoff_threshold=sindy_threshold,
             cutoff_n_terms=sindy_threshold_terms,
             cutoff_patience=sindy_threshold_patience,
-            cutoff_warmup=n_warmup_steps,
+            cutoff_warmup=100,#n_warmup_steps,
             sindy_alpha=sindy_alpha,
             batch_size=None,
             verbose=verbose,

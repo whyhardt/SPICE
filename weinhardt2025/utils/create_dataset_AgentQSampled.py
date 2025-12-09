@@ -7,11 +7,11 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from spice.resources.bandits import create_dataset, AgentQ, AgentQ_SampleZeros, BanditsDrift, BanditsSwitch, get_update_dynamics
 
 
-n_sessions = [256]#[16, 32, 64, 128, 256]
-n_trials_per_session = 100
-n_iterations_per_n_sessions = 1
+n_sessions = [32, 64, 128, 256, 512]
+n_trials_per_session = 200
+n_iterations_per_n_sessions = 8
 sigma = 0.2
-base_name = 'weinhardt2025/data/data_synthetic_*.csv'
+base_name = 'weinhardt2025/data/synthetic/synthetic_*.csv'
 sample_parameters = True
 
 for iteration in range(n_iterations_per_n_sessions):
@@ -22,9 +22,10 @@ for iteration in range(n_iterations_per_n_sessions):
             beta_reward=3.,
             alpha_reward=0.5,
             alpha_penalty=-1,
-            forget_rate=0.2,
+            forget_rate=0.3,
             beta_choice=1.,
-            zero_threshold=0.1,
+            zero_threshold=0.2,
+            parameter_variance=0.2,
             )
         
         # agent = AgentQ(

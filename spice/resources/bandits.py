@@ -278,7 +278,7 @@ class AgentQ(Agent):
         
       # asymmetric learning rates
       current_reward = reward[action] if not any(np.isnan(reward)) else reward[choice]
-      alpha[action] = alpha_r if current_reward > 0.5 else alpha_p
+      alpha[action] = alpha_p + current_reward * (alpha_r - alpha_p)
       
       # Reward-prediction-error
       r = current_reward if action==choice else 1-current_reward
@@ -350,24 +350,31 @@ class AgentQ_SampleZeros(AgentQ):
       # sample scaling parameters (inverse noise temperatures)
       self.betas['value_reward'], self.betas['value_choice'] = 0, 0
       while self.betas['value_reward'] <= self._zero_threshold and self.betas['value_choice'] <=  self._zero_threshold:
-        self.betas['value_reward'] = np.random.rand()
-        self.betas['value_choice'] = np.random.rand()
+        
+        self.betas['value_reward'] = np.random.beta(*self.compute_beta_dist_params(0.5, self._parameter_variance['beta_reward']))
+        self.betas['value_choice'] = np.random.beta(*self.compute_beta_dist_params(0.5, self._parameter_variance['beta_choice']))
         # apply zero-threshold if applicable
         self.betas['value_reward'] = self.betas['value_reward'] * 2 * self._mean_beta_reward if self.betas['value_reward'] > self._zero_threshold else 0
         self.betas['value_choice'] = self.betas['value_choice'] * 2 * self._mean_beta_choice if self.betas['value_choice'] > self._zero_threshold else 0
       
       # sample auxiliary parameters
-      self._forget_rate = np.random.rand()
-      self._forget_rate =  self._forget_rate * (self._forget_rate > self._zero_threshold) 
+      self._forget_rate = np.random.beta(*self.compute_beta_dist_params(self._mean_forget_rate, self._parameter_variance['forget_rate']))
+      self._forget_rate =  self._forget_rate * (self._forget_rate > self._zero_threshold)
       
       # sample learning rate; don't zero out; only check for applicability of asymmetric learning rates
-      self._alpha_reward = np.random.rand()
-      self._alpha_penalty = np.random.rand()
+      self._alpha_reward = np.random.beta(*self.compute_beta_dist_params(self._mean_alpha_reward, self._parameter_variance['alpha_reward']))
+      self._alpha_penalty = np.random.beta(*self.compute_beta_dist_params(self._mean_alpha_penalty, self._parameter_variance['alpha_penalty']))
       # set alpha_reward = alpha_penalty if (alpha_reward - alpha_penalty) < zero_threshold
       if np.abs(self._alpha_reward - self._alpha_penalty) < self._zero_threshold:
         alpha_mean = np.mean((self._alpha_reward, self._alpha_penalty))
         self._alpha_reward = alpha_mean
         self._alpha_penalty = alpha_mean
+        
+  def compute_beta_dist_params(self, mean, std):
+    n = mean * (1-mean) / std**2
+    a = mean * n
+    b = (1-mean) * n
+    return a, b
 
 
 class AgentNetwork(Agent):
@@ -456,6 +463,9 @@ class AgentNetwork(Agent):
   def get_participant_ids(self):
     if hasattr(self.model, 'participant_embedding'):
       return tuple(np.arange(self.model.participant_embedding.num_embeddings).tolist())
+    
+  def get_modules(self):
+    return tuple(list(self.model.submodules_rnn.keys()))
   
   @property
   def q(self):
