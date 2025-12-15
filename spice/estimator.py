@@ -5,13 +5,11 @@ import warnings
 import time
 import torch
 import numpy as np
-import pysindy as ps
 from sklearn.base import BaseEstimator
-from copy import deepcopy
-from typing import Dict, Optional, Tuple, Union, List
+from typing import Dict, Optional, Tuple
 
 from .resources.spice_training import fit_model
-from .resources.bandits import AgentNetwork, Bandits
+from .resources.bandits import AgentNetwork
 from .resources.rnn import BaseRNN
 from .resources.spice_utils import SpiceConfig, SpiceDataset
 
@@ -199,7 +197,7 @@ class SpiceEstimator(BaseEstimator):
         # if self.verbose:
         print('\nTraining the RNN...')
         
-        batch_size = data.shape[0] if self.batch_size == -1 else self.batch_size
+        batch_size = data.shape[0] if self.batch_size is None else self.batch_size
         
         rnn_model, rnn_optimizer, _ = fit_model(
             model=self.rnn_model,
@@ -242,7 +240,8 @@ class SpiceEstimator(BaseEstimator):
                 n_items=rnn_model.n_items,
             )
         rnn_agent_model.sindy_ensemble_size = rnn_model.sindy_ensemble_size  # Match trained ensemble size
-        rnn_agent_model.setup_sindy_coefficients(rnn_model.sindy_polynomial_degree)
+        for key_module in rnn_agent_model.submodules_rnn:
+            rnn_agent_model.setup_sindy_coefficients(key_module=key_module)
         rnn_agent_model.load_state_dict(state_dict)
         self.rnn_agent = AgentNetwork(rnn_agent_model, self.n_actions, device=self.device, use_sindy=False)
 
@@ -257,7 +256,8 @@ class SpiceEstimator(BaseEstimator):
                 n_items=rnn_model.n_items,
             )
         spice_agent_model.sindy_ensemble_size = rnn_model.sindy_ensemble_size  # Match trained ensemble size
-        spice_agent_model.setup_sindy_coefficients(rnn_model.sindy_polynomial_degree)
+        for key_module in spice_agent_model.submodules_rnn:
+            spice_agent_model.setup_sindy_coefficients(key_module=key_module)
         spice_agent_model.load_state_dict(state_dict)
         spice_agent_model.sindy_coefficients_presence = rnn_model.sindy_coefficients_presence
         self.spice_agent = AgentNetwork(spice_agent_model, self.n_actions, device=self.device, use_sindy=True)
@@ -325,9 +325,22 @@ class SpiceEstimator(BaseEstimator):
             print(f'RNN model has no participant_embedding module.')
             return None
 
-    def get_sindy_coefficients(self) -> Dict[str, Dict[str, float]]:
-        """Returns a dictionary where each entry holds the module name (key) and a dictionary holding the candidate terms and the corresponding coefficient."""
-        raise NotImplementedError
+    def get_sindy_coefficients(self, ensemble_index: int = 0) -> Tuple[np.ndarray, list]:
+        """Returns a tuple of a numpy array holding the sindy coefficients of shape (candidates, coefficients) and a tuple holding the corresponding candidate terms."""
+        
+        sindy_coefs = []
+        sindy_terms = []
+        
+        modules = self.rnn_model.submodules_rnn
+        
+        for module in modules:
+            candidate_terms = self.rnn_model.sindy_candidate_terms[module]
+            sindy_coefs.append((self.rnn_model.sindy_coefficients[module][:, ensemble_index] * self.rnn_model.sindy_coefficients_presence[module][:, ensemble_index]).detach().cpu().numpy())
+            sindy_terms += candidate_terms
+        
+        sindy_coefs = np.concat(sindy_coefs, axis=-1)
+        
+        return sindy_coefs, tuple(sindy_terms)
         
     def load_spice(self, path_model: str, deterministic: bool = True):
         
@@ -337,7 +350,8 @@ class SpiceEstimator(BaseEstimator):
         loaded_parameters = torch.load(path_model, map_location=torch.device('cpu'))
         
         self.rnn_model.sindy_ensemble_size = loaded_parameters['model']['sindy_coefficients.'+next(iter(self.rnn_model.submodules_rnn))].shape[1]
-        self.rnn_model.setup_sindy_coefficients()
+        for key_module in self.rnn_model.submodules_rnn:
+            self.rnn_model.setup_sindy_coefficients(key_module=key_module)
         self.rnn_model.sindy_coefficients_presence = loaded_parameters['sindy_coefficients_presence']
         
         self.rnn_model.load_state_dict(loaded_parameters['model'])

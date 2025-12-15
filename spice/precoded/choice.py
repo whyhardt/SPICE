@@ -1,6 +1,8 @@
 from spice.estimator import SpiceConfig
 from spice.resources.rnn import BaseRNN
 
+import torch
+
 
 # -------------------------------------------------------------------------------
 # RL MODEL WITH 
@@ -13,11 +15,10 @@ CONFIG = SpiceConfig(
     library_setup = {
         'value_reward_chosen': ['reward'],  # --> n_terms = 6
         'value_reward_not_chosen': [],      # --> n_terms = 3
-        'value_choice_chosen': [],          # --> n_terms = 3
-        'value_choice_not_chosen': [],      # --> n_terms = 3 
+        'value_choice': ['choice'],  # --> n_terms = 6
         },                                  # --> n_terms_total = 15
     memory_state={
-            'value_reward': 0.5,
+            'value_reward': 0.,
             'value_choice': 0.,
             },
 )
@@ -33,10 +34,9 @@ class SpiceModel(BaseRNN):
         self.participant_embedding = self.setup_embedding(self.n_participants, self.embedding_size, dropout=dropout)
 
         # set up the submodules
-        self.submodules_rnn['value_reward_chosen'] = self.setup_module(input_size=1+self.embedding_size, dropout=dropout)
-        self.submodules_rnn['value_reward_not_chosen'] = self.setup_module(input_size=0+self.embedding_size, dropout=dropout)
-        self.submodules_rnn['value_choice_chosen'] = self.setup_module(input_size=0+self.embedding_size, dropout=dropout)
-        self.submodules_rnn['value_choice_not_chosen'] = self.setup_module(input_size=0+self.embedding_size, dropout=dropout)
+        self.setup_module(key_module='value_reward_chosen', input_size=1+self.embedding_size, dropout=dropout)
+        self.setup_module(key_module='value_reward_not_chosen', input_size=0+self.embedding_size, dropout=dropout)
+        self.setup_module(key_module='value_choice', input_size=1+self.embedding_size, dropout=dropout)
         
     def forward(self, inputs, prev_state=None, batch_first=False):
         """Forward pass of the RNN
@@ -63,6 +63,7 @@ class SpiceModel(BaseRNN):
                 inputs=spice_signals.rewards[timestep],
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
+                activation_rnn=torch.nn.functional.leaky_relu,
                 )
             
             self.call_module(
@@ -72,25 +73,18 @@ class SpiceModel(BaseRNN):
                 inputs=None,
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
+                activation_rnn=torch.nn.functional.leaky_relu,
                 )
             
             # updates for value_choice
             self.call_module(
-                key_module='value_choice_chosen',
+                key_module='value_choice',
                 key_state='value_choice',
-                action_mask=spice_signals.actions[timestep],
-                inputs=None,
+                action_mask=None,
+                inputs=spice_signals.actions[timestep],
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
-                )
-            
-            self.call_module(
-                key_module='value_choice_not_chosen',
-                key_state='value_choice',
-                action_mask=1-spice_signals.actions[timestep],
-                inputs=None,
-                participant_index=spice_signals.participant_ids,
-                participant_embedding=participant_embedding,
+                activation_rnn=torch.nn.functional.leaky_relu,
                 )
             
             # Now keep track of the logit in the output array

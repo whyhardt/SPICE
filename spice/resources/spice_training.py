@@ -230,7 +230,10 @@ def batch_train(
             # # Polynomial degree weighted coefficient penalty for SINDy coefficients
             if sindy_weight > 0 and sindy_alpha > 0:
                 coefficient_penalty = model.compute_weighted_coefficient_penalty(sindy_alpha=sindy_alpha, norm=1)
-                loss_step = loss_step + coefficient_penalty
+                # coefficient_penalty = 0
+                # for module in model.submodules_rnn:
+                #     coefficient_penalty += (model.sindy_coefficients[module] * model.sindy_coefficients_presence[module]).abs().sum(dim=-1).mean()
+                loss_step = loss_step + sindy_alpha * coefficient_penalty
 
             # backpropagation
             optimizer.zero_grad()
@@ -299,9 +302,10 @@ def fit_sindy_second_stage(
     model.sindy_ensemble_size = 1
 
     # Re-initialize SINDy coefficients with single model (ensemble_size=1)
-    model.setup_sindy_coefficients(model.sindy_polynomial_degree)
+    for key_module in model.submodules_rnn:
+        model.setup_sindy_coefficients(key_module=key_module)
     model.to(model.device)
-
+    
     # Create optimizer for only SINDy coefficients
     optimizer_sindy = torch.optim.AdamW(list(model.sindy_coefficients.values()), lr=learning_rate)
     
@@ -614,61 +618,14 @@ def fit_model(
             dataset_train=dataset_train,
             dataset_test=dataset_test,
             learning_rate=optimizer.param_groups[0]['lr']*10,
-            epochs=1000,#sindy_epochs,
+            epochs=sindy_epochs,
             cutoff_threshold=sindy_threshold,
             cutoff_n_terms=sindy_threshold_terms,
             cutoff_patience=sindy_threshold_patience,
-            cutoff_warmup=100,#n_warmup_steps,
+            cutoff_warmup=400,#n_warmup_steps,
             sindy_alpha=sindy_alpha,
             batch_size=None,
             verbose=verbose,
         )
         
     return model.eval(), optimizer, loss_train
-
-
-# Old lr-scheduler logic for fit_model
-"""if scheduler and optimizer is not None:
-        # Define the LambdaLR scheduler for warm-up
-        # def warmup_lr_lambda(current_step):
-        #     if current_step < warmup_steps / 0.8:
-        #         return min(1e-1, float(current_step) / float(max(1, warmup_steps))) / (optimizer.param_groups[0]['lr']) / 100
-        #     else:
-        #         return 1 - float(current_step) / float(max(1, warmup_steps)) / (optimizer.param_groups[0]['lr']) / 100
-        #     return 1.0  # No change after warm-up phase
-        default_lr = optimizer.param_groups[0]['lr'] + 0
-        def warmup_lr_lambda(current_step):
-            scale = 1e-1 / default_lr
-            # if current_step < warmup_steps * 0.8:
-            #     return 0.1 * scale  # Scaling factor during the first 80% of warmup
-            # elif current_step < warmup_steps:
-            #     # Linearly anneal towards 1.0 in the last 20% of warmup steps
-            #     progress = (current_step - warmup_steps * 0.8) / (warmup_steps * 0.2)
-            #     return (0.1 + progress * (1.0 - 0.1)) * scale
-            if current_step < n_warmup_steps:
-                # Linearly anneal towards 1.0 in the last 20% of warmup steps
-                # progress = (current_step - warmup_steps) / (warmup_steps)
-                # return (0.1 + progress * (1.0 - 0.1)) * scale
-                return current_step / n_warmup_steps
-            else:
-                return 1.0  # Default learning rate scaling after warmup
-
-        # Create the scheduler with the Lambda function
-        scheduler_warmup = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=warmup_lr_lambda)
-                
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer=optimizer, T_0=n_warmup_steps if n_warmup_steps > 0 else 64, T_mult=2)
-        # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer=optimizer, factor=0.1, patience=10, threshold=0, cooldown=64, min_lr=1e-6)
-        # scheduler = ReduceOnPlateauWithRestarts(optimizer=optimizer, min_lr=1e-6, factor=0.1, patience=8)
-    else:
-        scheduler_warmup, scheduler = None, None
-        
-    # Update learning rate scheduler
-            if scheduler is not None:
-                if n_calls_to_train_model <= n_warmup_steps:
-                    scheduler_warmup.step()
-                else:
-                    if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau) or isinstance(scheduler, ReduceOnPlateauWithRestarts):
-                        scheduler.step(metrics=loss_test if dataset_test is not None else loss_train)
-                    else:
-                        scheduler.step()
-    """

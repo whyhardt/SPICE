@@ -7,9 +7,8 @@ import torch
 import matplotlib.pyplot as plt
 import pandas as pd
 
-from spice.estimator import SpiceEstimator
-from spice.utils.convert_dataset import convert_dataset, split_data_along_sessiondim, split_data_along_timedim
-from spice.utils.plotting import plot_session
+from spice import SpiceEstimator, convert_dataset, split_data_along_sessiondim, split_data_along_timedim, plot_session
+from spice.precoded import choice
 from spice.resources.bandits import AgentQ
 from spice.precoded import workingmemory_multiitem, workingmemory, choice, rescorlawagner, forgetting
 
@@ -25,7 +24,7 @@ if __name__=='__main__':
     # RNN training parameters
     parser.add_argument('--epochs', type=int, default=1000, help='Number of training epochs')
     parser.add_argument('--lr', type=float, default=0.01, help='Learning rate')
-    parser.add_argument('--l2_rnn', type=float, default=0.00001, help='L2 Reg of the RNN parameters')
+    parser.add_argument('--l2_rnn', type=float, default=0., help='L2 Reg of the RNN parameters')
     
     # SINDy training parameters
     parser.add_argument('--sindy_weight', type=float, default=0.1, help='Weight for SINDy regularization during RNN training')
@@ -62,21 +61,22 @@ if __name__=='__main__':
     # args.n_items=8
     # args.test_sessions="1"
     
-    # args.data = "weinhardt2025/data/synthetic/synthetic_256p_0.csv"
-    # args.model = args.data.replace("data", "params").replace("/synthetic_", "/spice_synthetic_").replace(".csv", "_2.pkl")
+    args.data = "weinhardt2025/data/synthetic/synthetic_2_256p_0.csv"
+    args.model = args.data.replace("data", "params").replace("/synthetic_", "/spice_synthetic_test").replace(".csv", ".pkl")
     
-    args.epochs = 4000
+    args.epochs = 2
     args.lr = 0.01
+    args.sindy_weight = 1
     args.sindy_cutoff_freq = 1
     args.sindy_cutoff = 1
     args.sindy_cutoff_patience = 100
     args.sindy_threshold = 0.05
-    args.sindy_alpha = 0.0001
+    args.sindy_alpha = 0.001
     warmup_steps = 1000
     
     example_participant = 1
     plot_coef_dist = True
-        
+    
     if args.train_ratio_time and args.test_sessions:
         raise ValueError("kwargs train_ratio_time and test_sessions cannot be assigned at the same time.")
     
@@ -86,7 +86,7 @@ if __name__=='__main__':
         additional_inputs=args.additional_columns.split(',') if args.additional_columns else None,
         timeshift_additional_inputs=args.timeshift_additional_columns,
     )
-
+    
     if args.train_ratio_time:
         args.test_sessions = None
         dataset_train, dataset_test = split_data_along_timedim(dataset, args.train_ratio_time)
@@ -106,7 +106,7 @@ if __name__=='__main__':
     else:
         spice_model = workingmemory_multiitem
 
-    # spice_model = rescorlawagner
+    # spice_model = choice
     
     class_rnn = spice_model.SpiceModel
     spice_config = spice_model.CONFIG
@@ -136,7 +136,7 @@ if __name__=='__main__':
         sindy_threshold_frequency=args.sindy_cutoff_freq,
         sindy_threshold_terms=args.sindy_cutoff,
         sindy_cutoff_patience=args.sindy_cutoff_patience,
-        sindy_epochs=args.epochs,
+        sindy_epochs=20,#args.epochs,
         sindy_alpha=args.sindy_alpha,
         sindy_library_polynomial_degree=2,
         
@@ -146,7 +146,7 @@ if __name__=='__main__':
         
         # other parameters
         verbose=True,
-        device=torch.device('cpu'),#torch.device('cuda' if torch.cuda.is_available() else 'cpu'),
+        # device=torch.device('cuda' if torch.cuda.is_available() else 'cpu'),
         save_path_spice=args.model,
     )
     

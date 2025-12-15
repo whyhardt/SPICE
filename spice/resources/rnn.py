@@ -1,15 +1,9 @@
 import torch
 import torch.nn as nn
 from typing import Optional, Tuple, Dict, Iterable, Callable, Union, List
-import pysindy as ps
 import numpy as np
 
-from .sindy_differentiable import (
-    compute_library_size,
-    compute_polynomial_library,
-    get_library_feature_names,
-    get_library_term_degrees,
-)
+from .sindy_differentiable import compute_library_size, compute_polynomial_library, get_library_feature_names, get_library_term_degrees
 from .spice_utils import SpiceConfig, SpiceSignals
 
 
@@ -19,7 +13,6 @@ class GRUModule(nn.Module):
         
         self.linear_in = nn.Linear(input_size, 8+input_size)
         self.dropout = nn.Dropout(p=dropout)
-        # self.relu = nn.LeakyReLU()
         self.gru_in = nn.GRU(8+input_size, 1)
         self.linear_out = nn.Linear(1, 1)
         
@@ -89,8 +82,6 @@ class BaseRNN(nn.Module):
         self.recording = {}
         self.submodules_rnn = nn.ModuleDict()
         self.submodules_eq = dict()
-        self.submodules_sindy = dict()
-        self.betas = nn.ModuleDict()
         
         # Differentiable SINDy coefficients (NEW)
         self.sindy_polynomial_degree = sindy_polynomial_degree
@@ -99,20 +90,15 @@ class BaseRNN(nn.Module):
         self.sindy_candidate_terms = {}
         self.sindy_degree_weights = {}  # Weights for coefficient penalty based on polynomial degree
         self.sindy_cutoff_patience_counters = {}  # Patience counters for thresholding
+        self.sindy_specs = {}  # sindy-specific specifications for each module (e.g. include_bias, interaction_only, ...)
         
         # Ensemble SINDy for stage 1 training (helps RNN learn better representations)
         self.sindy_ensemble_size = sindy_ensemble_size  # Number of ensemble members (num_replicates in sindy-shred)
-
-        # Noise injection for exploration (helps escape stagnant local minima)
-        self.sindy_noise_std = 0.0  # Standard deviation of noise (0 = disabled)
-        self.sindy_grad_history = {}  # Rolling window of recent gradient magnitudes
-        self.sindy_grad_history_size = 10  # Number of recent gradients to track
         
         # Setup initial values of RNN
         self.sindy_loss = torch.tensor(0, requires_grad=True, device=device, dtype=torch.float32)
         self.state = None
         self.init_state()  # initial memory state
-        self.setup_sindy_coefficients()  # differentiable SINDy coefficients
                 
     def forward(self, inputs, prev_state, batch_first=False):
         raise NotImplementedError('This method is not implemented.')
@@ -225,7 +211,7 @@ class BaseRNN(nn.Module):
             )
         # return torch.nn.Embedding(num_embeddings=num_embeddings, embedding_dim=embedding_size)
     
-    def setup_module(self, input_size: int, dropout: float = 0.):
+    def setup_module(self, key_module: str, input_size: int, dropout: float = 0., include_bias = True, interaction_only = False):
         """This method creates the standard RNN-module used in computational discovery of cognitive dynamics
 
         Args:
@@ -238,10 +224,12 @@ class BaseRNN(nn.Module):
         """
         
         # GRU network
-        module = GRUModule(input_size=input_size, dropout=dropout)
+        self.submodules_rnn[key_module] = GRUModule(input_size=input_size, dropout=dropout)
+        self.sindy_specs[key_module] = {}
+        self.sindy_specs[key_module]['include_bias'] = include_bias
+        self.sindy_specs[key_module]['interaction_only'] = interaction_only
+        self.setup_sindy_coefficients(key_module=key_module)
         
-        return module 
-    
     def call_module(
         self,
         key_module: str,
@@ -277,16 +265,15 @@ class BaseRNN(nn.Module):
         
         if inputs is None:
             inputs = torch.zeros((*value.shape, 0), dtype=torch.float32, device=value.device)
+        elif isinstance(inputs, tuple):
+            inputs = torch.concat([inputs_i.unsqueeze(-1) for inputs_i in inputs], dim=-1)
+        elif isinstance(inputs, torch.Tensor):
+            inputs = inputs.unsqueeze(-1)
             
         if participant_embedding is None:
             participant_embedding = torch.zeros((*value.shape, 0), dtype=torch.float32, device=value.device)
         else:
-            participant_embedding = participant_embedding.unsqueeze(1).repeat(1, value.shape[-1], 1)
-        
-        if isinstance(inputs, tuple):
-            inputs = torch.concat([inputs_i.unsqueeze(-1) for inputs_i in inputs], dim=-1)
-        elif isinstance(inputs, torch.Tensor):
-            inputs = inputs.unsqueeze(-1)
+            participant_embedding = participant_embedding.unsqueeze(1).repeat(1, self.n_items, 1)
 
         # Replace NaN in inputs with 0 to prevent NaN propagation through the network
         # NaN values should be masked out by action_mask, but we need to clean them before forward pass
@@ -295,12 +282,8 @@ class BaseRNN(nn.Module):
         if key_module in self.submodules_rnn.keys():
             if not self.use_sindy:
                 # use rnn module
-
                 inputs_rnn = torch.concat((value.unsqueeze(-1), inputs, participant_embedding), dim=-1)
-                # update_value = self.submodules_rnn[key_module](inputs_rnn)
-                # next_value = value + update_value.squeeze(-1)
                 next_value = self.submodules_rnn[key_module](inputs_rnn).squeeze(-1)
-
                 if activation_rnn is not None:
                     next_value = activation_rnn(next_value)
             else:
@@ -308,7 +291,7 @@ class BaseRNN(nn.Module):
                 if participant_index is not None:
                     next_value = self.forward_sindy(
                         h_current = value, 
-                        module_name = key_module, 
+                        key_module = key_module, 
                         participant_ids = participant_index, 
                         controls = inputs, 
                         polynomial_degree = self.sindy_polynomial_degree,
@@ -346,7 +329,7 @@ class BaseRNN(nn.Module):
             
         return next_value
     
-    def setup_sindy_coefficients(self, polynomial_degree: int = None, ensemble_size: int = None):
+    def setup_sindy_coefficients(self, key_module: str, polynomial_degree: int = None, ensemble_size: int = None):
         """
         Initialize learnable SINDy coefficients for each module with ensemble support.
         Called after submodules are defined in child class __init__.
@@ -363,48 +346,55 @@ class BaseRNN(nn.Module):
         if ensemble_size == None:
             ensemble_size = self.sindy_ensemble_size
             
-        rnn_modules = self.spice_config.modules#get('rnn_modules', [])
-        library_setup = self.spice_config.library_setup#get('library_setup', {})
+        control_features = self.spice_config.library_setup[key_module]
+        sindy_specs = self.sindy_specs[key_module]
         
-        for module_name in rnn_modules:
-            # Count features for this module: state + relevant controls
-            n_state_features = 1  # Current state value
-            control_features = library_setup.get(module_name, [])
-            n_control_features = len(control_features)
-            n_total_features = n_state_features + n_control_features
+        # Count features for this module: state + relevant controls
+        n_state_features = 1  # Current state value
+        n_control_features = len(control_features)
+        n_total_features = n_state_features + n_control_features
 
-            # Compute library size
-            n_library_terms = compute_library_size(n_total_features, polynomial_degree)
+        # Store library feature names
+        feature_names = tuple([key_module]) + control_features
+        self.sindy_candidate_terms[key_module] = get_library_feature_names(feature_names, polynomial_degree)
+        # apply sindy_specs
+        n_removed = 0
+        if not sindy_specs['include_bias']:
+            self.sindy_candidate_terms[key_module].remove('1')
+            n_removed += 1
+        if sindy_specs['interaction_only']:
+            # remove all 
+            for index_term, term in enumerate(self.sindy_candidate_terms[key_module]):
+                if '^' in term and not '*' in term:
+                    self.sindy_candidate_terms[key_module].remove(term)
+                    n_removed += 1
+                    
+        # Compute library size
+        n_library_terms = compute_library_size(n_total_features, polynomial_degree) - n_removed
+        
+        # Initialize coefficients [n_participants, n_ensemble, n_library_terms]
+        # Use very small initialization to prevent numerical instability
+        init_coeffs = torch.randn(self.n_participants, ensemble_size, n_library_terms) * 0.001
+        self.sindy_coefficients[key_module] = nn.Parameter(init_coeffs)
+        
+        # Initialize mask to all ones (all coefficients active)
+        self.sindy_coefficients_presence[key_module] = torch.ones(
+            self.n_participants, ensemble_size, n_library_terms,
+            dtype=torch.bool, device=self.device
+        )
 
-            # Initialize coefficients [n_participants, n_ensemble, n_library_terms]
-            # Use very small initialization to prevent numerical instability
-            init_coeffs = torch.randn(self.n_participants, ensemble_size, n_library_terms) * 0.001
-            self.sindy_coefficients[module_name] = nn.Parameter(init_coeffs)
-            
-            # Initialize mask to all ones (all coefficients active)
-            self.sindy_coefficients_presence[module_name] = torch.ones(
-                self.n_participants, ensemble_size, n_library_terms,
-                dtype=torch.bool, device=self.device
-            )
+        # Compute degree-based weights for coefficient penalty: d=0 -> 1, d=1 -> 2, d=2 -> 3, etc.
+        term_degrees = get_library_term_degrees(self.sindy_candidate_terms[key_module])
+        degree_weights = torch.tensor([max(1,d*2) for d in term_degrees], dtype=torch.float32, device=self.device)
+        self.sindy_degree_weights[key_module] = degree_weights
 
-            # Store library feature names
-            feature_names = tuple([module_name]) + control_features
-            self.sindy_candidate_terms[module_name] = get_library_feature_names(
-                feature_names, polynomial_degree
-            )
-
-            # Compute degree-based weights for coefficient penalty: d=0 -> 1, d=1 -> 2, d=2 -> 3, etc.
-            term_degrees = get_library_term_degrees(self.sindy_candidate_terms[module_name])
-            degree_weights = torch.tensor([max(1,d*2) for d in term_degrees], dtype=torch.float32, device=self.device)
-            self.sindy_degree_weights[module_name] = degree_weights
-
-            # Initialize patience counters to zero
-            self.sindy_cutoff_patience_counters[module_name] = torch.zeros(
-                self.n_participants, ensemble_size, n_library_terms,
-                dtype=torch.int32, device=self.device
-            )
+        # Initialize patience counters to zero
+        self.sindy_cutoff_patience_counters[key_module] = torch.zeros(
+            self.n_participants, ensemble_size, n_library_terms,
+            dtype=torch.int32, device=self.device
+        )
     
-    def forward_sindy(self, h_current: torch.Tensor, module_name: str, participant_ids: torch.Tensor, controls: torch.Tensor, polynomial_degree: int, ensemble_idx: int = None):
+    def forward_sindy(self, h_current: torch.Tensor, key_module: str, participant_ids: torch.Tensor, controls: torch.Tensor, polynomial_degree: int, ensemble_idx: int = None):
         """
         Forward pass using SINDy model (used during inference/evaluation).
         Uses only the first ensemble member (index 0) for prediction.
@@ -422,12 +412,12 @@ class BaseRNN(nn.Module):
         
         if ensemble_idx is None:
             # Get coefficients and masks for all ensemble members
-            sindy_coeffs = self.sindy_coefficients[module_name][participant_ids]  # [batch, n_ensemble, n_library_terms]
-            mask = self.sindy_coefficients_presence[module_name][participant_ids]  # [batch, n_ensemble, n_library_terms]
+            sindy_coeffs = self.sindy_coefficients[key_module][participant_ids]  # [batch, n_ensemble, n_library_terms]
+            mask = self.sindy_coefficients_presence[key_module][participant_ids]  # [batch, n_ensemble, n_library_terms]
         else:
             # Get coefficients and masks for all ensemble members
-            sindy_coeffs = self.sindy_coefficients[module_name][participant_ids, ensemble_idx].unsqueeze(1)  # [batch, n_ensemble, n_library_terms]
-            mask = self.sindy_coefficients_presence[module_name][participant_ids, ensemble_idx].unsqueeze(1)  # [batch, n_ensemble, n_library_terms]
+            sindy_coeffs = self.sindy_coefficients[key_module][participant_ids, ensemble_idx].unsqueeze(1)  # [batch, n_ensemble, n_library_terms]
+            mask = self.sindy_coefficients_presence[key_module][participant_ids, ensemble_idx].unsqueeze(1)  # [batch, n_ensemble, n_library_terms]
 
         # custom dropout layer for sindy coefficients
         # if hasattr(self, 'dropout') and self.training:
@@ -438,7 +428,13 @@ class BaseRNN(nn.Module):
         sindy_coeffs = sindy_coeffs * mask.float()
         
         # Compute polynomial library (shared across ensemble)
-        library = compute_polynomial_library(h_current, controls, degree=polynomial_degree, include_bias=True)  # [batch, n_actions, n_library_terms]
+        library = compute_polynomial_library(
+            h_current, 
+            controls, 
+            degree=polynomial_degree, 
+            include_bias=self.sindy_specs[key_module]['include_bias'],
+            interaction_only=self.sindy_specs[key_module]['interaction_only'],
+            )  # [batch, n_actions, n_library_terms]
 
         # Compute predictions for all ensemble members
         # library: [batch, actions, library_terms]
@@ -484,7 +480,7 @@ class BaseRNN(nn.Module):
         
         h_next_sindy_ensemble = self.forward_sindy(
             h_current=h_current, 
-            module_name=module_name, 
+            key_module=module_name, 
             participant_ids=participant_ids, 
             controls=controls, 
             polynomial_degree=polynomial_degree,
@@ -497,8 +493,11 @@ class BaseRNN(nn.Module):
 
         # Apply action mask: [batch, n_actions] -> [batch, 1, n_actions]
         # masked_diff = diff * action_mask.unsqueeze(1)
-        masked_diff = torch.where(action_mask.unsqueeze(1) == 1, diff, 0)  # [batch, n_ensemble, n_actions]
-
+        if action_mask is not None:
+            masked_diff = torch.where(action_mask.unsqueeze(1) == 1, diff, 0)  # [batch, n_ensemble, n_actions]
+        else:
+            masked_diff = diff
+            
         # 1. Sum over actions (i.e. remove masked out values by action_mask)
         # 2. Mean over ensemble dimension
         # 3. Mean over batch dimension only for finite values to get scalar loss
@@ -671,7 +670,7 @@ class BaseRNN(nn.Module):
                 if np.abs(sparse_coeffs[index_term]) != 0:
                     if equation_str[-3:] != " = ":
                         equation_str += "+ "
-                    equation_str += str(np.round(sparse_coeffs[index_term], 4)) + " " + term
+                    equation_str += str(np.round(sparse_coeffs[index_term], 3)) + " " + term
                     equation_str += "[t] " if term == module else " "
             if equation_str[-3:] == " = ":
                 equation_str += "0"

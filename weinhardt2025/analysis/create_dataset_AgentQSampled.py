@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from spice.resources.bandits import create_dataset, AgentQ, AgentQ_SampleZeros, BanditsDrift, BanditsSwitch, get_update_dynamics
+from spice.resources.bandits import create_dataset, AgentQ, AgentQ_SampleParams, BanditsDrift, BanditsSwitch, get_update_dynamics
 
 
 n_sessions = [128]#[16, 32, 64, 128, 256]

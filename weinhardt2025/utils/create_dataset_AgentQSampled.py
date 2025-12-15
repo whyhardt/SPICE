@@ -4,37 +4,30 @@ import numpy as np
 import pandas as pd
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from spice.resources.bandits import create_dataset, AgentQ, AgentQ_SampleZeros, BanditsDrift, BanditsSwitch, get_update_dynamics
+from spice.resources.bandits import create_dataset, AgentQ, AgentQ_SampleParams, BanditsDrift, BanditsSwitch, get_update_dynamics
 
 
-n_sessions = [32, 64, 128, 256, 512]
+n_sessions = [256]#[32, 64, 128, 256, 512]
 n_trials_per_session = 200
-n_iterations_per_n_sessions = 8
+n_iterations_per_n_sessions = 1
 sigma = 0.2
-base_name = 'weinhardt2025/data/synthetic/synthetic_*.csv'
-sample_parameters = True
+base_name = 'weinhardt2025/data/synthetic/synthetic_ApBr.csv'
+sample_parameters = False
 
 for iteration in range(n_iterations_per_n_sessions):
     for n_sess in n_sessions:
         dataset_name = base_name.replace('*', f'{n_sess}p_{iteration}')
 
-        agent = AgentQ_SampleZeros(
+        agent = AgentQ_SampleParams(
             beta_reward=3.,
             alpha_reward=0.5,
             alpha_penalty=-1,
-            forget_rate=0.3,
-            beta_choice=1.,
+            forget_rate=0.,
+            beta_choice=0.,
+            alpha_choice=1.,
             zero_threshold=0.2,
             parameter_variance=0.2,
             )
-        
-        # agent = AgentQ(
-        #     beta_reward=3.,
-        #     alpha_reward=0.8,
-        #     alpha_penalty=0.2,
-        #     forget_rate=0.,
-        #     beta_choice=1.,
-        #     )
 
         environment = BanditsDrift(sigma=sigma)
 

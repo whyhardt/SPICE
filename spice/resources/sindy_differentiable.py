@@ -120,7 +120,8 @@ def compute_polynomial_library(
     x: torch.Tensor,
     controls: torch.Tensor,
     degree: int,
-    include_bias: bool = True
+    include_bias: bool = True,
+    interaction_only: bool = False,
 ) -> torch.Tensor:
     """
     Compute polynomial library features in PyTorch (fully differentiable).
@@ -130,6 +131,7 @@ def compute_polynomial_library(
         controls: Control tensor [batch, n_actions, n_controls] or [batch, time, n_actions, n_controls]
         degree: Maximum polynomial degree
         include_bias: Whether to include constant term
+        interaction_only: Whether to inlude only interaction terms (with '*') of polynomial degree > 1
 
     Returns:
         Library tensor [batch, n_actions, n_library_terms] or [batch, time, n_actions, n_library_terms]
@@ -161,15 +163,22 @@ def compute_polynomial_library(
             if len(combo) == 0 and include_bias:
                 # Constant term
                 term = torch.ones_like(features[..., :1])
+                library_terms.append(term)
             elif len(combo) > 0:
+                # Check if we should skip this term based on interaction_only
+                if interaction_only and d > 1:
+                    # For degree > 1: only include if it's an interaction term
+                    # An interaction has at least 2 different feature indices
+                    unique_indices = len(set(combo))
+                    if unique_indices == 1:
+                        # Pure power term (e.g., x^2, x^3), skip it
+                        continue
+
                 # Polynomial term
                 term = torch.ones_like(features[..., :1])
                 for idx in combo:
                     term = term * features[..., idx:idx+1]
-            else:
-                continue
-
-            library_terms.append(term)
+                library_terms.append(term)
 
     library = torch.cat(library_terms, dim=-1)  # [batch, time, n_actions, n_library_terms]
 
