@@ -77,7 +77,7 @@ def print_training_status(
         status_lines.append("-" * 80)
         status_lines.append("Cutoff patience:")
         for m in model.submodules_rnn:
-            status_lines.append(m + f": {[p.item() for p in model.sindy_cutoff_patience_counters[m][0,0]]}")
+            status_lines.append(m + f": {[p.item() for p in model.sindy_cutoff_patience_counters[m][0,0,0]]}")
     
     status_lines.append("=" * 80)
     

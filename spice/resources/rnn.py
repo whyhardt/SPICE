@@ -74,6 +74,7 @@ class BaseRNN(nn.Module):
         self.embedding_size = embedding_size
         self.n_participants = n_participants
         self.n_experiments = n_experiments
+        self.n_sessions = n_participants * n_experiments
         self.use_sindy = use_sindy
         self.rnn_training_finished = False
         self.n_items = n_items if n_items is not None else n_actions
@@ -238,6 +239,8 @@ class BaseRNN(nn.Module):
         inputs: Union[torch.Tensor, Tuple[torch.Tensor]] = None,
         participant_embedding: torch.Tensor = None, 
         participant_index: torch.Tensor = None,
+        experiment_embedding: torch.Tensor = None,
+        experiment_index: torch.Tensor = None,
         activation_rnn: Callable = None,
         ):
         """Used to call a submodule of the RNN. Can be either: 
@@ -269,12 +272,22 @@ class BaseRNN(nn.Module):
             inputs = torch.concat([inputs_i.unsqueeze(-1) for inputs_i in inputs], dim=-1)
         elif isinstance(inputs, torch.Tensor):
             inputs = inputs.unsqueeze(-1)
-            
+        
+        if experiment_index is None:
+            experiment_index = torch.zeros_like(participant_index)
+        
         if participant_embedding is None:
             participant_embedding = torch.zeros((*value.shape, 0), dtype=torch.float32, device=value.device)
         else:
             participant_embedding = participant_embedding.unsqueeze(1).repeat(1, self.n_items, 1)
 
+        if experiment_embedding is None:
+            experiment_embedding = torch.zeros((*value.shape, 0), dtype=torch.float32, device=value.device)
+        else:
+            experiment_embedding = experiment_embedding.unsqueeze(1).repeat(1, self.n_items, 1)
+        
+        embedding = torch.concat((experiment_embedding, participant_embedding), dim=-1)
+        
         # Replace NaN in inputs with 0 to prevent NaN propagation through the network
         # NaN values should be masked out by action_mask, but we need to clean them before forward pass
         inputs = torch.nan_to_num(inputs, nan=0.0)
@@ -282,7 +295,7 @@ class BaseRNN(nn.Module):
         if key_module in self.submodules_rnn.keys():
             if not self.use_sindy:
                 # use rnn module
-                inputs_rnn = torch.concat((value.unsqueeze(-1), inputs, participant_embedding), dim=-1)
+                inputs_rnn = torch.concat((value.unsqueeze(-1), inputs, embedding), dim=-1)
                 next_value = self.submodules_rnn[key_module](inputs_rnn).squeeze(-1)
                 if activation_rnn is not None:
                     next_value = activation_rnn(next_value)
@@ -292,7 +305,8 @@ class BaseRNN(nn.Module):
                     next_value = self.forward_sindy(
                         h_current = value, 
                         key_module = key_module, 
-                        participant_ids = participant_index, 
+                        participant_ids = participant_index,
+                        experiment_ids = experiment_index,
                         controls = inputs, 
                         polynomial_degree = self.sindy_polynomial_degree,
                         ensemble_idx=0,
@@ -315,6 +329,7 @@ class BaseRNN(nn.Module):
                     inputs,
                     action_mask,
                     participant_index.squeeze(),
+                    experiment_index.squeeze(),
                     self.sindy_polynomial_degree,
                 )
         
@@ -374,12 +389,12 @@ class BaseRNN(nn.Module):
         
         # Initialize coefficients [n_participants, n_ensemble, n_library_terms]
         # Use very small initialization to prevent numerical instability
-        init_coeffs = torch.randn(self.n_participants, ensemble_size, n_library_terms) * 0.001
+        init_coeffs = torch.randn(self.n_participants, self.n_experiments, ensemble_size, n_library_terms) * 0.001
         self.sindy_coefficients[key_module] = nn.Parameter(init_coeffs)
         
         # Initialize mask to all ones (all coefficients active)
         self.sindy_coefficients_presence[key_module] = torch.ones(
-            self.n_participants, ensemble_size, n_library_terms,
+            self.n_participants, self.n_experiments, ensemble_size, n_library_terms,
             dtype=torch.bool, device=self.device
         )
 
@@ -390,11 +405,11 @@ class BaseRNN(nn.Module):
 
         # Initialize patience counters to zero
         self.sindy_cutoff_patience_counters[key_module] = torch.zeros(
-            self.n_participants, ensemble_size, n_library_terms,
+            self.n_participants, self.n_experiments, ensemble_size, n_library_terms,
             dtype=torch.int32, device=self.device
         )
     
-    def forward_sindy(self, h_current: torch.Tensor, key_module: str, participant_ids: torch.Tensor, controls: torch.Tensor, polynomial_degree: int, ensemble_idx: int = None):
+    def forward_sindy(self, h_current: torch.Tensor, key_module: str, participant_ids: torch.Tensor, experiment_ids: torch.Tensor, controls: torch.Tensor, polynomial_degree: int, ensemble_idx: int = None):
         """
         Forward pass using SINDy model (used during inference/evaluation).
         Uses only the first ensemble member (index 0) for prediction.
@@ -412,12 +427,12 @@ class BaseRNN(nn.Module):
         
         if ensemble_idx is None:
             # Get coefficients and masks for all ensemble members
-            sindy_coeffs = self.sindy_coefficients[key_module][participant_ids]  # [batch, n_ensemble, n_library_terms]
-            mask = self.sindy_coefficients_presence[key_module][participant_ids]  # [batch, n_ensemble, n_library_terms]
+            sindy_coeffs = self.sindy_coefficients[key_module][participant_ids, experiment_ids]  # [batch, n_ensemble, n_library_terms]
+            mask = self.sindy_coefficients_presence[key_module][participant_ids, experiment_ids]  # [batch, n_ensemble, n_library_terms]
         else:
             # Get coefficients and masks for all ensemble members
-            sindy_coeffs = self.sindy_coefficients[key_module][participant_ids, ensemble_idx].unsqueeze(1)  # [batch, n_ensemble, n_library_terms]
-            mask = self.sindy_coefficients_presence[key_module][participant_ids, ensemble_idx].unsqueeze(1)  # [batch, n_ensemble, n_library_terms]
+            sindy_coeffs = self.sindy_coefficients[key_module][participant_ids, experiment_ids, ensemble_idx].unsqueeze(1)  # [batch, n_ensemble, n_library_terms]
+            mask = self.sindy_coefficients_presence[key_module][participant_ids, experiment_ids, ensemble_idx].unsqueeze(1)  # [batch, n_ensemble, n_library_terms]
 
         # custom dropout layer for sindy coefficients
         # if hasattr(self, 'dropout') and self.training:
@@ -453,6 +468,7 @@ class BaseRNN(nn.Module):
         controls: torch.Tensor,
         action_mask: torch.Tensor,
         participant_ids: torch.Tensor,
+        experiment_ids: torch.Tensor,
         polynomial_degree: int = 2,
     ) -> torch.Tensor:
         """
@@ -469,6 +485,7 @@ class BaseRNN(nn.Module):
             controls: Control inputs [batch, n_actions, n_controls]
             filter: Binary mask for indicating target positions [batch, n_actions]
             participant_ids: Participant indices [batch]
+            experiment_ids: Experiment indices [batch]
             polynomial_degree: Polynomial degree
 
         Returns:
@@ -482,6 +499,7 @@ class BaseRNN(nn.Module):
             h_current=h_current, 
             key_module=module_name, 
             participant_ids=participant_ids, 
+            experiment_ids=experiment_ids,
             controls=controls, 
             polynomial_degree=polynomial_degree,
             )
@@ -597,9 +615,9 @@ class BaseRNN(nn.Module):
                     start_idx += n_terms
             
     def count_sindy_coefficients(self) -> torch.Tensor:
-        coefficients = torch.zeros(self.n_participants, device=self.device)
+        coefficients = torch.zeros(self.n_participants, self.n_experiments, device=self.device)
         for module in self.submodules_rnn:
-            coefficients += (self.sindy_coefficients_presence[module] != 0).sum(dim=-1).float().mean(dim=1)
+            coefficients += (self.sindy_coefficients_presence[module] != 0).sum(dim=-1).float().mean(dim=-1)
         return coefficients
 
     def compute_weighted_coefficient_penalty(self, sindy_alpha: float = 0.0, norm: int = 1) -> torch.Tensor:
@@ -649,7 +667,7 @@ class BaseRNN(nn.Module):
 
         return penalty
                     
-    def get_spice_model_string(self, participant_id: int = 0, ensemble_idx: int = 0) -> str:
+    def get_spice_model_string(self, participant_id: int = 0, experiment_id: int = 0, ensemble_idx: int = 0) -> str:
         """
         Get the learned SPICE features and equations as a string.
 
@@ -662,7 +680,7 @@ class BaseRNN(nn.Module):
         """
         lines = []
         for module in self.submodules_rnn:
-            sparse_coeffs = (self.sindy_coefficients[module][participant_id, ensemble_idx] * self.sindy_coefficients_presence[module][participant_id, ensemble_idx]).detach().cpu().numpy()
+            sparse_coeffs = (self.sindy_coefficients[module][participant_id, experiment_id, ensemble_idx] * self.sindy_coefficients_presence[module][participant_id, experiment_id, ensemble_idx]).detach().cpu().numpy()
             equation_str = module + "[t+1] = "
             for index_term, term in enumerate(self.sindy_candidate_terms[module]):
                 if term == module:
@@ -677,7 +695,7 @@ class BaseRNN(nn.Module):
             lines.append(equation_str)
         return "\n".join(lines)
 
-    def print_spice_model(self, participant_id: int = 0, ensemble_idx: int = 0) -> None:
+    def print_spice_model(self, participant_id: int = 0, experiment_id: int = 0, ensemble_idx: int = 0) -> None:
         """
         Print the learned SPICE features and equations for each trained module.
 
@@ -685,7 +703,7 @@ class BaseRNN(nn.Module):
             participant_id: Participant index to print
             ensemble_idx: Ensemble member index to print (default: 0, the first member)
         """
-        print(self.get_spice_model_string(participant_id, ensemble_idx))
+        print(self.get_spice_model_string(participant_id, experiment_id, ensemble_idx))
 
     def eval(self, use_sindy=True):
         super().eval()

@@ -309,12 +309,12 @@ class SpiceEstimator(BaseEstimator):
         
         return prediction_rnn, prediction_spice
 
-    def print_spice_model(self, participant_id: int = 0) -> None:
+    def print_spice_model(self, participant_id: int = 0, experiment_id: int = 0) -> None:
         """
         Get the learned SPICE features and equations.
         """
         
-        self.rnn_model.print_spice_model(participant_id)
+        self.rnn_model.print_spice_model(participant_id, experiment_id)
 
     def get_participant_embeddings(self) -> Dict:
         if hasattr(self.rnn_model, 'participant_embedding'):

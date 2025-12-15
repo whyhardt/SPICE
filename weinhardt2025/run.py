@@ -136,7 +136,7 @@ if __name__=='__main__':
         sindy_threshold_frequency=args.sindy_cutoff_freq,
         sindy_threshold_terms=args.sindy_cutoff,
         sindy_cutoff_patience=args.sindy_cutoff_patience,
-        sindy_epochs=20,#args.epochs,
+        sindy_epochs=10,#args.epochs,
         sindy_alpha=args.sindy_alpha,
         sindy_library_polynomial_degree=2,
         
@@ -222,7 +222,7 @@ if __name__=='__main__':
             term_names = estimator.rnn_model.sindy_candidate_terms[module_name]
             for idx, term in enumerate(term_names):
                 if term == module_name:
-                    sparse_coeffs[:, idx] += 1
+                    sparse_coeffs[..., idx] += 1
 
             coeff_data[module_name] = {
                 'coeffs': sparse_coeffs,
@@ -239,7 +239,7 @@ if __name__=='__main__':
 
             for idx, term in enumerate(terms):
                 all_terms.append(f"{module_name}: {term}")
-                all_coeffs_list.append(coeffs[:, idx])
+                all_coeffs_list.append(coeffs[..., idx])
 
         n_total_terms = len(all_terms)
 
