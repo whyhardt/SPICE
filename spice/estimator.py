@@ -5,13 +5,11 @@ import warnings
 import time
 import torch
 import numpy as np
-import pysindy as ps
 from sklearn.base import BaseEstimator
-from copy import deepcopy
-from typing import Dict, Optional, Tuple, Union, List
+from typing import Dict, Optional, Tuple
 
 from .resources.spice_training import fit_model
-from .resources.bandits import AgentNetwork, Bandits
+from .resources.bandits import AgentNetwork
 from .resources.rnn import BaseRNN
 from .resources.spice_utils import SpiceConfig, SpiceDataset
 
@@ -41,10 +39,10 @@ class SpiceEstimator(BaseEstimator):
         
         # RNN training parameters
         epochs: Optional[int] = 1,
+        warmup_steps: Optional[int] = 0,
         bagging: Optional[bool] = False,
-        sequence_length: Optional[int] = -1,  # -1 for keeping the sequence length in the data to its original length, otherwise strided windows of length sequence_length,
-        n_steps_per_call: Optional[int] = -1,  # number of timesteps in one backward-call; -1 for full sequence
-        batch_size: Optional[int] = -1,  # -1 for a batch-size equal to the number of participants in the data
+        n_steps_per_call: Optional[int] = None,  # number of timesteps in one backward-call; -1 for full sequence
+        batch_size: Optional[int] = None,  # -1 for a batch-size equal to the number of participants in the data
         learning_rate: Optional[float] = 1e-2,
         convergence_threshold: Optional[float] = 0,
         device: Optional[torch.device] = torch.device('cpu'),
@@ -55,15 +53,17 @@ class SpiceEstimator(BaseEstimator):
         # SPICE training parameters
         sindy_weight: Optional[float] = 0.1,  # Weight for SINDy regularization loss
         sindy_epochs: Optional[int] = 1000,
-        sindy_threshold_frequency: Optional[int] = 50,
         sindy_threshold: Optional[float] = 0.05,
+        sindy_threshold_frequency: Optional[int] = 1,
         sindy_threshold_terms: Optional[int] = 1,
+        sindy_cutoff_patience: Optional[int] = 0,
         sindy_regularization: Optional[float] = 1e-2,
         sindy_library_polynomial_degree: Optional[int] = 1,
         sindy_ensemble_size: Optional[int] = 10,
-        l2_sindy: Optional[float] = 0,
+        sindy_alpha: Optional[float] = 0,
+        sindy_noise_std: Optional[float] = 0.01,  # Noise injection std (0 = disabled)
         use_sindy: Optional[bool] = False,
-
+        
         verbose: Optional[bool] = False,
         save_path_spice: Optional[str] = None
     ):
@@ -97,8 +97,8 @@ class SpiceEstimator(BaseEstimator):
         
         # Training parameters
         self.epochs = epochs
+        self.warmup_steps = warmup_steps
         self.bagging = bagging
-        self.sequence_length = sequence_length
         self.n_steps_per_call = n_steps_per_call
         self.batch_size = batch_size
         self.learning_rate = learning_rate
@@ -107,20 +107,23 @@ class SpiceEstimator(BaseEstimator):
         self.device = device
         self.verbose = verbose
         self.deterministic = False
-        self.l2_weight_decay = l2_rnn
+        self.l2_rnn = l2_rnn
 
         # Save parameters
         self.save_path_model = save_path_spice
 
         # SINDy training parameters
         self.sindy_weight = sindy_weight
+        self.sindy_alpha = sindy_alpha
         self.sindy_threshold_frequency = sindy_threshold_frequency
         self.sindy_threshold = sindy_threshold
+        self.sindy_cutoff_patience = sindy_cutoff_patience
         self.sindy_threshold_terms = sindy_threshold_terms
         self.sindy_library_polynomial_degree = sindy_library_polynomial_degree
         self.sindy_regularization = sindy_regularization
         self.sindy_epochs = sindy_epochs
         self.sindy_ensemble_size = sindy_ensemble_size
+        self.sindy_noise_std = sindy_noise_std
         
         # Data parameters
         self.n_actions = n_actions
@@ -149,6 +152,9 @@ class SpiceEstimator(BaseEstimator):
             use_sindy=use_sindy,
             n_items=n_items,
         ).to(device)
+
+        # Set noise injection parameter
+        self.rnn_model.sindy_noise_std = sindy_noise_std
         
         sindy_params = []
         rnn_params = []
@@ -165,14 +171,11 @@ class SpiceEstimator(BaseEstimator):
         #   rescaling brings the gradient back to normal size -> desired updates;
         self.rnn_optimizer = torch.optim.AdamW(
             [
-            {'params': sindy_params, 'weight_decay': l2_sindy, 'lr': learning_rate/sindy_weight * len(self.rnn_model.submodules_rnn) if sindy_weight > 0 else learning_rate},
+            {'params': sindy_params, 'weight_decay': 0, 'lr': learning_rate},#/sindy_weight * len(self.rnn_model.submodules_rnn) if sindy_weight > 0 else learning_rate},
             {'params': rnn_params, 'weight_decay': l2_rnn, 'lr': learning_rate},
             ], 
-            # lr=learning_rate,
             )
         
-        # self.rnn_optimizer = torch.optim.AdamW(self.rnn_model.parameters(), lr=learning_rate, weight_decay=l2_weight_decay)
-            
     def fit(self, data: np.ndarray, targets: np.ndarray, data_test: np.ndarray = None, target_test: np.ndarray = None):
         """
         Fit the RNN and SPICE models to given data.
@@ -194,7 +197,7 @@ class SpiceEstimator(BaseEstimator):
         # if self.verbose:
         print('\nTraining the RNN...')
         
-        batch_size = data.shape[0] if self.batch_size == -1 else self.batch_size
+        batch_size = data.shape[0] if self.batch_size is None else self.batch_size
         
         rnn_model, rnn_optimizer, _ = fit_model(
             model=self.rnn_model,
@@ -203,11 +206,14 @@ class SpiceEstimator(BaseEstimator):
             optimizer=self.rnn_optimizer,
             convergence_threshold=self.convergence_threshold,
             sindy_weight=self.sindy_weight,
+            sindy_alpha=self.sindy_alpha,
             sindy_threshold=self.sindy_threshold,
             sindy_threshold_frequency=self.sindy_threshold_frequency,
             sindy_threshold_terms=self.sindy_threshold_terms,
+            sindy_threshold_patience=self.sindy_cutoff_patience,
             sindy_epochs=self.sindy_epochs,
             epochs=self.epochs,
+            n_warmup_steps=self.warmup_steps,
             batch_size=batch_size,
             bagging=self.bagging,
             scheduler=self.scheduler,
@@ -234,7 +240,8 @@ class SpiceEstimator(BaseEstimator):
                 n_items=rnn_model.n_items,
             )
         rnn_agent_model.sindy_ensemble_size = rnn_model.sindy_ensemble_size  # Match trained ensemble size
-        rnn_agent_model.setup_sindy_coefficients(rnn_model.sindy_polynomial_degree)
+        for key_module in rnn_agent_model.submodules_rnn:
+            rnn_agent_model.setup_sindy_coefficients(key_module=key_module)
         rnn_agent_model.load_state_dict(state_dict)
         self.rnn_agent = AgentNetwork(rnn_agent_model, self.n_actions, device=self.device, use_sindy=False)
 
@@ -249,9 +256,10 @@ class SpiceEstimator(BaseEstimator):
                 n_items=rnn_model.n_items,
             )
         spice_agent_model.sindy_ensemble_size = rnn_model.sindy_ensemble_size  # Match trained ensemble size
-        spice_agent_model.setup_sindy_coefficients(rnn_model.sindy_polynomial_degree)
+        for key_module in spice_agent_model.submodules_rnn:
+            spice_agent_model.setup_sindy_coefficients(key_module=key_module)
         spice_agent_model.load_state_dict(state_dict)
-        spice_agent_model.sindy_coefficient_masks = rnn_model.sindy_coefficient_masks
+        spice_agent_model.sindy_coefficients_presence = rnn_model.sindy_coefficients_presence
         self.spice_agent = AgentNetwork(spice_agent_model, self.n_actions, device=self.device, use_sindy=True)
         
         if self.verbose:
@@ -301,23 +309,12 @@ class SpiceEstimator(BaseEstimator):
         
         return prediction_rnn, prediction_spice
 
-    def print_spice_model(self, participant_id: int = 0) -> None:
+    def print_spice_model(self, participant_id: int = 0, experiment_id: int = 0) -> None:
         """
         Get the learned SPICE features and equations.
         """
         
-        self.rnn_model.print_spice_model(participant_id)
-    
-    def get_spice_agents(self) -> Dict:
-        """
-        Get the trained SPICE agents.
-        
-        Returns:
-            Dictionary containing SPICE agents
-        """
-        if self.spice_agent is None:
-            raise ValueError("Model hasn't been fitted yet. Call fit() first.")
-        return self.spice_agent
+        self.rnn_model.print_spice_model(participant_id, experiment_id)
 
     def get_participant_embeddings(self) -> Dict:
         if hasattr(self.rnn_model, 'participant_embedding'):
@@ -327,19 +324,38 @@ class SpiceEstimator(BaseEstimator):
         else:
             print(f'RNN model has no participant_embedding module.')
             return None
+
+    def get_sindy_coefficients(self, ensemble_index: int = 0) -> Tuple[np.ndarray, list]:
+        """Returns a tuple of a numpy array holding the sindy coefficients of shape (candidates, coefficients) and a tuple holding the corresponding candidate terms."""
+        
+        sindy_coefs = []
+        sindy_terms = []
+        
+        modules = self.rnn_model.submodules_rnn
+        
+        for module in modules:
+            candidate_terms = self.rnn_model.sindy_candidate_terms[module]
+            sindy_coefs.append((self.rnn_model.sindy_coefficients[module][:, ensemble_index] * self.rnn_model.sindy_coefficients_presence[module][:, ensemble_index]).detach().cpu().numpy())
+            sindy_terms += candidate_terms
+        
+        sindy_coefs = np.concat(sindy_coefs, axis=-1)
+        
+        return sindy_coefs, tuple(sindy_terms)
         
     def load_spice(self, path_model: str, deterministic: bool = True):
         
         # LOAD RNN MODEL AND OPTIMIZER
                 
         # load trained parameters
-        loaded_model = torch.load(path_model, map_location=torch.device('cpu'))
+        loaded_parameters = torch.load(path_model, map_location=torch.device('cpu'))
         
-        self.rnn_model.sindy_ensemble_size = loaded_model['model']['sindy_coefficients.'+next(iter(self.rnn_model.submodules_rnn))].shape[1]
-        self.rnn_model.setup_sindy_coefficients()
+        self.rnn_model.sindy_ensemble_size = loaded_parameters['model']['sindy_coefficients.'+next(iter(self.rnn_model.submodules_rnn))].shape[1]
+        for key_module in self.rnn_model.submodules_rnn:
+            self.rnn_model.setup_sindy_coefficients(key_module=key_module)
+        self.rnn_model.sindy_coefficients_presence = loaded_parameters['sindy_coefficients_presence']
         
-        self.rnn_model.load_state_dict(loaded_model['model'])
-        self.rnn_model.set_initial_state(batch_size=self.rnn_model.n_participants)
+        self.rnn_model.load_state_dict(loaded_parameters['model'])
+        self.rnn_model.init_state(batch_size=self.rnn_model.n_participants)
         # optimizer.load_state_dict(state_dict['optimizer'])
 
         self.rnn_model = self.rnn_model.to(self.rnn_model.device)
@@ -359,7 +375,7 @@ class SpiceEstimator(BaseEstimator):
                     use_sindy=agent_type[1],
                 )
             model.load_state_dict(state_dict)
-            model.sindy_coefficient_masks = loaded_model['sindy_coefficient_masks']
+            model.sindy_coefficients_presence = loaded_parameters['sindy_coefficients_presence']
             agent = AgentNetwork(model, self.n_actions, device=self.device, use_sindy=agent_type[1], deterministic=deterministic)
             setattr(self, agent_type[0], agent)
             
@@ -375,5 +391,9 @@ class SpiceEstimator(BaseEstimator):
         """
         
         # Save RNN model
-        state_dict = {'model': self.rnn_model.state_dict(), 'optimizer': self.rnn_optimizer.state_dict(), 'sindy_coefficient_masks': self.rnn_model.sindy_coefficient_masks}
+        state_dict = {
+            'model': self.rnn_model.state_dict(), 
+            'optimizer': self.rnn_optimizer.state_dict(), 
+            'sindy_coefficients_presence': self.rnn_model.sindy_coefficients_presence,
+            }
         torch.save(state_dict, path_rnn)

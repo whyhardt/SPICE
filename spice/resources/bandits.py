@@ -7,7 +7,6 @@ import pandas as pd
 from copy import copy, deepcopy
 import torch
 from tqdm import tqdm
-import pysindy as ps
 
 from .rnn import BaseRNN, ParameterModule
 from .spice_utils import SpiceDataset
@@ -108,7 +107,7 @@ class Agent:
     """Reset the agent for the beginning of a new session."""
     
     self.state = {
-      'value_reward': np.full((self.n_actions, 1), self._q_init),
+      'value_reward': np.zeros((self.n_actions, 1)),
       'value_choice': np.zeros((self.n_actions, 1)),
       'learning_rate_reward': np.zeros((self.n_actions, 1)),
     }
@@ -246,7 +245,7 @@ class AgentQ(Agent):
     # self._alpha = np.zeros(self._n_actions)
     
     self.state = {
-      'value_reward': np.full(self.n_actions, self._q_init),
+      'value_reward': np.zeros(self.n_actions),
       'value_choice': np.zeros(self.n_actions),
       'learning_rate_reward': np.zeros(self.n_actions),
     }
@@ -279,7 +278,7 @@ class AgentQ(Agent):
         
       # asymmetric learning rates
       current_reward = reward[action] if not any(np.isnan(reward)) else reward[choice]
-      alpha[action] = alpha_r if current_reward > 0.5 else alpha_p
+      alpha[action] = alpha_p + current_reward * (alpha_r - alpha_p)
       
       # Reward-prediction-error
       r = current_reward if action==choice else 1-current_reward
@@ -305,7 +304,7 @@ class AgentQ(Agent):
     return (self.state['value_reward']*self.betas['value_reward'] + self.state['value_choice']*self.betas['value_choice']).reshape(self.n_actions)
 
 
-class AgentQ_SampleZeros(AgentQ):
+class AgentQ_SampleParams(AgentQ):
   """An agent that runs simple Q-learning for the y-maze tasks.
 
   Attributes:
@@ -324,7 +323,7 @@ class AgentQ_SampleZeros(AgentQ):
       alpha_choice: float = 1.,
       forget_rate: float = 0.,
       parameter_variance: Union[Dict[str, float], float] = 0.,
-      zero_threshold: float = 0.1,
+      zero_threshold: float = 0.2,
       ):
     
     super().__init__(
@@ -344,31 +343,40 @@ class AgentQ_SampleZeros(AgentQ):
   def new_sess(self, sample_parameters=False, **kwargs):
     """Reset the agent for the beginning of a new session."""
     
-    super(AgentQ_SampleZeros, self).new_sess()
+    super().new_sess()
     
     # sample new parameters
     if sample_parameters:
       # sample scaling parameters (inverse noise temperatures)
       self.betas['value_reward'], self.betas['value_choice'] = 0, 0
       while self.betas['value_reward'] <= self._zero_threshold and self.betas['value_choice'] <=  self._zero_threshold:
-        self.betas['value_reward'] = np.random.rand()
-        self.betas['value_choice'] = np.random.rand()
+        
+        self.betas['value_reward'] = np.random.beta(*self.compute_beta_dist_params(mean=0.5, var=self._parameter_variance['beta_reward']))
+        self.betas['value_choice'] = np.random.beta(*self.compute_beta_dist_params(mean=0.5, var=self._parameter_variance['beta_choice']))
         # apply zero-threshold if applicable
         self.betas['value_reward'] = self.betas['value_reward'] * 2 * self._mean_beta_reward if self.betas['value_reward'] > self._zero_threshold else 0
         self.betas['value_choice'] = self.betas['value_choice'] * 2 * self._mean_beta_choice if self.betas['value_choice'] > self._zero_threshold else 0
       
       # sample auxiliary parameters
-      self._forget_rate = np.random.rand()
-      self._forget_rate =  self._forget_rate * (self._forget_rate > self._zero_threshold) 
+      self._forget_rate = np.random.beta(*self.compute_beta_dist_params(mean=self._mean_forget_rate, var=self._parameter_variance['forget_rate']))
+      self._forget_rate =  self._forget_rate * (self._forget_rate > self._zero_threshold)
+      
+      self._alpha_choice = np.random.beta(*self.compute_beta_dist_params(mean=self._mean_alpha_choice, var=self._parameter_variance['alpha_choice']))
+      self._alpha_choice = self._alpha_choice * (self._alpha_choice > self._zero_threshold)
       
       # sample learning rate; don't zero out; only check for applicability of asymmetric learning rates
-      self._alpha_reward = np.random.rand()
-      self._alpha_penalty = np.random.rand()
-      # set alpha_reward = alpha_penalty if (alpha_reward - alpha_penalty) < zero_threshold
+      self._alpha_reward = np.random.beta(*self.compute_beta_dist_params(mean=self._mean_alpha_reward, var=self._parameter_variance['alpha_reward']))
+      self._alpha_penalty = np.random.beta(*self.compute_beta_dist_params(mean=self._mean_alpha_penalty, var=self._parameter_variance['alpha_penalty']))
       if np.abs(self._alpha_reward - self._alpha_penalty) < self._zero_threshold:
         alpha_mean = np.mean((self._alpha_reward, self._alpha_penalty))
         self._alpha_reward = alpha_mean
         self._alpha_penalty = alpha_mean
+        
+  def compute_beta_dist_params(self, mean, var):
+    n = mean * (1-mean) / var**2
+    a = mean * n
+    b = (1-mean) * n
+    return a, b
 
 
 class AgentNetwork(Agent):
@@ -405,7 +413,7 @@ class AgentNetwork(Agent):
     if not isinstance(participant_id, torch.Tensor):
       participant_id = torch.tensor(participant_id, dtype=int, device=self.model.device)[None]
     
-    self.model.set_initial_state(batch_size=1)
+    self.model.init_state(batch_size=1)
     
     self._meta_data = torch.zeros((1, 2))
     self._meta_data[0, -1] = participant_id
@@ -418,19 +426,19 @@ class AgentNetwork(Agent):
 
   def get_logit(self):
     """Return the value of the agent's current state."""
-    betas = self.get_betas()
-    if betas:
-      logits = np.sum(
-        np.concatenate([
-          (self.state[key] * betas[key]).cpu().numpy() for key in self.state if key in betas 
-          ]), 
-        axis=0)
-    else:
-      logits = np.sum(
-        np.concatenate([
-          self.state[key].cpu().numpy() for key in self.state if 'value' in key
-          ]),
-        axis=0)
+    # betas = self.get_betas()
+    # if betas:
+    #   logits = np.sum(
+    #     np.concatenate([
+    #       (self.state[key] * betas[key]).cpu().numpy() for key in self.state if key in betas 
+    #       ]), 
+    #     axis=0)
+    # else:
+    logits = np.sum(
+      np.concatenate([
+        self.state[key].cpu().numpy() for key in self.state if 'value' in key
+        ]),
+      axis=0)
     return logits
 
   def update(self, choice: float, reward: float, block: int = 0, additional_inputs: np.ndarray = torch.zeros(0), **kwargs):
@@ -457,6 +465,9 @@ class AgentNetwork(Agent):
   def get_participant_ids(self):
     if hasattr(self.model, 'participant_embedding'):
       return tuple(np.arange(self.model.participant_embedding.num_embeddings).tolist())
+    
+  def get_modules(self):
+    return tuple(list(self.model.submodules_rnn.keys()))
   
   @property
   def q(self):

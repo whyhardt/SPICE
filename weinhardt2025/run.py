@@ -7,10 +7,8 @@ import torch
 import matplotlib.pyplot as plt
 import pandas as pd
 
-
-from spice.estimator import SpiceEstimator
-from spice.utils.convert_dataset import convert_dataset, split_data_along_sessiondim, split_data_along_timedim
-from spice.utils.plotting import plot_session
+from spice import SpiceEstimator, convert_dataset, split_data_along_sessiondim, split_data_along_timedim, plot_session
+from spice.precoded import choice
 from spice.resources.bandits import AgentQ
 from spice.precoded import workingmemory_multiitem, workingmemory, choice, rescorlawagner, forgetting
 
@@ -23,19 +21,22 @@ if __name__=='__main__':
     parser.add_argument('--model', type=str, default=None, help='Model name to load from and/or save to parameters of RNN')
     parser.add_argument('--data', type=str, default=None, help='Path to dataset')
     
-    # data and training parameters
+    # RNN training parameters
     parser.add_argument('--epochs', type=int, default=1000, help='Number of training epochs')
-    
     parser.add_argument('--lr', type=float, default=0.01, help='Learning rate')
-    parser.add_argument('--l2_rnn', type=float, default=0.00001, help='L2 Reg of the RNN parameters')
-    parser.add_argument('--l2_sindy', type=float, default=0.001, help='L2 Reg of the SINDy coefficients')
-    parser.add_argument('--sindy_weight', type=float, default=0.1, help='Weight for SINDy regularization during RNN training')
-    parser.add_argument('--sindy_cutoff', type=int, default=1, help='Number of thresholded terms')
-    parser.add_argument('--sindy_threshold', type=float, default=0.05, help='Threshold value for cutting off sindy terms')
+    parser.add_argument('--l2_rnn', type=float, default=0., help='L2 Reg of the RNN parameters')
     
+    # SINDy training parameters
+    parser.add_argument('--sindy_weight', type=float, default=0.1, help='Weight for SINDy regularization during RNN training')
+    parser.add_argument('--sindy_alpha', type=float, default=0.001, help='L2 Reg of the SINDy coefficients')
+    parser.add_argument('--sindy_threshold', type=float, default=0.05, help='Threshold value for cutting off sindy terms')
+    parser.add_argument('--sindy_cutoff', type=int, default=1, help='Number of thresholded terms')
+    parser.add_argument('--sindy_cutoff_freq', type=int, default=1, help='Number of epochs after which to cutoff')
+    parser.add_argument('--sindy_cutoff_patience', type=int, default=100, help='Number of epochs after which to cutoff')
+    
+    # Data setup parameters
     parser.add_argument('--train_ratio_time', type=float, default=None, help='Ratio of data used for training. Split along time dimension. Not combinable with test_sessions')
     parser.add_argument('--test_sessions', type=str, default=None, help='Comma-separated list of integeres which indicate test sessions. Not combinable with train_ratio_time')
-    
     parser.add_argument('--n_items', type=int, default=None, help='Number of items in dataset; Default None: As many items as actions (automatically detected from dataset);')
     parser.add_argument('--additional_columns', type=str, default=None, help='Comma-separated list of columns which are added to the dataset.')
     parser.add_argument('--timeshift_additional_columns', action='store_true', help='Shifts additional columns (defined by the kwarg "additional_columns") [t]->[t-1]; Necessary for e.g. predictor stimuli which are usually listed in the trial of which SPICE has to predict the action.')
@@ -56,28 +57,25 @@ if __name__=='__main__':
     
     # args.data="weinhardt2025/data/sugawara2021/sugawara2021.csv" 
     # args.model="weinhardt2025/params/sugawara2021/spice_sugawara2021.pkl" 
-    
-    # args.epochs=10
+    # args.additional_columns="shown_at_0,shown_at_1,shown_at_0_next,shown_at_1_next"
     # args.n_items=8
     # args.test_sessions="1"
-    # args.additional_columns="shown_at_0,shown_at_1,shown_at_0_next,shown_at_1_next"
     
-    # args.model = "weinhardt2025/params/spice_synthetic.pkl"
-    # args.data = "weinhardt2025/data/data_synthetic.csv"
+    args.data = "weinhardt2025/data/synthetic/synthetic_2_256p_0.csv"
+    args.model = args.data.replace("data", "params").replace("/synthetic_", "/spice_synthetic_test").replace(".csv", ".pkl")
     
-    # args.epochs = 10
-    # args.l2_rnn = 0.00001
-    # args.l2_sindy 0 001
-    # args.lr = 0.001
+    args.epochs = 2
+    args.lr = 0.01
+    args.sindy_weight = 1
+    args.sindy_cutoff_freq = 1
+    args.sindy_cutoff = 1
+    args.sindy_cutoff_patience = 100
+    args.sindy_threshold = 0.05
+    args.sindy_alpha = 0.001
+    warmup_steps = 1000
     
-    # args.sindy_weight = 0.1  # Start with very small weight for stability
-    # args.l2_sindy = 0.001
-    sindy_epochs = args.epochs 
-    sindy_threshold = args.sindy_threshold
-    sindy_thresholding_frequency = 100
-    sindy_threshold_terms = args.sindy_cutoff
-    
-    example_participant = 0
+    example_participant = 1
+    plot_coef_dist = True
     
     if args.train_ratio_time and args.test_sessions:
         raise ValueError("kwargs train_ratio_time and test_sessions cannot be assigned at the same time.")
@@ -88,7 +86,7 @@ if __name__=='__main__':
         additional_inputs=args.additional_columns.split(',') if args.additional_columns else None,
         timeshift_additional_inputs=args.timeshift_additional_columns,
     )
-
+    
     if args.train_ratio_time:
         args.test_sessions = None
         dataset_train, dataset_test = split_data_along_timedim(dataset, args.train_ratio_time)
@@ -108,7 +106,7 @@ if __name__=='__main__':
     else:
         spice_model = workingmemory_multiitem
 
-    spice_model = choice
+    # spice_model = choice
     
     class_rnn = spice_model.SpiceModel
     spice_config = spice_model.CONFIG
@@ -128,25 +126,27 @@ if __name__=='__main__':
         
         # rnn training parameters
         epochs=args.epochs,
+        warmup_steps=warmup_steps,
         l2_rnn=args.l2_rnn,
         learning_rate=args.lr,
         
         # sindy fitting parameters
         sindy_weight=args.sindy_weight,
-        sindy_threshold=sindy_threshold,
-        sindy_threshold_frequency=sindy_thresholding_frequency,
-        sindy_threshold_terms=sindy_threshold_terms,
+        sindy_threshold=args.sindy_threshold,
+        sindy_threshold_frequency=args.sindy_cutoff_freq,
+        sindy_threshold_terms=args.sindy_cutoff,
+        sindy_cutoff_patience=args.sindy_cutoff_patience,
+        sindy_epochs=10,#args.epochs,
+        sindy_alpha=args.sindy_alpha,
         sindy_library_polynomial_degree=2,
-        sindy_epochs=sindy_epochs,
-        l2_sindy=args.l2_sindy,
         
         # additional generalization parameters
-        # bagging=True,
+        bagging=True,
         # scheduler=True,
         
         # other parameters
         verbose=True,
-        device=torch.device('cuda' if torch.cuda.is_available() else 'cpu'),
+        # device=torch.device('cuda' if torch.cuda.is_available() else 'cpu'),
         save_path_spice=args.model,
     )
     
@@ -155,7 +155,8 @@ if __name__=='__main__':
     
     print(f"\nStarting training on {estimator.device}...")
     print("=" * 80)
-    estimator.fit(dataset_train.xs, dataset_train.ys, data_test=dataset_test.xs, target_test=dataset_test.ys)
+    if estimator.sindy_epochs > 0 or estimator.epochs > 0:
+        estimator.fit(dataset_train.xs, dataset_train.ys, data_test=dataset_test.xs, target_test=dataset_test.ys)
     print("=" * 80)
     print("\nTraining complete!")
     
@@ -179,24 +180,111 @@ if __name__=='__main__':
         dataset_df = pd.read_csv(args.data)
 
         # get the parameters for the selected participant and set up the ground truth model
-        n_trials = 100
+        n_trials = 200
         dataset_df = dataset_df[dataset_df['session'] == example_participant]
 
         agents['groundtruth'] = AgentQ(
             n_actions=2,
-            beta_reward=dataset_df['beta_reward'][example_participant * n_trials],
-            alpha_reward=dataset_df['alpha_reward'][example_participant * n_trials],
-            alpha_penalty=dataset_df['alpha_penalty'][example_participant * n_trials],
-            forget_rate=dataset_df['forget_rate'][example_participant * n_trials],
-            beta_choice=dataset_df['beta_choice'][example_participant * n_trials],
-            alpha_choice=dataset_df['alpha_choice'][example_participant * n_trials],
+            beta_reward=dataset_df['beta_reward'].values[0],
+            alpha_reward=dataset_df['alpha_reward'].values[0],
+            alpha_penalty=dataset_df['alpha_penalty'].values[0],
+            forget_rate=dataset_df['forget_rate'].values[0],
+            beta_choice=dataset_df['beta_choice'].values[0],
+            alpha_choice=dataset_df['alpha_choice'].values[0],
         )
-        
+
     fig, axs = plot_session(
         agents,
         experiment=dataset.xs[example_participant]
         )
 
     plt.show()
-    
-    print("\nNext step: Run analysis_model_evaluation.py to evaluate performance!")
+
+    # =====================================================================
+    # Plotting section: SINDy coefficients across participants
+    # =====================================================================
+    if args.sindy_weight > 0 and plot_coef_dist:
+        print("\nGenerating coefficient variance plots across participants...")
+
+        # Extract coefficients for all participants
+        ensemble_idx = 0  # Use first ensemble member
+        coeff_data = {}
+
+        for module_name in estimator.rnn_model.submodules_rnn:
+            # Get coefficients: [n_participants, n_ensemble, n_library_terms]
+            coeffs = estimator.rnn_model.sindy_coefficients[module_name][:, ensemble_idx, :].detach().cpu().numpy()
+            mask = estimator.rnn_model.sindy_coefficients_presence[module_name][:, ensemble_idx, :].cpu().numpy()
+
+            # Apply mask and adjust identity terms
+            sparse_coeffs = coeffs * mask
+
+            # Add 1 to the identity term (where term == module_name)
+            term_names = estimator.rnn_model.sindy_candidate_terms[module_name]
+            for idx, term in enumerate(term_names):
+                if term == module_name:
+                    sparse_coeffs[..., idx] += 1
+
+            coeff_data[module_name] = {
+                'coeffs': sparse_coeffs,
+                'terms': term_names
+            }
+
+        # Collect all coefficients for one figure
+        all_terms = []
+        all_coeffs_list = []
+
+        for module_name, data in coeff_data.items():
+            coeffs = data['coeffs']
+            terms = data['terms']
+
+            for idx, term in enumerate(terms):
+                all_terms.append(f"{module_name}: {term}")
+                all_coeffs_list.append(coeffs[..., idx])
+
+        n_total_terms = len(all_terms)
+
+        # Create single figure with all coefficient histograms
+        n_cols = min(4, n_total_terms)
+        n_rows = (n_total_terms + n_cols - 1) // n_cols
+
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=(4*n_cols, 3*n_rows))
+        fig.suptitle('Coefficient Distribution Across Participants (Normalized)', fontsize=14, fontweight='bold')
+
+        if n_total_terms == 1:
+            axes = [axes]
+        else:
+            axes = axes.flatten()
+
+        for idx, (term_name, coeff_values) in enumerate(zip(all_terms, all_coeffs_list)):
+            ax = axes[idx]
+
+            # Calculate mean and std for normalization
+            mean_val = coeff_values.mean()
+            std_val = coeff_values.std()
+
+            # Normalize coefficients: (x - mean) / std
+            if std_val > 0:
+                normalized_coeffs = (coeff_values - mean_val) / std_val
+            else:
+                normalized_coeffs = coeff_values - mean_val
+
+            # Create histogram
+            ax.hist(normalized_coeffs, bins=15, color='steelblue', alpha=0.7, edgecolor='black')
+
+            # Add vertical line at mean (which should be 0 after normalization)
+            ax.axvline(x=0, color='red', linestyle='--', linewidth=2, label='Mean')
+
+            # ax.set_xlabel('Normalized Coefficient Value')
+            # ax.set_ylabel('Frequency')
+            ax.set_title(f'{term_name}', fontsize=9)  # \nμ={mean_val:.3f}, σ={std_val:.3f}
+            ax.grid(True, alpha=0.3, axis='y')
+            ax.legend(fontsize=8)
+
+        # Hide unused subplots
+        for idx in range(n_total_terms, len(axes)):
+            axes[idx].axis('off')
+
+        plt.tight_layout()
+        plt.show()
+
+        print(f"Coefficient distribution plot generated with {n_total_terms} coefficients from {len(coeff_data)} modules.")
