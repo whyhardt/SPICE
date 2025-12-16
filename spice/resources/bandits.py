@@ -528,6 +528,7 @@ class BanditsGeneral(Bandits):
             reward_schedule: "binary" for 0/1 rewards, "penalty" for -1/+1 rewards
             bounds: Min and max values for reward probabilities
             seed: Random seed for reproducibility
+            counterfactual: If True, the reward for all arms is returned
         """
 
         super().__init__()
@@ -562,7 +563,7 @@ class BanditsGeneral(Bandits):
             'reversals': []
         }
         
-        # For correlated drift
+        # For correlated drift (only for 2-armed bandits)
         if self.reward_prob_correlation != 0 and self.n_arms == 2:
             # Construct covariance matrix for bivariate normal
             self.drift_cov = np.array([
@@ -574,14 +575,13 @@ class BanditsGeneral(Bandits):
 
     def step(self, choice: int) -> Tuple[float, dict]:
           """
-          Execute one step: apply drift/reversals, then generate reward for chosen arm.
+          Take a step in the environment: apply drift/reversals, then generate reward for the chosen arm.
           
           Args:
               choice: Index of chosen arm (0 to n_arms-1)
               
           Returns:
-              reward: The reward received
-              info: Dictionary with additional information
+              reward: The reward received for the chosen arm (if counterfactual, the reward for all arms is returned)
           """
           if choice < 0 or choice >= self.n_arms:
               raise ValueError(f"Choice must be between 0 and {self.n_arms-1}")
@@ -622,7 +622,7 @@ class BanditsGeneral(Bandits):
 
     @property
     def n_actions(self) -> int:
-      return 2            
+      return self.n_arms   
           
     def _apply_dynamics(self) -> bool:
         """Apply drift and check for reversals."""
@@ -1285,60 +1285,98 @@ def create_dataset(
 
 
 def process_dataset(dataset, agent, parameter_list, n_trials_per_session):
-    # dataset columns
     # general dataset columns
     session, choice, reward = [], [], []
-    choice_prob_0, choice_prob_1, action_value_0, action_value_1, reward_value_0, reward_value_1, choice_value_0, choice_value_1 = [], [], [], [], [], [], [], []
+    choice_prob_0, choice_prob_1 = [], []
+    action_value_0, action_value_1 = [], []
+    reward_value_0, reward_value_1 = [], []
+    choice_value_0, choice_value_1 = [], []
+
     # parameters
     beta_reward, alpha_reward, alpha_penalty = [], [], []
     beta_choice, alpha_choice = [], []
-    confirmation_bias, forget_rate = [], []
+    forget_rate = []
+
     # parameter means
     mean_beta_reward, mean_alpha_reward, mean_alpha_penalty = [], [], []
     mean_beta_choice, mean_alpha_choice = [], []
-    mean_confirmation_bias, mean_forget_rate = [], []
-    
-    for i in range(len(dataset)):    
-        # get update dynamics
+    mean_forget_rate = []
+
+    for i in range(len(dataset)):
         experiment = dataset.xs[i].cpu().numpy()
         qs, choice_probs, _ = get_update_dynamics(experiment, agent)
-        
-        # append behavioral data
-        session += list(experiment[:, -1])
-        choice += list(np.argmax(experiment[:, :agent.n_actions], axis=-1))
-        reward += list(np.max(experiment[:, agent.n_actions:agent.n_actions*2], axis=-1))
-        
-        # append update dynamics
-        choice_prob_0 += list(choice_probs[:, 0])
-        choice_prob_1 += list(choice_probs[:, 1])
-        action_value_0 += list(qs[0][:, 0])
-        action_value_1 += list(qs[0][:, 1])
-        reward_value_0 += list(qs[1]['value_reward'][:, 0])
-        reward_value_1 += list(qs[1]['value_reward'][:, 1])
-        choice_value_0 += list(qs[1]['value_reward'][:, 0])
-        choice_value_1 += list(qs[1]['value_reward'][:, 1])
-        
-        # append all model parameters for each trial
-        beta_reward += [parameter_list[i]['beta_reward']]  * n_trials_per_session
-        alpha_reward += [parameter_list[i]['alpha_reward']] * n_trials_per_session
-        alpha_penalty += [parameter_list[i]['alpha_penalty']] * n_trials_per_session
-        forget_rate += [parameter_list[i]['forget_rate']] * n_trials_per_session
-        beta_choice += [parameter_list[i]['beta_choice']] * n_trials_per_session
-        alpha_choice += [parameter_list[i]['alpha_choice']] * n_trials_per_session
-        
-        # append all mean model parameters for each trial
-        mean_beta_reward += [agent._mean_beta_reward] * n_trials_per_session
-        mean_alpha_reward += [agent._mean_alpha_reward] * n_trials_per_session
-        mean_alpha_penalty += [agent._mean_alpha_penalty] * n_trials_per_session
-        mean_forget_rate += [agent._mean_forget_rate] * n_trials_per_session
-        mean_beta_choice += [agent._mean_beta_choice] * n_trials_per_session
-        mean_alpha_choice += [agent._mean_alpha_choice] * n_trials_per_session
 
-    columns = ['session', 'choice', 'reward', 'choice_prob_0', 'choice_prob_1', 'action_value_0', 'action_value_1', 'reward_value_0', 'reward_value_1', 'choice_value_0', 'choice_value_1', 'beta_reward', 'alpha_reward', 'alpha_penalty', 'forget_rate', 'beta_choice', 'alpha_choice', 'mean_beta_reward', 'mean_alpha_reward', 'mean_alpha_penalty', 'mean_forget_rate', 'mean_beta_choice', 'mean_alpha_choice']
-    data = np.stack((np.array(session), np.array(choice), np.array(reward), np.array(choice_prob_0), np.array(choice_prob_1), np.array(action_value_0), np.array(action_value_1), np.array(reward_value_0), np.array(reward_value_1), np.array(choice_value_0), np.array(choice_value_1), np.array(beta_reward), np.array(alpha_reward), np.array(alpha_penalty), np.array(forget_rate), np.array(beta_choice), np.array(alpha_choice), np.array(mean_beta_reward), np.array(mean_alpha_reward), np.array(mean_alpha_penalty), np.array(mean_forget_rate), np.array(mean_beta_choice), np.array(mean_alpha_choice)), axis=-1)#.swapaxes(1, 0)
-    df = pd.DataFrame(data=data, columns=columns)
+        # behavioral data
+        session.extend(experiment[:, -1].tolist())
+        choice.extend(np.argmax(experiment[:, :agent.n_actions], axis=-1).tolist())
+        reward.extend(np.max(experiment[:, agent.n_actions : agent.n_actions * 2], axis=-1).tolist())
 
-    return df
+        # update dynamics
+        choice_prob_0.extend(choice_probs[:, 0].tolist())
+        choice_prob_1.extend(choice_probs[:, 1].tolist())
+        action_value_0.extend(qs[0][:, 0].tolist())
+        action_value_1.extend(qs[0][:, 1].tolist())
+        reward_value_0.extend(qs[1]["value_reward"][:, 0].tolist())
+        reward_value_1.extend(qs[1]["value_reward"][:, 1].tolist())
+        choice_value_0.extend(qs[1]["value_choice"][:, 0].tolist())
+        choice_value_1.extend(qs[1]["value_choice"][:, 1].tolist())
+
+        params = parameter_list[i]
+        mean_params = (
+            agent._mean_beta_reward,
+            agent._mean_alpha_reward,
+            agent._mean_alpha_penalty,
+            agent._mean_forget_rate,
+            agent._mean_beta_choice,
+            agent._mean_alpha_choice,
+        )
+
+        # replicate parameters for each trial
+        beta_reward.extend([params["beta_reward"]] * n_trials_per_session)
+        alpha_reward.extend([params["alpha_reward"]] * n_trials_per_session)
+        alpha_penalty.extend([params["alpha_penalty"]] * n_trials_per_session)
+        forget_rate.extend([params["forget_rate"]] * n_trials_per_session)
+        beta_choice.extend([params["beta_choice"]] * n_trials_per_session)
+        alpha_choice.extend([params["alpha_choice"]] * n_trials_per_session)
+
+        # replicate mean parameters for each trial
+        mean_beta_reward.extend([mean_params[0]] * n_trials_per_session)
+        mean_alpha_reward.extend([mean_params[1]] * n_trials_per_session)
+        mean_alpha_penalty.extend([mean_params[2]] * n_trials_per_session)
+        mean_forget_rate.extend([mean_params[3]] * n_trials_per_session)
+        mean_beta_choice.extend([mean_params[4]] * n_trials_per_session)
+        mean_alpha_choice.extend([mean_params[5]] * n_trials_per_session)
+
+    fields = {
+        "session": session,
+        "choice": choice,
+        "reward": reward,
+        "choice_prob_0": choice_prob_0,
+        "choice_prob_1": choice_prob_1,
+        "action_value_0": action_value_0,
+        "action_value_1": action_value_1,
+        "reward_value_0": reward_value_0,
+        "reward_value_1": reward_value_1,
+        "choice_value_0": choice_value_0,
+        "choice_value_1": choice_value_1,
+        "beta_reward": beta_reward,
+        "alpha_reward": alpha_reward,
+        "alpha_penalty": alpha_penalty,
+        "forget_rate": forget_rate,
+        "beta_choice": beta_choice,
+        "alpha_choice": alpha_choice,
+        "mean_beta_reward": mean_beta_reward,
+        "mean_alpha_reward": mean_alpha_reward,
+        "mean_alpha_penalty": mean_alpha_penalty,
+        "mean_forget_rate": mean_forget_rate,
+        "mean_beta_choice": mean_beta_choice,
+        "mean_alpha_choice": mean_alpha_choice,
+    }
+
+    columns = list(fields.keys())
+    data = np.column_stack([np.array(fields[name]) for name in columns])  # .swapaxes(1, 0)
+
+    return pd.DataFrame(data=data, columns=columns)
 
 
 def get_update_dynamics(experiment: Union[np.ndarray, torch.Tensor], agent: Agent, additional_signals: List[str] = ['value_reward', 'value_choice']):

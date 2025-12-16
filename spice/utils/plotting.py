@@ -276,7 +276,23 @@ def plot_session(
     return fig, axs
 
 
-def plot_reward_probs(datasets: List[Tuple[str, pd.DataFrame, np.ndarray]]):
+def plot_reward_probs(datasets: List[Tuple[str, np.ndarray]]):
+    """
+    Plot the reward probabilities for each arm over trials for multiple datasets.
+    Parameters
+    ----------
+    datasets : List[Tuple[str, np.ndarray]]
+        A list of tuples, each containing:
+            - title (str): The title for the subplot.
+            - reward_probs (np.ndarray): Array of shape (n_trials, n_arms) representing
+              the reward probability for each arm at each trial.
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+        The matplotlib Figure object containing the plots.
+    axes : list of matplotlib.axes.Axes
+        List of Axes objects for each subplot.
+    """  
     fig, axes = plt.subplots(len(datasets), 1, figsize=(12, 3.5 * len(datasets)), sharex=True)
     if len(datasets) == 1:
         axes = [axes]
@@ -284,7 +300,7 @@ def plot_reward_probs(datasets: List[Tuple[str, pd.DataFrame, np.ndarray]]):
     colors = ['#1f77b4', '#ff7f0e']
     linestyles = ['-', '--']
 
-    for ax, (title, df, reward_probs) in zip(axes, datasets):
+    for ax, (title, reward_probs) in zip(axes, datasets):
         # Convert list of arrays to 2D numpy array: shape (n_trials, n_arms)
         reward_prob_array = np.array(reward_probs)
         n_arms = reward_prob_array.shape[1]
@@ -307,7 +323,7 @@ def plot_reward_probs(datasets: List[Tuple[str, pd.DataFrame, np.ndarray]]):
         ax.legend()
 
     axes[-1].set_xlabel("Trial")
-    fig.suptitle("Reward Probabilities per Dataset (Session 0)", fontsize=14, fontweight="bold")
+    fig.suptitle("Reward Probabilities per Dataset", fontsize=14, fontweight="bold")
     fig.tight_layout(rect=[0, 0, 1, 0.97])
 
-    return fig, axes    
+    return fig, axes
