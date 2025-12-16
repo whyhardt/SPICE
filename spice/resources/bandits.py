@@ -1322,14 +1322,6 @@ def process_dataset(dataset, agent, parameter_list, n_trials_per_session):
         choice_value_1.extend(qs[1]["value_choice"][:, 1].tolist())
 
         params = parameter_list[i]
-        mean_params = (
-            agent._mean_beta_reward,
-            agent._mean_alpha_reward,
-            agent._mean_alpha_penalty,
-            agent._mean_forget_rate,
-            agent._mean_beta_choice,
-            agent._mean_alpha_choice,
-        )
 
         # replicate parameters for each trial
         beta_reward.extend([params["beta_reward"]] * n_trials_per_session)
@@ -1340,12 +1332,12 @@ def process_dataset(dataset, agent, parameter_list, n_trials_per_session):
         alpha_choice.extend([params["alpha_choice"]] * n_trials_per_session)
 
         # replicate mean parameters for each trial
-        mean_beta_reward.extend([mean_params[0]] * n_trials_per_session)
-        mean_alpha_reward.extend([mean_params[1]] * n_trials_per_session)
-        mean_alpha_penalty.extend([mean_params[2]] * n_trials_per_session)
-        mean_forget_rate.extend([mean_params[3]] * n_trials_per_session)
-        mean_beta_choice.extend([mean_params[4]] * n_trials_per_session)
-        mean_alpha_choice.extend([mean_params[5]] * n_trials_per_session)
+        mean_beta_reward.extend([agent._mean_beta_reward] * n_trials_per_session)
+        mean_alpha_reward.extend([agent._mean_alpha_reward] * n_trials_per_session)
+        mean_alpha_penalty.extend([agent._mean_alpha_penalty] * n_trials_per_session)
+        mean_forget_rate.extend([agent._mean_forget_rate] * n_trials_per_session)
+        mean_beta_choice.extend([agent._mean_beta_choice] * n_trials_per_session)
+        mean_alpha_choice.extend([agent._mean_alpha_choice] * n_trials_per_session)
 
     fields = {
         "session": session,
