@@ -705,9 +705,12 @@ class BaseRNN(nn.Module):
         """
         print(self.get_spice_model_string(participant_id, experiment_id, ensemble_idx))
 
+    def get_modules(self):
+        return [module for module in self.submodules_rnn]
+    
     def get_sindy_coefficients(self, key_module: Optional[str] = None):
         if key_module is None:
-            key_module = [self.submodules_rnn.keys()]
+            key_module = self.get_modules()
         
         if isinstance(key_module, str):
             key_module = [key_module]
