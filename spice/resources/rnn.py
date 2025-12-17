@@ -705,6 +705,23 @@ class BaseRNN(nn.Module):
         """
         print(self.get_spice_model_string(participant_id, experiment_id, ensemble_idx))
 
+    def get_sindy_coefficients(self, key_module: Optional[str] = None):
+        if key_module is None:
+            key_module = [self.submodules_rnn.keys()]
+        
+        if isinstance(key_module, str):
+            key_module = [key_module]
+        
+        sindy_coefficients = {}
+        for module in key_module:
+            sindy_coefficients[module] = self.sindy_coefficients[module].detach().cpu().numpy() * self.sindy_coefficients_presence[module].detach().cpu().numpy()
+            if self.sindy_specs[module].get('include_bias', False):
+                sindy_coefficients[module][..., 1] += 1
+            else:
+                sindy_coefficients[module][..., 0] += 1
+        
+        return sindy_coefficients
+    
     def eval(self, use_sindy=True):
         super().eval()
         self.use_sindy = use_sindy

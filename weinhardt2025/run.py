@@ -64,15 +64,16 @@ if __name__=='__main__':
     args.data = "weinhardt2025/data/synthetic/synthetic_2_256p_0.csv"
     args.model = args.data.replace("data", "params").replace("/synthetic_", "/spice_synthetic_test").replace(".csv", ".pkl")
     
-    args.epochs = 2
+    args.epochs = 100
     args.lr = 0.01
-    args.sindy_weight = 1
+    args.sindy_weight = 0.001
     args.sindy_cutoff_freq = 1
     args.sindy_cutoff = 1
     args.sindy_cutoff_patience = 100
     args.sindy_threshold = 0.05
     args.sindy_alpha = 0.001
-    warmup_steps = 1000
+    sindy_epochs = 1000
+    warmup_steps = 10
     
     example_participant = 1
     plot_coef_dist = True
@@ -99,6 +100,7 @@ if __name__=='__main__':
 
     n_actions = dataset_train.ys.shape[-1]
     n_participants = len(dataset_train.xs[..., -1].unique())
+    n_experiments = len(dataset_train.xs[..., -2].unique())
     n_items = args.n_items if args.n_items else n_actions
     
     if n_items == n_actions:
@@ -106,7 +108,7 @@ if __name__=='__main__':
     else:
         spice_model = workingmemory_multiitem
 
-    # spice_model = choice
+    spice_model = choice
     
     class_rnn = spice_model.SpiceModel
     spice_config = spice_model.CONFIG
@@ -121,6 +123,7 @@ if __name__=='__main__':
         rnn_class=class_rnn,
         spice_config=spice_config,
         n_participants=n_participants,
+        n_experiments=n_experiments,
         n_actions=n_actions,
         n_items=n_items,
         
@@ -136,9 +139,10 @@ if __name__=='__main__':
         sindy_threshold_frequency=args.sindy_cutoff_freq,
         sindy_threshold_terms=args.sindy_cutoff,
         sindy_cutoff_patience=args.sindy_cutoff_patience,
-        sindy_epochs=10,#args.epochs,
+        sindy_epochs=sindy_epochs,
         sindy_alpha=args.sindy_alpha,
         sindy_library_polynomial_degree=2,
+        sindy_ensemble_size=1,
         
         # additional generalization parameters
         bagging=True,
