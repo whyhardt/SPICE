@@ -3,6 +3,7 @@ from typing import NamedTuple, Union, Optional, Dict, Tuple, List, Iterable
 import matplotlib.pyplot as plt
 import matplotlib as mpl
 import numpy as np
+import pandas as pd
 from copy import copy, deepcopy
 import torch
 from tqdm import tqdm
@@ -491,7 +492,230 @@ class Bandits:
   
   def new_sess(self):
     pass
-  
+
+
+class BanditsGeneral(Bandits):
+    """
+    A generalized form of the multi-armed bandit which can enable a drifting paradigm, 
+    reversal learning, reward/no-reward and reward/penalty schedules, and arm-correlations.
+    
+    Features:
+    - Drift: Reward probabilities change gradually over time
+    - Reversals: Sudden swaps in reward probabilities (controlled by hazard rate)
+    - Correlated arms: Reward probabilities can move together
+    - Flexible reward schedules: Binary rewards (0/1) or penalty schedules (-1/+1)
+    """
+    
+    def __init__(
+        self,
+        n_arms: int = 2,
+        init_reward_prob: Optional[Iterable[float]] = None,
+        drift_rate: float = 0.0,
+        hazard_rate: float = 0.0,
+        reward_prob_correlation: float = 0.0,
+        reward_schedule: str = "binary",  # "binary" (0/1) or "penalty" (-1/+1)
+        bounds: Tuple[float, float] = (0.0, 1.0),
+        seed: Optional[int] = None,
+        counterfactual: bool = False,
+    ):  
+        """
+        Args:
+            n_arms: Number of arms
+            init_reward_prob: Initial reward probabilities for each arm
+            drift_rate: Rate of Gaussian random walk drift (std dev per step)
+            hazard_rate: Probability of reversal on each step
+            reward_prob_correlation: Correlation between arm drifts (-1 to 1)
+            reward_schedule: "binary" for 0/1 rewards, "penalty" for -1/+1 rewards
+            bounds: Min and max values for reward probabilities
+            seed: Random seed for reproducibility
+            counterfactual: If True, the reward for all arms is returned
+        """
+
+        super().__init__()
+
+        self.n_arms = n_arms
+        self.drift_rate = drift_rate
+        self.hazard_rate = hazard_rate
+        self.reward_prob_correlation = reward_prob_correlation
+        self.reward_schedule = reward_schedule
+        self.bounds = bounds
+        self.counterfactual = counterfactual
+        # Random number generator
+        self.rng = np.random.default_rng(seed)
+        
+        # Initialize reward probabilities
+        if init_reward_prob is None:
+            init_reward_prob = self.rng.uniform(bounds[0], bounds[1], n_arms)
+        else:
+            init_reward_prob = np.array(init_reward_prob)
+            if len(init_reward_prob) != n_arms:
+                raise ValueError(f"init_reward_prob must have length {n_arms}")
+        
+        self.init_reward_prob = np.array(init_reward_prob)
+        self.reward_prob = self.init_reward_prob.copy()
+        
+        # Tracking
+        self.t = 0
+        self.history = {
+            'choices': [],
+            'rewards': [],
+            'reward_probs': [self.reward_prob.copy()],
+            'reversals': []
+        }
+        
+        # For correlated drift (only for 2-armed bandits)
+        if self.reward_prob_correlation != 0 and self.n_arms == 2:
+            # Construct covariance matrix for bivariate normal
+            self.drift_cov = np.array([
+                [1, self.reward_prob_correlation],
+                [self.reward_prob_correlation, 1]
+            ]) * (self.drift_rate ** 2)
+        else:
+            self.drift_cov = None    
+
+    def step(self, choice: int) -> Tuple[float, dict]:
+          """
+          Take a step in the environment: apply drift/reversals, then generate reward for the chosen arm.
+          
+          Args:
+              choice: Index of chosen arm (0 to n_arms-1)
+              
+          Returns:
+              reward: The reward received for the chosen arm (if counterfactual, the reward for all arms is returned)
+          """
+          if choice < 0 or choice >= self.n_arms:
+              raise ValueError(f"Choice must be between 0 and {self.n_arms-1}")
+          
+          # Apply drift and reversals BEFORE reward is generated
+          reversal_occurred = self._apply_dynamics()
+          
+          # Generate reward based on current probabilities
+          if self.counterfactual:
+              # Generate rewards for all arms
+              reward = self._generate_reward(all_arms=True)
+              chosen_reward = reward[choice]
+          else:
+              # Generate reward only for chosen arm
+              reward = self._generate_reward(choice=choice, all_arms=False)
+              chosen_reward = reward
+          
+          # Update history (store the actual reward received for the chosen arm)
+          self.history['choices'].append(choice)
+          self.history['rewards'].append(chosen_reward)
+          self.history['reward_probs'].append(self.reward_prob.copy())
+          self.history['reversals'].append(reversal_occurred)
+          
+          self.t += 1
+          
+          # Return the reward
+          if self.counterfactual:
+              # Return full reward array for all arms
+              return reward
+          else:
+              # Return formatted reward with -1 for unchosen arm
+              choice_onehot = np.eye(self.n_actions)[choice]
+              return choice_onehot * reward + (1-choice_onehot)*-1
+
+    @property
+    def reward_probs(self) -> np.ndarray:
+      return self.history['reward_probs']
+
+    @property
+    def n_actions(self) -> int:
+      return self.n_arms   
+          
+    def _apply_dynamics(self) -> bool:
+        """Apply drift and check for reversals."""
+        reversal_occurred = False
+        
+        # Check for reversal (sudden swap)
+        if self.hazard_rate > 0 and self.rng.random() < self.hazard_rate:
+            self._apply_reversal()
+            reversal_occurred = True
+        
+        # Apply gradual drift
+        if self.drift_rate > 0:
+            self._apply_drift()
+        
+        return reversal_occurred
+    
+    def _apply_reversal(self):
+        """Apply a reversal: swap the reward probabilities."""
+        if self.n_arms == 2:
+            # Simple swap for 2 arms
+            self.reward_prob = self.reward_prob[::-1]
+        else:
+            # For >2 arms, randomly permute
+            self.reward_prob = self.rng.permutation(self.reward_prob)
+    
+    def _apply_drift(self):
+        """Apply Gaussian random walk drift to reward probabilities."""
+        if self.drift_cov is not None and self.n_arms == 2:
+            # Correlated drift for 2 arms
+            drift = self.rng.multivariate_normal(np.zeros(2), self.drift_cov)
+        else:
+            # Independent drift
+            drift = self.rng.normal(0, self.drift_rate, self.n_arms)
+        
+        # Apply drift and clip to bounds
+        self.reward_prob = np.clip(
+            self.reward_prob + drift,
+            self.bounds[0],
+            self.bounds[1]
+        )
+    
+    def _generate_reward(self, choice: int = None, all_arms: bool = False):
+        """Generate reward based on current probabilities.
+        
+        Args:
+            choice: Index of chosen arm (only needed if all_arms=False)
+            all_arms: If True, generate rewards for all arms; if False, only for chosen arm
+            
+        Returns:
+            float (if all_arms=False) or np.ndarray (if all_arms=True)
+        """
+        if all_arms:
+            # Generate rewards for all arms
+            successes = self.rng.random(self.n_arms) < self.reward_prob
+            if self.reward_schedule == "binary":
+                return successes.astype(float)
+            elif self.reward_schedule == "penalty":
+                return np.where(successes, 1.0, -1.0)
+            else:
+                raise ValueError(f"Unknown reward_schedule: {self.reward_schedule}")
+        else:
+            # Generate reward for chosen arm only
+            success = self.rng.random() < self.reward_prob[choice]
+            if self.reward_schedule == "binary":
+                return 1.0 if success else 0.0
+            elif self.reward_schedule == "penalty":
+                return 1.0 if success else -1.0
+            else:
+                raise ValueError(f"Unknown reward_schedule: {self.reward_schedule}")
+    
+    def new_sess(self):
+        """Reset to initial state for a new session."""
+        self.reward_prob = self.init_reward_prob.copy()
+        self.t = 0
+        self.history = {
+            'choices': [],
+            'rewards': [],
+            'reward_probs': [self.reward_prob.copy()],
+            'reversals': []
+        }
+    
+    def get_optimal_arm(self) -> int:
+        """Return the index of the arm with highest current reward probability."""
+        return int(np.argmax(self.reward_prob))
+    
+    def get_history_array(self) -> dict:
+        """Return history as numpy arrays for analysis."""
+        return {
+            'choices': np.array(self.history['choices']),
+            'rewards': np.array(self.history['rewards']),
+            'reward_probs': np.array(self.history['reward_probs']),
+            'reversals': np.array(self.history['reversals'])
+        }            
 
 class BanditsFlip(Bandits):
   """Env for 2-armed bandit task with reward probs that flip in blocks."""
@@ -964,7 +1188,12 @@ def run_experiment(
     # First - agent makes a choice
     choice = agent.get_choice()
     # Second - environment computes a reward
-    reward = environment.step(choice)
+    result = environment.step(choice)
+    if isinstance(result, tuple):
+      reward, info = result
+    else:
+      reward = result
+      info = {}
     # Log choice and reward
     choices[trial] = choice
     rewards[trial, :len(reward)] = reward
@@ -1053,6 +1282,93 @@ def create_dataset(
     device=device)
   
   return dataset, experiment_list, parameter_list
+
+
+def process_dataset(dataset, agent, parameter_list, n_trials_per_session):
+    # general dataset columns
+    session, choice, reward = [], [], []
+    choice_prob_0, choice_prob_1 = [], []
+    action_value_0, action_value_1 = [], []
+    reward_value_0, reward_value_1 = [], []
+    choice_value_0, choice_value_1 = [], []
+
+    # parameters
+    beta_reward, alpha_reward, alpha_penalty = [], [], []
+    beta_choice, alpha_choice = [], []
+    forget_rate = []
+
+    # parameter means
+    mean_beta_reward, mean_alpha_reward, mean_alpha_penalty = [], [], []
+    mean_beta_choice, mean_alpha_choice = [], []
+    mean_forget_rate = []
+
+    for i in range(len(dataset)):
+        experiment = dataset.xs[i].cpu().numpy()
+        qs, choice_probs, _ = get_update_dynamics(experiment, agent)
+
+        # behavioral data
+        session.extend(experiment[:, -1].tolist())
+        choice.extend(np.argmax(experiment[:, :agent.n_actions], axis=-1).tolist())
+        reward.extend(np.max(experiment[:, agent.n_actions : agent.n_actions * 2], axis=-1).tolist())
+
+        # update dynamics
+        choice_prob_0.extend(choice_probs[:, 0].tolist())
+        choice_prob_1.extend(choice_probs[:, 1].tolist())
+        action_value_0.extend(qs[0][:, 0].tolist())
+        action_value_1.extend(qs[0][:, 1].tolist())
+        reward_value_0.extend(qs[1]["value_reward"][:, 0].tolist())
+        reward_value_1.extend(qs[1]["value_reward"][:, 1].tolist())
+        choice_value_0.extend(qs[1]["value_choice"][:, 0].tolist())
+        choice_value_1.extend(qs[1]["value_choice"][:, 1].tolist())
+
+        params = parameter_list[i]
+
+        # replicate parameters for each trial
+        beta_reward.extend([params["beta_reward"]] * n_trials_per_session)
+        alpha_reward.extend([params["alpha_reward"]] * n_trials_per_session)
+        alpha_penalty.extend([params["alpha_penalty"]] * n_trials_per_session)
+        forget_rate.extend([params["forget_rate"]] * n_trials_per_session)
+        beta_choice.extend([params["beta_choice"]] * n_trials_per_session)
+        alpha_choice.extend([params["alpha_choice"]] * n_trials_per_session)
+
+        # replicate mean parameters for each trial
+        mean_beta_reward.extend([agent._mean_beta_reward] * n_trials_per_session)
+        mean_alpha_reward.extend([agent._mean_alpha_reward] * n_trials_per_session)
+        mean_alpha_penalty.extend([agent._mean_alpha_penalty] * n_trials_per_session)
+        mean_forget_rate.extend([agent._mean_forget_rate] * n_trials_per_session)
+        mean_beta_choice.extend([agent._mean_beta_choice] * n_trials_per_session)
+        mean_alpha_choice.extend([agent._mean_alpha_choice] * n_trials_per_session)
+
+    fields = {
+        "session": session,
+        "choice": choice,
+        "reward": reward,
+        "choice_prob_0": choice_prob_0,
+        "choice_prob_1": choice_prob_1,
+        "action_value_0": action_value_0,
+        "action_value_1": action_value_1,
+        "reward_value_0": reward_value_0,
+        "reward_value_1": reward_value_1,
+        "choice_value_0": choice_value_0,
+        "choice_value_1": choice_value_1,
+        "beta_reward": beta_reward,
+        "alpha_reward": alpha_reward,
+        "alpha_penalty": alpha_penalty,
+        "forget_rate": forget_rate,
+        "beta_choice": beta_choice,
+        "alpha_choice": alpha_choice,
+        "mean_beta_reward": mean_beta_reward,
+        "mean_alpha_reward": mean_alpha_reward,
+        "mean_alpha_penalty": mean_alpha_penalty,
+        "mean_forget_rate": mean_forget_rate,
+        "mean_beta_choice": mean_beta_choice,
+        "mean_alpha_choice": mean_alpha_choice,
+    }
+
+    columns = list(fields.keys())
+    data = np.column_stack([np.array(fields[name]) for name in columns])  # .swapaxes(1, 0)
+
+    return pd.DataFrame(data=data, columns=columns)
 
 
 def get_update_dynamics(experiment: Union[np.ndarray, torch.Tensor], agent: Agent, additional_signals: List[str] = ['value_reward', 'value_choice']):
