@@ -6,7 +6,7 @@ import time
 import torch
 import numpy as np
 from sklearn.base import BaseEstimator
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, List, Union
 
 from .resources.spice_training import fit_model
 from .resources.bandits import AgentNetwork
@@ -329,6 +329,12 @@ class SpiceEstimator(BaseEstimator):
         """Returns a dict of modules holding a numpy array with the sindy coefficients of shape (participant, experiment, ensemble, coefficient)."""
         
         return self.rnn_model.get_sindy_coefficients(key_module=key_module)
+    
+    def get_modules(self):
+        return self.rnn_model.get_modules()
+    
+    def get_candidate_terms(self, key_module: Optional[str] = None) -> Union[Dict[str, List[str]], List[str]]:
+        return self.rnn_model.get_candidate_terms(key_module=key_module)
         
     def load_spice(self, path_model: str, deterministic: bool = True):
         
@@ -338,8 +344,8 @@ class SpiceEstimator(BaseEstimator):
         loaded_parameters = torch.load(path_model, map_location=torch.device('cpu'))
         
         self.rnn_model.sindy_ensemble_size = loaded_parameters['model']['sindy_coefficients.'+next(iter(self.rnn_model.submodules_rnn))].shape[1]
-        for key_module in self.rnn_model.submodules_rnn:
-            self.rnn_model.setup_sindy_coefficients(key_module=key_module)
+        for module in self.get_modules():
+            self.rnn_model.setup_sindy_coefficients(key_module=module)
         self.rnn_model.sindy_coefficients_presence = loaded_parameters['sindy_coefficients_presence']
         
         self.rnn_model.load_state_dict(loaded_parameters['model'])

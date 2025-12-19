@@ -64,16 +64,16 @@ if __name__=='__main__':
     args.data = "weinhardt2025/data/synthetic/synthetic_2_256p_0.csv"
     args.model = args.data.replace("data", "params").replace("/synthetic_", "/spice_synthetic_test").replace(".csv", ".pkl")
     
-    args.epochs = 100
+    args.epochs = 4000
     args.lr = 0.01
-    args.sindy_weight = 0.001
+    args.sindy_weight = 0.1
     args.sindy_cutoff_freq = 1
     args.sindy_cutoff = 1
     args.sindy_cutoff_patience = 100
     args.sindy_threshold = 0.05
-    args.sindy_alpha = 0.001
-    sindy_epochs = 1000
-    warmup_steps = 10
+    args.sindy_alpha = 0.0001
+    sindy_epochs = 2000
+    warmup_steps = 1000
     
     example_participant = 1
     plot_coef_dist = True
@@ -108,7 +108,7 @@ if __name__=='__main__':
     else:
         spice_model = workingmemory_multiitem
 
-    spice_model = choice
+    # spice_model = choice
     
     class_rnn = spice_model.SpiceModel
     spice_config = spice_model.CONFIG
@@ -145,12 +145,13 @@ if __name__=='__main__':
         sindy_ensemble_size=1,
         
         # additional generalization parameters
+        batch_size=1024,
         bagging=True,
-        # scheduler=True,
+        scheduler=True,
         
         # other parameters
         verbose=True,
-        # device=torch.device('cuda' if torch.cuda.is_available() else 'cpu'),
+        device=torch.device('cuda' if torch.cuda.is_available() else 'cpu'),
         save_path_spice=args.model,
     )
     

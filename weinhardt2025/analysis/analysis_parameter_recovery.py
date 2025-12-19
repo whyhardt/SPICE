@@ -20,7 +20,7 @@ USE_STRUCTURAL_FILTERING = False  # Structural filtering enabled
 # base_name_params = 'weinhardt2025/params/synthetic/spice_synthetic_choice_SESSp_IT.pkl'
 
 spice_model = workingmemory
-base_name_params = 'weinhardt2025/params/synthetic/spice_synthetic_2_l2_0_001_SESSp_IT.pkl'
+base_name_params = 'weinhardt2025/params/synthetic/spice_synthetic_test2_SESSp_IT.pkl'
 
 random_sampling = [0.25, 0.5, 0.75]
 n_sessions = [256]#[16, 32, 64, 128, 256]
@@ -289,7 +289,7 @@ for index_sess, sess in enumerate(n_sessions):
             index_all_candidate_terms = 0
             for index_library, library in enumerate(mapping_libraries):
                 # get sindy coefficients
-                sindy_coefs_library = spice_agent.model.sindy_coefficients[library][index_participant][0].detach().cpu().numpy()
+                sindy_coefs_library = spice_agent.model.sindy_coefficients[library][index_participant, 0, 0].detach().cpu().numpy()
                 # sindy_coefs_presence_library = spice_agent.model.sindy_coefficients_presence[library][index_participant][0].detach().cpu().numpy()
                 # correct for delta-update rule (x[t+1] = x[t] + input*sindy_coefs) in sindy's next state computation (see: spice.resources.rnn.BaseRNN.forward_sindy)
                 sindy_coefs_library[1] += 1
@@ -387,30 +387,30 @@ for index_sess, sess in enumerate(n_sessions):
 # ------------------------------------------------
 
 # remove outliers in both true and recovered coefs where recovered coefficients are bigger than a big threshold (e.g. abs(recovered_coeff) > 1e1)
-coef_threshold = 1e2
-removed_params = 0
-for index_sess in range(len(n_sessions)):
-    mask_keep = np.all(recovered_params[index_sess] <= coef_threshold, axis=1)
+# coef_threshold = 1e2
+# removed_params = 0
+# for index_sess in range(len(n_sessions)):
+#     mask_keep = np.all(recovered_params[index_sess] <= coef_threshold, axis=1)
 
-    # Count the number of removed rows
-    removed_params += np.sum(~mask_keep)
+#     # Count the number of removed rows
+#     removed_params += np.sum(~mask_keep)
     
-    # Filter out the rows exceeding the threshold
-    true_params[index_sess] = true_params[index_sess][mask_keep]
-    recovered_params[index_sess] = recovered_params[index_sess][mask_keep]
+#     # Filter out the rows exceeding the threshold
+#     true_params[index_sess] = true_params[index_sess][mask_keep]
+#     recovered_params[index_sess] = recovered_params[index_sess][mask_keep]
 
-if removed_params > 0:
-    print(f'excluded parameters because of high values: {removed_params}')
+# if removed_params > 0:
+#     print(f'excluded parameters because of high values: {removed_params}')
 
-zero_division_offset = 1e-9
-for index_sess in range(len(n_sessions)):
+# zero_division_offset = 1e-9
+# for index_sess in range(len(n_sessions)):
 
-    # normalizing params
-    v_max = np.max(true_params[index_sess], axis=0, keepdims=True) + zero_division_offset
-    v_min = np.min(true_params[index_sess], axis=0, keepdims=True)
+#     # normalizing params
+#     v_max = np.max(true_params[index_sess], axis=0, keepdims=True) + zero_division_offset
+#     v_min = np.min(true_params[index_sess], axis=0, keepdims=True)
     
-    true_params[index_sess] = (true_params[index_sess] - v_min) / (v_max - v_min)
-    recovered_params[index_sess] = (recovered_params[index_sess] - v_min) / (v_max - v_min)
+#     true_params[index_sess] = (true_params[index_sess] - v_min) / (v_max - v_min)
+#     recovered_params[index_sess] = (recovered_params[index_sess] - v_min) / (v_max - v_min)
 
 
 # ------------------------------------------------

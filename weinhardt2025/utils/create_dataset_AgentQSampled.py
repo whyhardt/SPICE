@@ -10,29 +10,29 @@ from spice.resources.bandits import create_dataset, AgentQ, AgentQ_SampleParams,
 list_n_participants = [256]#[32, 64, 128, 256, 512]
 n_trials_per_session = 200
 n_iterations_per_n_sessions = 1
-sigma = (0.1, 0.3)
-base_name = 'weinhardt2025/data/synthetic/synthetic_ApBr_*.csv'
-sample_parameters = False
+sigma = [0.2]
+base_name = 'weinhardt2025/data/synthetic/synthetic_2_*.csv'
+sample_parameters = True
 
 for iteration in range(n_iterations_per_n_sessions):
     for n_participants in list_n_participants:
         for experiment_id in range(len(sigma)):
             dataset_name = base_name.replace('*', f'{n_participants}p_{iteration}_{experiment_id}')
 
-            if sigma[experiment_id] == min(sigma):
-                alpha_reward = 0.2
-            else:
-                alpha_reward = 0.8
+            # if sigma[experiment_id] == min(sigma):
+            #     alpha_reward = 0.2
+            # else:
+            #     alpha_reward = 0.8
             
             agent = AgentQ_SampleParams(
                 beta_reward=3.,
-                alpha_reward=alpha_reward,
-                alpha_penalty=-1,
-                forget_rate=0.,
-                beta_choice=0.,
-                alpha_choice=1.,
+                alpha_reward=0.5,
+                alpha_penalty=0.5,
+                forget_rate=0.2,
+                beta_choice=1.0,
+                alpha_choice=0.5,
                 zero_threshold=0.2,
-                parameter_variance=0.,
+                parameter_variance=0.2,
                 )
 
             environment = BanditsDrift(sigma=sigma[experiment_id])

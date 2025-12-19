@@ -708,6 +708,12 @@ class BaseRNN(nn.Module):
     def get_modules(self):
         return [module for module in self.submodules_rnn]
     
+    def get_candidate_terms(self, key_module: Optional[str] = None) -> Union[Dict[str, List[str]], List[str]]:
+        if key_module is None:
+            return self.sindy_candidate_terms
+        else:
+            return self.sindy_candidate_terms[key_module]
+            
     def get_sindy_coefficients(self, key_module: Optional[str] = None):
         if key_module is None:
             key_module = self.get_modules()

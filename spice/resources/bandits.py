@@ -226,7 +226,7 @@ class AgentQ(Agent):
     
     self.n_actions = n_actions
     self._parameter_variance = self.check_parameter_variance(parameter_variance)
-    self._q_init = 0.5
+    self._q_init = 0.
     
     self.new_sess()
 
