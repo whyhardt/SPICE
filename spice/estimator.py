@@ -65,7 +65,8 @@ class SpiceEstimator(BaseEstimator):
         use_sindy: Optional[bool] = False,
         
         verbose: Optional[bool] = False,
-        save_path_spice: Optional[str] = None
+        keep_log: Optional[bool] = False,
+        save_path_spice: Optional[str] = None,
     ):
         """
         Args:
@@ -106,6 +107,7 @@ class SpiceEstimator(BaseEstimator):
         self.scheduler = scheduler
         self.device = device
         self.verbose = verbose
+        self.keep_log = keep_log
         self.deterministic = False
         self.l2_rnn = l2_rnn
 
@@ -219,6 +221,7 @@ class SpiceEstimator(BaseEstimator):
             scheduler=self.scheduler,
             n_steps=self.n_steps_per_call,
             verbose=self.verbose,
+            keep_log=self.keep_log,
             path_save_checkpoints=None,
         )
 

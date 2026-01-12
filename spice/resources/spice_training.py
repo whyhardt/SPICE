@@ -35,7 +35,7 @@ def print_training_status(
     warmup_steps: int = 0,
     converged: bool = False,
     finished: bool = False,
-    debug_mode: bool = False,
+    keep_log: bool = False,
 ):
     """Print live-updating training status block."""
     
@@ -92,8 +92,8 @@ def print_training_status(
     current_line_count = len(status_lines)
     
     # Clear and reprint
-    if not debug_mode and n_calls > 1:
-        # Clear screen (alternative approach)
+    if not keep_log and n_calls > 1:
+        # Clear screen
         os.system('clear' if os.name == 'posix' else 'cls')
         print(msg, flush=True)
     else:
@@ -260,18 +260,16 @@ def batch_train(
         xs_step = xs[:, t:t+n_steps]
         ys_step = ys[:, t:t+n_steps]
         
-        # Mask out padding (NaN values) - valid trials have non-NaN actions
-        mask = ~torch.isnan(xs_step[..., :model.n_actions].sum(dim=-1, keepdim=True).repeat(1, 1, model.n_actions))
-        
         state = model.get_state(detach=True)
         ys_pred, _ = model(xs_step, state, batch_first=True)
         
-        ys_pred = ys_pred * mask
-        ys_step = ys_step * mask
+        # Mask out padding (NaN values) - valid trials have non-NaN actions
+        mask = ~torch.isnan(xs_step[..., 0])
+        mask = mask.reshape(-1)
         
         loss_step = loss_fn(
-            ys_pred.reshape(-1, model.n_actions),
-            torch.argmax(ys_step.reshape(-1, model.n_actions), dim=1),
+            ys_pred.reshape(-1, model.n_actions)[mask],
+            torch.argmax(ys_step.reshape(-1, model.n_actions), dim=1)[mask],
             )
         
         if torch.is_grad_enabled():
@@ -480,7 +478,7 @@ def fit_sindy_second_stage(
             sindy_weight=1,
             scheduler=None,
             warmup_steps=cutoff_warmup,
-            debug_mode=DEBUG_MODE,
+            keep_log=DEBUG_MODE,
         )    
         
     # Restore requires_grad for all parameters
@@ -509,11 +507,12 @@ def fit_model(
     scheduler: bool = False,
     n_steps: int = None,
     verbose: bool = True,
+    keep_log: bool = False,
     n_warmup_steps: int = 0,
     path_save_checkpoints: str = None,
     ) -> Tuple[BaseRNN, torch.optim.Optimizer, float]:
     """_summary_
-
+    
     Args:
         model (BaseRNN): A child class of the BaseRNN, which implements the forward method
         dataset_train (DatasetRNN): training data for the RNN of shape (Batch, Timesteps, Features) with Features being (Actions, Rewards, Participant ID) -> (n_actions, n_actions, 1)
@@ -695,7 +694,7 @@ def fit_model(
                     warmup_steps=n_warmup_steps,
                     converged=converged,
                     finished=not continue_training,
-                    debug_mode=DEBUG_MODE,
+                    keep_log=keep_log,
                 )
 
         except KeyboardInterrupt:
@@ -725,10 +724,10 @@ def fit_model(
     if verbose:
         msg = f"L(Train): {loss_train:.7f}"
         
-        if epochs > 0:
+        if epochs > 0 and dataset_test is not None:
             msg += f" --- L(Val, RNN): {loss_test_rnn:.7f}"
         
-        if sindy_weight > 0:
+        if sindy_weight > 0 and dataset_test is not None:
             model = model.eval(use_sindy=True)
             with torch.no_grad():
                 xs, ys = next(iter(dataloader_test))

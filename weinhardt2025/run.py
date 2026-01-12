@@ -61,8 +61,8 @@ if __name__=='__main__':
     # args.n_items=8
     # args.test_sessions="1"
     
-    args.data = "weinhardt2025/data/synthetic/synthetic_2_256p_0.csv"
-    args.model = args.data.replace("data", "params").replace("/synthetic_", "/spice_synthetic_test").replace(".csv", ".pkl")
+    # args.data = "weinhardt2025/data/synthetic/synthetic_2_256p_0.csv"
+    # args.model = args.data.replace("data", "params").replace("/synthetic_", "/spice_synthetic_test").replace(".csv", ".pkl")
     
     args.epochs = 4000
     args.lr = 0.01
