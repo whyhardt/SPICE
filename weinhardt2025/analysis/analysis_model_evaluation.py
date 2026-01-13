@@ -84,7 +84,7 @@ baseline_file = f'mcmc_{study}_ApBr.nc'
 use_test = True
 
 path_data = f'weinhardt2025/data/{study}/{study}.csv'
-path_model_rnn = f'weinhardt2025/params/{study}/spice_{study}.pkl'
+path_model_rnn = None#f'weinhardt2025/params/{study}/spice_{study}.pkl'
 path_model_spice = f'weinhardt2025/params/{study}/spice_{study}.pkl'
 path_model_baseline = None#os.path.join(f'weinhardt2025/params/{study}/', baseline_file)
 path_model_benchmark = None#os.path.join(f'weinhardt2025/params/{study}', benchmark_file) if len(models_benchmark) > 0 else None
@@ -105,6 +105,8 @@ dataset = convert_dataset(
 # use these participant_ids if not defined later
 participant_ids = dataset.xs[:, 0, -1].unique().cpu().numpy()
 n_actions = dataset.ys.shape[-1]
+# dataset.xs = dataset.xs.nan_to_num(0.)
+# dataset.ys = dataset.ys.nan_to_num(0.)
 
 # ------------------------------------------------------------
 # Setup of agents
@@ -142,16 +144,16 @@ else:
     n_parameters_lstm = 0
     
 # setup rnn agent
-if path_model_rnn is not None:
+if path_model_rnn is not None or path_model_spice is not None:
     print("Setting up RNN and SPICE agent from file", path_model_rnn)
     agent_rnn, agent_spice = setup_agent_spice(
         class_rnn=rnn_class,
-        path_model=path_model_rnn,
+        path_model=path_model_rnn if path_model_rnn is not None else path_model_spice,
         n_actions=n_actions,
         spice_config=sindy_config,
         )
     n_parameters_rnn = sum(p.numel() for p in agent_rnn.model.parameters() if p.requires_grad)
-    n_parameters_spice = agent_spice.count_parameters()
+    n_parameters_spice = agent_spice.count_parameters().astype(int).reshape(-1)
 else:
     n_parameters_rnn = 0
     n_parameters_spice = 0

@@ -43,9 +43,9 @@ if __name__=='__main__':
     
     args = parser.parse_args()
 
-    # args.model = "weinhardt2025/params/eckstein2022/spice_eckstein2022.pkl"
-    # args.data = "weinhardt2025/data/eckstein2022/eckstein2022.csv"
-    # args.train_ratio_time = 0.8
+    args.model = "weinhardt2025/params/eckstein2022/spice_eckstein2022.pkl"
+    args.data = "weinhardt2025/data/eckstein2022/eckstein2022.csv"
+    args.train_ratio_time = 0.8
     
     # args.model = "weinhardt2025/params/eckstein2024/spice_eckstein2024.pkl"
     # args.data = "weinhardt2025/data/eckstein2024/eckstein2024.csv"

@@ -1389,13 +1389,13 @@ def get_update_dynamics(experiment: Union[np.ndarray, torch.Tensor], agent: Agen
       experiment = experiment.squeeze(0)
     # get number of actual trials
     n_trials = len(experiment) - np.where(~np.isnan(experiment[::-1][:, 0]))[0][0]
-    choices = experiment[:n_trials, :agent.n_actions]
-    rewards = experiment[:n_trials, agent.n_actions:2*agent.n_actions]
+    choices = np.nan_to_num(experiment[:n_trials, :agent.n_actions])
+    rewards = np.nan_to_num(experiment[:n_trials, agent.n_actions:2*agent.n_actions])
     # TODO: additional_inputs are currently treated as signals and as meta-information for the embedding
-    additional_inputs = experiment[0, 2*agent.n_actions:-3]
-    current_block = int(experiment[0, -3])
-    experiment_id = int(experiment[0, -2])
-    participant_id = int(experiment[0, -1])
+    additional_inputs = np.nan_to_num(experiment[0, 2*agent.n_actions:-3])
+    current_block = np.nan_to_num(int(experiment[0, -3]))
+    experiment_id = np.nan_to_num(int(experiment[0, -2]))
+    participant_id = np.nan_to_num(int(experiment[0, -1]))
   else:
     raise TypeError("experiment is of not of class numpy.ndarray or torch.Tensor")
   
