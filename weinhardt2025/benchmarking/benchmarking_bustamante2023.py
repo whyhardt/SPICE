@@ -48,11 +48,13 @@ class MarginalValueTheoremModel(torch.nn.Module):
         n_participants: int = 1,
         depletion: Optional[float] = None,
         baseline_gain: Optional[float] = None,
+        batch_first: Optional[bool] = False,
     ):
         super().__init__()
         
         self.n_actions = n_actions
         self.n_participants = n_participants
+        self.batch_first = batch_first
 
         # Initialize parameters (raw, will be transformed)
         # Learning rate for environmental gain rate (0-1)
@@ -82,7 +84,7 @@ class MarginalValueTheoremModel(torch.nn.Module):
 
         self.device = torch.device('cpu')
         
-    def forward(self, inputs, prev_state=None, batch_first=False):
+    def forward(self, inputs, prev_state=None):
         """Forward pass through the model.
 
         Implements the MVT learning model from Constantino et al. (2015), Table 2:
@@ -90,7 +92,7 @@ class MarginalValueTheoremModel(torch.nn.Module):
         - delta_i = r_i/tau_i - ro_i
         - ro_{i+1} = ro_i + [1-(1-alpha)^tau_i] · delta_i
         """
-        input_variables, participant_ids, logits, timesteps = self.init_forward_pass(inputs, prev_state, batch_first)
+        input_variables, participant_ids, logits, timesteps = self.init_forward_pass(inputs, prev_state, self.batch_first)
         actions, rewards, harvest_duration, travel_duration = input_variables
 
         # Process each timestep
@@ -158,7 +160,7 @@ class MarginalValueTheoremModel(torch.nn.Module):
                 self.baseline_gain[participant_ids].detach(),
             )
 
-        if batch_first:
+        if self.batch_first:
             logits = logits.swapaxes(0, 1)
 
         return logits, self.get_state()

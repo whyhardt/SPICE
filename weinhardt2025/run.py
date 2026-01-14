@@ -43,17 +43,17 @@ if __name__=='__main__':
     
     args = parser.parse_args()
 
-    args.model = "weinhardt2025/params/eckstein2022/spice_eckstein2022.pkl"
-    args.data = "weinhardt2025/data/eckstein2022/eckstein2022.csv"
-    args.train_ratio_time = 0.8
+    # args.model = "weinhardt2025/params/eckstein2022/spice_eckstein2022.pkl"
+    # args.data = "weinhardt2025/data/eckstein2022/eckstein2022.csv"
+    # args.train_ratio_time = 0.8
     
     # args.model = "weinhardt2025/params/eckstein2024/spice_eckstein2024.pkl"
     # args.data = "weinhardt2025/data/eckstein2024/eckstein2024.csv"
     # args.test_sessions = "1,3"
     
-    # args.model = "weinhardt2025/params/dezfouli2019/spice_dezfouli2019.pkl"
-    # args.data = "weinhardt2025/data/dezfouli2019/dezfouli2019.csv"
-    # args.test_sessions = "3,6,9"
+    args.model = "weinhardt2025/params/dezfouli2019/spice_dezfouli2019.pkl"
+    args.data = "weinhardt2025/data/dezfouli2019/dezfouli2019.csv"
+    args.test_sessions = "3,6,9"
     
     # args.data="weinhardt2025/data/sugawara2021/sugawara2021.csv" 
     # args.model="weinhardt2025/params/sugawara2021/spice_sugawara2021.pkl" 
@@ -176,7 +176,7 @@ if __name__=='__main__':
         agents['spice'] = estimator.spice_agent
         
         # Print example SPICE model for first participant
-        print(f"\nExample SPICE model (participant {example_participant}; n_parameters = {estimator.spice_agent.count_parameters()[example_participant]}):")
+        print(f"\nExample SPICE model (participant {example_participant}; n_parameters = {int(estimator.spice_agent.count_parameters()[example_participant, 0])}):")
         print("-" * 80)
         estimator.print_spice_model(participant_id=example_participant)
         print("-" * 80)

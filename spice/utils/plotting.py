@@ -42,7 +42,7 @@ def plot_dynamics(
     color: A list of colors to use for the plot; at least as long as the number of timeseries
     reward_range: Tuple specifying the min and max possible reward values
   """
-
+  
   if color == None:
     color = [None]*len(timeseries)
   
@@ -176,7 +176,7 @@ def plot_session(
     x_axis = True
     
     # valid keys in agent dictionary
-    valid_keys_color_pairs = {'groundtruth': 'tab:blue', 'rnn': 'tab:orange', 'sindy': 'tab:pink', 'spice': 'tab:pink', 'benchmark':'tab:grey'}
+    colors = ['tab:blue', 'tab:orange', 'tab:pink', 'tab:grey']
     
     n_actions = agents[list(agents.keys())[0]].n_actions
     if isinstance(experiment, BanditSession):
@@ -196,31 +196,29 @@ def plot_session(
     list_signals = {signal: [] for signal in signals_to_plot}
     values_signals = {signal: [] for signal in signals_to_plot}
 
-    colors = []
+    # colors = []
     if labels is None:
         labels = []
         
-    for valid_key in valid_keys_color_pairs:        
-        # get q-values from agent
-        if valid_key in [key.lower() for key in agents]:
-            qs, probs, _ = get_update_dynamics(experiment, agents[valid_key], additional_signals=signals_to_plot)
-            list_probs.append(np.expand_dims(probs, 0))
-            list_q_value.append(np.expand_dims(qs[0], 0))
-            for signal in signals_to_plot:
-              list_signals[signal].append(np.expand_dims(qs[1][signal], 0))
-            
-            # get color from current agent
-            colors.append(valid_keys_color_pairs[valid_key])
-            
-            if len(labels) < len(agents):
-                # get labels from current agent
-                labels.append(valid_key)
+    for agent in agents:        
+      # get q-values from agent
+      qs, probs, _ = get_update_dynamics(experiment, agents[agent])
+      list_probs.append(np.expand_dims(probs, 0))
+      list_q_value.append(np.expand_dims(qs[0], 0))
+      for signal in signals_to_plot:
+        if signal in qs[1]:
+          list_signals[signal].append(np.expand_dims(qs[1][signal], 0))
+      
+      if len(labels) < len(agents):
+          # get labels from current agent
+          labels.append(agent)
 
     # concatenate all choice probs and q-values
     probs = np.concatenate(list_probs, axis=0)
     q_value = np.concatenate(list_q_value, axis=0)
     for signal in signals_to_plot:
-      values_signals[signal] = np.concatenate(list_signals[signal], axis=0)
+      if signal in list_signals and len(list_signals[signal]) > 0:
+        values_signals[signal] = np.concatenate(list_signals[signal], axis=0)
 
     fig, axs = plt.subplots(2 + len(signals_to_plot), 1, figsize=(10, 10))
     axs_row = 0
@@ -256,19 +254,20 @@ def plot_session(
     axs_row += 1
     
     for signal in signals_to_plot:
-      plot_dynamics(
-          compare=True,
-          choices=choices,
-          rewards=rewards,
-          timeseries=values_signals[signal][:, :, display_choice],
-          timeseries_name=signal,
-          color=colors,
-          fig_ax=(fig, axs[axs_row, fig_col]) if fig_col is not None else (fig, axs[axs_row]),
-          x_axis_info=x_axis,
-          y_axis_info=y_axis,
-          reward_range=reward_range,
-          )
-      axs_row += 1
+      if signal in values_signals and len(values_signals[signal]) > 0:
+        plot_dynamics(
+            compare=True,
+            choices=choices,
+            rewards=rewards,
+            timeseries=values_signals[signal][:, :, display_choice],
+            timeseries_name=signal,
+            color=colors,
+            fig_ax=(fig, axs[axs_row, fig_col]) if fig_col is not None else (fig, axs[axs_row]),
+            x_axis_info=x_axis,
+            y_axis_info=y_axis,
+            reward_range=reward_range,
+            )
+        axs_row += 1
     
     if save is not None:
         plt.savefig(save, dpi=300)

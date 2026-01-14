@@ -40,6 +40,7 @@ class GRUModule(nn.Module):
         next_state = self.linear_out(next_state)
         return next_state
     
+    
 class ParameterModule(nn.Module):
     def __init__(self):
         super().__init__()

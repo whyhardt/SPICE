@@ -17,46 +17,46 @@ from spice.utils.convert_dataset import convert_dataset, split_data_along_timedi
 from spice import precoded
 
 # dataset specific benchmarking models
-from weinhardt2025.benchmarking import benchmarking_dezfouli2019, benchmarking_eckstein2022, benchmarking_lstm, benchmarking_eckstein2024, benchmarking_castro2025
+from weinhardt2025.benchmarking import benchmarking_dezfouli2019, benchmarking_eckstein2022, benchmarking_gru, benchmarking_eckstein2024, benchmarking_castro2025
 
 # -------------------------------------------------------------------------------
 # AGENT CONFIGURATIONS
 # -------------------------------------------------------------------------------
 
 # ------------------- CONFIGURATION ECKSTEIN2022 --------------------
-study = 'eckstein2022'
-models_benchmark = ['ApAnBrBcfBch']
-train_test_ratio = 0.8
-sindy_config = precoded.workingmemory.CONFIG
-rnn_class = precoded.workingmemory.SpiceModel
-additional_inputs = None
-setup_agent_benchmark = benchmarking_eckstein2022.setup_agent_benchmark
-rl_model = benchmarking_eckstein2022.rl_model
-benchmark_file = f'mcmc_{study}_MODEL.nc'
-model_config_baseline = 'ApBr'
-baseline_file = f'mcmc_{study}_ApBr.nc'
-
-# ------------------- CONFIGURATION ECKSTEIN2024 --------------------
-# study = 'eckstein2024'
-# models_benchmark = ['CogFunSearch']
-# train_test_ratio = [1,3]
+# study = 'eckstein2022'
+# models_benchmark = ['ApAnBrBcfBch']
+# train_test_ratio = 0.8
 # sindy_config = precoded.workingmemory.CONFIG
 # rnn_class = precoded.workingmemory.SpiceModel
 # additional_inputs = None
-# setup_agent_benchmark = benchmarking_eckstein2024.setup_agent_benchmark
-# # setup_agent_benchmark = benchmarking_castro2025.setup_agent_benchmark
-# Eckstein2024Model = benchmarking_eckstein2024.Eckstein2024Model
-# Castro2025Model = benchmarking_castro2025.Castro2025Model
-# benchmark_file = f'cogfunsearch_{study}.pkl'
-# model_config_baseline = None
-# baseline_file = f'benchmark_{study}.pkl'
+# setup_agent_benchmark = benchmarking_eckstein2022.setup_agent_benchmark
+# rl_model = benchmarking_eckstein2022.rl_model
+# benchmark_file = f'mcmc_{study}_MODEL.nc'
+# model_config_baseline = 'ApBr'
+# baseline_file = f'mcmc_{study}_ApBr.nc'
+
+# ------------------- CONFIGURATION ECKSTEIN2024 --------------------
+study = 'eckstein2024'
+models_benchmark = ['CogFunSearch']
+train_test_ratio = [1,3]
+sindy_config = precoded.workingmemory.CONFIG
+rnn_class = precoded.workingmemory.SpiceModel
+additional_inputs = None
+setup_agent_benchmark = benchmarking_eckstein2024.setup_agent_benchmark
+# setup_agent_benchmark = benchmarking_castro2025.setup_agent_benchmark
+Eckstein2024Model = benchmarking_eckstein2024.Eckstein2024Model
+Castro2025Model = benchmarking_castro2025.Castro2025Model
+benchmark_file = f'cogfunsearch_{study}.pkl'
+model_config_baseline = None
+baseline_file = f'benchmark_{study}.pkl'
 
 # ------------------------ CONFIGURATION DEZFOULI2019 -----------------------
 # study = 'dezfouli2019'
 # train_test_ratio = [3, 6, 9]
 # models_benchmark = ['PhiChiBetaKappaC']
-# sindy_config = precoded.choice.CONFIG
-# rnn_class = precoded.choice.SpiceModel
+# sindy_config = precoded.workingmemory.CONFIG
+# rnn_class = precoded.workingmemory.SpiceModel
 # additional_inputs = []
 # setup_agent_benchmark = benchmarking_dezfouli2019.setup_agent_gql
 # gql_model = benchmarking_dezfouli2019.Dezfouli2019GQL
@@ -85,10 +85,10 @@ use_test = True
 
 path_data = f'weinhardt2025/data/{study}/{study}.csv'
 path_model_rnn = None#f'weinhardt2025/params/{study}/spice_{study}.pkl'
-path_model_spice = f'weinhardt2025/params/{study}/spice_{study}.pkl'
+path_model_spice = None#f'weinhardt2025/params/{study}/spice_{study}.pkl'
 path_model_baseline = None#os.path.join(f'weinhardt2025/params/{study}/', baseline_file)
 path_model_benchmark = None#os.path.join(f'weinhardt2025/params/{study}', benchmark_file) if len(models_benchmark) > 0 else None
-path_model_benchmark_lstm = None#f'params/{study}/lstm_{study}.pkl'
+path_model_benchmark_gru = f'weinhardt2025/params/{study}/gru_{study}.pkl'
 
 # -------------------------------------------------------------------------------
 # MODEL COMPARISON PIPELINE
@@ -136,12 +136,12 @@ else:
     models_benchmark = []
 n_parameters_benchmark = 0
 
-if path_model_benchmark_lstm:
-    print("Setting up LSTM agent from file", path_model_benchmark_lstm)
-    agent_lstm = benchmarking_lstm.setup_agent_lstm(path_model=path_model_benchmark_lstm)
-    n_parameters_lstm = sum(p.numel() for p in agent_lstm.model.parameters() if p.requires_grad)
+if path_model_benchmark_gru:
+    print("Setting up GRU agent from file", path_model_benchmark_gru)
+    agent_gru = benchmarking_gru.setup_agent_gru(path_model=path_model_benchmark_gru)
+    n_parameters_gru = sum(p.numel() for p in agent_gru.model.parameters() if p.requires_grad)
 else:
-    n_parameters_lstm = 0
+    n_parameters_gru = 0
     
 # setup rnn agent
 if path_model_rnn is not None or path_model_spice is not None:
@@ -253,11 +253,11 @@ for index_data in tqdm(range(len(dataset_test))):
             metric_participant[1, index_data] += scores_benchmark[index_best_benchmark, 0]
             metric_participant[5:, index_data] += scores_benchmark[:, 0]
         
-        # Benchmark LSTM
-        if path_model_benchmark_lstm:
-            probs_lstm = get_update_dynamics(experiment=data_input[index_data], agent=agent_lstm)[1]
-            scores_lstm = np.array(get_scores(data=data_ys[index_start:index_end], probs=probs_lstm[index_start:index_end], n_parameters=n_parameters_lstm))
-            metric_participant[2, index_data] += scores_lstm[0]
+        # Benchmark GRU
+        if path_model_benchmark_gru:
+            probs_gru = get_update_dynamics(experiment=data_input[index_data], agent=agent_gru)[1]
+            scores_gru = np.array(get_scores(data=data_ys[index_start:index_end], probs=probs_gru[index_start:index_end], n_parameters=n_parameters_gru))
+            metric_participant[2, index_data] += scores_gru[0]
             
         # SPICE-RNN
         if path_model_rnn is not None:
@@ -273,8 +273,8 @@ for index_data in tqdm(range(len(dataset_test))):
         if path_model_benchmark:
             scores[1] += scores_benchmark[index_best_benchmark]
             scores[5:] += scores_benchmark
-        if path_model_benchmark_lstm:
-            scores[2] += scores_lstm
+        if path_model_benchmark_gru:
+            scores[2] += scores_gru
         if path_model_rnn is not None:
             scores[3] += scores_rnn
         if path_model_spice is not None:
@@ -304,19 +304,26 @@ avg_trial_likelihood = np.exp(- scores[:, 0])
 metric_participant_std = (metric_participant/considered_trials_participant).std(axis=1)
 avg_trial_likelihood_participant = np.exp(- metric_participant / considered_trials_participant)
 avg_trial_likelihood_participant_std = avg_trial_likelihood_participant.std(axis=1)
-parameter_participant_std = parameters_participant.std(axis=1)
+parameter_participant_std = parameters_participant.std(axis=1)[0]
 
 # compute average number of parameters
 n_parameters_benchmark_single_models = [agent_benchmark[model][1] for model in models_benchmark] if path_model_benchmark else []
 n_parameters = np.array([
     n_parameters_baseline,
     n_parameters_benchmark, 
-    n_parameters_lstm,
+    n_parameters_gru,
     n_parameters_rnn, 
     np.mean(n_parameters_spice),
     ]+n_parameters_benchmark_single_models)
+n_parameters_std = np.array([
+    0,
+    0,
+    0,
+    0,
+    parameter_participant_std,
+])
 
-scores = np.concatenate((avg_trial_likelihood.reshape(-1, 1), avg_trial_likelihood_participant_std.reshape(-1, 1), scores[:, :1], metric_participant_std.reshape(-1, 1), scores[:, 1:], n_parameters.reshape(-1, 1)), axis=1)
+scores = np.concatenate((avg_trial_likelihood.reshape(-1, 1), avg_trial_likelihood_participant_std.reshape(-1, 1), scores[:, :1], metric_participant_std.reshape(-1, 1), scores[:, 1:], n_parameters.reshape(-1, 1), n_parameters_std.reshape(-1, 1)), axis=1)
 
 
 # ------------------------------------------------------------
@@ -328,7 +335,7 @@ print(f'Failed participants: {failed_participants}')
 
 df = pd.DataFrame(
     data=scores,
-    index=['Baseline', 'Benchmark', 'LSTM', 'RNN', 'SPICE']+models_benchmark,
-    columns = ('Trial Lik.', '(std)', 'NLL', '(std)', 'AIC', 'BIC', 'n_parameters'),
+    index=['Baseline', 'Benchmark', 'GRU', 'RNN', 'SPICE']+models_benchmark,
+    columns = ('Trial Lik.', '(std)', 'NLL', '(std)', 'AIC', 'BIC', 'n_parameters', '(std)'),
     )
 print(df)
