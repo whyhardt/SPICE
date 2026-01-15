@@ -83,7 +83,7 @@ class Agent:
 
     check_in_0_1_range(alpha_reward, 'alpha')
 
-  def get_state(self):
+  def get_state(self, **kwargs):
     return self.logits, self.state
     
   def check_parameter_variance(self, parameter_variance):
@@ -453,13 +453,22 @@ class AgentNetwork(Agent):
     else:
       self.state['hidden'] = state
       
-  def get_state(self):
+  def get_state(self, numpy: bool = False, **kwargs):    
     if isinstance(self.model, BaseRNN):
       state = self.model.get_state(detach=True)
     else:
       state = self.state
-    return self.logits, state
-  
+      
+    if numpy:
+      state_numpy = {}
+      logits = self.logits.detach().cpu().numpy()
+      for key in state:
+        if isinstance(state[key], torch.Tensor):
+          state_numpy[key] = state[key].detach().cpu().numpy()
+      return logits, state_numpy
+    else:
+      return self.logits, state
+      
   def get_participant_ids(self):
     if hasattr(self.model, 'participant_embedding'):
       return tuple(np.arange(self.model.participant_embedding.num_embeddings).tolist())
@@ -1409,7 +1418,7 @@ def get_update_dynamics(experiment: Union[np.ndarray, torch.Tensor], agent: Agen
   
   for trial in range(n_trials):
     # track all states
-    current_logits, state = agent.get_state()
+    current_logits, state = agent.get_state(numpy=True)      
     logits[trial] = current_logits[0]
     for signal in additional_signals:
       if isinstance(agent.state, dict):

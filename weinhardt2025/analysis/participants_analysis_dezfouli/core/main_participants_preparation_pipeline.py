@@ -9,23 +9,24 @@ from copy import deepcopy
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..')))
 
-from utils.convert_dataset import convert_dataset
-from resources.rnn_utils import DatasetRNN
-from resources.model_evaluation import log_likelihood, bayesian_information_criterion
-from resources.bandits import get_update_dynamics, AgentSpice
-from resources.sindy_utils import load_spice, SindyConfig_dezfouli2019
-from utils.setup_agents import setup_agent_rnn
-from resources.rnn import RLRNN_dezfouli2019, ExtendedEmbedding
+from spice import convert_dataset, SpiceDataset, SpiceEstimator
+from spice.resources.model_evaluation import log_likelihood, bayesian_information_criterion
+from spice.resources.bandits import get_update_dynamics
+from spice.precoded.workingmemory import SpiceModel, CONFIG
 
 # ─── BEHAVIORAL METRICS ─────────────────────────────────────────────────────────────────────────────────
 additional_inputs = ['diag']  # include diagnosis as an additional input
 #or None if not diagnosis
 
-data_path = 'data/dezfouli2019/dezfouli2019.csv' 
+data_path = 'weinhardt2025/data/dezfouli2019/dezfouli2019.csv' 
 
 # (1) Read raw CSV and cast 'session' → int
-dataset, _, original_df, _ = convert_dataset(file=data_path, additional_inputs=additional_inputs)
-#original_df['session'] = original_df['session'].astype(int)
+dataset = convert_dataset(file=data_path, additional_inputs=None)
+dataset_diag = convert_dataset(file=data_path, additional_inputs=additional_inputs)
+original_df = pd.read_csv(data_path)
+
+n_actions = dataset.ys.shape[-1]
+n_participants = len(dataset.xs[..., -1].unique())
 
 # Get a list of unique session IDs from original_df
 unique_sessions = original_df['session'].unique().tolist()
@@ -138,35 +139,32 @@ print(f"Behavioral metrics computed for {len(behavior_df)} participants.")
 
 # ─── SINDy AND RNN MODELS ──────────────────────────────────────────────────────────────────────────────
 
-model_rnn_path = '/Users/martynaplomecka/closedloop_rl/data/dezfouli2019/rnn_dezfouli2019_no_l1_l2_0.pkl'
-model_spice_path = '/Users/martynaplomecka/closedloop_rl/data/dezfouli2019/spice_dezfouli2019_no_l1_l2_0.pkl'
+model_spice_path = 'weinhardt2025/params/dezfouli2019/spice_dezfouli2019.pkl'
 
 #class_rnn = RLRNN_meta_dezfouli2019
-class_rnn = RLRNN_dezfouli2019
+class_rnn = SpiceModel
 
-sindy_config = SindyConfig_dezfouli2019
+sindy_config = CONFIG
 
-
-agent_rnn = setup_agent_rnn(
-    path_model=model_rnn_path,
-    class_rnn=class_rnn,
-    list_sindy_signals=sindy_config["rnn_modules"] + sindy_config['control_parameters']
+estimator = SpiceEstimator(
+    rnn_class=class_rnn,
+    spice_config=CONFIG,
+    n_actions=n_actions,
+    n_participants=n_participants,
+    sindy_library_polynomial_degree=2,
+    use_sindy=True,
 )
 
-spice_modules = load_spice(file=model_spice_path)
-agent_spice = AgentSpice(
-    model_rnn=agent_rnn.model,
-    sindy_modules=spice_modules,
-    n_actions=agent_rnn._n_actions
-)
+estimator.load_spice(model_spice_path)
+agent_rnn = estimator.rnn_agent
+agent_spice = estimator.spice_agent
 
-list_rnn_modules = SindyConfig_dezfouli2019["rnn_modules"]
+list_rnn_modules = list(CONFIG.library_setup.keys())
 
 # Build mappings between "real session ID" and SPICE's internal index 0..(N-1)
 session_to_index = {pid: i for i, pid in enumerate(unique_sessions)}
 index_to_session = {i: pid for i, pid in enumerate(unique_sessions)}
 
-n_participants = len(unique_sessions)
 # Now `participant_ids` is the list of real session IDs, not 0..n_participants-1
 participant_ids = unique_sessions
 
@@ -177,40 +175,14 @@ print(f"Mapped {len(index_to_session)} indices to actual PIDs")
 # Collect all SINDy feature names
 all_feature_names = set()
 for module in list_rnn_modules:
-    for idx_internal in agent_spice.model.submodules_sindy[module]:
-        sindy_model = agent_spice.model.submodules_sindy[module][idx_internal]
-        for name in sindy_model.get_feature_names():
+    for idx_internal in range(agent_spice.model.sindy_coefficients[module].shape[0]):
+        sindy_model = agent_spice.model.sindy_coefficients[module][idx_internal]
+        for name in agent_spice.model.sindy_candidate_terms[module]:
             all_feature_names.add(f"{module}_{name}")
 
 # Extract embedding matrix from the SPICE model
-if isinstance(agent_spice.model.participant_embedding, torch.nn.Embedding):
-    embedding_matrix = agent_spice.model.participant_embedding.weight.detach().cpu().numpy()
-elif isinstance(agent_spice.model.participant_embedding, ExtendedEmbedding):
-    embedding_matrix = agent_spice.model.participant_embedding.embedding.weight.detach().cpu().numpy()
-else:
-    raise RuntimeError("Unknown embedding type in SPICE model.")
-
+embedding_matrix = agent_spice.model.participant_embedding[0].weight.detach().cpu().numpy()
 embedding_size = embedding_matrix.shape[1]
-
-# ─── PRECOMPUTE BETAS (fixed) ─────────────────────────────────────────────────────────────────────────
-
-features = {'beta_reward': {}, 'beta_choice': {}}
-
-for index_pid, pid in enumerate(participant_ids):
-    # Filter original_df on the real session ID (pid)
-    subset = original_df[original_df["session"] == pid]
-    if subset.empty:
-        print(f"Warning: no rows in original_df where session == {pid}")
-        continue
-
-    internal_idx = session_to_index[pid]
-    mask_pid = dataset.xs[:, 0, -1] == index_pid
-    additional_embedding_inputs = dataset.xs[mask_pid, 0, 2*agent_spice._n_actions:-3]
-    # Initialize SPICE for this internal index with the participant's diagnosis
-    agent_spice.new_sess(participant_id=internal_idx, additional_embedding_inputs=additional_embedding_inputs)
-    betas = agent_spice.get_betas()
-    features['beta_reward'][internal_idx] = betas.get('x_value_reward', 0.0)
-    features['beta_choice'][internal_idx] = betas.get('x_value_choice', 0.0)
 
 # Build the SINDy‐params DataFrame
 sindy_params = []
@@ -222,16 +194,11 @@ for internal_idx in tqdm(range(n_participants), desc="Extracting SINDy/RNN param
     for feat in all_feature_names:
         param_dict[feat] = 0.0
 
-    # Insert beta_reward and beta_choice (if they exist)
-    param_dict['beta_reward'] = features['beta_reward'].get(internal_idx, 0.0)
-    param_dict['beta_choice'] = features['beta_choice'].get(internal_idx, 0.0)
-
     # Fill in each submodule's coefficients
     for module in list_rnn_modules:
-        if internal_idx in agent_spice.model.submodules_sindy[module]:
-            model = agent_spice.model.submodules_sindy[module][internal_idx]
-            coefs = model.model.steps[-1][1].coef_.flatten()
-            for i, name in enumerate(model.get_feature_names()):
+        if internal_idx in range(agent_spice.model.sindy_coefficients[module].shape[0]):
+            coefs = agent_spice.model.sindy_coefficients[module][internal_idx].flatten().detach().cpu().numpy()
+            for i, name in enumerate(agent_spice.model.sindy_candidate_terms):
                 param_dict[f"{module}_{name}"] = coefs[i]
             param_dict[f"params_{module}"] = np.sum(np.abs(coefs) > 1e-10)
         else:
@@ -262,7 +229,8 @@ print(f"After inner‐join of SINDy + behavior: {len(merged_df)} participants")
 # ─── SECTION 3: CALCULATE MODEL EVALUATION METRICS ─────────────────────────────────────────────────────
 
 # Reload or reuse the same dataset object for testing
-dataset_test, _, _, _ = convert_dataset(file=data_path, additional_inputs=additional_inputs)
+dataset_test = convert_dataset(file=data_path, additional_inputs=None)
+dataset_diag_test = convert_dataset(file=data_path, additional_inputs=additional_inputs)
 
 # Collect metrics for each session, then average per participant
 session_metrics = []
@@ -286,12 +254,12 @@ for internal_idx in tqdm(range(n_participants), desc="Computing model metrics"):
         if not mask.any():
             continue
 
-        participant_data = DatasetRNN(*dataset_test[mask])
+        participant_data = SpiceDataset(*dataset_test[mask])
 
         # Reset agents before computing predictions
         # Get additional embedding inputs for this participant
         mask_pid = dataset.xs[:, 0, -1] == internal_idx
-        additional_embedding_inputs = dataset.xs[mask_pid, 0, 2*agent_spice._n_actions:-3]
+        additional_embedding_inputs = dataset.xs[mask_pid, 0, 2*agent_spice.n_actions:-3]
         
         agent_spice.new_sess(participant_id=internal_idx, additional_embedding_inputs=additional_embedding_inputs)
         agent_rnn.new_sess(participant_id=internal_idx)
@@ -312,14 +280,14 @@ for internal_idx in tqdm(range(n_participants), desc="Computing model metrics"):
         ll_spice = log_likelihood(data=true_actions, probs=probs_spice)
         ll_rnn = log_likelihood(data=true_actions, probs=probs_rnn)
 
-        spice_per_trial_like = np.exp(ll_spice / (n_trials_test * agent_rnn._n_actions))
-        rnn_per_trial_like = np.exp(ll_rnn / (n_trials_test * agent_rnn._n_actions))
+        spice_per_trial_like = np.exp(ll_spice / (n_trials_test * agent_rnn.n_actions))
+        rnn_per_trial_like = np.exp(ll_rnn / (n_trials_test * agent_rnn.n_actions))
 
         n_params_dict = agent_spice.count_parameters()
-        if internal_idx not in n_params_dict:
-            continue
-        n_parameters_spice = n_params_dict[internal_idx]
-
+        # if internal_idx not in n_params_dict:
+        #     continue
+        n_parameters_spice = int(n_params_dict[internal_idx])
+        
         bic_spice = bayesian_information_criterion(
             data=true_actions,
             probs=probs_spice,
@@ -385,8 +353,8 @@ print(f"Average number of sessions per participant: {session_metrics_df.groupby(
 final_df = pd.merge(merged_df, metrics_df, on='participant_id', how='inner')
 print(f"After inner‐join with metrics: {len(final_df)} participants")
 
-
-final_df.to_csv('dezfouli_final_df_sindy_analysis_with_metrics.csv', index=False)
-behavior_df.to_csv('dezfouli_behavior_metrics_fixed.csv', index=False)
-sindy_df.to_csv('dezfouli_sindy_parameters.csv', index=False)
-metrics_df.to_csv('dezfouli_model_evaluation_metrics.csv', index=False)
+path_results = 'weinhardt2025/analysis/participants_analysis_dezfouli/results'
+final_df.to_csv(os.path.join(path_results, 'dezfouli_final_df_sindy_analysis_with_metrics.csv'), index=False)
+behavior_df.to_csv(os.path.join(path_results, 'dezfouli_behavior_metrics_fixed.csv'), index=False)
+sindy_df.to_csv(os.path.join(path_results, 'dezfouli_sindy_parameters.csv'), index=False)
+metrics_df.to_csv(os.path.join(path_results, 'dezfouli_model_evaluation_metrics.csv'), index=False)
