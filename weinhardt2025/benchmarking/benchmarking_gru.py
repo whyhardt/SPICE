@@ -40,16 +40,17 @@ class GRU(torch.nn.Module):
         return y, state
 
   
-def setup_agent_gru(path_model: str) -> AgentNetwork:
+def setup_agent_gru(path_model: str, gru: torch.nn.Module = None) -> AgentNetwork:
     state_dict = torch.load(path_model, map_location=torch.device('cpu'))
     
     hidden_size = state_dict['linear_in.weight'].shape[0]
     n_actions = state_dict['linear_out.weight'].shape[0]
     additional_inputs = state_dict['linear_in.weight'].shape[1] - 1 - n_actions
     
-    gru = GRU(n_actions=n_actions, hidden_size=hidden_size, additional_inputs=additional_inputs)
+    if gru is None:
+        gru = GRU(n_actions=n_actions, hidden_size=hidden_size, additional_inputs=additional_inputs)
     gru.load_state_dict(state_dict=state_dict)
-    agent = AgentNetwork(model_rnn=gru, n_actions=n_actions)
+    agent = AgentNetwork(model_rnn=gru, n_actions=gru.n_actions)
     return agent
 
 def training(

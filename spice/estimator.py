@@ -364,6 +364,7 @@ class SpiceEstimator(BaseEstimator):
             model = self.rnn_class(
                     spice_config=self.spice_config,
                     n_actions=self.rnn_model.n_actions,
+                    n_items=self.rnn_model.n_items,
                     n_participants=self.rnn_model.n_participants,
                     n_experiments=self.rnn_model.n_experiments,
                     sindy_config=self.rnn_model.spice_config,

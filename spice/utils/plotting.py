@@ -168,12 +168,14 @@ def plot_session(
     save: str = None, 
     display_choice: int = 0,
     reward_range: List[float] = [0, 1],
-    signals_to_plot: List[str] = ['value_reward', 'value_choice'],
+    signals_to_plot: Optional[List[str]] = None,
     ):    
-    # plot the dynamcis associated with the first arm
-    
+
     y_axis = True
     x_axis = True
+    
+    if signals_to_plot is None:
+      signals_to_plot = []
     
     # valid keys in agent dictionary
     colors = ['tab:blue', 'tab:orange', 'tab:pink', 'tab:grey']
@@ -244,7 +246,7 @@ def plot_session(
         choices=choices,
         rewards=rewards,
         timeseries=q_value[:, :, display_choice],
-        timeseries_name='$q$',
+        timeseries_name='$Logit$',
         color=colors,
         fig_ax=(fig, axs[axs_row, fig_col]) if fig_col is not None else (fig, axs[axs_row]),
         y_axis_info=x_axis,

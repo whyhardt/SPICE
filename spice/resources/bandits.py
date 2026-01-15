@@ -80,8 +80,11 @@ class Agent:
     self._q_init = 0.5
     self._parameter_variance = self.check_parameter_variance(parameter_variance)
     self._deterministic = deterministic
-    
+
     check_in_0_1_range(alpha_reward, 'alpha')
+
+  def get_state(self):
+    return self.logits, self.state
     
   def check_parameter_variance(self, parameter_variance):
     if isinstance(parameter_variance, float):
@@ -112,10 +115,15 @@ class Agent:
       'learning_rate_reward': np.zeros((self.n_actions, 1)),
     }
     
+    self.logits = torch.zeros((1, self.n_actions))
+    
   def get_choice_probs(self) -> np.ndarray:
     """Compute the choice probabilities as softmax over q."""
-    decision_variable = self.q - self.q.min()
-    # decision_variable = np.clip(decision_variable, a_min=0, a_max=50)
+    logits = self.logits
+    if isinstance(logits, torch.Tensor):
+      logits = logits.detach().cpu().numpy()
+      
+    decision_variable = logits - logits.min()
     decision_variable = np.exp(decision_variable)
     choice_probs = decision_variable / np.sum(decision_variable)
     return choice_probs.reshape(self.n_actions)
@@ -153,16 +161,8 @@ class Agent:
     # Update memory state
     self.state['value_reward'] += reward_update
     self.state['learning_rate_reward'] = alpha
-  
-  def get_state_value(self, state: str, multiply_with_beta: bool = True):
-    if multiply_with_beta and state in self.betas:
-      return (self.state[state] * self.betas[state]).reshape(self.n_actions)
-    else:
-      return self.state[state].reshape(self.n_actions)
-
-  @property
-  def q(self):
-    return (self.state['value_reward']*self.betas['value_reward']).reshape(self.n_actions)
+    
+    self.logits = (self.state['value_reward']*self.betas['value_reward']).reshape(1, self.n_actions)
 
 
 class AgentQ(Agent):
@@ -298,10 +298,8 @@ class AgentQ(Agent):
     self.state['value_reward'][choice] += reward_update[choice]
     self.state['value_choice'] += self._alpha_choice * cpe
     self.state['learning_rate_reward'] = alpha
-
-  @property
-  def q(self):
-    return (self.state['value_reward']*self.betas['value_reward'] + self.state['value_choice']*self.betas['value_choice']).reshape(self.n_actions)
+    
+    self.logits = (self.state['value_reward']*self.betas['value_reward'] + self.state['value_choice']*self.betas['value_choice']).reshape(1, self.n_actions)
 
 
 class AgentQ_SampleParams(AgentQ):
@@ -406,6 +404,7 @@ class AgentNetwork(Agent):
       self.deterministic = deterministic
       self.use_sindy = use_sindy
       self.device = device
+      self.state = {}
       self.model = model_rnn.eval(use_sindy=use_sindy).to(device) if isinstance(model_rnn, BaseRNN) else model_rnn.eval().to(device)
       self.new_sess()
       
@@ -418,7 +417,9 @@ class AgentNetwork(Agent):
       self.model.init_state(batch_size=1)
       state = self.model.get_state()
     else:
-      state = torch.zeros((1, self.n_actions), device=self.device, dtype=torch.float32)
+      state = None
+      
+    self.logits = torch.zeros((1, self.n_actions), device=self.device, dtype=torch.float32)
     
     self._meta_data = torch.zeros((1, 2), dtype=torch.float32)
     self._meta_data[0, -1] = participant_id
@@ -427,16 +428,7 @@ class AgentNetwork(Agent):
     self._additional_meta_data = additional_embedding_inputs if isinstance(additional_embedding_inputs, torch.Tensor) else torch.tensor(additional_embedding_inputs, dtype=torch.float32)
     self._additional_meta_data = self._additional_meta_data.view(1, -1)
     
-    self.set_state((state, None))
-
-  def get_logit(self):
-    """Return the value of the agent's current state."""
-    logits = np.sum(
-      np.concatenate([
-        self.state[key].cpu().numpy() for key in self.state if 'value' in key
-        ]),
-      axis=0)
-    return logits
+    self.set_state(self.logits, state)
 
   def update(self, choice: float, reward: float, block: int = 0, additional_inputs: np.ndarray = torch.zeros(0), **kwargs):
     if not isinstance(reward, np.ndarray):
@@ -449,36 +441,25 @@ class AgentNetwork(Agent):
     xs = torch.concat([choice, torch.tensor(reward, dtype=torch.float32), torch.tensor(additional_inputs, dtype=torch.float32), torch.tensor(block, dtype=torch.float32).view(1), self._meta_data.view(-1)]).view(1, 1, -1).to(device=self.device)
     
     with torch.no_grad():
-      logits, state = self.model(xs, self.get_state() if isinstance(self.model, BaseRNN) else self.get_state()['hidden'])
+      logits, state = self.model(xs, self.get_state()[1] if isinstance(self.model, BaseRNN) else self.get_state()[1]['hidden'])
     
-    self.set_state((logits, state))
+    self.set_state(logits, state)
   
-  def set_state(self, state):
+  def set_state(self, logits, state):
+    self.logits = logits
+    
     if isinstance(self.model, BaseRNN):
       self.state = self.model.get_state()
-      self.betas = self.get_betas()
     else:
-      self.state = {
-        'value': state[0],
-        'hidden': state[1],
-        }
+      self.state['hidden'] = state
       
   def get_state(self):
     if isinstance(self.model, BaseRNN):
-      return self.model.get_state(detach=True)
+      state = self.model.get_state(detach=True)
     else:
-      return self.state
-      
-  def get_betas(self):
-    if hasattr(self.model, 'betas'):
-      betas = {}
-      if hasattr(self.model, 'participant_embedding'):
-        participant_embedding = self.model.participant_embedding(self._meta_data[..., -1].int().to(device=self.model.device).view(1, 1))
-      for key in self.model.betas:
-        betas[key] = self.model.betas[key]().item() if isinstance(self.model.betas[key], ParameterModule) else self.model.betas[key](participant_embedding).item()
-      return betas
-    return None
-
+      state = self.state
+    return self.logits, state
+  
   def get_participant_ids(self):
     if hasattr(self.model, 'participant_embedding'):
       return tuple(np.arange(self.model.participant_embedding.num_embeddings).tolist())
@@ -488,10 +469,6 @@ class AgentNetwork(Agent):
       return tuple(list(self.model.submodules_rnn.keys()))
     else:
       raise TypeError(f"Agent model is not a SPICE model. This function is only executable for SPICE models.")
-    
-  @property
-  def q(self):
-    return self.get_logit()
   
   def count_parameters(self) -> np.ndarray:
     if isinstance(self.model, BaseRNN):
@@ -1207,7 +1184,6 @@ def run_experiment(
   for trial in range(n_trials+1):
     # Log environment reward probabilities and Q-Values
     # reward_probs[trial] = environment.reward_probs
-    # qs[trial] = agent.q
     # First - agent makes a choice
     choice = agent.get_choice()
     # Second - environment computes a reward
@@ -1424,28 +1400,28 @@ def get_update_dynamics(experiment: Union[np.ndarray, torch.Tensor], agent: Agen
   
   # reset agent states according to ID
   agent.new_sess(participant_id=participant_id, experiment_id=experiment_id, additional_embedding_inputs=additional_inputs)
-  betas_available = hasattr(agent, 'betas') and agent.betas is not None
   
   # initialize storages
-  q = np.zeros((n_trials, agent.n_actions))
+  logits = np.zeros((n_trials, agent.n_actions))
   additional_signals = [state for state in agent.state if 'value' in state]
-  values_signal = {signal: np.zeros((n_trials, agent.n_actions)) for signal in additional_signals}
+  state_values = {signal: np.zeros((n_trials, agent.model.n_items if hasattr(agent.model, 'n_items') else agent.model.n_actions)) for signal in additional_signals}
   choice_probs = np.zeros((n_trials, agent.n_actions))
   
   for trial in range(n_trials):
     # track all states
-    q[trial] = agent.q
+    current_logits, state = agent.get_state()
+    logits[trial] = current_logits[0]
     for signal in additional_signals:
       if isinstance(agent.state, dict):
-        if signal in agent.state:
-          value = agent.get_state_value(signal, multiply_with_beta=betas_available)
+        if signal in state:
+          value = state[signal]
         else: 
-          value = np.zeros_like(agent.q)
+          value = np.zeros_like(agent.logits)
       else:
-        value = agent.state
+        value = np.zeros(agent.n_actions)
       if isinstance(value, torch.Tensor):
         value = value.detach().cpu().numpy()
-      values_signal[signal][trial] = value
+      state_values[signal][trial] = value
     
     choice_probs[trial] = np.clip(agent.get_choice_probs(), 1e-8, 1)
     
@@ -1456,7 +1432,7 @@ def get_update_dynamics(experiment: Union[np.ndarray, torch.Tensor], agent: Agen
       additional_inputs=additional_inputs,
       )
   
-  return (q, values_signal), choice_probs, agent
+  return (logits, state_values), choice_probs, agent
 
 
 ###############
