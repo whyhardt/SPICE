@@ -12,7 +12,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '.
 from spice import convert_dataset, SpiceDataset, SpiceEstimator
 from spice.resources.model_evaluation import log_likelihood, bayesian_information_criterion
 from spice.resources.bandits import get_update_dynamics
-from spice.precoded.workingmemory import SpiceModel, CONFIG
+from spice.precoded import workingmemory
 
 # ─── BEHAVIORAL METRICS ─────────────────────────────────────────────────────────────────────────────────
 additional_inputs = ['diag']  # include diagnosis as an additional input
@@ -142,13 +142,13 @@ print(f"Behavioral metrics computed for {len(behavior_df)} participants.")
 model_spice_path = 'weinhardt2025/params/dezfouli2019/spice_dezfouli2019.pkl'
 
 #class_rnn = RLRNN_meta_dezfouli2019
-class_rnn = SpiceModel
+class_rnn = workingmemory.SpiceModel
 
-sindy_config = CONFIG
+sindy_config = workingmemory.CONFIG
 
 estimator = SpiceEstimator(
     rnn_class=class_rnn,
-    spice_config=CONFIG,
+    spice_config=workingmemory.CONFIG,
     n_actions=n_actions,
     n_participants=n_participants,
     sindy_library_polynomial_degree=2,
@@ -159,7 +159,7 @@ estimator.load_spice(model_spice_path)
 agent_rnn = estimator.rnn_agent
 agent_spice = estimator.spice_agent
 
-list_rnn_modules = list(CONFIG.library_setup.keys())
+list_rnn_modules = list(workingmemory.CONFIG.library_setup.keys())
 
 # Build mappings between "real session ID" and SPICE's internal index 0..(N-1)
 session_to_index = {pid: i for i, pid in enumerate(unique_sessions)}
