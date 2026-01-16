@@ -21,7 +21,7 @@ additional_inputs = None#['age']  # If you want to include age as an additional 
 data_path = 'weinhardt2025/data/eckstein2022/eckstein2022.csv'
 #data_path = 'data/eckstein2022/eckstein2022.csv'
 
-slcn_path = '/Users/martynaplomecka/closedloop_rl/data/eckstein2022/SLCN.csv'
+slcn_path = 'weinhardt2025/data/eckstein2022/SLCN.csv'
 # (1a) Read raw CSV and cast 'session' → int
 dataset = convert_dataset(file=data_path, additional_inputs=additional_inputs)
 original_df = pd.read_csv(data_path)
@@ -162,7 +162,7 @@ print(f"Behavioral metrics computed for {len(behavior_df)} participants.")
 
 # ─── SINDy AND RNN MODELS ──────────────────────────────────────────────────────────────────────────────
 
-model_spice_path = '/Users/martynaplomecka/closedloop_rl/params/new/spice_eckstein2022.pkl'
+model_spice_path = 'weinhardt2025/params/eckstein2022/spice_eckstein2022.pkl'
 
 class_rnn = workingmemory.SpiceModel
 
@@ -219,7 +219,7 @@ for internal_idx in tqdm(range(n_participants), desc="Extracting SINDy/RNN param
     # Fill in each submodule’s coefficients
     for module in list_rnn_modules:
         if internal_idx in range(agent_spice.model.sindy_coefficients[module].shape[0]):
-            coefs = agent_spice.model.submodules_sindy[module][internal_idx].flatten().detach().cpu().numpy()
+            coefs = agent_spice.model.sindy_coefficients[module][internal_idx].flatten().detach().cpu().numpy()
             for i, name in enumerate(agent_spice.model.sindy_candidate_terms[module]):
                 param_dict[f"{module}_{name}"] = coefs[i]
             param_dict[f"params_{module}"] = np.sum(np.abs(coefs) > 1e-10)
