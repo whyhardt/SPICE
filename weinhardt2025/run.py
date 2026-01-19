@@ -25,7 +25,6 @@ if __name__=='__main__':
     parser.add_argument('--epochs', type=int, default=4000, help='Number of training epochs')
     parser.add_argument('--lr', type=float, default=0.01, help='Learning rate')
     parser.add_argument('--l2_rnn', type=float, default=0., help='L2 Reg of the RNN parameters')
-    parser.add_argument('--scheduler', action='store_true', help='Using a Plateau LR scheduler')
     
     # SINDy training parameters
     parser.add_argument('--sindy_weight', type=float, default=0.1, help='Weight for SINDy regularization during RNN training')
@@ -113,7 +112,7 @@ if __name__=='__main__':
 
     print(f"\nInitializing SpiceEstimator with end-to-end SINDy training (weight={args.sindy_weight})...")
     estimator = SpiceEstimator(
-
+        
         # model paramaeters
         rnn_class=class_rnn,
         spice_config=spice_config,
@@ -142,7 +141,7 @@ if __name__=='__main__':
         # additional generalization parameters
         batch_size=1024,
         bagging=True,
-        scheduler=args.scheduler,
+        scheduler=True,
         
         # other parameters
         verbose=True,
