@@ -8,9 +8,9 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 from spice import SpiceEstimator, convert_dataset, split_data_along_sessiondim, split_data_along_timedim, plot_session
-from spice.precoded import choice
+from spice.precoded import choice, workingmemory
 from spice.resources.bandits import AgentQ
-from spice.precoded import workingmemory_multiitem, workingmemory, choice, rescorlawagner, forgetting
+from spice.precoded import workingmemory_multiitem, workingmemory, workingmemory_rewardbinary, choice, rescorlawagner, forgetting
 
 
 if __name__=='__main__':
@@ -25,10 +25,11 @@ if __name__=='__main__':
     parser.add_argument('--epochs', type=int, default=1000, help='Number of training epochs')
     parser.add_argument('--lr', type=float, default=0.01, help='Learning rate')
     parser.add_argument('--l2_rnn', type=float, default=0., help='L2 Reg of the RNN parameters')
+    parser.add_argument('--scheduler', action='store_true', help='Using a Plateau LR scheduler')
     
     # SINDy training parameters
     parser.add_argument('--sindy_weight', type=float, default=0.1, help='Weight for SINDy regularization during RNN training')
-    parser.add_argument('--sindy_alpha', type=float, default=0.001, help='L2 Reg of the SINDy coefficients')
+    parser.add_argument('--sindy_alpha', type=float, default=0.0001, help='L2 Reg of the SINDy coefficients')
     parser.add_argument('--sindy_threshold', type=float, default=0.05, help='Threshold value for cutting off sindy terms')
     parser.add_argument('--sindy_cutoff', type=int, default=1, help='Number of thresholded terms')
     parser.add_argument('--sindy_cutoff_freq', type=int, default=1, help='Number of epochs after which to cutoff')
@@ -43,17 +44,21 @@ if __name__=='__main__':
     
     args = parser.parse_args()
 
+    include_validation = True
+    
     # args.model = "weinhardt2025/params/eckstein2022/spice_eckstein2022.pkl"
     # args.data = "weinhardt2025/data/eckstein2022/eckstein2022.csv"
     # args.train_ratio_time = 0.8
+    # include_validation = False
+    # args.scheduler = False
+
+    args.model = "weinhardt2025/params/eckstein2024/spice_eckstein2024.pkl"
+    args.data = "weinhardt2025/data/eckstein2024/eckstein2024.csv"
+    args.test_sessions = "1,3"
     
-    # args.model = "weinhardt2025/params/eckstein2024/spice_eckstein2024.pkl"
-    # args.data = "weinhardt2025/data/eckstein2024/eckstein2024.csv"
-    # args.test_sessions = "1,3"
-    
-    args.model = "weinhardt2025/params/dezfouli2019/spice_dezfouli2019.pkl"
-    args.data = "weinhardt2025/data/dezfouli2019/dezfouli2019.csv"
-    args.test_sessions = "3,6,9"
+    # args.model = "weinhardt2025/params/dezfouli2019/spice_dezfouli2019.pkl"
+    # args.data = "weinhardt2025/data/dezfouli2019/dezfouli2019.csv"
+    # args.test_sessions = "3,6,9"
     
     # args.data="weinhardt2025/data/sugawara2021/sugawara2021.csv" 
     # args.model="weinhardt2025/params/sugawara2021/spice_sugawara2021.pkl" 
@@ -63,17 +68,6 @@ if __name__=='__main__':
     
     # args.data = "weinhardt2025/data/synthetic/synthetic_2_256p_0.csv"
     # args.model = args.data.replace("data", "params").replace("/synthetic_", "/spice_synthetic_test").replace(".csv", ".pkl")
-    
-    args.epochs = 4000
-    args.lr = 0.01
-    args.sindy_weight = 0.1
-    args.sindy_cutoff_freq = 1
-    args.sindy_cutoff = 1
-    args.sindy_cutoff_patience = 100
-    args.sindy_threshold = 0.05
-    args.sindy_alpha = 0.0001
-    sindy_epochs = 2000
-    warmup_steps = 1000
     
     example_participant = 1
     plot_coef_dist = True
@@ -97,18 +91,23 @@ if __name__=='__main__':
     else:
         print("No split into training and test data.")
         dataset_train, dataset_test = dataset, dataset
-
+    if include_validation:
+        dataset_tuple = dataset_train.xs, dataset_train.ys, dataset_test.xs, dataset_test.ys
+    else:
+        dataset_tuple = dataset_train.xs, dataset_train.ys
+        
     n_actions = dataset_train.ys.shape[-1]
     n_participants = len(dataset_train.xs[..., -1].unique())
     n_experiments = len(dataset_train.xs[..., -2].unique())
     n_items = args.n_items if args.n_items else n_actions
     
     if n_items == n_actions:
-        spice_model = workingmemory
+        if ((dataset.xs[..., n_actions:n_actions*2].nan_to_num(0) == 1).int() + (dataset.xs[..., n_actions:n_actions*2].nan_to_num(0) == 0).int()).sum() == dataset.xs.shape[0]*dataset.xs.shape[1]*n_actions:
+            spice_model = workingmemory_rewardbinary
+        else:
+            spice_model = workingmemory
     else:
         spice_model = workingmemory_multiitem
-
-    # spice_model = choice
     
     class_rnn = spice_model.SpiceModel
     spice_config = spice_model.CONFIG
@@ -129,7 +128,7 @@ if __name__=='__main__':
         
         # rnn training parameters
         epochs=args.epochs,
-        warmup_steps=warmup_steps,
+        warmup_steps=args.epochs//4,
         l2_rnn=args.l2_rnn,
         learning_rate=args.lr,
         
@@ -139,7 +138,7 @@ if __name__=='__main__':
         sindy_threshold_frequency=args.sindy_cutoff_freq,
         sindy_threshold_terms=args.sindy_cutoff,
         sindy_cutoff_patience=args.sindy_cutoff_patience,
-        sindy_epochs=sindy_epochs,
+        sindy_epochs=args.epochs,
         sindy_alpha=args.sindy_alpha,
         sindy_library_polynomial_degree=2,
         sindy_ensemble_size=1,
@@ -147,7 +146,7 @@ if __name__=='__main__':
         # additional generalization parameters
         batch_size=1024,
         bagging=True,
-        scheduler=True,
+        scheduler=args.scheduler,
         
         # other parameters
         verbose=True,
@@ -161,7 +160,7 @@ if __name__=='__main__':
     print(f"\nStarting training on {estimator.device}...")
     print("=" * 80)
     if estimator.sindy_epochs > 0 or estimator.epochs > 0:
-        estimator.fit(dataset_train.xs, dataset_train.ys, data_test=dataset_test.xs, target_test=dataset_test.ys)
+        estimator.fit(*dataset_tuple)
     print("=" * 80)
     print("\nTraining complete!")
     
@@ -200,7 +199,8 @@ if __name__=='__main__':
 
     fig, axs = plot_session(
         agents,
-        experiment=dataset.xs[example_participant]
+        experiment=dataset.xs[example_participant],
+        signals_to_plot=['value_reward', 'value_wm_reward', 'value_choice'],
         )
 
     plt.show()

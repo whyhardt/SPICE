@@ -2,6 +2,7 @@
 SPICE: Sparse and Interpretable Cognitive Equations
 """
 
+from .precoded import workingmemory
 from .estimator import SpiceEstimator
 from .precoded import (
     rescorlawagner,

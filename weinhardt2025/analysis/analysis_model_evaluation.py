@@ -24,39 +24,39 @@ from weinhardt2025.benchmarking import benchmarking_dezfouli2019, benchmarking_e
 # -------------------------------------------------------------------------------
 
 # ------------------- CONFIGURATION ECKSTEIN2022 --------------------
-# study = 'eckstein2022'
-# models_benchmark = ['ApAnBrBcfBch']
-# train_test_ratio = 0.8
-# sindy_config = precoded.workingmemory.CONFIG
-# rnn_class = precoded.workingmemory.SpiceModel
-# additional_inputs = None
-# setup_agent_benchmark = benchmarking_eckstein2022.setup_agent_benchmark
-# rl_model = benchmarking_eckstein2022.rl_model
-# benchmark_file = f'mcmc_{study}_MODEL.nc'
-# model_config_baseline = 'ApBr'
-# baseline_file = f'mcmc_{study}_ApBr.nc'
-
-# ------------------- CONFIGURATION ECKSTEIN2024 --------------------
-study = 'eckstein2024'
-models_benchmark = ['CogFunSearch']
-train_test_ratio = [1,3]
+study = 'eckstein2022'
+models_benchmark = ['ApAnBrBcfBch']
+train_test_ratio = 0.8
 sindy_config = precoded.workingmemory.CONFIG
 rnn_class = precoded.workingmemory.SpiceModel
 additional_inputs = None
-setup_agent_benchmark = benchmarking_eckstein2024.setup_agent_benchmark
-# setup_agent_benchmark = benchmarking_castro2025.setup_agent_benchmark
-Eckstein2024Model = benchmarking_eckstein2024.Eckstein2024Model
-Castro2025Model = benchmarking_castro2025.Castro2025Model
-benchmark_file = f'cogfunsearch_{study}.pkl'
-model_config_baseline = None
-baseline_file = f'benchmark_{study}.pkl'
+setup_agent_benchmark = benchmarking_eckstein2022.setup_agent_benchmark
+rl_model = benchmarking_eckstein2022.rl_model
+benchmark_file = f'mcmc_{study}_MODEL.nc'
+model_config_baseline = 'ApBr'
+baseline_file = f'mcmc_{study}_ApBr.nc'
+
+# ------------------- CONFIGURATION ECKSTEIN2024 --------------------
+# study = 'eckstein2024'
+# models_benchmark = ['CogFunSearch']
+# train_test_ratio = [1,3]
+# sindy_config = precoded.workingmemory_2.CONFIG
+# rnn_class = precoded.workingmemory_2.SpiceModel
+# additional_inputs = None
+# setup_agent_benchmark = benchmarking_eckstein2024.setup_agent_benchmark
+# # setup_agent_benchmark = benchmarking_castro2025.setup_agent_benchmark
+# Eckstein2024Model = benchmarking_eckstein2024.Eckstein2024Model
+# Castro2025Model = benchmarking_castro2025.Castro2025Model
+# benchmark_file = f'cogfunsearch_{study}.pkl'
+# model_config_baseline = None
+# baseline_file = f'benchmark_{study}.pkl'
 
 # ------------------------ CONFIGURATION DEZFOULI2019 -----------------------
 # study = 'dezfouli2019'
 # train_test_ratio = [3, 6, 9]
 # models_benchmark = ['PhiChiBetaKappaC']
-# sindy_config = precoded.workingmemory.CONFIG
-# rnn_class = precoded.workingmemory.SpiceModel
+# sindy_config = precoded.workingmemory_2.CONFIG
+# rnn_class = precoded.workingmemory_2.SpiceModel
 # additional_inputs = []
 # setup_agent_benchmark = benchmarking_dezfouli2019.setup_agent_gql
 # gql_model = benchmarking_dezfouli2019.Dezfouli2019GQL
@@ -84,11 +84,11 @@ baseline_file = f'benchmark_{study}.pkl'
 use_test = True
 
 path_data = f'weinhardt2025/data/{study}/{study}.csv'
-path_model_rnn = None#f'weinhardt2025/params/{study}/spice_{study}.pkl'
-path_model_spice = None#f'weinhardt2025/params/{study}/spice_{study}.pkl'
+path_model_rnn = f'weinhardt2025/params/{study}/spice_{study}.pkl'
+path_model_spice = f'weinhardt2025/params/{study}/spice_{study}.pkl'
 path_model_baseline = None#os.path.join(f'weinhardt2025/params/{study}/', baseline_file)
 path_model_benchmark = None#os.path.join(f'weinhardt2025/params/{study}', benchmark_file) if len(models_benchmark) > 0 else None
-path_model_benchmark_gru = f'weinhardt2025/params/{study}/gru_{study}.pkl'
+path_model_benchmark_gru = None#f'weinhardt2025/params/{study}/gru_{study}.pkl'
 
 # -------------------------------------------------------------------------------
 # MODEL COMPARISON PIPELINE

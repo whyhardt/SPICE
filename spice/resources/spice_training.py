@@ -10,7 +10,7 @@ import shutil
 
 from .rnn import BaseRNN
 from .spice_utils import SpiceDataset
-from .sindy_differentiable import threshold_coefficients
+from .sindy_differentiable import threshold_coefficients, get_library_term_degrees
 import sys
 
 
@@ -72,9 +72,32 @@ def print_training_status(
         status_lines.append("-" * terminal_width)
         status_lines.append("Cutoff patience:")
         for m in model.submodules_rnn:
+            # Build masks for terms
+            n_terms = len(model.sindy_candidate_terms[m])
+            # Linear terms with fit_linear=False: show "-" (fixed at 1.0)
+            fixed_linear = [False] * n_terms
+            if not model.sindy_specs[m].get('fit_linear', True):
+                term_degrees = get_library_term_degrees(model.sindy_candidate_terms[m])
+                for idx, degree in enumerate(term_degrees):
+                    if degree == 1:
+                        fixed_linear[idx] = True
+            # State-containing terms with include_state=False: skip entirely (not printed)
+            skip_state = [False] * n_terms
+            if not model.sindy_specs[m].get('include_state', True):
+                for idx, term in enumerate(model.sindy_candidate_terms[m]):
+                    if m in term:
+                        skip_state[idx] = True
+
             patience_list = ""
             for ip, p in enumerate(model.sindy_cutoff_patience_counters[m][0,0,0]):
-                patience_list += str(p.item()) if model.sindy_coefficients_presence[m][0,0,0, ip] else "-"
+                if skip_state[ip]:
+                    continue  # Skip state-containing terms entirely (not printed in equations)
+                elif fixed_linear[ip]:
+                    patience_list += "-"  # Show "-" for fixed linear terms (fit_linear=False)
+                elif model.sindy_coefficients_presence[m][0,0,0, ip]:
+                    patience_list += str(p.item())
+                else:
+                    patience_list += "-"  # Thresholded-out terms
                 patience_list += ", "
             status_lines.append(m + ": " + patience_list[:-2])
             

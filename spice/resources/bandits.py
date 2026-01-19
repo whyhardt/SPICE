@@ -249,6 +249,8 @@ class AgentQ(Agent):
       'value_choice': np.zeros(self.n_actions),
       'learning_rate_reward': np.zeros(self.n_actions),
     }
+    
+    self.logits = np.zeros((1, self.n_actions))
 
   def update(self, choice: int, reward: np.ndarray, *args, **kwargs):
     """Update the agent after one step of the task.
@@ -1413,7 +1415,11 @@ def get_update_dynamics(experiment: Union[np.ndarray, torch.Tensor], agent: Agen
   # initialize storages
   logits = np.zeros((n_trials, agent.n_actions))
   additional_signals = [state for state in agent.state if 'value' in state]
-  state_values = {signal: np.zeros((n_trials, agent.model.n_items if hasattr(agent.model, 'n_items') else agent.model.n_actions)) for signal in additional_signals}
+  n_values = agent.n_actions
+  if hasattr(agent, 'model'):
+    if hasattr(agent.model, 'n_items'):
+      n_values = agent.model.n_items
+  state_values = {signal: np.zeros((n_trials, n_values)) for signal in additional_signals}
   choice_probs = np.zeros((n_trials, agent.n_actions))
   
   for trial in range(n_trials):

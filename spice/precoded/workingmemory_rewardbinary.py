@@ -20,7 +20,8 @@ CONFIG = SpiceConfig(
             'reward[t-3]',
         ],
         'value_reward_not_chosen': [
-            'reward_chosen',
+            'reward_chosen_success',
+            'reward_chosen_fail',
             'reward[t-1]', 
             'reward[t-2]',
             'reward[t-3]',
@@ -74,7 +75,7 @@ class SpiceModel(BaseRNN):
         # Value learning module (slow updates)
         # Can use recent reward history to modulate learning
         self.setup_module(key_module='value_reward_chosen', input_size=4+self.embedding_size, dropout=dropout)  # -> 21 terms
-        self.setup_module(key_module='value_reward_not_chosen', input_size=4+self.embedding_size, dropout=dropout)  # -> 21 terms
+        self.setup_module(key_module='value_reward_not_chosen', input_size=5+self.embedding_size, dropout=dropout)  # -> 21 terms
         self.setup_module(key_module='value_choice', input_size=4+self.embedding_size, dropout=dropout, include_bias=False) # -> 21 terms; bias not necessary when module is applied equally to all options
         # self.setup_module(key_module='logits', input_size=2+self.embedding_size, dropout=dropout, include_bias=False, fit_linear=False, include_state=False) # -> 8 terms
 
@@ -83,7 +84,8 @@ class SpiceModel(BaseRNN):
         
         # perform time-invariant computations
         participant_embedding = self.participant_embedding(spice_signals.participant_ids)
-        rewards_chosen = spice_signals.rewards.nan_to_num(0).sum(dim=-1, keepdim=True).repeat(1, 1, self.n_actions)
+        rewards_chosen_success = (spice_signals.rewards.nan_to_num(0).sum(dim=-1, keepdim=True).repeat(1, 1, self.n_actions) == 1).float()
+        rewards_chosen_fail = spice_signals.rewards.nan_to_num(0).sum(dim=-1, keepdim=True).repeat(1, 1, self.n_actions) == 0
         
         # perform time-variant computations
         for timestep in spice_signals.timesteps:
@@ -102,13 +104,14 @@ class SpiceModel(BaseRNN):
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
             )
-            
+
             self.call_module(
                 key_module='value_reward_not_chosen',
                 key_state='value_reward',
                 action_mask=1-spice_signals.actions[timestep],
                 inputs=(
-                    rewards_chosen[timestep],
+                    rewards_chosen_success[timestep],
+                    rewards_chosen_fail[timestep],
                     self.state['buffer_reward_1'],  # Recent reward history
                     self.state['buffer_reward_2'],
                     self.state['buffer_reward_3'],
