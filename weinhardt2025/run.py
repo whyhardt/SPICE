@@ -43,8 +43,6 @@ if __name__=='__main__':
     parser.add_argument('--timeshift_additional_columns', action='store_true', help='Shifts additional columns (defined by the kwarg "additional_columns") [t]->[t-1]; Necessary for e.g. predictor stimuli which are usually listed in the trial of which SPICE has to predict the action.')
     
     args = parser.parse_args()
-
-    include_validation = True
     
     # args.model = "weinhardt2025/params/eckstein2022/spice_eckstein2022.pkl"
     # args.data = "weinhardt2025/data/eckstein2022/eckstein2022.csv"
@@ -91,11 +89,9 @@ if __name__=='__main__':
     else:
         print("No split into training and test data.")
         dataset_train, dataset_test = dataset, dataset
-    if include_validation:
-        dataset_tuple = dataset_train.xs, dataset_train.ys, dataset_test.xs, dataset_test.ys
-    else:
-        dataset_tuple = dataset_train.xs, dataset_train.ys
-        
+    
+    dataset_tuple = dataset_train.xs, dataset_train.ys, dataset_train.xs, dataset_train.ys
+    
     n_actions = dataset_train.ys.shape[-1]
     n_participants = len(dataset_train.xs[..., -1].unique())
     n_experiments = len(dataset_train.xs[..., -2].unique())
