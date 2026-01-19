@@ -22,7 +22,7 @@ if __name__=='__main__':
     parser.add_argument('--data', type=str, default=None, help='Path to dataset')
     
     # RNN training parameters
-    parser.add_argument('--epochs', type=int, default=1000, help='Number of training epochs')
+    parser.add_argument('--epochs', type=int, default=4000, help='Number of training epochs')
     parser.add_argument('--lr', type=float, default=0.01, help='Learning rate')
     parser.add_argument('--l2_rnn', type=float, default=0., help='L2 Reg of the RNN parameters')
     parser.add_argument('--scheduler', action='store_true', help='Using a Plateau LR scheduler')
@@ -52,9 +52,9 @@ if __name__=='__main__':
     # include_validation = False
     # args.scheduler = False
 
-    args.model = "weinhardt2025/params/eckstein2024/spice_eckstein2024.pkl"
-    args.data = "weinhardt2025/data/eckstein2024/eckstein2024.csv"
-    args.test_sessions = "1,3"
+    # args.model = "weinhardt2025/params/eckstein2024/spice_eckstein2024.pkl"
+    # args.data = "weinhardt2025/data/eckstein2024/eckstein2024.csv"
+    # args.test_sessions = "1,3"
     
     # args.model = "weinhardt2025/params/dezfouli2019/spice_dezfouli2019.pkl"
     # args.data = "weinhardt2025/data/dezfouli2019/dezfouli2019.csv"
