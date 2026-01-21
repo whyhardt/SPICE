@@ -1,4 +1,4 @@
-from typing import Dict, Iterable, List
+from typing import Union, Dict, Iterable, List, Optional
 import numpy as np
 import torch
 
@@ -91,7 +91,7 @@ class SpiceDataset(torch.utils.data.Dataset):
 class SpiceConfig():
     def __init__(self,
                  library_setup: Dict[str, Iterable[str]],
-                 memory_state: Dict[str, float],
+                 memory_state: Union[List[str], Dict[str, float]],
                  states_in_logit: List[str] = None, 
                  ):
         """
@@ -113,7 +113,13 @@ class SpiceConfig():
         self.modules = tuple(library_setup.keys())                
         self.all_features = self.modules + self.control_signals
         
-        self.memory_state = memory_state
+        if isinstance(memory_state, list):
+            memory_state_dict = {}
+            for state in memory_state:
+                memory_state_dict[state] = 0.
+            self.memory_state = memory_state_dict
+        else:
+            self.memory_state = memory_state
         
         if states_in_logit:
             # check that all states_in_logit actually appear in the memory state

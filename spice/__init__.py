@@ -12,6 +12,8 @@ from .precoded import (
     choice,
     interaction,
     workingmemory,
+    workingmemory_rewardbinary,
+    workingmemory_multiitem,
 )
 from .resources.rnn import BaseRNN
 from .resources.spice_utils import SpiceConfig, SpiceDataset, SpiceSignals

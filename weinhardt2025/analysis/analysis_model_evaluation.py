@@ -27,8 +27,8 @@ from weinhardt2025.benchmarking import benchmarking_dezfouli2019, benchmarking_e
 study = 'eckstein2022'
 models_benchmark = ['ApAnBrBcfBch']
 train_test_ratio = 0.8
-sindy_config = precoded.workingmemory.CONFIG
-rnn_class = precoded.workingmemory.SpiceModel
+sindy_config = precoded.workingmemory_rewardbinary.CONFIG
+rnn_class = precoded.workingmemory_rewardbinary.SpiceModel
 additional_inputs = None
 setup_agent_benchmark = benchmarking_eckstein2022.setup_agent_benchmark
 rl_model = benchmarking_eckstein2022.rl_model
@@ -88,7 +88,7 @@ path_model_rnn = f'weinhardt2025/params/{study}/spice_{study}.pkl'
 path_model_spice = f'weinhardt2025/params/{study}/spice_{study}.pkl'
 path_model_baseline = None#os.path.join(f'weinhardt2025/params/{study}/', baseline_file)
 path_model_benchmark = None#os.path.join(f'weinhardt2025/params/{study}', benchmark_file) if len(models_benchmark) > 0 else None
-path_model_benchmark_gru = None#f'weinhardt2025/params/{study}/gru_{study}.pkl'
+path_model_benchmark_gru = f'weinhardt2025/params/{study}/gru_{study}.pkl'
 
 # -------------------------------------------------------------------------------
 # MODEL COMPARISON PIPELINE

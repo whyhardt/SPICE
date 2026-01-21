@@ -58,48 +58,56 @@ def training(
     optimizer: torch.optim.Optimizer, 
     dataset_train: SpiceDataset, 
     dataset_test: SpiceDataset = None, 
-    epochs = 3000, 
+    epochs = 3000,
+    batch_size = None,
     criterion = torch.nn.CrossEntropyLoss(), 
     device: torch.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu'),
     ):
     
     n_actions = dataset_train.ys.shape[-1]
+    batch_size = min(dataset_train.xs.shape[0], batch_size) if batch_size is not None else dataset_train.xs.shape[0]
+    dataloader = torch.utils.data.DataLoader(dataset_train, batch_size=batch_size, shuffle=True)
     
     for epoch in range(epochs):
         gru.train()
         optimizer.zero_grad()
         
-        random_indexes = torch.randint(dataset_train.xs.shape[0], (1, dataset_train.xs.shape[0]))[0]
+        # random_indexes = torch.randint(dataset_train.xs.shape[0], (1, dataset_train.xs.shape[0]))[0]
         
-        xs_train = dataset_train.xs[random_indexes].to(device)
-        ys_train = dataset_train.ys[random_indexes].to(device)
-        xs_test = dataset_test.xs.to(device)
-        ys_test = dataset_test.ys.to(device)
+        # xs_train = dataset_train.xs[random_indexes].to(device)
+        # ys_train = dataset_train.ys[random_indexes].to(device)
+        # xs_test = dataset_test.xs.to(device)
+        # ys_test = dataset_test.ys.to(device)
         
-        # Forward pass
-        logits, _ = gru(xs_train)
-        
-        # Reshape for loss computation
-        nan_mask = ~xs_train[..., :n_actions].sum(dim=-1).reshape(-1).isnan().to(device)
-        logits_flat = logits.reshape(-1, n_actions)[nan_mask]
-        labels_flat = torch.argmax(ys_train[..., :n_actions].reshape(-1, n_actions)[nan_mask], dim=-1).reshape(-1).long()
-        
-        # Compute loss
-        loss = criterion(logits_flat, labels_flat)
-        
-        # Backward pass
-        loss.backward()
-        optimizer.step()
+        for batch in dataloader:
+            
+            xs, ys = batch[0].to(device), batch[1].to(device)
+            
+            # Forward pass
+            logits, _ = gru(xs)
+            
+            # Reshape for loss computation
+            nan_mask = ~xs[..., :n_actions].sum(dim=-1).reshape(-1).isnan().to(device)
+            logits_flat = logits.reshape(-1, n_actions)[nan_mask]
+            labels_flat = torch.argmax(ys[..., :n_actions].reshape(-1, n_actions)[nan_mask], dim=-1).reshape(-1).long()
+            
+            # Compute loss
+            loss = criterion(logits_flat, labels_flat)
+            
+            # Backward pass
+            loss.backward()
+            optimizer.step()
         
         # test data
-        gru.eval()
-        with torch.no_grad():
-            logits_test, _ = gru(xs_test)
-            nan_mask = ~xs_test[..., :n_actions].sum(dim=-1).reshape(-1).isnan()
-            logits_flat = logits_test.reshape(-1, n_actions)[nan_mask]
-            labels_flat = torch.argmax(ys_test[..., :n_actions].reshape(-1, n_actions)[nan_mask], dim=-1).reshape(-1).long()
-            loss_test = criterion(logits_flat, labels_flat)
-        gru.train()
+        if dataset_test is not None:
+            gru.eval()
+            with torch.no_grad():
+                logits_test, _ = gru(dataset_test.xs.to(device))
+                nan_mask = ~dataset_test.xs[..., :n_actions].sum(dim=-1).reshape(-1).isnan().to(device)
+                logits_flat = logits_test.reshape(-1, n_actions)[nan_mask]
+                labels_flat = torch.argmax(dataset_test.ys[..., :n_actions].to(device).reshape(-1, n_actions)[nan_mask], dim=-1).reshape(-1).long()
+                loss_test = criterion(logits_flat, labels_flat)
+            gru.train()
         
         print(f"Epoch {epoch+1}/{epochs}: L(Train): {loss.item()}; L(Test): {loss_test.item()}")
         
@@ -119,7 +127,7 @@ def main(path_save_model:str, path_data: str, epochs: int, lr: float, split_rati
     optimizer = torch.optim.Adam(gru.parameters(), lr=lr)
     
     print('Training GRU...')
-    gru = training(dataset_train=dataset_training, dataset_test=dataset_test, gru=gru, optimizer=optimizer, epochs=epochs)
+    gru = training(dataset_train=dataset_training, dataset_test=dataset_training, gru=gru, optimizer=optimizer, epochs=epochs, device=device)
     print('Training GRU done!')
     
     # save GRU model
@@ -128,11 +136,11 @@ def main(path_save_model:str, path_data: str, epochs: int, lr: float, split_rati
     
 if __name__=='__main__':
     
-    # dataset_name = 'eckstein2022'
-    # split_ratio = 0.8
+    dataset_name = 'eckstein2022'
+    split_ratio = 0.8
     
-    dataset_name = 'eckstein2024'
-    split_ratio = [1, 3]
+    # dataset_name = 'eckstein2024'
+    # split_ratio = [1, 3]
     
     # dataset_name = 'dezfouli2019'
     # split_ratio = [3, 6, 9]
@@ -142,7 +150,7 @@ if __name__=='__main__':
     
     path_save_model = f'weinhardt2025/params/{dataset_name}/gru_{dataset_name}.pkl'
     path_data = f'weinhardt2025/data/{dataset_name}/{dataset_name}.csv'
-    epochs = 1000
+    epochs = 10000
     lr = 1e-2
     
     device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')

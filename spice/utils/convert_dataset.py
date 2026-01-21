@@ -56,18 +56,22 @@ def convert_dataset(
     if not df_block in df.columns:
         df[df_block] = 0
         original_df[df_block] = 0
-    else:
-        # normalize block numbers
-        blocks_max = df[df_block].max()
-        blocks_min = df[df_block].min()
-        df[df_block] = (df[df_block] - blocks_min) / (blocks_max - blocks_min)
+    # else:
+    #     # normalize block numbers
+    #     blocks_max = df[df_block].max()
+    #     blocks_min = df[df_block].min()
+    #     df[df_block] = (df[df_block] - blocks_min) / (blocks_max - blocks_min)
         
     # get maximum number of trials per participant
     n_groups = len(df.groupby(groupby_kw).size())
     max_trials = df.groupby(groupby_kw).size().max()
     
     # let actions begin from 0
-    choices = df[df_choice].values
+    if isinstance(df[df_choice].iloc[0], str):
+        choices = df[df_choice].astype('category').cat.codes.values.copy()
+        print(f"ValueWarning: Values from choice column ({df_choice}) had to be converted from str to int. The mapping is sorted alphabetically: {tuple([(index, key) for index, key in enumerate(np.sort(df[df_choice].unique()))])}")
+    else:
+        choices = df[df_choice].values
     choice_min = np.nanmin(choices[choices != -1])
     choices[choices != -1] = choices[choices != -1] - choice_min
     df[df_choice] = choices

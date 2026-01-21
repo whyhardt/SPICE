@@ -49,9 +49,10 @@ docs/.sass-cache/
 # SPICE
 weinhardt2025/benchmarking/params
 playground.py
-weinhardt2025/data
-weinhardt2025/params
-weinhardt2025/analysis/participants_analysis/results
-weinhardt2025/analysis/participants_analysis/plots
-weinhardt2025/analysis/participants_analysis_dezfouli/results
-weinhardt2025/analysis/participants_analysis_dezfouli/plots
+weinhardt2025/data/weber2024_raw
+
+# Files
+*.pkl
+*.csv
+*.png
+*.jpg
