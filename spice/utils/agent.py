@@ -27,8 +27,7 @@ class Agent:
           n_actions: number of permitted actions (default = 2)
       """
       
-      super().__init__(n_actions=n_actions)
-
+      self.n_actions = n_actions
       self.deterministic = deterministic
       self.use_sindy = use_sindy
       self.device = device
