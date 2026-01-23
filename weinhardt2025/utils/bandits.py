@@ -809,7 +809,7 @@ def create_dataset(
     # one-hot encoding of choices
     choices = np.eye(agent.n_actions)[choices]
     ys[session] = choices[1:]
-    xs[session] = np.concatenate((choices[:-1], rewards[:-1], experiment.session[:, None]), axis=-1)
+    xs[session] = np.concatenate((choices[:-1], rewards[:-1], torch.zeros((n_trials, 1)), torch.zeros((n_trials, 1)), experiment.session[:, None]), axis=-1)
     
     if isinstance(agent.model, QLearning):
       # add current parameters to list
