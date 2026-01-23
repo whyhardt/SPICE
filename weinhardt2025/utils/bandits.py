@@ -815,15 +815,15 @@ def create_dataset(
       # add current parameters to list
       parameter_list.append(
         {
-          'beta_reward': copy(agent.betas['value_reward']),
-          'alpha_reward': copy(agent.alpha_reward),
-          'alpha_penalty': copy(agent.alpha_penalty),
-          'beta_choice': copy(agent.betas['value_choice']),
-          'alpha_choice': copy(agent.alpha_choice),
-          'forget_rate': copy(agent.forget_rate),
+          'beta_reward': copy(agent.model.beta_reward),
+          'alpha_reward': copy(agent.model.alpha_reward),
+          'alpha_penalty': copy(agent.model.alpha_penalty),
+          'beta_choice': copy(agent.model.beta_choice),
+          'alpha_choice': copy(agent.model.alpha_choice),
+          'forget_rate': copy(agent.model.forget_rate),
         }
       )
-
+      
   dataset = SpiceDataset(
     xs=xs, 
     ys=ys,
