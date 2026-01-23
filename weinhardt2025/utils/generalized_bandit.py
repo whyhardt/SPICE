@@ -92,10 +92,10 @@ class BanditsGeneral:
             raise ValueError(f"Choice must be between 0 and {self.n_arms-1}")
         
         # Apply drift and reversals BEFORE reward is generated
-        reversal_occurred = self._apply_dynamics()
+        reversal_occurred = self.apply_dynamics()
         
         # Generate reward based on current probabilities
-        reward = self._generate_reward(choice)
+        reward = self.generate_reward(choice)
         
         # Update history
         self.history['choices'].append(choice)
@@ -120,12 +120,12 @@ class BanditsGeneral:
         
         # Check for reversal (sudden swap)
         if self.hazard_rate > 0 and self.rng.random() < self.hazard_rate:
-            self._apply_reversal()
+            self.apply_reversal()
             reversal_occurred = True
         
         # Apply gradual drift
         if self.drift_rate > 0:
-            self._apply_drift()
+            self.apply_drift()
         
         return reversal_occurred
     

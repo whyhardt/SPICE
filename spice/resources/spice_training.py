@@ -138,7 +138,7 @@ class ReduceLROnPlateauRNNOnly:
 
         self.best = float('inf') if mode == 'min' else float('-inf')
         self.num_bad_epochs = 0
-        self._last_lr = [group['lr'] for group in optimizer.param_groups]
+        self.last_lr = [group['lr'] for group in optimizer.param_groups]
 
     def step(self, metrics):
         """Update learning rate based on the validation loss (only for RNN params)."""
@@ -156,7 +156,7 @@ class ReduceLROnPlateauRNNOnly:
             self.num_bad_epochs += 1
 
         if self.num_bad_epochs >= self.patience:
-            self._reduce_lr()
+            self.reduce_lr()
             self.num_bad_epochs = 0
 
     def _reduce_lr(self):
@@ -166,7 +166,7 @@ class ReduceLROnPlateauRNNOnly:
             old_lr = self.optimizer.param_groups[1]['lr']
             new_lr = max(old_lr * self.factor, self.min_lr)
             self.optimizer.param_groups[1]['lr'] = new_lr
-            self._last_lr[1] = new_lr
+            self.last_lr[1] = new_lr
 
             if self.verbose and new_lr != old_lr:
                 print(f'Reducing RNN learning rate to {new_lr:.4e}')
@@ -213,8 +213,8 @@ class ReduceOnPlateauWithRestarts:
         
         # Check if patience is exceeded
         if self.num_bad_epochs > self.patience:
-            self._reduce_lr()  # Reduce learning rates
-            self._adjust_patience()  # Adjust the patience according to the learning rate
+            self.reduce_lr()  # Reduce learning rates
+            self.adjust_patience()  # Adjust the patience according to the learning rate
             self.num_bad_epochs = 0  # Reset bad epochs counter
 
     def _reduce_lr(self):

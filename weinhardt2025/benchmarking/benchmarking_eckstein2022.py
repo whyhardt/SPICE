@@ -128,11 +128,11 @@ class Agent_eckstein2022(Agent):
     ):
         super().__init__(n_actions=n_actions, deterministic=deterministic)
         
-        self._n_actions = n_actions
-        self._q_init = 0.5
+        self.n_actions = n_actions
+        self.q_init = 0.5
         
         # Store parameters in format expected by shared update function
-        self._params = {
+        self.params = {
             'alpha_pos': alpha_reward,
             'alpha_neg': alpha_penalty if alpha_penalty >= 0 else alpha_reward,
             'alpha_cf_pos': alpha_counterfactual_reward,
@@ -167,7 +167,7 @@ class Agent_eckstein2022(Agent):
             self.state['x_value_choice'].reshape(-1),
             choice,
             reward_value,
-            self._params
+            self.params
         )
         
         # Update state
@@ -176,12 +176,12 @@ class Agent_eckstein2022(Agent):
 
     @property
     def q(self):
-        return (self.state['x_value_reward'] * self._params['beta_r'] + 
-                self.state['x_value_choice'] * self._params['beta_ch']).reshape(-1)
+        return (self.state['x_value_reward'] * self.params['beta_r'] + 
+                self.state['x_value_choice'] * self.params['beta_ch']).reshape(-1)
 
     @property
     def q_choice(self):
-        return (self.state['x_value_choice'] * self._params['beta_ch']).reshape(-1)
+        return (self.state['x_value_choice'] * self.params['beta_ch']).reshape(-1)
     
 
 def setup_agent_benchmark(path_model: str, model_config: str, deterministic: bool = True, **kwargs) -> List[Agent_eckstein2022]:

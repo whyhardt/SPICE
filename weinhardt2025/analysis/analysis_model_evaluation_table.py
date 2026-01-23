@@ -171,9 +171,9 @@ for index_data in tqdm(range(len(dataset_test))):
         n_trials = len(probs_baseline)
         
         if isinstance(train_test_ratio, float):
-            data_ys = dataset.xs[index_data, :n_trials, :agent_baseline[0][0]._n_actions].cpu().numpy()
+            data_ys = dataset.xs[index_data, :n_trials, :agent_baseline[0][0].n_actions].cpu().numpy()
         else:
-            data_ys = dataset_test.xs[index_data, :n_trials, :agent_baseline[0][0]._n_actions].cpu().numpy()
+            data_ys = dataset_test.xs[index_data, :n_trials, :agent_baseline[0][0].n_actions].cpu().numpy()
             
         n_trials_test = int(n_trials * (1-train_test_ratio)) if isinstance(train_test_ratio, float) else n_trials
         index_start = n_trials - n_trials_test
@@ -220,7 +220,7 @@ for index_data in tqdm(range(len(dataset_test))):
                 
             # SPICE
             if path_model_spice is not None:
-                additional_inputs_embedding = data_input[0, agent_spice[value]._n_actions*2:-3]
+                additional_inputs_embedding = data_input[0, agent_spice[value].n_actions*2:-3]
                 agent_spice[value].new_sess(participant_id=pid, additional_embedding_inputs=additional_inputs_embedding)
                 n_params_spice = agent_spice[value].count_parameters()[pid]
                 
@@ -264,9 +264,9 @@ if not isinstance(train_test_ratio, float) and path_model_rnn is not None:
             n_trials = len(probs_baseline)
             
             if isinstance(train_test_ratio, float):
-                data_ys = dataset.xs[index_data, :n_trials, :agent_baseline[0][0]._n_actions].cpu().numpy()
+                data_ys = dataset.xs[index_data, :n_trials, :agent_baseline[0][0].n_actions].cpu().numpy()
             else:
-                data_ys = dataset_train.xs[index_data, :n_trials, :agent_baseline[0][0]._n_actions].cpu().numpy()
+                data_ys = dataset_train.xs[index_data, :n_trials, :agent_baseline[0][0].n_actions].cpu().numpy()
             
             n_trials_test = int(n_trials * train_test_ratio) if isinstance(train_test_ratio, float) else 0
             index_end = n_trials - n_trials_test

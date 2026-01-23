@@ -48,8 +48,8 @@ def compute_loss_for_landscape(model, inputs, targets, sindy_weight=0.1):
 
         # Cross-entropy loss
         loss_ce = torch.nn.functional.cross_entropy(
-            ys_pred.reshape(-1, model._n_actions),
-            torch.argmax(ys_targets.reshape(-1, model._n_actions), dim=1),
+            ys_pred.reshape(-1, model.n_actions),
+            torch.argmax(ys_targets.reshape(-1, model.n_actions), dim=1),
             reduction='mean'
         )
 

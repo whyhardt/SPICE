@@ -109,7 +109,7 @@ dataset = DatasetRNN(torch.concat(dataset_xs), torch.concat(dataset_ys))
 session, choice, reward = [], [], []
 
 print('Saving values...')
-n_actions = agent[0]._n_actions if isinstance(agent, list) else agent.n_actions
+n_actions = agent[0].n_actions if isinstance(agent, list) else agent.n_actions
 for i in tqdm(range(len(dataset))):    
     # get update dynamics
     experiment = dataset.xs[i].cpu().numpy()

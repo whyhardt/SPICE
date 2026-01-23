@@ -28,22 +28,22 @@ class Dezfouli2019GQL(torch.nn.Module):
         
         self.d = dimensions
         self.n_actions = n_actions
-        self._n_actions = n_actions  # For compatibility
+        self.n_actions = n_actions  # For compatibility
         
         # Initialize parameters based on model configuration
         if 'Phi' in model:
             self.phi_logit = torch.nn.Parameter(torch.zeros((self.d, 1)))
-            self._phi_learnable = True
+            self.phi_learnable = True
         else:
             self.register_buffer('phi_fixed', torch.ones((self.d, 1)))
-            self._phi_learnable = False
+            self.phi_learnable = False
             
         if 'Chi' in model:
             self.chi_logit = torch.nn.Parameter(torch.zeros((self.d, 1)))
-            self._chi_learnable = True
+            self.chi_learnable = True
         else:
             self.register_buffer('chi_fixed', torch.ones((self.d, 1)))
-            self._chi_learnable = False
+            self.chi_learnable = False
             
         if 'Beta' in model:
             self.beta = torch.nn.Parameter(torch.ones((self.d, 1)))
@@ -64,14 +64,14 @@ class Dezfouli2019GQL(torch.nn.Module):
     
     def get_phi(self):
         """Get phi parameter values."""
-        if self._phi_learnable:
+        if self.phi_learnable:
             return torch.sigmoid(self.phi_logit)
         else:
             return self.phi_fixed
     
     def get_chi(self):
         """Get chi parameter values."""
-        if self._chi_learnable:
+        if self.chi_learnable:
             return torch.sigmoid(self.chi_logit)
         else:
             return self.chi_fixed

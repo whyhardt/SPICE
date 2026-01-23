@@ -93,7 +93,7 @@ class Castro2025Model(torch.nn.Module):
         super().__init__()
 
         self.n_actions = n_actions
-        self._n_actions = n_actions  # For compatibility
+        self.n_actions = n_actions  # For compatibility
 
         # Initialize 13 parameters (raw, will be transformed)
         self.beta_r_raw = torch.nn.Parameter(torch.zeros(1))
