@@ -535,7 +535,7 @@ class BaseRNN(nn.Module):
         # masked_diff = diff * action_mask.unsqueeze(1)
         if action_mask is not None:
             masked_diff = torch.where(action_mask.unsqueeze(1) == 1, diff, 0)  # [batch, n_ensemble, n_actions]
-            n_masked = action_mask.sum(dim=-1).clamp(min=1)
+            n_masked = action_mask.sum(dim=-1, keepdim=True).clamp(min=1)
         else:
             masked_diff = diff
             n_masked = diff.shape[-1]  # All actions contribute when no mask
@@ -544,7 +544,7 @@ class BaseRNN(nn.Module):
         # 2. normalize by number of included values (e.g. in 4-armed bandit: non-chosen actions = 3 -> need to normalize; otherwise skewed loss with heavy bias for non-chosen actions)
         # 3. Compute mean
         # 4. Normalize over number of modules to keep SINDy loss in a good range for any SPICE architecture
-        sindy_loss = torch.mean(masked_diff.sum(dim=-1) / n_masked.reshape(-1, 1)) / len(self.submodules_rnn)
+        sindy_loss = torch.mean(masked_diff.sum(dim=-1) / n_masked) / len(self.submodules_rnn)
         
         # Clip loss to prevent explosion
         sindy_loss = torch.clamp(sindy_loss, max=100.0)
