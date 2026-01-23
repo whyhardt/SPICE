@@ -8,7 +8,8 @@ from copy import copy, deepcopy
 import torch
 from tqdm import tqdm
 
-from ...spice.utils.agent import SpiceDataset, Agent
+from ...spice.resources.spice_utils import SpiceDataset
+from ...spice.utils.agent import Agent
 from weinhardt2025.benchmarking.benchmarking_qlearning import QLearning
 
 
