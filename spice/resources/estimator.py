@@ -8,10 +8,10 @@ import numpy as np
 from sklearn.base import BaseEstimator
 from typing import Dict, Optional, Tuple, List, Union
 
-from .resources.spice_training import fit_model
-from .resources.rnn import BaseRNN
-from .resources.spice_utils import SpiceConfig, SpiceDataset
-from .utils.agent import Agent
+from .spice_training import fit_model
+from .rnn import BaseRNN
+from .spice_utils import SpiceConfig, SpiceDataset
+from ..utils.agent import Agent
 
 
 warnings.filterwarnings("ignore")

@@ -1,6 +1,6 @@
 from typing import List, Optional
 
-from spice.estimator import SpiceConfig
+from spice.resources.estimator import SpiceConfig
 from spice.resources.rnn import BaseRNN
 
 class ConfigModelComparison:

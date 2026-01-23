@@ -2,7 +2,7 @@
 SPICE: Sparse and Interpretable Cognitive Equations
 """
 
-from .estimator import SpiceEstimator
+from .resources.estimator import SpiceEstimator
 from .resources.rnn import BaseRNN
 from .resources.spice_utils import SpiceConfig, SpiceDataset, SpiceSignals
 from .utils.convert_dataset import convert_dataset, split_data_along_sessiondim, split_data_along_timedim

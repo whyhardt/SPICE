@@ -1,10 +1,8 @@
-from typing import Tuple, Union
-from torch import device
+from typing import Union
 import numpy as np
 import torch
 
 from ..resources.rnn import BaseRNN
-from ..estimator import SpiceEstimator
 
 
 class Agent:

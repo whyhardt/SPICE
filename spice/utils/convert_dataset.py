@@ -9,9 +9,7 @@ import torch
 import warnings
 from copy import copy
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from resources.spice_utils import SpiceDataset
-from weinhardt2025.utils.bandits import BanditSession
+from ..resources.spice_utils import SpiceDataset
 
 
 def convert_dataset(

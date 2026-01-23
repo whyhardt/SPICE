@@ -5,13 +5,11 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, RandomSampler
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from typing import Tuple
-from collections import defaultdict
 import shutil
 
 from .rnn import BaseRNN
 from .spice_utils import SpiceDataset
-from .sindy_differentiable import threshold_coefficients, get_library_term_degrees
-import sys
+from .sindy_differentiable import get_library_term_degrees
 
 
 # === DEBUG MODE: Set to False for live-updating display, True for line-by-line output ===

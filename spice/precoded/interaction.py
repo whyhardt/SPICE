@@ -1,5 +1,5 @@
-from spice.estimator import SpiceConfig
-from spice.resources.rnn import BaseRNN
+from ..resources.estimator import SpiceConfig
+from ..resources.rnn import BaseRNN
 
 
 # -------------------------------------------------------------------------------

@@ -9,7 +9,7 @@ from matplotlib import cm
 import loss_landscapes
 import loss_landscapes.metrics
 
-from spice.estimator import SpiceEstimator
+from spice.resources.estimator import SpiceEstimator
 from spice.utils.convert_dataset import convert_dataset, split_data_along_timedim
 from spice.resources.spice_utils import SpiceDataset
 from spice.precoded import BufferWorkingMemoryRNN, BUFFER_WORKING_MEMORY_CONFIG
