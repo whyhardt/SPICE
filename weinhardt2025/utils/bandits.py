@@ -790,7 +790,7 @@ def create_dataset(
   
   agent_original = agent
   n_actions = agent[0].n_actions if isinstance(agent_original, list) else agent.n_actions
-  xs = np.zeros((n_sessions, n_trials, n_actions*2 + 1))
+  xs = np.zeros((n_sessions, n_trials, n_actions*2 + 3))
   ys = np.zeros((n_sessions, n_trials, n_actions))
   experiment_list = []
   parameter_list = []
