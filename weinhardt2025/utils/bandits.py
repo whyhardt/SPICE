@@ -10,7 +10,7 @@ from tqdm import tqdm
 
 from ...spice.resources.spice_utils import SpiceDataset
 from ...spice.utils.agent import Agent
-from weinhardt2025.benchmarking.benchmarking_qlearning import QLearning
+from ..benchmarking.benchmarking_qlearning import QLearning
 
 
 # Setup so that plots will look nice
