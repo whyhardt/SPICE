@@ -17,7 +17,7 @@ class GRUModule(nn.Module):
         self.linear_out = nn.Linear(1, 1)
         
         #Simple weight initialization for all parameters
-        self._initialize_weights()
+        self.initialize_weights()
     
     def initialize_weights(self):
         """Apply Xavier uniform to all parameters"""
