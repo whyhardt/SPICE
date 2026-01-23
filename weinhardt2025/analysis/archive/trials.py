@@ -9,13 +9,12 @@ import random
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from resources.model_evaluation import bayesian_information_criterion, log_likelihood
-from utils.plotting import plot_session
-from resources.bandits import BanditsDrift, AgentQ, AgentNetwork, AgentSpice, get_update_dynamics
-from resources.rnn import RLRNN
-from resources.rnn_utils import DatasetRNN
-from resources.rnn_training import fit_model
-from resources.sindy_training import fit_spice
+from weinhardt2025.utils.model_evaluation import bayesian_information_criterion, log_likelihood
+from spice.utils.plotting import plot_session
+from weinhardt2025.utils.bandits import BanditsDrift
+from spice.resources.rnn import RLRNN
+from spice.utils.agent import Agent, get_update_dynamics
+
 np.random.seed(42)
 torch.manual_seed(42)
 
@@ -209,7 +208,7 @@ def run_training_and_evaluation(dataset, label):
     
     logger.info(f"Final training loss: {final_train_loss:.7f}")
     
-    agent_rnn = AgentNetwork(model_rnn=model_rnn, n_actions=n_actions)
+    agent_rnn = Agent(model_rnn=model_rnn, n_actions=n_actions)
     
     logger.info("\nFitting SINDy...")
     agent_sindy, _ = fit_spice(

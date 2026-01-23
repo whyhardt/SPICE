@@ -9,7 +9,7 @@ from copy import copy
 from sklearn.linear_model import LinearRegression
 from scipy import stats
 
-from spice.utils.setup_agents import setup_agent
+from spice.utils.agent import setup_agent
 from spice.precoded import workingmemory, choice
 
 

@@ -9,9 +9,7 @@ import matplotlib.cm as cm
 import torch
 from typing import Tuple, Optional
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from resources.bandits import AgentQ, AgentNetwork, BanditSession, get_update_dynamics, plot_session as plt_session
-from resources.spice_utils import SpiceDataset
+from .agent import Agent, get_update_dynamics
 
 
 def plot_dynamics(
@@ -162,8 +160,8 @@ def plot_dynamics(
 
 
 def plot_session(
-    agents: Dict[str, Union[AgentNetwork, AgentQ]], 
-    experiment: Union[BanditSession, np.ndarray], 
+    agents: Dict[str, Agent], 
+    experiment: np.ndarray, 
     labels: List[str] = None, 
     save: str = None, 
     display_choice: int = 0,
@@ -181,10 +179,7 @@ def plot_session(
     colors = ['tab:blue', 'tab:orange', 'tab:pink', 'tab:grey']
     
     n_actions = agents[list(agents.keys())[0]].n_actions
-    if isinstance(experiment, BanditSession):
-        choices = np.eye(n_actions)[experiment.choices.astype(int)][:, display_choice]
-        rewards = experiment.rewards[:, display_choice]
-    elif isinstance(experiment, np.ndarray) or isinstance(experiment, torch.Tensor):
+    if isinstance(experiment, np.ndarray) or isinstance(experiment, torch.Tensor):
         if isinstance(experiment, torch.Tensor):
             experiment = experiment.detach().cpu().numpy()
         assert experiment.ndim == 2, 'Experiment data should have only two dimensions -> (timesteps, features)'

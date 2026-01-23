@@ -45,9 +45,10 @@ import sys
 import os
 import pandas as pd
 import numpy as np
-from spice.resources.bandits import create_dataset, BanditsDrift, get_update_dynamics
+from spice.resources.bandits import create_dataset, BanditsDrift
 from spice.resources.rnn_utils import DatasetRNN
 from spice.utils.plotting import plot_session
+from spice.utils.agent import get_update_dynamics
 ```
 
 ## 1. Preparing Raw Experimental Data

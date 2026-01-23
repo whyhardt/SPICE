@@ -16,10 +16,9 @@ warnings.filterwarnings('ignore')
 
 import sys, os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from resources.bandits import AgentNetwork, AgentSpice
-from utils.setup_agents import setup_agent_rnn, setup_agent_spice
-from resources.rnn import RLRNN_eckstein2022, RLRNN_dezfouli2019
-from resources.sindy_utils import SindyConfig_eckstein2022, SindyConfig_dezfouli2019
+from spice.utils.agent import Agent
+from spice.utils.agent import setup_agent_rnn, setup_agent_spice
+from spice.resources.rnn import RLRNN_eckstein2022, RLRNN_dezfouli2019
 
 # =============================================================================
 # CONFIGURATION
@@ -134,7 +133,7 @@ def extract_participant_demographics(df, demo_cols):
     
     return demographics
 
-def get_embeddings(agent_rnn: AgentNetwork):
+def get_embeddings(agent_rnn: Agent):
     """Extract participant embeddings from trained RNN"""
     participant_ids = torch.arange(agent_rnn.model.n_participants, dtype=torch.int32)
     embeddings = agent_rnn.model.participant_embedding(participant_ids).detach().numpy()

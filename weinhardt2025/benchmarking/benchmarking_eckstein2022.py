@@ -14,7 +14,7 @@ import matplotlib.pyplot as plt
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from spice.utils.convert_dataset import convert_dataset, split_data_along_timedim, split_data_along_sessiondim
-from spice.resources.bandits import Agent, check_in_0_1_range
+from weinhardt2025.utils.bandits import Agent, check_in_0_1_range
 from spice.utils.convert_dataset import convert_dataset
 from spice.utils.plotting import plot_session
 

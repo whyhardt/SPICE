@@ -9,9 +9,9 @@ from sklearn.base import BaseEstimator
 from typing import Dict, Optional, Tuple, List, Union
 
 from .resources.spice_training import fit_model
-from .resources.bandits import AgentNetwork
 from .resources.rnn import BaseRNN
 from .resources.spice_utils import SpiceConfig, SpiceDataset
+from .utils.agent import Agent
 
 
 warnings.filterwarnings("ignore")
@@ -246,7 +246,7 @@ class SpiceEstimator(BaseEstimator):
         for key_module in rnn_agent_model.submodules_rnn:
             rnn_agent_model.setup_sindy_coefficients(key_module=key_module)
         rnn_agent_model.load_state_dict(state_dict)
-        self.rnn_agent = AgentNetwork(rnn_agent_model, self.n_actions, device=self.device, use_sindy=False)
+        self.rnn_agent = Agent(rnn_agent_model, self.n_actions, device=self.device, use_sindy=False)
 
         # Create SPICE agent and load trained weights
         spice_agent_model = self.rnn_class(
@@ -263,7 +263,7 @@ class SpiceEstimator(BaseEstimator):
             spice_agent_model.setup_sindy_coefficients(key_module=key_module)
         spice_agent_model.load_state_dict(state_dict)
         spice_agent_model.sindy_coefficients_presence = rnn_model.sindy_coefficients_presence
-        self.spice_agent = AgentNetwork(spice_agent_model, self.n_actions, device=self.device, use_sindy=True)
+        self.spice_agent = Agent(spice_agent_model, self.n_actions, device=self.device, use_sindy=True)
         
         if self.verbose:
             print('\nRNN training finished.')
@@ -374,7 +374,7 @@ class SpiceEstimator(BaseEstimator):
                 )
             model.load_state_dict(state_dict)
             model.sindy_coefficients_presence = loaded_parameters['sindy_coefficients_presence']
-            agent = AgentNetwork(model, self.n_actions, device=self.device, use_sindy=agent_type[1], deterministic=deterministic)
+            agent = Agent(model, self.n_actions, device=self.device, use_sindy=agent_type[1], deterministic=deterministic)
             setattr(self, agent_type[0], agent)
             
     def save_spice(self, path_rnn: str):

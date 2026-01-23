@@ -11,7 +11,7 @@ from copy import copy
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from resources.spice_utils import SpiceDataset
-from resources.bandits import BanditSession
+from weinhardt2025.utils.bandits import BanditSession
 
 
 def convert_dataset(
@@ -137,12 +137,6 @@ def convert_dataset(
     xs = np.full((n_groups, max_trials, n_actions*2 + n_ids + additional_inputs_xs + 1 if df_block is not None else 0), np.nan)
     ys = np.full((n_groups, max_trials, n_actions), np.nan)
 
-    probs_choice = np.full((n_groups, max_trials, n_actions), np.nan)
-    values_action = np.full((n_groups, max_trials, n_actions), np.nan)
-    values_reward = np.full((n_groups, max_trials, n_actions), np.nan)
-    values_choice = np.full((n_groups, max_trials, n_actions), np.nan)
-    
-    experiment_list = []
     # for index_group, participant_id in enumerate(participant_ids):
     for index_group, group in enumerate(df.groupby(groupby_kw)):
 
@@ -181,25 +175,6 @@ def convert_dataset(
         if additional_inputs is not None and len(additional_inputs) > 0:
             for index, additional_input in enumerate(additional_inputs):
                 xs[index_group, :len(choice)-1, n_actions*2+index] = group_df[additional_input].values[:-1]
-        
-        experiment = BanditSession(
-            choices=group_df[df_choice].values,
-            rewards=rewards,
-            session=np.full((*rewards.shape[:-1], 1), index_group),
-            # reward_probabilities=np.zeros_like(choice)+0.5,
-            # q=np.zeros_like(choice)+0.5,
-            n_trials=len(choice)
-        )
-
-        # get update dynamics if available - only for generated data with e.g. utils/create_dataset.py
-        if 'choice_prob_0' in df.columns:
-            for index_choice in range(n_actions):
-                probs_choice[index_group, :len(choice), index_choice] = group_df[f'choice_prob_{index_choice}'].values
-                values_action[index_group, :len(choice), index_choice] = group_df[f'action_value_{index_choice}'].values
-                values_reward[index_group, :len(choice), index_choice] = group_df[f'reward_value_{index_choice}'].values
-                values_choice[index_group, :len(choice), index_choice] = group_df[f'choice_value_{index_choice}'].values
-        
-        experiment_list.append(experiment)
         
     # move additional inputs one timestep back in order to make the next decision being based on them
     if timeshift_additional_inputs:

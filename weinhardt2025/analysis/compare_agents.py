@@ -5,7 +5,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from spice.resources.bandits import Agent, AgentQ, BanditsDrift, BanditsSwitch, plot_session, create_dataset, get_update_dynamics
+from weinhardt2025.utils.bandits import BanditsDrift, BanditsSwitch, create_dataset
+from spice.utils.agent import Agent, get_update_dynamics
 from spice.utils.plotting import plot_session
 from spice.utils.convert_dataset import convert_dataset
 
@@ -13,14 +14,14 @@ from spice.utils.convert_dataset import convert_dataset
 path_data = 'weinhardt2025/data/synthetic/synthetic_ApAnBc.csv'
 path_model = 'benchmarking/params/mcmc_eckstein2022_ApAnBrBcfBch.nc'
 
-agent1 = AgentQ(
+agent1 = Agent(
     beta_reward=3.0,
     alpha_reward=0.5,
     alpha_penalty=0.5,
     beta_choice=0.,
     )
 
-agent2 = AgentQ(
+agent2 = Agent(
     beta_reward=3.0,
     alpha_reward=0.5,
     alpha_penalty=0.5,

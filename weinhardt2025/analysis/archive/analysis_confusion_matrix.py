@@ -10,10 +10,8 @@ from copy import deepcopy
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from spice.utils.convert_dataset import convert_dataset
-from spice.utils.setup_agents import setup_agent_spice
-from spice.resources.bandits import get_update_dynamics, AgentSpice, AgentNetwork
-from spice.resources.model_evaluation import log_likelihood, bayesian_information_criterion, akaike_information_criterion
-from spice.resources.sindy_utils import SindyConfig_eckstein2022 as SindyConfig
+from spice.utils.agent import Agent, get_update_dynamics
+from weinhardt2025.utils.model_evaluation import log_likelihood, bayesian_information_criterion, akaike_information_criterion
 from spice.resources.rnn import RLRNN_eckstein2022 as RLRNN
 from weinhardt2025.analysis.colormap import truncate_colormap
 from weinhardt2025.benchmarking import benchmarking_eckstein2022, benchmarking_dezfouli2019
@@ -115,7 +113,7 @@ for index_simulated_model, simulated_model in enumerate(simulated_models):
         
         for session in tqdm(range(n_sessions)):
             # get choice probabilities from agent for data from simulated model
-            choice_probs_fitted = get_update_dynamics(experiment=dataset.xs[session], agent=agent if isinstance(agent, AgentSpice) or isinstance(agent, AgentNetwork) else agent[0][session])[1]
+            choice_probs_fitted = get_update_dynamics(experiment=dataset.xs[session], agent=agent if isinstance(agent, AgentSpice) or isinstance(agent, Agent) else agent[0][session])[1]
             choices = dataset.xs[session, :len(choice_probs_fitted), :n_actions].cpu().numpy()
             
             if fitted_model == 'spice':

@@ -4,8 +4,8 @@ import numpy as np
 import pandas as pd
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from spice.resources.bandits import create_dataset, AgentQ, AgentQ_SampleParams, BanditsDrift, BanditsSwitch, get_update_dynamics
-
+from weinhardt2025.utils.bandits import create_dataset, BanditsDrift, BanditsSwitch
+from spice.utils.agent import Agent, get_update_dynamics
 
 n_sessions = [128]#[16, 32, 64, 128, 256]
 n_trials_per_session = 100
@@ -84,13 +84,13 @@ for iteration in range(n_iterations_per_n_sessions):
             alpha_choice += [parameter_list[i]['alpha_choice']] * n_trials_per_session
             
             # append all mean model parameters for each trial
-            mean_beta_reward += [agent._mean_beta_reward] * n_trials_per_session
-            mean_alpha_reward += [agent._mean_alpha_reward] * n_trials_per_session
-            mean_alpha_penalty += [agent._mean_alpha_penalty] * n_trials_per_session
-            mean_confirmation_bias += [agent._mean_confirmation_bias] * n_trials_per_session
-            mean_forget_rate += [agent._mean_forget_rate] * n_trials_per_session
-            mean_beta_choice += [agent._mean_beta_choice] * n_trials_per_session
-            mean_alpha_choice += [agent._mean_alpha_choice] * n_trials_per_session
+            mean_beta_reward += [agent.mean_beta_reward] * n_trials_per_session
+            mean_alpha_reward += [agent.mean_alpha_reward] * n_trials_per_session
+            mean_alpha_penalty += [agent.mean_alpha_penalty] * n_trials_per_session
+            mean_confirmation_bias += [agent.mean_confirmation_bias] * n_trials_per_session
+            mean_forget_rate += [agent.mean_forget_rate] * n_trials_per_session
+            mean_beta_choice += [agent.mean_beta_choice] * n_trials_per_session
+            mean_alpha_choice += [agent.mean_alpha_choice] * n_trials_per_session
 
         columns = ['session', 'choice', 'reward', 'choice_prob_0', 'choice_prob_1', 'action_value_0', 'action_value_1', 'reward_value_0', 'reward_value_1', 'choice_value_0', 'choice_value_1', 'beta_reward', 'alpha_reward', 'alpha_penalty', 'confirmation_bias', 'forget_rate', 'beta_choice', 'alpha_choice', 'mean_beta_reward', 'mean_alpha_reward', 'mean_alpha_penalty', 'mean_confirmation_bias', 'mean_forget_rate', 'mean_beta_choice', 'mean_alpha_choice']
         data = np.stack((np.array(session), np.array(choice), np.array(reward), np.array(choice_prob_0), np.array(choice_prob_1), np.array(action_value_0), np.array(action_value_1), np.array(reward_value_0), np.array(reward_value_1), np.array(choice_value_0), np.array(choice_value_1), np.array(beta_reward), np.array(alpha_reward), np.array(alpha_penalty), np.array(confirmation_bias), np.array(forget_rate), np.array(beta_choice), np.array(alpha_choice), np.array(mean_beta_reward), np.array(mean_alpha_reward), np.array(mean_alpha_penalty), np.array(mean_confirmation_bias), np.array(mean_forget_rate), np.array(mean_beta_choice), np.array(mean_alpha_choice)), axis=-1)#.swapaxes(1, 0)

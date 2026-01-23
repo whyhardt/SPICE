@@ -119,3 +119,61 @@ class QLearning(BaseRNN):
         
         return spice_signals.logits, self.state
     
+    
+#     def new_sess(self, sample_parameters=False, **kwargs):
+#     """Reset the agent for the beginning of a new session."""
+    
+#     super().new_sess()
+    
+#     # sample new parameters
+#     if sample_parameters:
+#       # sample scaling parameters (inverse noise temperatures)
+#       self.betas['value_reward'], self.betas['value_choice'] = 0, 0
+#       while self.betas['value_reward'] <= self.zero_threshold and self.betas['value_choice'] <=  self.zero_threshold:
+        
+#         self.betas['value_reward'] = np.random.beta(*self.compute_beta_dist_params(mean=0.5, var=self.parameter_variance['beta_reward']))
+#         self.betas['value_choice'] = np.random.beta(*self.compute_beta_dist_params(mean=0.5, var=self.parameter_variance['beta_choice']))
+#         # apply zero-threshold if applicable
+#         self.betas['value_reward'] = self.betas['value_reward'] * 2 * self.mean_beta_reward if self.betas['value_reward'] > self.zero_threshold else 0
+#         self.betas['value_choice'] = self.betas['value_choice'] * 2 * self.mean_beta_choice if self.betas['value_choice'] > self.zero_threshold else 0
+      
+#       # sample auxiliary parameters
+#       self.forget_rate = np.random.beta(*self.compute_beta_dist_params(mean=self.mean_forget_rate, var=self.parameter_variance['forget_rate']))
+#       self.forget_rate =  self.forget_rate * (self.forget_rate > self.zero_threshold)
+      
+#       self.alpha_choice = np.random.beta(*self.compute_beta_dist_params(mean=self.mean_alpha_choice, var=self.parameter_variance['alpha_choice']))
+#       self.alpha_choice = self.alpha_choice * (self.alpha_choice > self.zero_threshold)
+      
+#       # sample learning rate; don't zero out; only check for applicability of asymmetric learning rates
+#       self.alpha_reward = np.random.beta(*self.compute_beta_dist_params(mean=self.mean_alpha_reward, var=self.parameter_variance['alpha_reward']))
+#       self.alpha_penalty = np.random.beta(*self.compute_beta_dist_params(mean=self.mean_alpha_penalty, var=self.parameter_variance['alpha_penalty']))
+#       if np.abs(self.alpha_reward - self.alpha_penalty) < self.zero_threshold:
+#         alpha_mean = np.mean((self.alpha_reward, self.alpha_penalty))
+#         self.alpha_reward = alpha_mean
+#         self.alpha_penalty = alpha_mean
+        
+#   def compute_beta_dist_params(self, mean, var):
+#     n = mean * (1-mean) / var**2
+#     a = mean * n
+#     b = (1-mean) * n
+#     return a, b
+
+    # def check_parameter_variance(self, parameter_variance):
+    #     if isinstance(parameter_variance, float):
+    #       par_var_dict = {}
+    #       for key in self.list_params:
+    #         par_var_dict[key] = parameter_variance
+    #       parameter_variance = par_var_dict
+    #     elif isinstance(parameter_variance, dict):
+    #       # check that all keys in parameter_variance are valid
+    #       not_valid_keys = []
+    #       for key in parameter_variance:
+    #         if not key in self.list_params:
+    #           not_valid_keys.append(key)
+    #       if len(not_valid_keys) > 0:
+    #         raise ValueError(f'Some keys in parameter_variance are not valid ({not_valid_keys}). Valid keys are {self.list_params}')
+    #       # check that all parameters are available - set to 0 if a parameter is not available
+    #       for key in self.list_params:
+    #         if not key in parameter_variance:
+    #           parameter_variance[key] = 0.
+    #     return parameter_variance

@@ -6,7 +6,8 @@ import numpy as np
 
 from spice.resources.spice_utils import SpiceDataset
 from spice.utils.convert_dataset import convert_dataset, split_data_along_timedim, split_data_along_sessiondim
-from spice.resources.bandits import Agent, AgentNetwork
+from spice.utils.agent import Agent
+
 
 class GRU(torch.nn.Module):
     
@@ -40,7 +41,7 @@ class GRU(torch.nn.Module):
         return y, state
 
   
-def setup_agent_gru(path_model: str, gru: torch.nn.Module = None) -> AgentNetwork:
+def setup_agent_gru(path_model: str, gru: torch.nn.Module = None) -> Agent:
     state_dict = torch.load(path_model, map_location=torch.device('cpu'))
     
     hidden_size = state_dict['linear_in.weight'].shape[0]
@@ -50,7 +51,7 @@ def setup_agent_gru(path_model: str, gru: torch.nn.Module = None) -> AgentNetwor
     if gru is None:
         gru = GRU(n_actions=n_actions, hidden_size=hidden_size, additional_inputs=additional_inputs)
     gru.load_state_dict(state_dict=state_dict)
-    agent = AgentNetwork(model_rnn=gru, n_actions=gru.n_actions)
+    agent = Agent(model_rnn=gru, n_actions=gru.n_actions)
     return agent
 
 def training(

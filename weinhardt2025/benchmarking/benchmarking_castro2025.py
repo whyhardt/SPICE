@@ -10,7 +10,7 @@ from adabelief_pytorch import AdaBelief
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from spice.resources.spice_utils import SpiceDataset
 from spice.utils.convert_dataset import convert_dataset, split_data_along_sessiondim, reshape_data_along_participantdim
-from spice.resources.bandits import AgentNetwork
+from spice.utils.agent import Agent
 from spice.resources.spice_training import batch_train
 
 
@@ -501,7 +501,7 @@ def training(n_actions: int, dataset_training: SpiceDataset, epochs: int, lr: fl
     return all_models
 
 
-class AgentCastro2025(AgentNetwork):
+class AgentCastro2025(Agent):
     """A class that allows running a pretrained Castro2025 model as an agent."""
 
     def __init__(

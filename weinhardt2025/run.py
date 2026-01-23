@@ -9,7 +9,7 @@ import pandas as pd
 
 from spice import SpiceEstimator, convert_dataset, split_data_along_sessiondim, split_data_along_timedim, plot_session
 from spice.precoded import choice, workingmemory
-from spice.resources.bandits import AgentQ
+from weinhardt2025.utils.bandits import AgentQ
 from spice.precoded import workingmemory_multiitem, workingmemory, workingmemory_rewardbinary, choice, rescorlawagner, forgetting
 
 

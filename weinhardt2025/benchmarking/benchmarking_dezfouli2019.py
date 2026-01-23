@@ -10,7 +10,7 @@ from typing import List
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from spice.resources.spice_utils import SpiceDataset
 from spice.utils.convert_dataset import convert_dataset, split_data_along_sessiondim, reshape_data_along_participantdim
-from spice.resources.bandits import Agent, AgentNetwork
+from spice.utils.agent import Agent
 from spice.resources.spice_training import batch_train
 from weinhardt2025.utils.config_model_comparison import ConfigModelComparison
 
@@ -291,7 +291,7 @@ def training(model_config: str, n_actions: int, dimensions: int,  dataset_traini
     return all_models
 
 
-class AgentGQL(AgentNetwork):
+class AgentGQL(Agent):
     """A class that allows running a pretrained GQL model as an agent."""
 
     def __init__(

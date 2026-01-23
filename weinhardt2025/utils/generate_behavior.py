@@ -5,10 +5,11 @@ import pandas as pd
 from tqdm import tqdm
 import torch
 
-from spice.resources.bandits import create_dataset, get_update_dynamics, BanditsDrift, BanditsFlip_eckstein2022, Bandits_Standard, Agent, AgentQ
+from weinhardt2025.utils.bandits import create_dataset, BanditsDrift, BanditsFlip_eckstein2022, Bandits_Standard
 from spice.resources.spice_utils import SpiceDataset
-from spice.utils.setup_agents import setup_agent_rnn, setup_agent_spice
+from spice.utils.agent import setup_agent_rnn, setup_agent_spice
 from spice.utils.convert_dataset import convert_dataset
+from spice.utils.agent import Agent, get_update_dynamics
 
 # dataset specific SPICE configurations and models
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))

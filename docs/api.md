@@ -202,7 +202,7 @@ from spice.resources.sindy_training import fit_spice
 def fit_spice(
     rnn_modules: List[str],
     control_signals: List[str],
-    agent_rnn: AgentNetwork,
+    agent_rnn: Agent,
     data: DatasetRNN = None,
     polynomial_degree: int = 2,
     optimizer_threshold: float = 0.05,
@@ -235,7 +235,7 @@ from spice.resources.optimizer_selection import optimize_for_participant
 
 def optimize_for_participant(
     participant_id: int,
-    agent_rnn: AgentNetwork,
+    agent_rnn: Agent,
     data: DatasetRNN,
     metric_rnn: float,
     rnn_modules: list,
@@ -313,7 +313,7 @@ Plot data from a behavioral session comparing different agents.
 from spice.utils.plotting import plot_session
 
 def plot_session(
-    agents: Dict[str, Union[AgentSpice, AgentNetwork, AgentQ]],
+    agents: Dict[str, Union[AgentSpice, Agent, AgentQ]],
     experiment: Union[BanditSession, np.ndarray],
     labels: List[str] = None,
     save: str = None

@@ -8,9 +8,8 @@ from copy import copy
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 # standard methods and classes used for every model evaluation
-from spice.resources.model_evaluation import get_scores
-from spice.resources.bandits import get_update_dynamics, AgentQ
-from spice.utils.setup_agents import setup_agent as setup_agent_spice
+from weinhardt2025.utils.model_evaluation import get_scores
+from spice.utils.agent import get_update_dynamics, Agent
 from spice.utils.convert_dataset import convert_dataset, split_data_along_timedim, split_data_along_sessiondim
 
 # dataset specific SPICE models

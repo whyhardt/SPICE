@@ -10,8 +10,8 @@ from copy import deepcopy
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..')))
 
 from spice import convert_dataset, SpiceDataset, SpiceEstimator
-from spice.resources.model_evaluation import log_likelihood, bayesian_information_criterion
-from spice.resources.bandits import get_update_dynamics
+from weinhardt2025.utils.model_evaluation import log_likelihood, bayesian_information_criterion
+from spice.utils.agent import get_update_dynamics
 from spice.precoded import workingmemory
 
 # ─── BEHAVIORAL METRICS ─────────────────────────────────────────────────────────────────────────────────
