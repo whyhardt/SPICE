@@ -8,7 +8,8 @@ from copy import copy, deepcopy
 import torch
 from tqdm import tqdm
 
-from spice import SpiceDataset, Agent
+from ...spice.utils.agent import SpiceDataset, Agent
+from weinhardt2025.benchmarking.benchmarking_qlearning import QLearning
 
 
 # Setup so that plots will look nice
