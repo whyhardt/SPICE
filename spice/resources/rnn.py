@@ -544,7 +544,7 @@ class BaseRNN(nn.Module):
         # 2. normalize by number of included values (e.g. in 4-armed bandit: non-chosen actions = 3 -> need to normalize; otherwise skewed loss with heavy bias for non-chosen actions)
         # 3. Compute mean
         # 4. Normalize over number of modules to keep SINDy loss in a good range for any SPICE architecture
-        sindy_loss = torch.mean(masked_diff.sum(dim=-1) / n_masked) / len(self.submodules_rnn)
+        sindy_loss = torch.mean(masked_diff.sum(dim=-1) / n_masked.reshape(-1, 1)) / len(self.submodules_rnn)
         
         # Clip loss to prevent explosion
         sindy_loss = torch.clamp(sindy_loss, max=100.0)
