@@ -19,7 +19,7 @@ class GRUModule(nn.Module):
         #Simple weight initialization for all parameters
         self._initialize_weights()
     
-    def _initialize_weights(self):
+    def initialize_weights(self):
         """Apply Xavier uniform to all parameters"""
         for param in self.parameters():
             if param.dim() > 1:  # Only weight matrices, skip biases

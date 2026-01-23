@@ -159,7 +159,7 @@ class ReduceLROnPlateauRNNOnly:
             self.reduce_lr()
             self.num_bad_epochs = 0
 
-    def _reduce_lr(self):
+    def reduce_lr(self):
         """Reduce learning rate only for RNN parameters (param_groups[1])."""
         # Only update param_groups[1] (RNN parameters), skip param_groups[0] (SINDy coefficients)
         if len(self.optimizer.param_groups) > 1:
@@ -217,7 +217,7 @@ class ReduceOnPlateauWithRestarts:
             self.adjust_patience()  # Adjust the patience according to the learning rate
             self.num_bad_epochs = 0  # Reset bad epochs counter
 
-    def _reduce_lr(self):
+    def reduce_lr(self):
         """
         Reduce the learning rate for all parameter groups by the given factor.
         """
@@ -233,7 +233,7 @@ class ReduceOnPlateauWithRestarts:
             else:
                 param_group['lr'] = new_lr
     
-    def _adjust_patience(self):
+    def adjust_patience(self):
         """
         Adjust the patience according to the learning rate.
         """

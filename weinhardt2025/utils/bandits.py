@@ -173,7 +173,7 @@ class BanditsGeneral(Bandits):
     def n_actions(self) -> int:
       return self.n_arms   
           
-    def _apply_dynamics(self) -> bool:
+    def apply_dynamics(self) -> bool:
         """Apply drift and check for reversals."""
         reversal_occurred = False
         
@@ -188,7 +188,7 @@ class BanditsGeneral(Bandits):
         
         return reversal_occurred
     
-    def _apply_reversal(self):
+    def apply_reversal(self):
         """Apply a reversal: swap the reward probabilities."""
         if self.n_arms == 2:
             # Simple swap for 2 arms
@@ -197,7 +197,7 @@ class BanditsGeneral(Bandits):
             # For >2 arms, randomly permute
             self.reward_prob = self.rng.permutation(self.reward_prob)
     
-    def _apply_drift(self):
+    def apply_drift(self):
         """Apply Gaussian random walk drift to reward probabilities."""
         if self.drift_cov is not None and self.n_arms == 2:
             # Correlated drift for 2 arms
@@ -213,7 +213,7 @@ class BanditsGeneral(Bandits):
             self.bounds[1]
         )
     
-    def _generate_reward(self, choice: int = None, all_arms: bool = False):
+    def generate_reward(self, choice: int = None, all_arms: bool = False):
         """Generate reward based on current probabilities.
         
         Args:
