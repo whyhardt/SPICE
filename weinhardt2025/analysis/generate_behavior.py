@@ -10,7 +10,7 @@ from weinhardt2025.utils.bandits import create_dataset, BanditsDrift, BanditsFli
 from spice.resources.spice_utils import SpiceDataset
 from spice.utils.agent import Agent, get_update_dynamics
 from spice.utils.agent import setup_agent_rnn, setup_agent_spice
-from spice.utils.convert_dataset import convert_dataset
+from spice.utils.convert_dataset import csv_to_dataset
 
 # dataset specific SPICE configurations and models
 from spice.resources.rnn import RLRNN, RLRNN_eckstein2022, RLRNN_dezfouli2019
@@ -70,7 +70,7 @@ elif agent_type == 'rnn':
 else:
     setup_agent = setup_agent_benchmark
 
-n_participants = len(convert_dataset(path_data).xs[:, 0, -1].unique())
+n_participants = len(csv_to_dataset(path_data).xs[:, 0, -1].unique())
 
 dataset_xs, dataset_ys = [], []
 for session in range(n_sessions):

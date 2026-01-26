@@ -7,9 +7,8 @@ from typing import List
 from joblib import Parallel, delayed
 from adabelief_pytorch import AdaBelief
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from spice.resources.spice_utils import SpiceDataset
-from spice.utils.convert_dataset import convert_dataset, split_data_along_sessiondim, reshape_data_along_participantdim
+from spice.utils.convert_dataset import csv_to_dataset, split_data_along_sessiondim, reshape_data_along_participantdim
 from spice.utils.agent import Agent
 from spice.resources.spice_training import batch_train
 
@@ -553,7 +552,7 @@ def main(path_save_model: str, path_data: str, n_actions: int, n_epochs: int, lr
     """
 
     # Load and split data
-    dataset_full = convert_dataset(
+    dataset_full = csv_to_dataset(
         file=path_data,
         df_participant_id='s_id',
         df_choice='action',

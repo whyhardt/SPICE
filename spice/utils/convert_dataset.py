@@ -1,7 +1,7 @@
 import sys
 import os
 
-from typing import List
+from typing import List, Optional
 
 import pandas as pd
 import numpy as np
@@ -12,11 +12,11 @@ from copy import copy
 from ..resources.spice_utils import SpiceDataset
 
 
-def convert_dataset(
+def csv_to_dataset(
     file: str,
     device = None,
     sequence_length: int = None,
-    df_participant_id: str = 'session',
+    df_participant_id: str = 'participant',
     df_block: str = 'block',
     df_experiment_id: str = 'experiment',
     df_choice: str = 'choice',
@@ -88,15 +88,21 @@ def convert_dataset(
     else:
         reward_cols = [df_reward]
     
-    # normalize rewards
+    # normalize rewards (exclude -1 which represents missing/NaN values)
     r_min, r_max = [], []
     for reward_column in reward_cols:
-        r_min.append(df[reward_column].min())
-        r_max.append(df[reward_column].max())
-    r_min = np.min(r_min)
-    r_max = np.max(r_max)
+        valid_rewards = df[reward_column][df[reward_column] != -1]
+        if len(valid_rewards) > 0:
+            r_min.append(valid_rewards.min())
+            r_max.append(valid_rewards.max())
+    r_min = np.min(r_min) if r_min else 0
+    r_max = np.max(r_max) if r_max else 1
+    # Avoid division by zero if all rewards are the same
+    r_range = r_max - r_min if r_max != r_min else 1
     for reward_column in reward_cols:
-        df[reward_column] = (df[reward_column] - r_min) / (r_max - r_min)
+        # Only normalize valid rewards, keep -1 as-is (will be handled as NaN later)
+        mask = df[reward_column] != -1
+        df.loc[mask, reward_column] = (df.loc[mask, reward_column] - r_min) / r_range
     
     # check whether the additional inputs are in the dataset
     additional_inputs_xs = 0
@@ -183,6 +189,127 @@ def convert_dataset(
     dataset = SpiceDataset(xs, ys, device=device, sequence_length=sequence_length)
     
     return dataset
+
+
+def dataset_to_csv(
+    dataset: SpiceDataset,
+    path: str,
+    df_participant_id: str = 'participant',
+    df_experiment_id: str = 'experiment',
+    df_block: str = 'block',
+    df_choice: str = 'choice',
+    df_feedback: str = 'reward',
+    additional_inputs: Optional[List[str]] = None,
+    ) -> None:
+    """Writes a SpiceDataset object to a csv file.
+
+    SpiceDataset has the shape (n_participants * n_experiments * n_blocks, n_trials, features).
+    The features are in the order (action_0, action_1, ..., action_m, feedback_0, feedback_1, ..., feedback_m, *additional_inputs, block_id, experiment_id, participant_id)
+    The action is one-hot-encoded.
+    The feedback can be provided fully (feedback observed for all actions including unchosen ones) or partially (feedback observed only for chosen action; feedback values for unchosen values are torch.nan).
+    A pandas.DataFrame object has to be created of the shape (n_participants * n_experiments * n_blocks * n_trials, features_dataframe)
+    features_dataframe has the shape (participant, experiment, block, action, feedback, *additional_inputs)
+    For full feedback each feedback feature from SpiceDataset is written into the pandas.DataFrame by extending df_feedback with f'_{index_action}'
+    For partial feedback only the feedback value of the chosen action is written into the pandas.DataFrame; df_feedback is taken as given.
+
+    Note: Due to the time-shifted structure of SpiceDataset (xs[t] predicts ys[t] = choice[t+1]),
+    only the trials stored in xs are output. The final choice (in ys) is the prediction target
+    for the last xs entry and is reconstructed when loading with csv_to_dataset.
+    """
+
+    # Convert to numpy if needed
+    xs = dataset.xs.cpu().numpy() if hasattr(dataset.xs, 'cpu') else np.array(dataset.xs)
+    ys = dataset.ys.cpu().numpy() if hasattr(dataset.ys, 'cpu') else np.array(dataset.ys)
+
+    n_groups, max_trials, n_features = xs.shape
+    n_actions = ys.shape[-1]
+
+    # Calculate number of additional inputs
+    # n_features = n_actions * 2 (choice + reward) + n_additional_inputs + 3 (block, experiment, participant)
+    n_additional_inputs = n_features - n_actions * 2 - 3
+
+    # Validate additional_inputs list length
+    if additional_inputs is not None and len(additional_inputs) != n_additional_inputs:
+        warnings.warn(f"Number of additional_inputs names ({len(additional_inputs)}) does not match "
+                      f"number of additional input features in dataset ({n_additional_inputs}). "
+                      f"Using generic names for additional inputs.")
+        additional_inputs = [f'additional_input_{i}' for i in range(n_additional_inputs)]
+    elif additional_inputs is None and n_additional_inputs > 0:
+        additional_inputs = [f'additional_input_{i}' for i in range(n_additional_inputs)]
+
+    # Determine if feedback is full or partial by checking if unchosen actions have non-NaN feedback
+    # Check first valid trial to detect feedback type
+    is_full_feedback = False
+    for group_idx in range(n_groups):
+        valid_mask = ~np.isnan(xs[group_idx, :, 0])
+        if np.any(valid_mask):
+            first_valid_idx = np.argmax(valid_mask)
+            choice_onehot = xs[group_idx, first_valid_idx, :n_actions]
+            chosen_action = int(np.argmax(choice_onehot))
+            rewards = xs[group_idx, first_valid_idx, n_actions:n_actions*2]
+            # Check if any unchosen action has non-NaN feedback
+            for action_idx in range(n_actions):
+                if action_idx != chosen_action and not np.isnan(rewards[action_idx]):
+                    is_full_feedback = True
+                    break
+            break
+
+    # Prepare list to collect rows
+    rows = []
+
+    for group_idx in range(n_groups):
+        # Get metadata (constant across trials within a group)
+        block_id = xs[group_idx, 0, -3]
+        experiment_id = xs[group_idx, 0, -2]
+        participant_id = xs[group_idx, 0, -1]
+
+        # Find number of valid timesteps in xs (non-NaN)
+        valid_mask = ~np.isnan(xs[group_idx, :, 0])
+        n_valid = int(np.sum(valid_mask))
+
+        # Reconstruct trials from SpiceDataset
+        # In CSV format: row t has choice_t and reward_t (reward received at trial t)
+        # In SpiceDataset: xs[t] = (choice_t, reward_t) - same time alignment
+        # The last trial's choice is in ys, but its reward is not stored
+
+        # Trials 0 to n_valid-1: choice and reward from xs[t]
+        for trial_idx in range(n_valid):
+            choice_onehot = xs[group_idx, trial_idx, :n_actions]
+            choice = int(np.argmax(choice_onehot))
+
+            # Get reward from the same timestep
+            rewards = xs[group_idx, trial_idx, n_actions:n_actions*2]
+
+            row = {
+                df_participant_id: int(participant_id),
+                df_experiment_id: int(experiment_id),
+                df_block: int(block_id),
+                'trial': trial_idx,
+                df_choice: choice,
+            }
+
+            # Add feedback from the same trial
+            if is_full_feedback:
+                for action_idx in range(n_actions):
+                    row[f'{df_feedback}_{action_idx}'] = rewards[action_idx]
+            else:
+                row[df_feedback] = rewards[choice] if not np.isnan(rewards[choice]) else np.nan
+
+            # Add additional inputs from current trial
+            if additional_inputs is not None:
+                for i, name in enumerate(additional_inputs):
+                    row[name] = xs[group_idx, trial_idx, n_actions*2 + i]
+
+            rows.append(row)
+
+        # Note: We don't output the final trial (from ys) because:
+        # 1. Its choice is already the target for the last xs timestep
+        # 2. Its reward is not stored in the dataset
+        # 3. Including it causes csv_to_dataset to create NaN entries in ys
+
+    # Create DataFrame and save to CSV
+    df = pd.DataFrame(rows)
+    df.to_csv(path, index=False) 
 
 
 def split_data_along_timedim(dataset: SpiceDataset, split_ratio: float, device: torch.device = torch.device('cpu')):

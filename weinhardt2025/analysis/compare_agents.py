@@ -8,7 +8,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from weinhardt2025.utils.bandits import BanditsDrift, BanditsSwitch, create_dataset
 from spice.utils.agent import Agent, get_update_dynamics
 from spice.utils.plotting import plot_session
-from spice.utils.convert_dataset import convert_dataset
+from spice.utils.convert_dataset import csv_to_dataset
 
 
 path_data = 'weinhardt2025/data/synthetic/synthetic_ApAnBc.csv'
@@ -46,7 +46,7 @@ agent2 = Agent(
 # env = BanditsDrift(0.2)
 # trajectory = create_dataset(agent1, env, 128, 1)[0]
 
-trajectory = convert_dataset(path_data)
+trajectory = csv_to_dataset(path_data)
 
 agents = {
     'groundtruth': agent1, 

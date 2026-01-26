@@ -12,11 +12,12 @@ import pickle
 from typing import List, Callable, Union, Dict
 import matplotlib.pyplot as plt
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from spice.utils.convert_dataset import convert_dataset, split_data_along_timedim, split_data_along_sessiondim
-from weinhardt2025.utils.bandits import Agent, check_in_0_1_range
-from spice.utils.convert_dataset import convert_dataset
+from spice.utils.convert_dataset import csv_to_dataset, split_data_along_timedim, split_data_along_sessiondim
+from spice.utils.convert_dataset import csv_to_dataset
 from spice.utils.plotting import plot_session
+
+sys.path.append('../..')
+from weinhardt2025.utils.bandits import Agent, check_in_0_1_range
 
 
 def rl_update_step(r_values, c_values, choice, reward, params):
@@ -393,7 +394,7 @@ def fit_mcmc(data: str, model: str, num_samples: int, num_warmup: int, num_chain
         raise ValueError(f'The provided model {model} is not supported. At least some part of the configuration ({model_checked}) is not valid. Valid configurations may include {valid_config}.')
     
     # Get and prepare the data
-    dataset = convert_dataset(data)
+    dataset = csv_to_dataset(data)
     if isinstance(train_test_ratio, float):
         dataset = split_data_along_timedim(dataset=dataset, split_ratio=train_test_ratio)[0].xs.numpy()
     else:
@@ -457,6 +458,6 @@ if __name__=='__main__':
         path_model=os.path.join(args.output_dir, 'mcmc_eckstein2022_'+args.model+'.nc'),
         model_config=args.model,
         )
-    experiment = convert_dataset(args.file).xs[0]
+    experiment = csv_to_dataset(args.file).xs[0]
     fig, axs = plot_session(agents={'benchmark': agent_mcmc[0][0]}, experiment=experiment)
     plt.show()

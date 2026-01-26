@@ -1,4 +1,6 @@
+from typing import Union
 import torch
+
 from spice import BaseRNN, SpiceConfig
 
 
@@ -7,19 +9,21 @@ class QLearning(BaseRNN):
     def __init__(self,
                  n_actions: int = 2,
                  n_participants: int = 1,
-                 beta_reward: float = 3.0,
-                 alpha_reward: float = 0.5,
-                 alpha_penalty: float = 0.5,
-                 forget_rate: float = 0.,
-                 beta_choice: float = 0.,
-                 fit_model: bool = False,
+                 n_experiments: int = 1,
+                 beta_reward: Union[float, torch.Tensor] = 1.0,
+                 alpha_reward: Union[float, torch.Tensor] = 0.5,
+                 alpha_penalty: Union[float, torch.Tensor] = 0.5,
+                 forget_rate: Union[float, torch.Tensor] = 0.,
+                 beta_choice: Union[float, torch.Tensor] = 0.,
+                 counterfactual_learning: Union[float, torch.Tensor] = 0.,
+                 fit_full_model: bool = False,
                  **kwargs,
         ):
         
         spice_config = SpiceConfig(
             library_setup={
                 'value_reward_chosen': ['reward'],
-                'value_reward_not_chosen': [],
+                'value_reward_not_chosen': ['chosen_reward_success', 'chosen_reward_fail'],
                 'value_choice': ['choice'],
             },
             memory_state=['value_reward', 'value_choice'],
@@ -28,59 +32,46 @@ class QLearning(BaseRNN):
         super().__init__(
             spice_config=spice_config, 
             n_actions=n_actions, 
-            n_participants=n_participants, 
+            n_participants=n_participants,
+            n_experiments=n_experiments, 
             use_sindy=True, 
             sindy_polynomial_degree=2,
             sindy_ensemble_size=1)
-                
-        self.beta_reward = beta_reward
-        self.alpha_reward = alpha_reward
-        self.alpha_penalty = alpha_penalty
-        self.forget_rate = forget_rate
-        self.beta_choice = beta_choice
+        self.rnn_training_finished = True
+        
+        self.beta_reward = torch.full((self.n_participants, self.n_experiments), beta_reward) if isinstance(beta_reward, float) else beta_reward
+        self.alpha_reward = torch.full((self.n_participants, self.n_experiments), alpha_reward) if isinstance(alpha_reward, float) else alpha_reward
+        self.alpha_penalty = torch.full((self.n_participants, self.n_experiments), alpha_penalty) if isinstance(alpha_penalty, float) else alpha_penalty
+        self.forget_rate = torch.full((self.n_participants, self.n_experiments), forget_rate) if isinstance(forget_rate, float) else forget_rate
+        self.beta_choice = torch.full((self.n_participants, self.n_experiments), beta_choice) if isinstance(beta_choice, float) else beta_choice
+        self.countefactual_learning = torch.full((self.n_participants, self.n_experiments), counterfactual_learning) if isinstance(counterfactual_learning, float) else counterfactual_learning
         
         # basic SPICE stuff
         self.rnn_training_finished = True  # rnn not necessary here
         self.setup_module(key_module='value_reward_chosen', input_size=1)
-        self.setup_module(key_module='value_reward_not_chosen', input_size=0)
+        self.setup_module(key_module='value_reward_not_chosen', input_size=2)
         self.setup_module(key_module='value_choice', input_size=1)
         
-        # specific to spice-based q-learning model
-        self.coefficient_maps = {
-            # asymmetric learning rate: 
-            #   update = (alpha_penalty + (alpha_reward - alpha_penalty)*reward)*(reward-value_reward_chosen[t])
-            #   update = -alpha_penalty value_reward_chosen[t] + alpha_reward reward + (alpha_reward-alpha_penalty) value_reward_chosen[t]*reward
-            'value_reward_chosen': (
-                ('value_reward_chosen', -self.alpha_penalty),
-                ('reward', self.beta_reward*self.alpha_reward),
-                ('value_reward_chosen*reward', self.alpha_penalty-self.alpha_reward),
-                ),
-            # forgetting:
-            #   update = forget_rate*(self.state['value_reward']|_{t=0}-value_reward_not_chosen[t])
-            #   update = forget_rate*Q_init + -forget_rate value_reward_not_chosen[t]
-            'value_reward_not_chosen': (
-                ('1', self.beta_reward*self.forget_rate*self.state['value_reward'][0, 0]),
-                ('value_reward_not_chosen', -self.forget_rate),
-            ),
-            # choice perseverance:
-            #   update = choice_perseverance choice
-            'value_choice': (
-                ('value_choice', -1),
-                ('choice', self.beta_choice),
-            ) 
-        }
-        
-        # if the model is not about to be fitted but the given parameter values should be used then translate these values into the SINDy coefficients 
-        if not fit_model:
-            for module in self.get_modules():
-                self.sindy_coefficients[module].requires_grad = False
-                self.sindy_coefficients[module] *= 0
-                for candidate_term, value in self.coefficient_maps[module]:
-                    self.sindy_coefficients[module][:, 0, 0, self.sindy_candidate_terms[module].index(candidate_term)] = value
+        if not fit_full_model:
+            self.udpate_coefficients(
+                parameters={
+                    'beta_reward': self.beta_reward.clone(),
+                    'alpha_reward': self.alpha_reward.clone(),
+                    'alpha_penalty': self.alpha_penalty.clone(),
+                    'forget_rate': self.forget_rate.clone(),
+                    'beta_choice': self.beta_choice.clone(),
+                    'countefactual_learning': self.countefactual_learning.clone(),
+                },
+                participant_id=torch.arange(0, self.n_participants),
+                experiment_id=torch.arange(0, self.n_experiments),
+            )
 
     def forward(self, inputs: torch.Tensor, prev_state = None, batch_first: bool = False):
         
         spice_signals = self.init_forward_pass(inputs, prev_state, batch_first)
+        
+        chosen_reward_success = spice_signals.rewards.sum(dim=-1, keepdim=True).repeat(1, 1, self.n_actions) == 1
+        chosen_reward_fail = spice_signals.rewards.sum(dim=-1, keepdim=True).repeat(1, 1, self.n_actions) != 1
         
         for timestep in spice_signals.timesteps:
             
@@ -99,6 +90,10 @@ class QLearning(BaseRNN):
             self.call_module(
                 key_module='value_reward_not_chosen',
                 key_state='value_reward',
+                inputs=(
+                    chosen_reward_success[timestep],
+                    chosen_reward_fail[timestep],
+                ),
                 action_mask=1-spice_signals.actions[timestep],
                 participant_index=spice_signals.participant_ids,
             )
@@ -118,39 +113,94 @@ class QLearning(BaseRNN):
         spice_signals = self.post_forward_pass(spice_signals, batch_first)
         
         return spice_signals.logits, self.state
-    
-    
-#     def new_sess(self, sample_parameters=False, **kwargs):
-#     """Reset the agent for the beginning of a new session."""
-    
-#     super().new_sess()
-    
-#     # sample new parameters
-#     if sample_parameters:
-#       # sample scaling parameters (inverse noise temperatures)
-#       self.betas['value_reward'], self.betas['value_choice'] = 0, 0
-#       while self.betas['value_reward'] <= self.zero_threshold and self.betas['value_choice'] <=  self.zero_threshold:
+
+    def udpate_coefficients(self, parameters: dict, participant_id: Union[int, torch.Tensor] = None, experiment_id: Union[int, torch.Tensor] = None):
+        if participant_id is None:
+            participant_id = torch.arange(0, self.n_participants)
         
-#         self.betas['value_reward'] = np.random.beta(*self.compute_beta_dist_params(mean=0.5, var=self.parameter_variance['beta_reward']))
-#         self.betas['value_choice'] = np.random.beta(*self.compute_beta_dist_params(mean=0.5, var=self.parameter_variance['beta_choice']))
-#         # apply zero-threshold if applicable
-#         self.betas['value_reward'] = self.betas['value_reward'] * 2 * self.mean_beta_reward if self.betas['value_reward'] > self.zero_threshold else 0
-#         self.betas['value_choice'] = self.betas['value_choice'] * 2 * self.mean_beta_choice if self.betas['value_choice'] > self.zero_threshold else 0
-      
-#       # sample auxiliary parameters
-#       self.forget_rate = np.random.beta(*self.compute_beta_dist_params(mean=self.mean_forget_rate, var=self.parameter_variance['forget_rate']))
-#       self.forget_rate =  self.forget_rate * (self.forget_rate > self.zero_threshold)
-      
-#       self.alpha_choice = np.random.beta(*self.compute_beta_dist_params(mean=self.mean_alpha_choice, var=self.parameter_variance['alpha_choice']))
-#       self.alpha_choice = self.alpha_choice * (self.alpha_choice > self.zero_threshold)
-      
-#       # sample learning rate; don't zero out; only check for applicability of asymmetric learning rates
-#       self.alpha_reward = np.random.beta(*self.compute_beta_dist_params(mean=self.mean_alpha_reward, var=self.parameter_variance['alpha_reward']))
-#       self.alpha_penalty = np.random.beta(*self.compute_beta_dist_params(mean=self.mean_alpha_penalty, var=self.parameter_variance['alpha_penalty']))
-#       if np.abs(self.alpha_reward - self.alpha_penalty) < self.zero_threshold:
-#         alpha_mean = np.mean((self.alpha_reward, self.alpha_penalty))
-#         self.alpha_reward = alpha_mean
-#         self.alpha_penalty = alpha_mean
+        if experiment_id is None:
+            experiment_id = torch.arange(0, self.n_experiments)
+        
+        for parameter in parameters:
+            if hasattr(self, parameter):
+                model_parameters = getattr(self, parameter)
+                model_parameters[participant_id][:, experiment_id] = parameters[parameter]
+                setattr(self, parameter, model_parameters)
+            else:
+                raise KeyError(f"The QLearning model has not attribute {parameter}.")
+            
+        # specific to spice-based q-learning model
+        coefficient_maps = {
+            # asymmetric learning rate: 
+            #   update = (alpha_penalty + (alpha_reward - alpha_penalty)*reward)*(reward-value_reward_chosen[t])
+            #   update = -alpha_penalty value_reward_chosen[t] + alpha_reward reward + (alpha_reward-alpha_penalty) value_reward_chosen[t]*reward
+            'value_reward_chosen': (
+                ('value_reward_chosen', -self.alpha_penalty[participant_id][:, experiment_id]),
+                ('reward', self.beta_reward[participant_id][:, experiment_id]*self.alpha_reward[participant_id][:, experiment_id]),
+                ('value_reward_chosen*reward', self.alpha_penalty[participant_id][:, experiment_id]-self.alpha_reward[participant_id][:, experiment_id]),
+                ),
+            # forgetting:
+            #   update = forget_rate*(self.state['value_reward']|_{t=0}-value_reward_not_chosen[t])
+            #   update = forget_rate*Q_init + -forget_rate value_reward_not_chosen[t]
+            'value_reward_not_chosen': (
+                ('1', self.beta_reward[participant_id][:, experiment_id]*self.forget_rate[participant_id][:, experiment_id]*self.state['value_reward'][0, 0]),
+                ('value_reward_not_chosen', -self.forget_rate[participant_id][:, experiment_id]),
+                ('chosen_reward_success', -self.beta_reward[participant_id][:, experiment_id]*self.countefactual_learning[participant_id][:, experiment_id]),
+                ('chosen_reward_fail', self.beta_reward[participant_id][:, experiment_id]*self.countefactual_learning[participant_id][:, experiment_id]),
+            ),
+            # choice perseverance:
+            #   update = choice_perseverance choice
+            'value_choice': (
+                ('value_choice', -1),
+                ('choice', self.beta_choice[participant_id][:, experiment_id]),
+            ) 
+        }
+        
+        for module in self.get_modules():
+            self.sindy_coefficients[module].requires_grad = False
+            self.sindy_coefficients[module][participant_id][:, experiment_id] *= 0
+            for candidate_term, value in coefficient_maps[module]:
+                self.sindy_coefficients[module][participant_id][:, experiment_id, 0, self.sindy_candidate_terms[module].index(candidate_term)] = value
+
+    def eval(self, *args, **kwargs):
+        super().eval()
+        self.use_sindy=True
+        return self
+        
+    def train(self, mode=True):
+        super().train(mode)
+        self.use_sindy=True
+        return self
+    
+    # def sample_parameters(self, parameters_to_sample: list[str] = None):
+    #     if parameters_to_sample is None:
+            
+        
+    #     # sample new parameters
+    #     # sample scaling parameters (inverse noise temperatures)
+    #     self.betas['value_reward'], self.betas['value_choice'] = 0, 0
+    #     while self.betas['value_reward'] <= self.zero_threshold and self.betas['value_choice'] <=  self.zero_threshold:
+            
+    #         self.betas['value_reward'] = np.random.beta(*self.compute_beta_dist_params(mean=0.5, var=self.parameter_variance['beta_reward']))
+    #         self.betas['value_choice'] = np.random.beta(*self.compute_beta_dist_params(mean=0.5, var=self.parameter_variance['beta_choice']))
+    #         # apply zero-threshold if applicable
+    #         self.betas['value_reward'] = self.betas['value_reward'] * 2 * self.mean_beta_reward if self.betas['value_reward'] > self.zero_threshold else 0
+    #         self.betas['value_choice'] = self.betas['value_choice'] * 2 * self.mean_beta_choice if self.betas['value_choice'] > self.zero_threshold else 0
+        
+    #     # sample auxiliary parameters
+    #     self.forget_rate = np.random.beta(*self.compute_beta_dist_params(mean=self.mean_forget_rate, var=self.parameter_variance['forget_rate']))
+    #     self.forget_rate =  self.forget_rate * (self.forget_rate > self.zero_threshold)
+        
+    #     self.alpha_choice = np.random.beta(*self.compute_beta_dist_params(mean=self.mean_alpha_choice, var=self.parameter_variance['alpha_choice']))
+    #     self.alpha_choice = self.alpha_choice * (self.alpha_choice > self.zero_threshold)
+        
+    #     # sample learning rate; don't zero out; only check for applicability of asymmetric learning rates
+    #     self.alpha_reward = np.random.beta(*self.compute_beta_dist_params(mean=self.mean_alpha_reward, var=self.parameter_variance['alpha_reward']))
+    #     self.alpha_penalty = np.random.beta(*self.compute_beta_dist_params(mean=self.mean_alpha_penalty, var=self.parameter_variance['alpha_penalty']))
+    #     if np.abs(self.alpha_reward - self.alpha_penalty) < self.zero_threshold:
+    #         alpha_mean = np.mean((self.alpha_reward, self.alpha_penalty))
+    #         self.alpha_reward = alpha_mean
+    #         self.alpha_penalty = alpha_mean
         
 #   def compute_beta_dist_params(self, mean, var):
 #     n = mean * (1-mean) / var**2

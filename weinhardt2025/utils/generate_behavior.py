@@ -5,16 +5,16 @@ import pandas as pd
 from tqdm import tqdm
 import torch
 
-from weinhardt2025.utils.bandits import create_dataset, BanditsDrift, BanditsFlip_eckstein2022, Bandits_Standard
 from spice.resources.spice_utils import SpiceDataset
 from spice.utils.agent import setup_agent_rnn, setup_agent_spice
-from spice.utils.convert_dataset import convert_dataset
+from spice.utils.convert_dataset import csv_to_dataset
 from spice.utils.agent import Agent, get_update_dynamics
-
-# dataset specific SPICE configurations and models
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 from spice.precoded import InteractionRNN, INTERACTION_CONFIG
+
+import sys
+sys.path.append('../..')
 from weinhardt2025.benchmarking import benchmarking_dezfouli2019, benchmarking_eckstein2022
+from weinhardt2025.utils.bandits import create_dataset, BanditsDrift, BanditsFlip_eckstein2022, Bandits_Standard
 
 
 # ----------------------- GENERAL CONFIGURATION ----------------------------
@@ -82,7 +82,7 @@ else:
     setup_agent = setup_agent_benchmark
 
 if path_data:
-    n_participants = len(convert_dataset(path_data).xs[:, 0, -1].unique())
+    n_participants = len(csv_to_dataset(path_data).xs[:, 0, -1].unique())
 else:
     n_participants = 100
     

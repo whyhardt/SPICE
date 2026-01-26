@@ -10,7 +10,10 @@ from tqdm import tqdm
 
 from spice.resources.spice_utils import SpiceDataset
 from spice.utils.agent import Agent
-from ..benchmarking.benchmarking_qlearning import QLearning
+
+import sys
+sys.path.append('../..')
+from weinhardt2025.benchmarking.benchmarking_qlearning import QLearning
 
 
 # Setup so that plots will look nice
@@ -46,227 +49,227 @@ class Bandits:
 
 
 class BanditsGeneral(Bandits):
+  """
+  A generalized form of the multi-armed bandit which can enable a drifting paradigm, 
+  reversal learning, reward/no-reward and reward/penalty schedules, and arm-correlations.
+  
+  Features:
+  - Drift: Reward probabilities change gradually over time
+  - Reversals: Sudden swaps in reward probabilities (controlled by hazard rate)
+  - Correlated arms: Reward probabilities can move together
+  - Flexible reward schedules: Binary rewards (0/1) or penalty schedules (-1/+1)
+  """
+  
+  def __init__(
+      self,
+      n_arms: int = 2,
+      init_reward_prob: Optional[Iterable[float]] = None,
+      drift_rate: float = 0.0,
+      hazard_rate: float = 0.0,
+      reward_prob_correlation: float = 0.0,
+      reward_schedule: str = "binary",  # "binary" (0/1) or "penalty" (-1/+1)
+      bounds: Tuple[float, float] = (0.0, 1.0),
+      seed: Optional[int] = None,
+      counterfactual: bool = False,
+  ):  
     """
-    A generalized form of the multi-armed bandit which can enable a drifting paradigm, 
-    reversal learning, reward/no-reward and reward/penalty schedules, and arm-correlations.
-    
-    Features:
-    - Drift: Reward probabilities change gradually over time
-    - Reversals: Sudden swaps in reward probabilities (controlled by hazard rate)
-    - Correlated arms: Reward probabilities can move together
-    - Flexible reward schedules: Binary rewards (0/1) or penalty schedules (-1/+1)
+    Args:
+        n_arms: Number of arms
+        init_reward_prob: Initial reward probabilities for each arm
+        drift_rate: Rate of Gaussian random walk drift (std dev per step)
+        hazard_rate: Probability of reversal on each step
+        reward_prob_correlation: Correlation between arm drifts (-1 to 1)
+        reward_schedule: "binary" for 0/1 rewards, "penalty" for -1/+1 rewards
+        bounds: Min and max values for reward probabilities
+        seed: Random seed for reproducibility
+        counterfactual: If True, the reward for all arms is returned
     """
+
+    super().__init__()
+
+    self.n_arms = n_arms
+    self.drift_rate = drift_rate
+    self.hazard_rate = hazard_rate
+    self.reward_prob_correlation = reward_prob_correlation
+    self.reward_schedule = reward_schedule
+    self.bounds = bounds
+    self.counterfactual = counterfactual
+    # Random number generator
+    self.rng = np.random.default_rng(seed)
     
-    def __init__(
-        self,
-        n_arms: int = 2,
-        init_reward_prob: Optional[Iterable[float]] = None,
-        drift_rate: float = 0.0,
-        hazard_rate: float = 0.0,
-        reward_prob_correlation: float = 0.0,
-        reward_schedule: str = "binary",  # "binary" (0/1) or "penalty" (-1/+1)
-        bounds: Tuple[float, float] = (0.0, 1.0),
-        seed: Optional[int] = None,
-        counterfactual: bool = False,
-    ):  
-        """
-        Args:
-            n_arms: Number of arms
-            init_reward_prob: Initial reward probabilities for each arm
-            drift_rate: Rate of Gaussian random walk drift (std dev per step)
-            hazard_rate: Probability of reversal on each step
-            reward_prob_correlation: Correlation between arm drifts (-1 to 1)
-            reward_schedule: "binary" for 0/1 rewards, "penalty" for -1/+1 rewards
-            bounds: Min and max values for reward probabilities
-            seed: Random seed for reproducibility
-            counterfactual: If True, the reward for all arms is returned
-        """
+    # Initialize reward probabilities
+    if init_reward_prob is None:
+        init_reward_prob = self.rng.uniform(bounds[0], bounds[1], n_arms)
+    else:
+        init_reward_prob = np.array(init_reward_prob)
+        if len(init_reward_prob) != n_arms:
+            raise ValueError(f"init_reward_prob must have length {n_arms}")
+    
+    self.init_reward_prob = np.array(init_reward_prob)
+    self.reward_prob = self.init_reward_prob.copy()
+    
+    # Tracking
+    self.t = 0
+    self.history = {
+        'choices': [],
+        'rewards': [],
+        'reward_probs': [self.reward_prob.copy()],
+        'reversals': []
+    }
+    
+    # For correlated drift (only for 2-armed bandits)
+    if self.reward_prob_correlation != 0 and self.n_arms == 2:
+        # Construct covariance matrix for bivariate normal
+        self.drift_cov = np.array([
+            [1, self.reward_prob_correlation],
+            [self.reward_prob_correlation, 1]
+        ]) * (self.drift_rate ** 2)
+    else:
+        self.drift_cov = None    
 
-        super().__init__()
+  def step(self, choice: int) -> Tuple[float, dict]:
+    """
+    Take a step in the environment: apply drift/reversals, then generate reward for the chosen arm.
+    
+    Args:
+        choice: Index of chosen arm (0 to n_arms-1)
+        
+    Returns:
+        reward: The reward received for the chosen arm (if counterfactual, the reward for all arms is returned)
+    """
+    if choice < 0 or choice >= self.n_arms:
+        raise ValueError(f"Choice must be between 0 and {self.n_arms-1}")
+    
+    # Apply drift and reversals BEFORE reward is generated
+    reversal_occurred = self.apply_dynamics()
+    
+    # Generate reward based on current probabilities
+    if self.counterfactual:
+        # Generate rewards for all arms
+        reward = self.generate_reward(all_arms=True)
+        chosen_reward = reward[choice]
+    else:
+        # Generate reward only for chosen arm
+        reward = self.generate_reward(choice=choice, all_arms=False)
+        chosen_reward = reward
+    
+    # Update history (store the actual reward received for the chosen arm)
+    self.history['choices'].append(choice)
+    self.history['rewards'].append(chosen_reward)
+    self.history['reward_probs'].append(self.reward_prob.copy())
+    self.history['reversals'].append(reversal_occurred)
+    
+    self.t += 1
+    
+    # Return the reward
+    choice_onehot = np.eye(self.n_actions)[choice]
+    if self.counterfactual:
+      return reward
+    else:
+      reward = choice_onehot * reward[choice] + (1-choice_onehot)*-10
+      reward = np.where(reward==-10, np.nan, reward)
+      return reward
 
-        self.n_arms = n_arms
-        self.drift_rate = drift_rate
-        self.hazard_rate = hazard_rate
-        self.reward_prob_correlation = reward_prob_correlation
-        self.reward_schedule = reward_schedule
-        self.bounds = bounds
-        self.counterfactual = counterfactual
-        # Random number generator
-        self.rng = np.random.default_rng(seed)
-        
-        # Initialize reward probabilities
-        if init_reward_prob is None:
-            init_reward_prob = self.rng.uniform(bounds[0], bounds[1], n_arms)
-        else:
-            init_reward_prob = np.array(init_reward_prob)
-            if len(init_reward_prob) != n_arms:
-                raise ValueError(f"init_reward_prob must have length {n_arms}")
-        
-        self.init_reward_prob = np.array(init_reward_prob)
-        self.reward_prob = self.init_reward_prob.copy()
-        
-        # Tracking
-        self.t = 0
-        self.history = {
-            'choices': [],
-            'rewards': [],
-            'reward_probs': [self.reward_prob.copy()],
-            'reversals': []
-        }
-        
-        # For correlated drift (only for 2-armed bandits)
-        if self.reward_prob_correlation != 0 and self.n_arms == 2:
-            # Construct covariance matrix for bivariate normal
-            self.drift_cov = np.array([
-                [1, self.reward_prob_correlation],
-                [self.reward_prob_correlation, 1]
-            ]) * (self.drift_rate ** 2)
-        else:
-            self.drift_cov = None    
+  @property
+  def reward_probs(self) -> np.ndarray:
+    return self.history['reward_probs']
 
-    def step(self, choice: int) -> Tuple[float, dict]:
-          """
-          Take a step in the environment: apply drift/reversals, then generate reward for the chosen arm.
+  @property
+  def n_actions(self) -> int:
+    return self.n_arms   
+        
+  def apply_dynamics(self) -> bool:
+      """Apply drift and check for reversals."""
+      reversal_occurred = False
+      
+      # Check for reversal (sudden swap)
+      if self.hazard_rate > 0 and self.rng.random() < self.hazard_rate:
+          self.apply_reversal()
+          reversal_occurred = True
+      
+      # Apply gradual drift
+      if self.drift_rate > 0:
+          self.apply_drift()
+      
+      return reversal_occurred
+  
+  def apply_reversal(self):
+      """Apply a reversal: swap the reward probabilities."""
+      if self.n_arms == 2:
+          # Simple swap for 2 arms
+          self.reward_prob = self.reward_prob[::-1]
+      else:
+          # For >2 arms, randomly permute
+          self.reward_prob = self.rng.permutation(self.reward_prob)
+  
+  def apply_drift(self):
+      """Apply Gaussian random walk drift to reward probabilities."""
+      if self.drift_cov is not None and self.n_arms == 2:
+          # Correlated drift for 2 arms
+          drift = self.rng.multivariate_normal(np.zeros(2), self.drift_cov)
+      else:
+          # Independent drift
+          drift = self.rng.normal(0, self.drift_rate, self.n_arms)
+      
+      # Apply drift and clip to bounds
+      self.reward_prob = np.clip(
+          self.reward_prob + drift,
+          self.bounds[0],
+          self.bounds[1]
+      )
+  
+  def generate_reward(self, choice: int = None, all_arms: bool = False):
+      """Generate reward based on current probabilities.
+      
+      Args:
+          choice: Index of chosen arm (only needed if all_arms=False)
+          all_arms: If True, generate rewards for all arms; if False, only for chosen arm
           
-          Args:
-              choice: Index of chosen arm (0 to n_arms-1)
-              
-          Returns:
-              reward: The reward received for the chosen arm (if counterfactual, the reward for all arms is returned)
-          """
-          if choice < 0 or choice >= self.n_arms:
-              raise ValueError(f"Choice must be between 0 and {self.n_arms-1}")
-          
-          # Apply drift and reversals BEFORE reward is generated
-          reversal_occurred = self.apply_dynamics()
-          
-          # Generate reward based on current probabilities
-          if self.counterfactual:
-              # Generate rewards for all arms
-              reward = self.generate_reward(all_arms=True)
-              chosen_reward = reward[choice]
+      Returns:
+          float (if all_arms=False) or np.ndarray (if all_arms=True)
+      """
+      if all_arms:
+          # Generate rewards for all arms
+          successes = self.rng.random(self.n_arms) < self.reward_prob
+          if self.reward_schedule == "binary":
+              return successes.astype(float)
+          elif self.reward_schedule == "penalty":
+              return np.where(successes, 1.0, -1.0)
           else:
-              # Generate reward only for chosen arm
-              reward = self.generate_reward(choice=choice, all_arms=False)
-              chosen_reward = reward
-          
-          # Update history (store the actual reward received for the chosen arm)
-          self.history['choices'].append(choice)
-          self.history['rewards'].append(chosen_reward)
-          self.history['reward_probs'].append(self.reward_prob.copy())
-          self.history['reversals'].append(reversal_occurred)
-          
-          self.t += 1
-          
-          # Return the reward
-          if self.counterfactual:
-              # Return full reward array for all arms
-              return reward
+              raise ValueError(f"Unknown reward_schedule: {self.reward_schedule}")
+      else:
+          # Generate reward for chosen arm only
+          success = self.rng.random() < self.reward_prob[choice]
+          if self.reward_schedule == "binary":
+              return 1.0 if success else 0.0
+          elif self.reward_schedule == "penalty":
+              return 1.0 if success else -1.0
           else:
-              # Return formatted reward with -1 for unchosen arm
-              choice_onehot = np.eye(self.n_actions)[choice]
-              return choice_onehot * reward + (1-choice_onehot)*-1
-
-    @property
-    def reward_probs(self) -> np.ndarray:
-      return self.history['reward_probs']
-
-    @property
-    def n_actions(self) -> int:
-      return self.n_arms   
-          
-    def apply_dynamics(self) -> bool:
-        """Apply drift and check for reversals."""
-        reversal_occurred = False
-        
-        # Check for reversal (sudden swap)
-        if self.hazard_rate > 0 and self.rng.random() < self.hazard_rate:
-            self.apply_reversal()
-            reversal_occurred = True
-        
-        # Apply gradual drift
-        if self.drift_rate > 0:
-            self.apply_drift()
-        
-        return reversal_occurred
-    
-    def apply_reversal(self):
-        """Apply a reversal: swap the reward probabilities."""
-        if self.n_arms == 2:
-            # Simple swap for 2 arms
-            self.reward_prob = self.reward_prob[::-1]
-        else:
-            # For >2 arms, randomly permute
-            self.reward_prob = self.rng.permutation(self.reward_prob)
-    
-    def apply_drift(self):
-        """Apply Gaussian random walk drift to reward probabilities."""
-        if self.drift_cov is not None and self.n_arms == 2:
-            # Correlated drift for 2 arms
-            drift = self.rng.multivariate_normal(np.zeros(2), self.drift_cov)
-        else:
-            # Independent drift
-            drift = self.rng.normal(0, self.drift_rate, self.n_arms)
-        
-        # Apply drift and clip to bounds
-        self.reward_prob = np.clip(
-            self.reward_prob + drift,
-            self.bounds[0],
-            self.bounds[1]
-        )
-    
-    def generate_reward(self, choice: int = None, all_arms: bool = False):
-        """Generate reward based on current probabilities.
-        
-        Args:
-            choice: Index of chosen arm (only needed if all_arms=False)
-            all_arms: If True, generate rewards for all arms; if False, only for chosen arm
-            
-        Returns:
-            float (if all_arms=False) or np.ndarray (if all_arms=True)
-        """
-        if all_arms:
-            # Generate rewards for all arms
-            successes = self.rng.random(self.n_arms) < self.reward_prob
-            if self.reward_schedule == "binary":
-                return successes.astype(float)
-            elif self.reward_schedule == "penalty":
-                return np.where(successes, 1.0, -1.0)
-            else:
-                raise ValueError(f"Unknown reward_schedule: {self.reward_schedule}")
-        else:
-            # Generate reward for chosen arm only
-            success = self.rng.random() < self.reward_prob[choice]
-            if self.reward_schedule == "binary":
-                return 1.0 if success else 0.0
-            elif self.reward_schedule == "penalty":
-                return 1.0 if success else -1.0
-            else:
-                raise ValueError(f"Unknown reward_schedule: {self.reward_schedule}")
-    
-    def new_sess(self):
-        """Reset to initial state for a new session."""
-        self.reward_prob = self.init_reward_prob.copy()
-        self.t = 0
-        self.history = {
-            'choices': [],
-            'rewards': [],
-            'reward_probs': [self.reward_prob.copy()],
-            'reversals': []
-        }
-    
-    def get_optimal_arm(self) -> int:
-        """Return the index of the arm with highest current reward probability."""
-        return int(np.argmax(self.reward_prob))
-    
-    def get_history_array(self) -> dict:
-        """Return history as numpy arrays for analysis."""
-        return {
-            'choices': np.array(self.history['choices']),
-            'rewards': np.array(self.history['rewards']),
-            'reward_probs': np.array(self.history['reward_probs']),
-            'reversals': np.array(self.history['reversals'])
-        }            
+              raise ValueError(f"Unknown reward_schedule: {self.reward_schedule}")
+  
+  def new_sess(self):
+      """Reset to initial state for a new session."""
+      self.reward_prob = self.init_reward_prob.copy()
+      self.t = 0
+      self.history = {
+          'choices': [],
+          'rewards': [],
+          'reward_probs': [self.reward_prob.copy()],
+          'reversals': []
+      }
+  
+  def get_optimal_arm(self) -> int:
+      """Return the index of the arm with highest current reward probability."""
+      return int(np.argmax(self.reward_prob))
+  
+  def get_history_array(self) -> dict:
+      """Return history as numpy arrays for analysis."""
+      return {
+          'choices': np.array(self.history['choices']),
+          'rewards': np.array(self.history['rewards']),
+          'reward_probs': np.array(self.history['reward_probs']),
+          'reversals': np.array(self.history['reversals'])
+      }            
 
 class BanditsFlip(Bandits):
   """Env for 2-armed bandit task with reward probs that flip in blocks."""
@@ -317,11 +320,9 @@ class BanditsFlip(Bandits):
     if self.counterfactual:
       return reward
     else:
-      return choice_onehot * reward[choice] + (1-choice_onehot)*-1
-
-  @property
-  def n_actions(self) -> int:
-    return 2
+      reward = choice_onehot * reward[choice] + (1-choice_onehot)*-10
+      reward = np.where(reward==-10, np.nan, reward)
+      return reward
   
 
 class BanditsSwitch(Bandits):
@@ -393,15 +394,9 @@ class BanditsSwitch(Bandits):
     if self.counterfactual:
       return reward
     else:
-      return choice_onehot * reward[choice] + (1-choice_onehot)*-1
-
-  @property
-  def reward_probs(self) -> np.ndarray:
-    return self.reward_probs.copy()
-
-  @property
-  def n_actions(self) -> int:
-    return 2
+      reward = choice_onehot * reward[choice] + (1-choice_onehot)*-10
+      reward = np.where(reward==-10, np.nan, reward)
+      return reward
 
 
 class BanditsDrift(Bandits):
@@ -472,15 +467,9 @@ class BanditsDrift(Bandits):
     if self.counterfactual:
       return reward
     else:
-      return choice_onehot * reward[choice] + (1-choice_onehot)*-1
-
-  @property
-  def reward_probs(self) -> np.ndarray:
-    return self.reward_probs.copy()
-
-  @property
-  def n_actions(self) -> int:
-    return self.n_actions
+      reward = choice_onehot * reward[choice] + (1-choice_onehot)*-10
+      reward = np.where(reward==-10, np.nan, reward)
+      return reward
   
   
 class BanditsDrift_eckstein2024(Bandits):
@@ -549,17 +538,11 @@ class BanditsDrift_eckstein2024(Bandits):
     # Return the reward
     choice_onehot = np.eye(self.n_actions)[choice]
     if self.counterfactual:
-      return self.reward_probs
+      return reward
     else:
-      return choice_onehot * self.reward_probs[choice] + (1-choice_onehot)*-1
-
-  @property
-  def reward_probs(self) -> np.ndarray:
-    return self.reward_probs.copy()
-
-  @property
-  def n_actions(self) -> int:
-    return self.n_actions
+      reward = choice_onehot * reward[choice] + (1-choice_onehot)*-10
+      reward = np.where(reward==-10, np.nan, reward)
+      return reward
 
 
 class BanditsFlip_eckstein2022(Bandits):
@@ -633,11 +616,9 @@ class BanditsFlip_eckstein2022(Bandits):
     if self.counterfactual:
       return reward
     else:
-      return choice_onehot * reward[choice] + (1-choice_onehot)*-1
-
-  @property
-  def n_actions(self) -> int:
-    return 2
+      reward = choice_onehot * reward[choice] + (1-choice_onehot)*-10
+      reward = np.where(reward==-10, np.nan, reward)
+      return reward
   
 
 class Bandits_Standard(Bandits):
@@ -668,11 +649,9 @@ class Bandits_Standard(Bandits):
     if self.counterfactual:
       return reward
     else:
-      return choice_onehot * reward[choice] + (1-choice_onehot)*-1
-
-  @property
-  def n_actions(self) -> int:
-    return 2
+      reward = choice_onehot * reward[choice] + (1-choice_onehot)*-10
+      reward = np.where(reward==-10, np.nan, reward)
+      return reward
 
 
 class BanditSession(NamedTuple):
@@ -773,7 +752,7 @@ def create_dataset(
   verbose=False,
   ) -> tuple[SpiceDataset, list[BanditSession], list[dict[str, float]]]:
   """Generates a behavioral dataset from a given agent and environment.
-
+  
   Args:
     agent: An agent object to generate choices
     environment: An environment object to generate rewards
@@ -809,7 +788,7 @@ def create_dataset(
     # one-hot encoding of choices
     choices = np.eye(agent.n_actions)[choices]
     ys[session] = choices[1:]
-    xs[session] = np.concatenate((choices[:-1], rewards[:-1], torch.zeros((n_trials, 1)), torch.zeros((n_trials, 1)), experiment.session[:, None]), axis=-1)
+    xs[session] = np.concatenate((choices[:-1], rewards[:-1], np.zeros((n_trials, 1)), np.zeros((n_trials, 1)), experiment.session[:, None]), axis=-1)
     
     if isinstance(agent.model, QLearning):
       # add current parameters to list

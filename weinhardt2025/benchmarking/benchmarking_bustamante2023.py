@@ -6,9 +6,8 @@ import pickle
 from typing import List, Optional
 from joblib import Parallel, delayed
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from spice.resources.spice_utils import SpiceDataset
-from spice.utils.convert_dataset import convert_dataset, split_data_along_sessiondim, reshape_data_along_participantdim
+from spice.utils.convert_dataset import csv_to_dataset, split_data_along_sessiondim, reshape_data_along_participantdim
 from spice.utils.agent import Agent
 from spice.resources.spice_training import batch_train
 
@@ -251,11 +250,11 @@ class MarginalValueTheoremModel(torch.nn.Module):
     
 if __name__=='__main__':
     
-    from spice.utils.convert_dataset import convert_dataset
+    from spice.utils.convert_dataset import csv_to_dataset
     
     file = 'weinhardt2025/data/bustamante2023/bustamante2023_processed.csv'
     
-    dataset = convert_dataset(
+    dataset = csv_to_dataset(
         file=file,
         df_participant_id='subject_id',
         df_choice='decision',

@@ -1,11 +1,7 @@
-import sys, os
-
 import torch
-from tqdm import tqdm
-import numpy as np
 
 from spice.resources.spice_utils import SpiceDataset
-from spice.utils.convert_dataset import convert_dataset, split_data_along_timedim, split_data_along_sessiondim
+from spice.utils.convert_dataset import csv_to_dataset, split_data_along_timedim, split_data_along_sessiondim
 from spice.utils.agent import Agent
 
 
@@ -117,9 +113,9 @@ def training(
 def main(path_save_model:str, path_data: str, epochs: int, lr: float, split_ratio: float, device=torch.device('cpu')):
     
     if isinstance(split_ratio, float):
-        dataset_training, dataset_test = split_data_along_timedim(convert_dataset(path_data), split_ratio=split_ratio)
+        dataset_training, dataset_test = split_data_along_timedim(csv_to_dataset(path_data), split_ratio=split_ratio)
     else:
-        dataset_training, dataset_test = split_data_along_sessiondim(convert_dataset(path_data), list_test_sessions=split_ratio)
+        dataset_training, dataset_test = split_data_along_sessiondim(csv_to_dataset(path_data), list_test_sessions=split_ratio)
     
     n_actions = dataset_training.ys.shape[-1]
     n_participants = len(dataset_training.xs[..., -1].unique())

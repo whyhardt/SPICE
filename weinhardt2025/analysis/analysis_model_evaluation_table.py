@@ -14,7 +14,7 @@ from benchmarking import benchmarking_dezfouli2019
 from weinhardt2025.utils.model_evaluation import get_scores
 from spice.utils.agent import get_update_dynamics, Agent
 from spice.utils.agent import setup_agent_rnn, setup_agent_spice
-from spice.utils.convert_dataset import convert_dataset, split_data_along_timedim, split_data_along_sessiondim
+from spice.utils.convert_dataset import csv_to_dataset, split_data_along_timedim, split_data_along_sessiondim
 
 # dataset specific SPICE models
 from spice.resources import rnn, sindy_utils
@@ -68,7 +68,7 @@ path_model_spice = f'params/{study}/spice_{study}_l2_L2VALUE_v2_ep4096.pkl'
 # MODEL COMPARISON PIPELINE
 # -------------------------------------------------------------------------------
 
-dataset = convert_dataset(path_data, additional_inputs=additional_inputs)
+dataset = csv_to_dataset(path_data, additional_inputs=additional_inputs)
 participant_ids = dataset.xs[:, 0, -1].unique().cpu().numpy()
 
 # ------------------------------------------------------------

@@ -7,10 +7,8 @@ import torch
 import matplotlib.pyplot as plt
 import pandas as pd
 
-from spice import SpiceEstimator, convert_dataset, split_data_along_sessiondim, split_data_along_timedim, plot_session
-from spice.precoded import choice, workingmemory
-from weinhardt2025.utils.bandits import AgentQ
-from spice.precoded import workingmemory_multiitem, workingmemory, workingmemory_rewardbinary, choice, rescorlawagner, forgetting
+from spice import SpiceEstimator, csv_to_dataset, split_data_along_sessiondim, split_data_along_timedim, plot_session
+from spice.precoded import workingmemory_multiitem, workingmemory, workingmemory_rewardbinary, choice
 
 
 if __name__=='__main__':
@@ -69,8 +67,8 @@ if __name__=='__main__':
     # args.additional_columns = None,
     # args.test_sessions = "4,8,12"
     
-    # args.data = "weinhardt2025/data/synthetic/synthetic_2_256p_0.csv"
-    # args.model = args.data.replace("data", "params").replace("/synthetic_", "/spice_synthetic_test").replace(".csv", ".pkl")
+    # args.data = "weinhardt2025/data/synthetic/synthetic_32p_0_0.csv"
+    # args.model = args.data.replace("data", "params").replace("/synthetic_", "/spice_synthetic").replace(".csv", ".pkl")
     
     example_participant = 1
     plot_coef_dist = True
@@ -79,7 +77,7 @@ if __name__=='__main__':
         raise ValueError("kwargs train_ratio_time and test_sessions cannot be assigned at the same time.")
     
     print(f"Loading dataset from {args.data}...")
-    dataset = convert_dataset(
+    dataset = csv_to_dataset(
         file=args.data,
         df_participant_id='session',
         additional_inputs=args.additional_columns.split(',') if args.additional_columns else None,
@@ -110,6 +108,8 @@ if __name__=='__main__':
             spice_model = workingmemory
     else:
         spice_model = workingmemory_multiitem
+    
+    spice_model = choice
     
     class_rnn = spice_model.SpiceModel
     spice_config = spice_model.CONFIG

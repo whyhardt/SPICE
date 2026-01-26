@@ -10,7 +10,7 @@ import loss_landscapes
 import loss_landscapes.metrics
 
 from spice.resources.estimator import SpiceEstimator
-from spice.utils.convert_dataset import convert_dataset, split_data_along_timedim
+from spice.utils.convert_dataset import csv_to_dataset, split_data_along_timedim
 from spice.resources.spice_utils import SpiceDataset
 from spice.precoded import BufferWorkingMemoryRNN, BUFFER_WORKING_MEMORY_CONFIG
 
@@ -266,7 +266,7 @@ if __name__ == '__main__':
     model_path = "weinhardt2025/params/eckstein2022/spice_eckstein2022.pkl"
 
     print("Loading dataset...")
-    dataset = convert_dataset(file=data_path)
+    dataset = csv_to_dataset(file=data_path)
     dataset_train, dataset_test = split_data_along_timedim(dataset, 0.8)
 
     n_actions = dataset_train.ys.shape[-1]

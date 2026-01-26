@@ -9,7 +9,7 @@ from copy import deepcopy
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..')))
 
-from spice import convert_dataset, SpiceDataset, SpiceEstimator
+from spice import csv_to_dataset, SpiceDataset, SpiceEstimator
 from weinhardt2025.utils.model_evaluation import log_likelihood, bayesian_information_criterion
 from spice.utils.agent import get_update_dynamics
 from spice.precoded import workingmemory
@@ -23,7 +23,7 @@ data_path = 'weinhardt2025/data/eckstein2022/eckstein2022.csv'
 
 slcn_path = 'weinhardt2025/data/eckstein2022/SLCN.csv'
 # (1a) Read raw CSV and cast 'session' → int
-dataset = convert_dataset(file=data_path, additional_inputs=additional_inputs)
+dataset = csv_to_dataset(file=data_path, additional_inputs=additional_inputs)
 original_df = pd.read_csv(data_path)
 original_df['session'] = original_df['session'].astype(int)
 

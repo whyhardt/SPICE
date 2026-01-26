@@ -9,7 +9,7 @@ from tqdm import tqdm
 from copy import deepcopy
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from spice.utils.convert_dataset import convert_dataset
+from spice.utils.convert_dataset import csv_to_dataset
 from spice.utils.agent import Agent, get_update_dynamics
 from weinhardt2025.utils.model_evaluation import log_likelihood, bayesian_information_criterion, akaike_information_criterion
 from spice.resources.rnn import RLRNN_eckstein2022 as RLRNN
@@ -100,7 +100,7 @@ confusion_matrix = {metric: np.zeros((len(models), len(models))) for metric in m
 for index_simulated_model, simulated_model in enumerate(simulated_models):
     
     # get data and choice probabilities from simulated model
-    dataset = convert_dataset(file=path_data.replace('SIMULATED', simulated_model))
+    dataset = csv_to_dataset(file=path_data.replace('SIMULATED', simulated_model))
     n_sessions = len(dataset)
     metrics_session = {metric: np.zeros((n_sessions, len(models))) for metric in metrics}
 

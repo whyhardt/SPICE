@@ -9,7 +9,7 @@ from copy import deepcopy
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..')))
 
-from spice import convert_dataset, SpiceDataset, SpiceEstimator
+from spice import csv_to_dataset, SpiceDataset, SpiceEstimator
 from weinhardt2025.utils.model_evaluation import log_likelihood, bayesian_information_criterion
 from spice.utils.agent import get_update_dynamics
 from spice.precoded import workingmemory
@@ -21,8 +21,8 @@ additional_inputs = ['diag']  # include diagnosis as an additional input
 data_path = 'weinhardt2025/data/dezfouli2019/dezfouli2019.csv' 
 
 # (1) Read raw CSV and cast 'session' → int
-dataset = convert_dataset(file=data_path, additional_inputs=None)
-dataset_diag = convert_dataset(file=data_path, additional_inputs=additional_inputs)
+dataset = csv_to_dataset(file=data_path, additional_inputs=None)
+dataset_diag = csv_to_dataset(file=data_path, additional_inputs=additional_inputs)
 original_df = pd.read_csv(data_path)
 
 n_actions = dataset.ys.shape[-1]
@@ -229,8 +229,8 @@ print(f"After inner‐join of SINDy + behavior: {len(merged_df)} participants")
 # ─── SECTION 3: CALCULATE MODEL EVALUATION METRICS ─────────────────────────────────────────────────────
 
 # Reload or reuse the same dataset object for testing
-dataset_test = convert_dataset(file=data_path, additional_inputs=None)
-dataset_diag_test = convert_dataset(file=data_path, additional_inputs=additional_inputs)
+dataset_test = csv_to_dataset(file=data_path, additional_inputs=None)
+dataset_diag_test = csv_to_dataset(file=data_path, additional_inputs=additional_inputs)
 
 # Collect metrics for each session, then average per participant
 session_metrics = []
