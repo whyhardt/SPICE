@@ -12,7 +12,7 @@ from spice.utils.agent import Agent, get_update_dynamics
 from spice.precoded import InteractionRNN, INTERACTION_CONFIG
 
 import sys
-sys.path.append('../..')
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 from weinhardt2025.benchmarking import benchmarking_dezfouli2019, benchmarking_eckstein2022
 from weinhardt2025.utils.bandits import create_dataset, BanditsDrift, BanditsFlip_eckstein2022, Bandits_Standard
 

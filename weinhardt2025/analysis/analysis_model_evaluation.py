@@ -6,16 +6,13 @@ import pandas as pd
 from tqdm import tqdm
 from copy import copy
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 # standard methods and classes used for every model evaluation
-from weinhardt2025.utils.model_evaluation import get_scores
 from spice.utils.agent import get_update_dynamics, Agent
 from spice.utils.convert_dataset import csv_to_dataset, split_data_along_timedim, split_data_along_sessiondim
+from spice.precoded import choice, workingmemory, workingmemory_multiitem, workingmemory_rewardbinary
 
-# dataset specific SPICE models
-from spice import precoded
-
-# dataset specific benchmarking models
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
+from weinhardt2025.utils.model_evaluation import get_scores
 from weinhardt2025.benchmarking import benchmarking_dezfouli2019, benchmarking_eckstein2022, benchmarking_gru, benchmarking_eckstein2024, benchmarking_castro2025
 
 # -------------------------------------------------------------------------------
@@ -26,8 +23,8 @@ from weinhardt2025.benchmarking import benchmarking_dezfouli2019, benchmarking_e
 study = 'eckstein2022'
 models_benchmark = ['ApAnBrBcfBch']
 train_test_ratio = 0.8
-sindy_config = precoded.workingmemory_rewardbinary.CONFIG
-rnn_class = precoded.workingmemory_rewardbinary.SpiceModel
+sindy_config = workingmemory_rewardbinary.CONFIG
+rnn_class = workingmemory_rewardbinary.SpiceModel
 additional_inputs = None
 setup_agent_benchmark = benchmarking_eckstein2022.setup_agent_benchmark
 rl_model = benchmarking_eckstein2022.rl_model
@@ -39,8 +36,8 @@ baseline_file = f'mcmc_{study}_ApBr.nc'
 # study = 'eckstein2024'
 # models_benchmark = ['CogFunSearch']
 # train_test_ratio = [1,3]
-# sindy_config = precoded.workingmemory_2.CONFIG
-# rnn_class = precoded.workingmemory_2.SpiceModel
+# sindy_config = workingmemory_2.CONFIG
+# rnn_class = workingmemory_2.SpiceModel
 # additional_inputs = None
 # setup_agent_benchmark = benchmarking_eckstein2024.setup_agent_benchmark
 # # setup_agent_benchmark = benchmarking_castro2025.setup_agent_benchmark
@@ -54,8 +51,8 @@ baseline_file = f'mcmc_{study}_ApBr.nc'
 # study = 'dezfouli2019'
 # train_test_ratio = [3, 6, 9]
 # models_benchmark = ['PhiChiBetaKappaC']
-# sindy_config = precoded.workingmemory_2.CONFIG
-# rnn_class = precoded.workingmemory_2.SpiceModel
+# sindy_config = workingmemory_2.CONFIG
+# rnn_class = workingmemory_2.SpiceModel
 # additional_inputs = []
 # setup_agent_benchmark = benchmarking_dezfouli2019.setup_agent_gql
 # gql_model = benchmarking_dezfouli2019.Dezfouli2019GQL
@@ -67,7 +64,7 @@ baseline_file = f'mcmc_{study}_ApBr.nc'
 # study = 'gershmanB2018'
 # train_test_ratio = [4, 8, 12, 16]
 # models_benchmark = ['PhiBeta']
-# sindy_config = precoded.
+# sindy_config = 
 # rnn_class = rnn.RLRNN_eckstein2022
 # additional_inputs = []
 # # setup_agent_benchmark = benchmarking_dezfouli2019.setup_agent_benchmark

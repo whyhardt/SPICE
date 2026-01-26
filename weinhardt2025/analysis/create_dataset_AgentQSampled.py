@@ -3,9 +3,10 @@ import sys, os
 import numpy as np
 import pandas as pd
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from weinhardt2025.utils.bandits import create_dataset, BanditsDrift, BanditsSwitch
 from spice.utils.agent import Agent, get_update_dynamics
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
+from weinhardt2025.utils.bandits import create_dataset, BanditsDrift, BanditsSwitch
 
 n_sessions = [128]#[16, 32, 64, 128, 256]
 n_trials_per_session = 100

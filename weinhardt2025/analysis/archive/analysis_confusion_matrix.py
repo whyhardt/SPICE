@@ -8,11 +8,12 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 from copy import deepcopy
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from spice.utils.convert_dataset import csv_to_dataset
 from spice.utils.agent import Agent, get_update_dynamics
-from weinhardt2025.utils.model_evaluation import log_likelihood, bayesian_information_criterion, akaike_information_criterion
 from spice.resources.rnn import RLRNN_eckstein2022 as RLRNN
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
+from weinhardt2025.utils.model_evaluation import log_likelihood, bayesian_information_criterion, akaike_information_criterion
 from weinhardt2025.analysis.colormap import truncate_colormap
 from weinhardt2025.benchmarking import benchmarking_eckstein2022, benchmarking_dezfouli2019
 

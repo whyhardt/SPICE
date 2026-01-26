@@ -16,8 +16,8 @@ from spice.utils.convert_dataset import csv_to_dataset, split_data_along_timedim
 from spice.utils.convert_dataset import csv_to_dataset
 from spice.utils.plotting import plot_session
 
-sys.path.append('../..')
-from weinhardt2025.utils.bandits import Agent, check_in_0_1_range
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
+from weinhardt2025.utils.bandits import Agent
 
 
 def rl_update_step(r_values, c_values, choice, reward, params):

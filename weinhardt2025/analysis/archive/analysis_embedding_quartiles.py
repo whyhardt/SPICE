@@ -14,8 +14,6 @@ from copy import deepcopy
 import warnings
 warnings.filterwarnings('ignore')
 
-import sys, os
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from spice.utils.agent import Agent
 from spice.utils.agent import setup_agent_rnn, setup_agent_spice
 from spice.resources.rnn import RLRNN_eckstein2022, RLRNN_dezfouli2019

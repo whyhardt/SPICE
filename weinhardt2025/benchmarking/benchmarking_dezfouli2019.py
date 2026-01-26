@@ -12,7 +12,7 @@ from spice.utils.convert_dataset import csv_to_dataset, split_data_along_session
 from spice.utils.agent import Agent
 from spice.resources.spice_training import batch_train
 
-sys.path.append('../..')
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 from weinhardt2025.utils.config_model_comparison import ConfigModelComparison
 
 
