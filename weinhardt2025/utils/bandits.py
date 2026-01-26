@@ -162,11 +162,11 @@ class BanditsGeneral(Bandits):
     self.t += 1
     
     # Return the reward
-    choice_onehot = np.eye(self.n_actions)[choice]
     if self.counterfactual:
       return reward
     else:
-      reward = choice_onehot * reward[choice] + (1-choice_onehot)*-10
+      choice_onehot = np.eye(self.n_actions)[choice]
+      reward = choice_onehot * reward + (1-choice_onehot)*-10
       reward = np.where(reward==-10, np.nan, reward)
       return reward
 
