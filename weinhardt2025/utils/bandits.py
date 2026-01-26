@@ -11,8 +11,8 @@ from tqdm import tqdm
 from spice.resources.spice_utils import SpiceDataset
 from spice.utils.agent import Agent
 
-import sys
-sys.path.append('../..')
+import sys, os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 from weinhardt2025.benchmarking.benchmarking_qlearning import QLearning
 
 

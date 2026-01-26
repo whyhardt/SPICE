@@ -6,22 +6,19 @@ import pandas as pd
 from tqdm import tqdm
 from copy import copy
 
-from weinhardt2025.benchmarking import benchmarking_gru
-
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 # standard methods and classes used for every model evaluation
-from benchmarking import benchmarking_dezfouli2019
-from weinhardt2025.utils.model_evaluation import get_scores
 from spice.utils.agent import get_update_dynamics, Agent
 from spice.utils.agent import setup_agent_rnn, setup_agent_spice
 from spice.utils.convert_dataset import csv_to_dataset, split_data_along_timedim, split_data_along_sessiondim
-
-# dataset specific SPICE models
 from spice.resources import rnn, sindy_utils
 
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))) 
 # dataset specific benchmarking models
-from benchmarking import benchmarking_dezfouli2019, benchmarking_eckstein2022
-from benchmarking.benchmarking_dezfouli2019 import Dezfouli2019GQL
+from weinhardt2025.benchmarking import benchmarking_gru
+from weinhardt2025.benchmarking import benchmarking_dezfouli2019
+from weinhardt2025.utils.model_evaluation import get_scores
+from weinhardt2025.benchmarking import benchmarking_dezfouli2019, benchmarking_eckstein2022
+from weinhardt2025.benchmarking.benchmarking_dezfouli2019 import Dezfouli2019GQL
 
 l2_values = ['0.0001']#['0', '0.00001', '0.00005', '0.0001', '0.0005', '0.001']
 

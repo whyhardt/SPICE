@@ -6,8 +6,8 @@ from spice.resources.spice_utils import SpiceDataset
 from spice.utils.convert_dataset import dataset_to_csv
 from spice.utils.agent import Agent, get_update_dynamics
 
-# import sys
-# sys.path.append('../..')
+import sys, os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from weinhardt2025.utils.bandits import create_dataset, BanditsDrift, BanditsSwitch
 from weinhardt2025.benchmarking.benchmarking_qlearning import QLearning
 
