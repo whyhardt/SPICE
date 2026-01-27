@@ -17,6 +17,7 @@ list_n_participants = [32, 64, 128, 256, 512]
 n_trials_per_session = 100
 n_blocks_per_session = 4
 n_iterations_per_n_sessions = 8
+n_actions = 2
 sigma = [0.2]
 
 base_name = 'weinhardt2025/data/synthetic/synthetic_*.csv'
@@ -67,15 +68,14 @@ def sample_parameters() -> dict:
     parameters['alpha_penalty'] = np.random.beta(*compute_beta_dist_params(mean=parameters_mean['alpha_penalty'], var=parameter_variance), n_participants)
     # set to symmetric learning if difference between alpha_reward and alpha_penalty lower than threshold
     index_symmetric_learning = np.abs(parameters['alpha_reward'] - parameters['alpha_penalty']) < zero_threshold
-    parameters['alpha_reward'][index_symmetric_learning] = np.mean((parameters['alpha_reward'][index_symmetric_learning], parameters['alpha_penalty'][index_symmetric_learning]))
-    parameters['alpha_penalty'][index_symmetric_learning] = np.mean((parameters['alpha_reward'][index_symmetric_learning], parameters['alpha_penalty'][index_symmetric_learning]))
+    mean_alpha = (parameters['alpha_reward'][index_symmetric_learning] + parameters['alpha_penalty'][index_symmetric_learning]) / 2
+    parameters['alpha_reward'][index_symmetric_learning] = mean_alpha
+    parameters['alpha_penalty'][index_symmetric_learning] = mean_alpha
     
     return {key: param.reshape(-1, 1) for key, param in parameters.items()}
 
 
 for iteration in range(n_iterations_per_n_sessions):
-    if iteration == 0:
-        continue
     for n_participants in list_n_participants:
         for experiment_id in range(len(sigma)):
             dataset_name = base_name.replace('*', f'{n_participants}p_{iteration}_{experiment_id}')
@@ -84,7 +84,7 @@ for iteration in range(n_iterations_per_n_sessions):
             
             # init model
             agent = Agent(QLearning(
-                n_actions=2,
+                n_actions=n_actions,
                 n_participants=n_participants,
                 **{key: torch.tensor(param, dtype=torch.float32) for key, param in parameters.items()}
                 ), use_sindy=True, deterministic=False)
@@ -100,11 +100,26 @@ for iteration in range(n_iterations_per_n_sessions):
                             n_sessions=n_participants,
                             verbose=False,
                             )[0]
-                dataset_block.xs [..., -3] = index_block
+                dataset_block.xs[..., -3] = index_block
                 dataset_block.xs[..., -2] = experiment_id
+                
+                # add sampled parameters to xs as additional inputs
+                parameters_xs, parameters_mean_xs = [], []
+                participant_ids_xs = dataset_block.xs[:, 0, -1].long()
+                for key, param in parameters.items():
+                    parameters_xs.append(torch.tensor(param[participant_ids_xs], dtype=dataset_block.xs.dtype, device=dataset_block.xs.device).reshape(-1, 1, 1).repeat(1, dataset_block.xs.shape[1], 1))  
+                    parameters_mean_xs.append(torch.tensor(parameters_mean[key], dtype=dataset_block.xs.dtype, device=dataset_block.xs.device).reshape(1, 1, 1).repeat(*dataset_block.xs.shape[:-1], 1))              
+                parameters_xs = torch.concat(parameters_xs, dim=-1)
+                parameters_mean_xs = torch.concat(parameters_mean_xs, dim=-1)
+                dataset_block.xs = torch.concat((dataset_block.xs[..., :2*n_actions], parameters_xs, parameters_mean_xs, dataset_block.xs[..., -3:]), dim=-1)
+                
                 xs_session.append(dataset_block.xs)
                 ys_session.append(dataset_block.ys)
-            dataset = SpiceDataset(xs=torch.concat(xs_session), ys=torch.concat(ys_session))
+            xs = torch.concat(xs_session)
+            dataset = SpiceDataset(xs=xs, ys=torch.concat(ys_session))
             
-            dataset_to_csv(dataset=dataset, path=dataset_name)
+            parameter_cols = [key for key in parameters]
+            parameter_mean_cols = ['mean_'+key for key in parameters]
+            
+            dataset_to_csv(dataset=dataset, path=dataset_name, additional_inputs=parameter_cols+parameter_mean_cols)
             print(f'Data saved to {dataset_name}')

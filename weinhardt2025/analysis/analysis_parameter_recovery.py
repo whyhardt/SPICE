@@ -9,8 +9,11 @@ from copy import copy
 from sklearn.linear_model import LinearRegression
 from scipy import stats
 
-from spice.utils.agent import setup_agent
-from spice.precoded import workingmemory, choice
+from spice import Agent, SpiceEstimator, csv_to_dataset
+from spice.precoded import workingmemory_rewardbinary, workingmemory, choice
+
+sys.path.append(os.path.abspath(os.path.join(os.path.__file__, '..', '..')))
+from weinhardt2025.benchmarking.benchmarking_qlearning import QLearning
 
 
 save_plots = False
@@ -19,8 +22,8 @@ USE_STRUCTURAL_FILTERING = False  # Structural filtering enabled
 # spice_model = choice
 # base_name_params = 'weinhardt2025/params/synthetic/spice_synthetic_choice_SESSp_IT.pkl'
 
-spice_model = workingmemory
-base_name_params = 'weinhardt2025/params/synthetic/spice_synthetic_test2_SESSp_IT.pkl'
+spice_class = workingmemory_rewardbinary
+base_name_params = 'weinhardt2025/params/synthetic/spice_synthetic_SESSp_IT_0.pkl'
 
 random_sampling = [0.25, 0.5, 0.75]
 n_sessions = [256]#[16, 32, 64, 128, 256]
@@ -32,28 +35,7 @@ coef_threshold = 0.05
 # create a mapping of ground truth parameters to library parameters
 # -----------------------------------------------------------------------------------------------
 
-mapping_value_reward_chosen = {
-    'value_reward_chosen': lambda alpha_reward, alpha_penalty, beta_reward: 1-alpha_penalty if beta_reward > 0 else 0,
-    'reward[t]': lambda alpha_reward, alpha_penalty, beta_reward: beta_reward*alpha_reward,
-    'value_reward_chosen*reward[t]': lambda alpha_reward, alpha_penalty, beta_reward: alpha_penalty-alpha_reward if beta_reward > 0 else 0,
-    }
-
-mapping_value_reward_not_chosen = {
-    '1': lambda forget_rate, beta_reward: beta_reward*0.5*forget_rate,
-    'value_reward_not_chosen': lambda forget_rate, beta_reward: 1-forget_rate if beta_reward > 0 else 0,
-    }
-
-mapping_value_choice = {
-    'value_choice': lambda alpha_choice, beta_choice: 1-alpha_choice if beta_choice > 0 else 0,
-    'choice[t]': lambda alpha_choice, beta_choice: beta_choice*alpha_choice,
-    }
-
-
-mapping_libraries = {
-    'value_reward_chosen': mapping_value_reward_chosen,
-    'value_reward_not_chosen': mapping_value_reward_not_chosen,
-    'value_choice': mapping_value_choice,
-}
+parameter_names = ['beta_reward', 'beta_choice', 'alpha_reward', 'alpha_penalty', 'alpha_choice', 'forget_rate']
 
 mapping_variable_names = {
     '1': '1',
@@ -61,22 +43,15 @@ mapping_variable_names = {
     'value_reward_not_chosen': r'$q_{t}$',
     'value_choice': r'$c_{t}$',
     'reward': r'$r$',
+    'reward_chosen_success': r'$r_{c}$',
+    'reward_chosen_fail': r'$(1-r_{c})$',
+    'choice': r'$c$',
 }
 
 
 # -----------------------------------------------------------------------------------------------
 # analysis auxiliary functions
 # -----------------------------------------------------------------------------------------------
-
-def argument_extractor(data, library: str):
-    if library == 'value_reward_chosen':
-        return data['alpha_reward'], data['alpha_penalty'], data['beta_reward']
-    elif library == 'value_reward_not_chosen':
-        return data['forget_rate'], data['beta_reward']
-    elif library == 'value_choice':
-        return data['alpha_choice'], data['beta_choice']
-    else:
-        raise ValueError(f'The argument extractor for the library {library} is not implemented.')
 
 def identified_params(true_coefs: np.ndarray, recovered_coefs: np.ndarray):
     zero_division_offset = 1e-9
@@ -107,29 +82,21 @@ def n_true_params(true_coefs):
     # same goes for alphas.
     # Caution: the values will also change for true_coefs outside this function. In this scenario it's fine because these values should be modelled as 0s anyways
 
+    n_params_active = len(parameter_names)
+    
     # reward-based parameter group
     if true_coefs['beta_reward'] == 0 or (true_coefs['alpha_reward'] == 0 and true_coefs['alpha_penalty'] == 0):
-        true_coefs['alpha_reward'] = 0
-        true_coefs['alpha_penalty'] = 0
-        true_coefs['forget_rate'] = 0
-        true_coefs['beta_reward'] = 0
+        n_params_active -= 4  # no beta_reward, alpha_reward, alpha_penalty, forget_rate
 
     # set alpha_penalty to 0 if alpha_penalty == alpha_reward
-    if true_coefs['alpha_reward'] == true_coefs['alpha_penalty']:
-        true_coefs['alpha_penalty'] = 0
+    elif true_coefs['alpha_reward'] == true_coefs['alpha_penalty']:
+        n_params_active -= 1  # no extra alpha_penalty; only applicable if not first case
 
     # choice-based parameter group
     if true_coefs['beta_choice'] == 0 or true_coefs['alpha_choice'] == 0:
-        true_coefs['beta_choice'] = 0
-        true_coefs['alpha_choice'] = 0
+        n_params_active -= 2  # no beta_choice, alpha_choice
         
-    return np.sum([
-        true_coefs['beta_reward'] != 0,
-        true_coefs['alpha_reward'] != 0,
-        true_coefs['alpha_penalty'] != 0,
-        true_coefs['forget_rate'] != 0,
-        true_coefs['beta_choice'] != 0,
-        ]).astype(int)
+    return n_params_active
 
 def compute_structural_mask(spice_agents, n_participants, mapping_libraries):
     """
@@ -207,12 +174,10 @@ def compute_structural_mask(spice_agents, n_participants, mapping_libraries):
 # configuration
 # -----------------------------------------------------------------------------------------------
 
-base_name_data = 'weinhardt2025/data/synthetic/synthetic_2_SESSp_IT.csv'
+base_name_data = 'weinhardt2025/data/synthetic/synthetic_SESSp_IT.csv'
 kw_participant_id = 'session'
 path_plots = 'analysis/plots_parameter_recovery'
-
-# ground truth parameters (alpha_reward, alpha_penalty, forget_rate, beta_reward, beta_choice)
-n_params_q = 6
+n_params_q = len(parameter_names)
 
 # -----------------------------------------------------------------------------------------------
 # Initialization of storages
@@ -249,34 +214,29 @@ for index_sess, sess in enumerate(n_sessions):
         path_data = base_name_data.replace('SESS', str(sess)).replace('IT', str(it))
 
         # setup of ground truth model from current dataset
-        data = pd.read_csv(path_data)
-        participant_ids = np.unique(data[kw_participant_id].values)
+        dataset = csv_to_dataset(path_data, additional_inputs=parameter_names)
+        n_actions = dataset.ys.shape[-1]
+        participant_ids = dataset.xs[:, 0, -1].unique()
+        parameters = {key: dataset.xs[:, 0, 2*n_actions+index_key].unique(sorted=False) for index_key, key in enumerate(parameter_names)}
+        qlearning = QLearning(
+            n_actions=n_actions,
+            n_participants=len(participant_ids),
+            **parameters,
+        )
 
-        # Load all runs for structural filtering
-        spice_agents = []
-        for run in range(n_runs):
-            path_spice = base_name_params.replace('SESS', str(sess)).replace('IT', str(it)).replace('RUN', str(run))
-            spice_agent = setup_agent(
-                class_rnn=spice_model.SpiceModel,
-                path_model=path_spice,
-                spice_config=spice_model.CONFIG,
-            )[0]
-            spice_agents.append(spice_agent)
-
-        # Compute structural masks across all runs
-        if USE_STRUCTURAL_FILTERING:
-            print(f"\n{'='*60}")
-            print(f"Computing structural masks for {sess} participants, iteration {it}")
-            print(f"{'='*60}")
-            structural_masks = compute_structural_mask(spice_agents, sess, mapping_libraries)
-        else:
-            structural_masks = None
-
-        # Use first run as the primary agent for analysis (all runs should give similar results after filtering)
-        spice_agent = spice_agents[0]
+        # load trained spice model
+        path_spice = base_name_params.replace('SESS', str(sess)).replace('IT', str(it)).replace('RUN', str(run))
+        spice_esimator = SpiceEstimator(
+            rnn_class=spice_class.SpiceModel, 
+            spice_config=spice_class.CONFIG, 
+            n_actions=n_actions,
+            n_participants=len(participant_ids),
+            sindy_library_polynomial_degree=2,
+            )
+        spice_esimator.load_spice(path_spice)
+        spice_model = spice_esimator.spice_agent.model
 
         for index_participant, participant in enumerate(participant_ids):
-            spice_agent.new_sess(participant_id=participant)
             
             # get all true parameters of current participant from dataset
             data_coefs_all = data.loc[data[kw_participant_id]==participant].iloc[-1]
@@ -296,12 +256,6 @@ for index_sess, sess in enumerate(n_sessions):
                 # sindy_coefs_presence_library = np.abs(sindy_coefs_library) > coef_threshold
                 sindy_coefs_library *= np.abs(sindy_coefs_library) > coef_threshold
                 
-                # Apply structural filtering if enabled
-                if USE_STRUCTURAL_FILTERING and structural_masks is not None:
-                    # Only keep coefficients that pass the structural mask
-                    # sindy_coefs_presence_library = sindy_coefs_presence_library * structural_masks[library]
-                    sindy_coefs_library *= structural_masks[library]
-
                 feature_names_library = spice_agent.model.sindy_candidate_terms[library]
                 # sindy_coefs_array += (sindy_coefs_library * sindy_coefs_presence_library).tolist()
                 sindy_coefs_array += sindy_coefs_library.tolist()

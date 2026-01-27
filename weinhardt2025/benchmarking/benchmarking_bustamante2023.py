@@ -258,7 +258,7 @@ if __name__=='__main__':
         file=file,
         df_participant_id='subject_id',
         df_choice='decision',
-        df_reward='reward',
+        df_feedback='reward',
         df_block='overall_round',
         additional_inputs=['harvest_duration', 'travel_duration'],   
     )

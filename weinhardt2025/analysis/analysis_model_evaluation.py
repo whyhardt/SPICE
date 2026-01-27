@@ -96,7 +96,7 @@ dataset = csv_to_dataset(
     df_participant_id='session',
     df_block='block',
     df_choice='choice',
-    df_reward='reward',
+    df_feedback='reward',
     )
 # use these participant_ids if not defined later
 participant_ids = dataset.xs[:, 0, -1].unique().cpu().numpy()

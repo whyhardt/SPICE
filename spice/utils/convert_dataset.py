@@ -20,7 +20,7 @@ def csv_to_dataset(
     df_block: str = 'block',
     df_experiment_id: str = 'experiment',
     df_choice: str = 'choice',
-    df_reward: str = 'reward',
+    df_feedback: str = 'reward',
     additional_inputs: List[str] = None,
     timeshift_additional_inputs: bool = False,
     remove_failed_trials: bool = True,
@@ -79,14 +79,14 @@ def csv_to_dataset(
     n_actions = int(df[df_choice].max() + 1)
     
     # get all columns with rewards
-    if df_reward + '_0' in df.columns:
+    if df_feedback + '_0' in df.columns:
         # counterfactual dataset
         reward_cols = []
         for reward_column in df.columns:
-            if df_reward in reward_column:
+            if df_feedback in reward_column:
                 reward_cols.append(reward_column)
     else:
-        reward_cols = [df_reward]
+        reward_cols = [df_feedback]
     
     # normalize rewards (exclude -1 which represents missing/NaN values)
     r_min, r_max = [], []

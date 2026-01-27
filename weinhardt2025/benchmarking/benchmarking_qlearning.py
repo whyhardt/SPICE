@@ -15,6 +15,7 @@ class QLearning(BaseRNN):
                  alpha_penalty: Union[float, torch.Tensor] = 0.5,
                  forget_rate: Union[float, torch.Tensor] = 0.,
                  beta_choice: Union[float, torch.Tensor] = 0.,
+                 alpha_choice: Union[float, torch.Tensor] = 1.,
                  counterfactual_learning: Union[float, torch.Tensor] = 0.,
                  fit_full_model: bool = False,
                  **kwargs,
@@ -22,9 +23,9 @@ class QLearning(BaseRNN):
         
         spice_config = SpiceConfig(
             library_setup={
-                'value_reward_chosen': ['reward'],
-                'value_reward_not_chosen': ['chosen_reward_success', 'chosen_reward_fail'],
-                'value_choice': ['choice'],
+                'value_reward_chosen': ['reward[t]'],
+                'value_reward_not_chosen': ['reward_chosen_success', 'reward_chosen_fail'],
+                'value_choice': ['choice[t]'],
             },
             memory_state=['value_reward', 'value_choice'],
         )
@@ -44,13 +45,14 @@ class QLearning(BaseRNN):
         self.alpha_penalty = torch.full((self.n_participants, self.n_experiments), alpha_penalty) if isinstance(alpha_penalty, float) else alpha_penalty
         self.forget_rate = torch.full((self.n_participants, self.n_experiments), forget_rate) if isinstance(forget_rate, float) else forget_rate
         self.beta_choice = torch.full((self.n_participants, self.n_experiments), beta_choice) if isinstance(beta_choice, float) else beta_choice
+        self.alpha_choice = torch.full((self.n_participants, self.n_experiments), alpha_choice) if isinstance(alpha_choice, float) else alpha_choice
         self.countefactual_learning = torch.full((self.n_participants, self.n_experiments), counterfactual_learning) if isinstance(counterfactual_learning, float) else counterfactual_learning
         
         # basic SPICE stuff
         self.rnn_training_finished = True  # rnn not necessary here
         self.setup_module(key_module='value_reward_chosen', input_size=1)
         self.setup_module(key_module='value_reward_not_chosen', input_size=2)
-        self.setup_module(key_module='value_choice', input_size=1)
+        self.setup_module(key_module='value_choice', input_size=1, include_bias=False)
         
         if not fit_full_model:
             self.update_coefficients(
@@ -60,6 +62,7 @@ class QLearning(BaseRNN):
                     'alpha_penalty': self.alpha_penalty.clone(),
                     'forget_rate': self.forget_rate.clone(),
                     'beta_choice': self.beta_choice.clone(),
+                    'alpha_choice': self.alpha_choice.clone(),
                     'countefactual_learning': self.countefactual_learning.clone(),
                 },
                 participant_id=torch.arange(0, self.n_participants),
@@ -124,7 +127,7 @@ class QLearning(BaseRNN):
         for parameter in parameters:
             if hasattr(self, parameter):
                 model_parameters = getattr(self, parameter)
-                model_parameters[participant_id][:, experiment_id] = parameters[parameter]
+                model_parameters[participant_id.unsqueeze(1), experiment_id] = parameters[parameter]
                 setattr(self, parameter, model_parameters)
             else:
                 raise KeyError(f"The QLearning model has no attribute {parameter}.")
@@ -135,30 +138,30 @@ class QLearning(BaseRNN):
             #   update = (alpha_penalty + (alpha_reward - alpha_penalty)*reward)*(reward-value_reward_chosen[t])
             #   update = -alpha_penalty value_reward_chosen[t] + alpha_reward reward + (alpha_reward-alpha_penalty) value_reward_chosen[t]*reward
             'value_reward_chosen': (
-                ('value_reward_chosen', -self.alpha_penalty[participant_id][:, experiment_id]),
-                ('reward', self.beta_reward[participant_id][:, experiment_id]*self.alpha_reward[participant_id][:, experiment_id]),
-                ('value_reward_chosen*reward', self.alpha_penalty[participant_id][:, experiment_id]-self.alpha_reward[participant_id][:, experiment_id]),
+                ('value_reward_chosen', -self.alpha_penalty[participant_id.unsqueeze(1), experiment_id]),
+                ('reward[t]', self.beta_reward[participant_id.unsqueeze(1), experiment_id]*self.alpha_reward[participant_id.unsqueeze(1), experiment_id]),
+                ('value_reward_chosen*reward[t]', self.alpha_penalty[participant_id.unsqueeze(1), experiment_id]-self.alpha_reward[participant_id.unsqueeze(1), experiment_id]),
                 ),
             # forgetting:
             #   update = forget_rate*(self.state['value_reward']|_{t=0}-value_reward_not_chosen[t])
             #   update = forget_rate*Q_init + -forget_rate value_reward_not_chosen[t]
             'value_reward_not_chosen': (
-                ('1', self.beta_reward[participant_id][:, experiment_id]*self.forget_rate[participant_id][:, experiment_id]*self.state['value_reward'][0, 0]),
-                ('value_reward_not_chosen', -self.forget_rate[participant_id][:, experiment_id]),
-                ('chosen_reward_success', -self.beta_reward[participant_id][:, experiment_id]*self.countefactual_learning[participant_id][:, experiment_id]),
-                ('chosen_reward_fail', self.beta_reward[participant_id][:, experiment_id]*self.countefactual_learning[participant_id][:, experiment_id]),
+                ('1', self.beta_reward[participant_id.unsqueeze(1), experiment_id]*self.forget_rate[participant_id.unsqueeze(1), experiment_id]*self.state['value_reward'][0, 0]),
+                ('value_reward_not_chosen', -self.forget_rate[participant_id.unsqueeze(1), experiment_id]),
+                ('reward_chosen_success', -self.beta_reward[participant_id.unsqueeze(1), experiment_id]*self.countefactual_learning[participant_id.unsqueeze(1), experiment_id]),
+                ('reward_chosen_fail', self.beta_reward[participant_id.unsqueeze(1), experiment_id]*self.countefactual_learning[participant_id.unsqueeze(1), experiment_id]),
             ),
             # choice perseverance:
             #   update = choice_perseverance choice
             'value_choice': (
-                ('value_choice', -1),
-                ('choice', self.beta_choice[participant_id][:, experiment_id]),
+                ('value_choice', -self.alpha_choice[participant_id.unsqueeze(1), experiment_id]),
+                ('choice[t]', self.beta_choice[participant_id.unsqueeze(1), experiment_id]*self.alpha_choice[participant_id.unsqueeze(1), experiment_id]),
             ) 
         }
         
         for module in self.get_modules():
             self.sindy_coefficients[module].requires_grad = False
-            self.sindy_coefficients[module].data[participant_id.unsqueeze(1), experiment_id] = torch.nn.Parameter(torch.zeros_like(self.sindy_coefficients[module][participant_id][:, experiment_id]))
+            self.sindy_coefficients[module].data[participant_id.unsqueeze(1), experiment_id] = torch.nn.Parameter(torch.zeros_like(self.sindy_coefficients[module][participant_id.unsqueeze(1), experiment_id]))
             for candidate_term, value in coefficient_maps[module]:
                 self.sindy_coefficients[module].data[participant_id.unsqueeze(1), experiment_id, 0, self.sindy_candidate_terms[module].index(candidate_term)] = value
 
