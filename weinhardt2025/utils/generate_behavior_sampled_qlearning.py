@@ -4,7 +4,7 @@ import torch
 
 from spice.resources.spice_utils import SpiceDataset
 from spice.utils.convert_dataset import dataset_to_csv
-from spice.utils.agent import Agent, get_update_dynamics
+from spice.utils.agent import Agent
 
 import sys, os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
@@ -13,10 +13,10 @@ from weinhardt2025.utils.bandits import create_dataset, BanditsDrift, BanditsSwi
 from weinhardt2025.benchmarking.benchmarking_qlearning import QLearning
 
 
-list_n_participants = [32]#, 64, 128, 256, 512]
+list_n_participants = [32, 64, 128, 256, 512]
 n_trials_per_session = 100
 n_blocks_per_session = 4
-n_iterations_per_n_sessions = 1
+n_iterations_per_n_sessions = 8
 sigma = [0.2]
 
 base_name = 'weinhardt2025/data/synthetic/synthetic_*.csv'
@@ -74,6 +74,8 @@ def sample_parameters() -> dict:
 
 
 for iteration in range(n_iterations_per_n_sessions):
+    if iteration == 0:
+        continue
     for n_participants in list_n_participants:
         for experiment_id in range(len(sigma)):
             dataset_name = base_name.replace('*', f'{n_participants}p_{iteration}_{experiment_id}')
