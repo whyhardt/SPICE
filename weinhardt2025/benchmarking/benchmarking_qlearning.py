@@ -53,7 +53,7 @@ class QLearning(BaseRNN):
         self.setup_module(key_module='value_choice', input_size=1)
         
         if not fit_full_model:
-            self.udpate_coefficients(
+            self.update_coefficients(
                 parameters={
                     'beta_reward': self.beta_reward.clone(),
                     'alpha_reward': self.alpha_reward.clone(),
@@ -114,7 +114,7 @@ class QLearning(BaseRNN):
         
         return spice_signals.logits, self.state
 
-    def udpate_coefficients(self, parameters: dict, participant_id: Union[int, torch.Tensor] = None, experiment_id: Union[int, torch.Tensor] = None):
+    def update_coefficients(self, parameters: dict, participant_id: Union[int, torch.Tensor] = None, experiment_id: Union[int, torch.Tensor] = None):
         if participant_id is None:
             participant_id = torch.arange(0, self.n_participants)
         
@@ -127,7 +127,7 @@ class QLearning(BaseRNN):
                 model_parameters[participant_id][:, experiment_id] = parameters[parameter]
                 setattr(self, parameter, model_parameters)
             else:
-                raise KeyError(f"The QLearning model has not attribute {parameter}.")
+                raise KeyError(f"The QLearning model has no attribute {parameter}.")
             
         # specific to spice-based q-learning model
         coefficient_maps = {
@@ -158,9 +158,9 @@ class QLearning(BaseRNN):
         
         for module in self.get_modules():
             self.sindy_coefficients[module].requires_grad = False
-            self.sindy_coefficients[module][participant_id][:, experiment_id] *= 0
+            self.sindy_coefficients[module].data[participant_id.unsqueeze(1), experiment_id] = torch.nn.Parameter(torch.zeros_like(self.sindy_coefficients[module][participant_id][:, experiment_id]))
             for candidate_term, value in coefficient_maps[module]:
-                self.sindy_coefficients[module][participant_id][:, experiment_id, 0, self.sindy_candidate_terms[module].index(candidate_term)] = value
+                self.sindy_coefficients[module].data[participant_id.unsqueeze(1), experiment_id, 0, self.sindy_candidate_terms[module].index(candidate_term)] = value
 
     def eval(self, *args, **kwargs):
         super().eval()
