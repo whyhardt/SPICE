@@ -73,9 +73,9 @@ class SpiceModel(BaseRNN):
         
         # Value learning module (slow updates)
         # Can use recent reward history to modulate learning
-        self.setup_module(key_module='value_reward_chosen', input_size=4+self.embedding_size, dropout=dropout, include_bias=False)  # -> 21 terms
-        self.setup_module(key_module='value_reward_not_chosen', input_size=3+self.embedding_size, dropout=dropout, include_bias=False)  # -> 21 terms
-        self.setup_module(key_module='value_choice', input_size=4+self.embedding_size, dropout=dropout, include_bias=False) # -> 21 terms; bias not necessary when module is applied equally to all options
+        self.setup_module(key_module='value_reward_chosen', input_size=4+self.embedding_size, dropout=dropout, include_bias=True)  # -> 21 terms
+        self.setup_module(key_module='value_reward_not_chosen', input_size=3+self.embedding_size, dropout=dropout, include_bias=True)  # -> 21 terms
+        self.setup_module(key_module='value_choice', input_size=4+self.embedding_size, dropout=dropout, include_bias=True) # -> 21 terms; bias not necessary when module is applied equally to all options
         # self.setup_module(key_module='logits', input_size=2+self.embedding_size, dropout=dropout, include_bias=False, fit_linear=False, include_state=False) # -> 8 terms
         
     def forward(self, inputs, prev_state=None, batch_first=False):

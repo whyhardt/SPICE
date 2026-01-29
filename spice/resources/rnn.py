@@ -14,7 +14,7 @@ class GRUModule(nn.Module):
         self.linear_in = nn.Linear(input_size, 8+input_size)
         self.dropout = nn.Dropout(p=dropout)
         self.gru_in = nn.GRU(8+input_size, 1)
-        # self.linear_out = nn.Linear(1, 1)
+        self.linear_out = nn.Linear(1, 1)
         
         #Simple weight initialization for all parameters
         self.initialize_weights()
@@ -34,7 +34,7 @@ class GRUModule(nn.Module):
         x = inputs[..., 1:]
         y = self.dropout(self.linear_in(x))
         next_state = self.gru_in(y,state)[1].view(-1, n_actions, 1)
-        # next_state = self.linear_out(next_state)
+        next_state = self.linear_out(next_state)
         return next_state
     
     

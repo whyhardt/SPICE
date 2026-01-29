@@ -10,7 +10,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '.
 from weinhardt2025.benchmarking.benchmarking_qlearning import QLearning
 
 
-path_data = 'weinhardt2025/data/synthetic/synthetic_PARp_IT_0.csv'
+path_data = 'weinhardt2025/data/synthetic/synthetic_PARp_IT_0_new.csv'
 spice_model = workingmemory
 rl_parameters = ['beta_reward', 'beta_choice', 'alpha_reward', 'alpha_penalty', 'alpha_choice', 'forget_rate']
 participants = [256]#[32, 64, 128, 256, 512]
@@ -81,7 +81,7 @@ for index_par, par in enumerate(participants):
             n_participants=par,
             sindy_library_polynomial_degree=2,
         )
-        fitted_model.load_spice(path_data.replace('PAR', str(par)).replace('IT', str(it)).replace('data', 'params').replace('/synthetic_', '/spice_synthetic_').replace('.csv', '.pkl'))
+        fitted_model.load_spice(path_data.replace('PAR', str(par)).replace('IT', str(it)).replace('data', 'params').replace('/synthetic_', '/spice_synthetic_').replace('.csv', '_OLD.pkl'))
         fitted_model = fitted_model.rnn_model
 
         # put all coefs into storage

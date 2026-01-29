@@ -14,11 +14,10 @@ from spice.precoded import workingmemory, choice
 
 
 save_plots = False
-USE_STRUCTURAL_FILTERING = False  # Structural filtering enabled
 
 spice_model = workingmemory
-base_name_params = 'weinhardt2025/params/synthetic/spice_synthetic_SESSp_IT_0.pkl'
-base_name_data = 'weinhardt2025/data/synthetic/synthetic_SESSp_IT_0.csv'
+base_name_params = 'weinhardt2025/params/synthetic/spice_synthetic_SESSp_IT_0_new_OLD.pkl'
+base_name_data = 'weinhardt2025/data/synthetic/synthetic_SESSp_IT_0_new.csv'
 kw_participant_id = 'participant'
 path_plots = 'analysis/plots_parameter_recovery'
 
