@@ -14,19 +14,19 @@ CONFIG = SpiceConfig(
     library_setup={
         # Value learning can depend on recent reward sequence (working memory)
         'value_reward_chosen': [
-            'reward[t]',           
+            'reward',           
             'reward[t-1]', 
             'reward[t-2]',
             'reward[t-3]',
         ],
         'value_reward_not_chosen': [
-            'reward_chosen',
+            # 'reward_chosen',
             'reward[t-1]', 
             'reward[t-2]',
             'reward[t-3]',
             ],
         'value_choice': [
-            'choice[t]',
+            'choice',
             'choice[t-1]', 
             'choice[t-2]',
             'choice[t-3]',
@@ -73,17 +73,17 @@ class SpiceModel(BaseRNN):
         
         # Value learning module (slow updates)
         # Can use recent reward history to modulate learning
-        self.setup_module(key_module='value_reward_chosen', input_size=4+self.embedding_size, dropout=dropout)  # -> 21 terms
-        self.setup_module(key_module='value_reward_not_chosen', input_size=4+self.embedding_size, dropout=dropout)  # -> 21 terms
+        self.setup_module(key_module='value_reward_chosen', input_size=4+self.embedding_size, dropout=dropout, include_bias=False)  # -> 21 terms
+        self.setup_module(key_module='value_reward_not_chosen', input_size=3+self.embedding_size, dropout=dropout, include_bias=False)  # -> 21 terms
         self.setup_module(key_module='value_choice', input_size=4+self.embedding_size, dropout=dropout, include_bias=False) # -> 21 terms; bias not necessary when module is applied equally to all options
         # self.setup_module(key_module='logits', input_size=2+self.embedding_size, dropout=dropout, include_bias=False, fit_linear=False, include_state=False) # -> 8 terms
-
+        
     def forward(self, inputs, prev_state=None, batch_first=False):
         spice_signals = self.init_forward_pass(inputs, prev_state, batch_first)
         
         # perform time-invariant computations
         participant_embedding = self.participant_embedding(spice_signals.participant_ids)
-        rewards_chosen = spice_signals.rewards.nan_to_num(0).sum(dim=-1, keepdim=True).repeat(1, 1, self.n_actions)
+        # rewards_chosen = spice_signals.rewards.nan_to_num(0).sum(dim=-1, keepdim=True).repeat(1, 1, self.n_actions)
         
         # perform time-variant computations
         for timestep in spice_signals.timesteps:
@@ -108,7 +108,7 @@ class SpiceModel(BaseRNN):
                 key_state='value_reward',
                 action_mask=1-spice_signals.actions[timestep],
                 inputs=(
-                    rewards_chosen[timestep],
+                    # rewards_chosen[timestep],
                     self.state['buffer_reward_1'],  # Recent reward history
                     self.state['buffer_reward_2'],
                     self.state['buffer_reward_3'],

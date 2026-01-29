@@ -1,8 +1,6 @@
 from ..resources.estimator import SpiceConfig
 from ..resources.rnn import BaseRNN
 
-import torch
-
 
 # -------------------------------------------------------------------------------
 # RL MODEL WITH 
@@ -33,15 +31,15 @@ class SpiceModel(BaseRNN):
         # set up the participant-embedding layer
         self.participant_embedding = self.setup_embedding(self.n_participants, self.embedding_size, dropout=dropout)
         self.experiment_embedding = self.setup_embedding(self.n_experiments, 1)
-
+                
         # set up the submodules
-        self.setup_module(key_module='value_reward_chosen', input_size=1+self.embedding_size+1, dropout=dropout)
-        self.setup_module(key_module='value_reward_not_chosen', input_size=0+self.embedding_size+1, dropout=dropout)
-        self.setup_module(key_module='value_choice', input_size=1+self.embedding_size+1, dropout=dropout)
+        self.setup_module(key_module='value_reward_chosen', input_size=1+self.embedding_size+1, dropout=dropout, include_bias=True)
+        self.setup_module(key_module='value_reward_not_chosen', input_size=0+self.embedding_size+1, dropout=dropout, include_bias=True)
+        self.setup_module(key_module='value_choice', input_size=1+self.embedding_size+1, dropout=dropout, include_bias=False)
         
     def forward(self, inputs, prev_state=None, batch_first=False):
         """Forward pass of the RNN
-
+        
         Args:
             inputs (torch.Tensor): includes all necessary inputs (action, reward, participant id) to the RNN to let it compute the next action
             prev_state (Tuple[torch.Tensor], optional): That's the previous memory state of the RNN containing the reward-based value. Defaults to None.

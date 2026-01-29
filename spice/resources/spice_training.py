@@ -55,7 +55,7 @@ def print_training_status(
     
     if scheduler is not None:
         progress_msg += f'; LR: {scheduler.get_last_lr()[-1]:.2e}'
-        if isinstance(scheduler, (ReduceLROnPlateau, ReduceLROnPlateauRNNOnly, ReduceOnPlateauWithRestarts)):
+        if isinstance(scheduler, (ReduceLROnPlateau, ReduceOnPlateauWithRestarts)):
             progress_msg += f"; Metric: {scheduler.best:.7f}; Bad epochs: {scheduler.num_bad_epochs}/{scheduler.patience}"
     
     status_lines.append(progress_msg)
@@ -123,133 +123,83 @@ def print_training_status(
     return current_line_count
 
 
-class ReduceLROnPlateauRNNOnly:
-    """
-    ReduceLROnPlateau scheduler that only applies to RNN parameters (param_groups[1]),
-    leaving SINDy coefficient learning rates unchanged.
-    """
-    def __init__(self, optimizer, mode='min', factor=0.9, patience=100, min_lr=0, verbose=False):
-        self.optimizer = optimizer
-        self.mode = mode
-        self.factor = factor
-        self.patience = patience
-        self.min_lr = min_lr
-        self.verbose = verbose
-
-        self.best = float('inf') if mode == 'min' else float('-inf')
-        self.num_bad_epochs = 0
-        self.last_lr = [group['lr'] for group in optimizer.param_groups]
-
-    def step(self, metrics):
-        """Update learning rate based on the validation loss (only for RNN params)."""
-        current = metrics
-
-        if self.mode == 'min':
-            is_better = current < self.best
-        else:
-            is_better = current > self.best
-
-        if is_better:
-            self.best = current
-            self.num_bad_epochs = 0
-        else:
-            self.num_bad_epochs += 1
-
-        if self.num_bad_epochs >= self.patience:
-            self.reduce_lr()
-            self.num_bad_epochs = 0
-
-    def reduce_lr(self):
-        """Reduce learning rate only for RNN parameters (param_groups[1])."""
-        # Only update param_groups[1] (RNN parameters), skip param_groups[0] (SINDy coefficients)
-        if len(self.optimizer.param_groups) > 1:
-            old_lr = self.optimizer.param_groups[1]['lr']
-            new_lr = max(old_lr * self.factor, self.min_lr)
-            self.optimizer.param_groups[1]['lr'] = new_lr
-            self.last_lr[1] = new_lr
-
-            if self.verbose and new_lr != old_lr:
-                print(f'Reducing RNN learning rate to {new_lr:.4e}')
-
-    def get_last_lr(self):
-        """Return the last computed learning rates for all parameter groups."""
-        return [group['lr'] for group in self.optimizer.param_groups]
-
-
 class ReduceOnPlateauWithRestarts:
-    def __init__(self, optimizer, min_lr, factor, patience):
-        """
-        Plateau-based LR scheduler with restarts to the base learning rate when min_lr is hit.
+    """
+    Plateau-based LR scheduler with restarts for RNN parameters only.
 
+    When the learning rate hits min_lr and stays there for patience
+    epochs without improvement, it resets to the base learning rate.
+    SINDy coefficients (param_groups[0]) are not affected.
+    """
+    def __init__(self, optimizer, min_lr, factor, patience, restart: bool):
+        """
         Parameters:
         - optimizer: Optimizer instance.
         - min_lr: The minimum learning rate after reductions.
         - factor: Multiplicative factor to reduce the LR on plateau.
-        - patience: Number of epochs with no improvement before reducing the LR.
+        - patience: Number of epochs with no improvement before reducing/restarting LR.
         """
         self.optimizer = optimizer
         self.min_lr = min_lr
-        self.base_lrs = [group['initial_lr'] for group in optimizer.param_groups]  # Extract base LRs
+        self.base_lr_rnn = optimizer.param_groups[1]['lr'] if len(optimizer.param_groups) > 1 else optimizer.param_groups[0]['lr']
         self.factor = factor
         self.patience = patience
-        self.base_patience = patience
+        self.restart = restart
         
-        self.best = float('inf')  # Initialize the best validation loss as infinity
-        self.num_bad_epochs = 0  # Initialize the count of bad epochs
+        self.best = float('inf')
+        self.num_bad_epochs = 0
         self.num_cycles_completed = 0
-        
-        # Store the current learning rate for each parameter group
-        self.current_lrs = [group['lr'] for group in optimizer.param_groups]
 
     def step(self, metrics):
         """
         Update the learning rate based on the validation loss.
+        Only affects RNN parameters (param_groups[1]).
         """
         if metrics < self.best:
             self.best = metrics
-            self.num_bad_epochs = 0  # Reset bad epochs counter
+            self.num_bad_epochs = 0
         else:
             self.num_bad_epochs += 1
-        
-        # Check if patience is exceeded
-        if self.num_bad_epochs > self.patience:
-            self.reduce_lr()  # Reduce learning rates
-            self.adjust_patience()  # Adjust the patience according to the learning rate
-            self.num_bad_epochs = 0  # Reset bad epochs counter
 
-    def reduce_lr(self):
-        """
-        Reduce the learning rate for all parameter groups by the given factor.
-        """
-        for i, param_group in enumerate(self.optimizer.param_groups):            
-            
-            old_lr = param_group['lr']
-            new_lr = max(old_lr * self.factor, self.min_lr)
-            
-            # Check if the new learning rate has hit min_lr and reset if so
-            if new_lr <= self.min_lr:
-                param_group['lr'] = self.base_lrs[i]
-                self.num_cycles_completed += 1
+        if self.num_bad_epochs > self.patience:
+            current_lr = self._get_rnn_lr()
+            if current_lr <= self.min_lr and self.restart:
+                self._restart_lr()
             else:
-                param_group['lr'] = new_lr
-    
-    def adjust_patience(self):
-        """
-        Adjust the patience according to the learning rate.
-        """
-        # self.patience = max([self.patience * (1+self.num_cycles_completed) if self.get_lr()[-1] < self.base_lrs[-1] else self.base_patience, 200])
-        self.patience = self.patience * 2 if self.get_lr()[-1] < self.base_lrs[-1] else self.base_patience
+                self._reduce_lr()
+            self.num_bad_epochs = 0
+
+    def _get_rnn_lr(self):
+        """Get current RNN learning rate."""
+        if len(self.optimizer.param_groups) > 1:
+            return self.optimizer.param_groups[1]['lr']
+        return self.optimizer.param_groups[0]['lr']
+
+    def _reduce_lr(self):
+        """Reduce the learning rate for RNN parameters only (param_groups[1])."""
+        if len(self.optimizer.param_groups) > 1:
+            param_group = self.optimizer.param_groups[1]
+        else:
+            param_group = self.optimizer.param_groups[0]
+
+        old_lr = param_group['lr']
+        new_lr = max(old_lr * self.factor, self.min_lr)
+        param_group['lr'] = new_lr
+
+    def _restart_lr(self):
+        """Restart the learning rate for RNN parameters back to base LR."""
+        if len(self.optimizer.param_groups) > 1:
+            self.optimizer.param_groups[1]['lr'] = self.base_lr_rnn
+        else:
+            self.optimizer.param_groups[0]['lr'] = self.base_lr_rnn
+        self.num_cycles_completed += 1
 
     def get_lr(self):
-        """
-        Retrieve the current learning rates for all parameter groups.
-        """
+        """Retrieve the current learning rates for all parameter groups."""
         return [group['lr'] for group in self.optimizer.param_groups]
-    
+
     def get_last_lr(self):
-        """
-        Retrieve the last computed learning rates for all parameter groups.
-        """
+        """Retrieve the last computed learning rates for all parameter groups."""
         return [group['lr'] for group in self.optimizer.param_groups]
     
 
@@ -580,14 +530,14 @@ def fit_model(
     # Initialize learning rate scheduler (only for RNN parameters, not SINDy coefficients)
     lr_scheduler = None
     if scheduler:
-        lr_scheduler = ReduceLROnPlateauRNNOnly(
-            optimizer,
-            mode='min',
-            factor=0.5,
-            patience=100,
-            min_lr=1e-4,
+        lr_scheduler = ReduceOnPlateauWithRestarts(
+            optimizer=optimizer,
+            min_lr=1e-5,
+            factor=0.1,
+            patience=50,
+            restart=True,
         )
-
+        
     if epochs == 0:
         continue_training = False
         msg = 'No training epochs specified. Model will not be trained.'

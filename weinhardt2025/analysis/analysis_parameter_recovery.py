@@ -1,685 +1,366 @@
-import os, sys
-
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib.gridspec import GridSpec
-import pandas as pd
-import seaborn as sns
-from copy import copy
-from sklearn.linear_model import LinearRegression
-from scipy import stats
+import torch
 
-from spice import Agent, SpiceEstimator, csv_to_dataset
-from spice.precoded import workingmemory_rewardbinary, workingmemory, choice
+from spice import SpiceEstimator, csv_to_dataset
+from spice.precoded import workingmemory, choice
 
-sys.path.append(os.path.abspath(os.path.join(os.path.__file__, '..', '..')))
+import sys, os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 from weinhardt2025.benchmarking.benchmarking_qlearning import QLearning
 
 
-save_plots = False
-USE_STRUCTURAL_FILTERING = False  # Structural filtering enabled
-
-# spice_model = choice
-# base_name_params = 'weinhardt2025/params/synthetic/spice_synthetic_choice_SESSp_IT.pkl'
-
-spice_class = workingmemory_rewardbinary
-base_name_params = 'weinhardt2025/params/synthetic/spice_synthetic_SESSp_IT_0.pkl'
-
-random_sampling = [0.25, 0.5, 0.75]
-n_sessions = [256]#[16, 32, 64, 128, 256]
+path_data = 'weinhardt2025/data/synthetic/synthetic_PARp_IT_0.csv'
+spice_model = workingmemory
+rl_parameters = ['beta_reward', 'beta_choice', 'alpha_reward', 'alpha_penalty', 'alpha_choice', 'forget_rate']
+participants = [256]#[32, 64, 128, 256, 512]
 iterations = 1
-n_runs = 4  # Number of runs per dataset (0, 1, 2, 3)
-coef_threshold = 0.05
-
-# -----------------------------------------------------------------------------------------------
-# create a mapping of ground truth parameters to library parameters
-# -----------------------------------------------------------------------------------------------
-
-parameter_names = ['beta_reward', 'beta_choice', 'alpha_reward', 'alpha_penalty', 'alpha_choice', 'forget_rate']
-
-mapping_variable_names = {
-    '1': '1',
-    'value_reward_chosen': r'$q_{t}$',
-    'value_reward_not_chosen': r'$q_{t}$',
-    'value_choice': r'$c_{t}$',
-    'reward': r'$r$',
-    'reward_chosen_success': r'$r_{c}$',
-    'reward_chosen_fail': r'$(1-r_{c})$',
-    'choice': r'$c$',
-}
+coefficient_threshold = 0.05
+n_coefficients_fitted_model = 62
 
 
-# -----------------------------------------------------------------------------------------------
-# analysis auxiliary functions
-# -----------------------------------------------------------------------------------------------
+# get coefficients storage
+true_coefs = np.zeros((len(participants), participants[-1]*iterations, n_coefficients_fitted_model))
+fitted_coefs = np.zeros((len(participants), participants[-1]*iterations, n_coefficients_fitted_model))
+active_params = np.zeros((len(participants), participants[-1]*iterations, 1))
 
-def identified_params(true_coefs: np.ndarray, recovered_coefs: np.ndarray):
-    zero_division_offset = 1e-9
+def count_active_params(dict_rl_parameters):
     
-    # check which true coefficients are zeros and non-zeros
-    non_zero_features = true_coefs != 0
-    zero_features = true_coefs == 0
+    n_participants = dict_rl_parameters[rl_parameters[0]].shape[0]
+    n_active_params = torch.zeros((n_participants, 1)) + len(rl_parameters)
     
-    # count all correctly and non-correctly identified parameters
-    true_pos = np.sum(recovered_coefs[non_zero_features] != 0)
-    false_neg = np.sum(recovered_coefs[non_zero_features] == 0)
-    true_neg = np.sum(recovered_coefs[zero_features] == 0)
-    false_pos = np.sum(recovered_coefs[zero_features] != 0)
+    n_active_params = torch.where(torch.logical_or(dict_rl_parameters['beta_reward'] == 0, dict_rl_parameters['alpha_reward'] == 0), n_active_params-4, n_active_params)  # if beta_reward == 0: no alpha_reward, alpha_penalty, forget_rate as well
+    n_active_params = torch.where(torch.logical_or(dict_rl_parameters['beta_choice'] == 0, dict_rl_parameters['alpha_choice'] == 0), n_active_params-2, n_active_params)  # if beta_choice == 0: no alpha_choice as well
     
-    # get identification rates of correctly and non-correctly identified parameters
-    true_pos_rel = (true_pos+zero_division_offset) / (np.sum(non_zero_features)+zero_division_offset)
-    false_neg_rel = (false_neg+zero_division_offset) / (np.sum(non_zero_features)+zero_division_offset)
-    true_neg_rel = (true_neg+zero_division_offset) / (np.sum(zero_features)+zero_division_offset)
-    false_pos_rel = (false_pos+zero_division_offset) / (np.sum(zero_features)+zero_division_offset)
+    n_active_params = torch.where(dict_rl_parameters['alpha_penalty'] == 0, n_active_params-1, n_active_params)
+    n_active_params = torch.where(dict_rl_parameters['forget_rate'] == 0, n_active_params-1, n_active_params)
     
-    return (true_pos, true_neg, false_pos, false_neg), (true_pos_rel, true_neg_rel, false_pos_rel, false_neg_rel)
+    return n_active_params.reshape(n_participants).numpy()
 
-def n_true_params(true_coefs):
-    # Count number of non-zero coefficients in AgentQ-parameters
-    # Filter for parameter groups
-    # group parameters by being either reward- or choice-based
-    # if beta of one group is 0, then the other parameters can be considered also as 0s because they won't have any influence on the result
-    # same goes for alphas.
-    # Caution: the values will also change for true_coefs outside this function. In this scenario it's fine because these values should be modelled as 0s anyways
+# -------------------------------------------------------------------------------
+# Get true and fitted SINDy coefficients
+# -------------------------------------------------------------------------------
 
-    n_params_active = len(parameter_names)
-    
-    # reward-based parameter group
-    if true_coefs['beta_reward'] == 0 or (true_coefs['alpha_reward'] == 0 and true_coefs['alpha_penalty'] == 0):
-        n_params_active -= 4  # no beta_reward, alpha_reward, alpha_penalty, forget_rate
-
-    # set alpha_penalty to 0 if alpha_penalty == alpha_reward
-    elif true_coefs['alpha_reward'] == true_coefs['alpha_penalty']:
-        n_params_active -= 1  # no extra alpha_penalty; only applicable if not first case
-
-    # choice-based parameter group
-    if true_coefs['beta_choice'] == 0 or true_coefs['alpha_choice'] == 0:
-        n_params_active -= 2  # no beta_choice, alpha_choice
-        
-    return n_params_active
-
-def compute_structural_mask(spice_agents, n_participants, mapping_libraries):
-    """
-    Compute structural coefficient mask across multiple runs.
-
-    Based on playground.py filtering logic:
-    - Population frequency > 0.5 (present in >50% of participants)
-    - Consistency across runs (std < 0.25)
-    - Statistical significance (p < 0.05)
-    - Effect size (Cohen's d > 0.3)
-
-    Args:
-        spice_agents: List of SPICE agents from different runs
-        n_participants: Number of participants
-        mapping_libraries: Dictionary mapping library names
-
-    Returns:
-        Dictionary mapping library names to structural masks
-    """
-    n_runs = len(spice_agents)
-
-    # Collect coefficients from all runs
-    coefs_all_libs = {}
-
-    for library in mapping_libraries:
-        coefs_runs = []
-        for spice_agent in spice_agents:
-            # Get coefficients for this library across all participants
-            coefs_library = spice_agent.model.sindy_coefficients[library][:, 0].detach().cpu().numpy()
-            presence_library = spice_agent.model.sindy_coefficients_presence[library][:, 0].detach().cpu().numpy()
-            coefs_runs.append(coefs_library * presence_library)
-
-        coefs_all_libs[library] = np.stack(coefs_runs)  # Shape: (n_runs, n_participants, n_terms)
-
-    # Compute structural mask for each library
-    structural_masks = {}
-
-    for library, coefs_all in coefs_all_libs.items():
-        # 1. Population-level frequency (within each run)
-        freq_within_run = np.mean(coefs_all != 0, axis=1)  # (n_runs, n_terms)
-        mean_pop_freq = np.mean(freq_within_run, axis=0)   # (n_terms,)
-        std_pop_freq = np.std(freq_within_run, axis=0)
-
-        # 2. Population-level significance test
-        n_terms = coefs_all.shape[2]
-        p_values_pop = np.zeros(n_terms)
-        for c in range(n_terms):
-            coef_values = coefs_all[:, :, c].flatten()
-            t_stat, p_val = stats.ttest_1samp(coef_values, 0)
-            p_values_pop[c] = p_val
-
-        # 3. Effect size at population level
-        mean_magnitude = np.mean(np.abs(coefs_all), axis=(0, 1))
-        cohen_d_pop = mean_magnitude / (np.std(coefs_all, axis=(0, 1)) + 1e-9)
-
-        # 4. Identify structural coefficients
-        structural_mask = (
-            (mean_pop_freq > 0.5) &        # Present in >50% of participants
-            (std_pop_freq < 0.25) &         # Consistent across runs
-            (p_values_pop < 0.05) &         # Significantly non-zero
-            (cohen_d_pop > 0.3)             # Medium to large effect size
-        )
-
-        structural_masks[library] = structural_mask
-
-        print(f"\nLibrary: {library}")
-        print(f"  Total coefficient positions: {len(structural_mask)}")
-        print(f"  Structural coefficients: {np.sum(structural_mask)}")
-        print(f"  Structural coefficient indices: {np.where(structural_mask)[0]}")
-
-    return structural_masks
-
-
-# -----------------------------------------------------------------------------------------------
-# configuration
-# -----------------------------------------------------------------------------------------------
-
-base_name_data = 'weinhardt2025/data/synthetic/synthetic_SESSp_IT.csv'
-kw_participant_id = 'session'
-path_plots = 'analysis/plots_parameter_recovery'
-n_params_q = len(parameter_names)
-
-# -----------------------------------------------------------------------------------------------
-# Initialization of storages
-# -----------------------------------------------------------------------------------------------
-
-# parameter correlation coefficients
-true_params = []#[np.zeros((sess*iterations, n_candidate_terms)) for sess in n_sessions]
-recovered_params = []#[np.zeros((sess*iterations, n_candidate_terms)) for sess in n_sessions]
-
-# parameter identification matrices
-true_pos_count = np.zeros((len(n_sessions)+len(random_sampling), n_params_q))
-true_neg_count = np.zeros((len(n_sessions)+len(random_sampling),  n_params_q))
-false_pos_count = np.zeros((len(n_sessions)+len(random_sampling),  n_params_q))
-false_neg_count = np.zeros((len(n_sessions)+len(random_sampling),  n_params_q))
-
-true_pos_rates = np.zeros((len(n_sessions)+len(random_sampling), iterations, n_params_q))
-true_neg_rates = np.zeros((len(n_sessions)+len(random_sampling), iterations,  n_params_q))
-false_pos_rates = np.zeros((len(n_sessions)+len(random_sampling), iterations,  n_params_q))
-false_neg_rates = np.zeros((len(n_sessions)+len(random_sampling), iterations,  n_params_q))
-
-true_pos_rates_count = np.zeros((len(n_sessions)+len(random_sampling), iterations, n_params_q))
-true_neg_rates_count = np.zeros((len(n_sessions)+len(random_sampling), iterations, n_params_q))
-false_pos_rates_count = np.zeros((len(n_sessions)+len(random_sampling), iterations, n_params_q))
-false_neg_rates_count = np.zeros((len(n_sessions)+len(random_sampling), iterations, n_params_q))
-
-
-# -----------------------------------------------------------------------------------------------
-# Start analysis
-# -----------------------------------------------------------------------------------------------
-
-random_sampling, n_sessions = tuple(random_sampling), tuple(n_sessions)
-for index_sess, sess in enumerate(n_sessions):
+for index_par, par in enumerate(participants):
     for it in range(iterations):
-        path_data = base_name_data.replace('SESS', str(sess)).replace('IT', str(it))
 
-        # setup of ground truth model from current dataset
-        dataset = csv_to_dataset(path_data, additional_inputs=parameter_names)
+        # load dataset and collect true rl parameters
+        dataset = csv_to_dataset(file=path_data.replace('PAR', str(par)).replace('IT', str(it)), additional_inputs=rl_parameters)
         n_actions = dataset.ys.shape[-1]
-        participant_ids = dataset.xs[:, 0, -1].unique()
-        parameters = {key: dataset.xs[:, 0, 2*n_actions+index_key].unique(sorted=False) for index_key, key in enumerate(parameter_names)}
-        qlearning = QLearning(
+        mask = dataset.xs[:, 0, -3] == 0  # block -> 0; each participant only once
+        rl_parameters_dataset = {param: dataset.xs[mask, 0, n_actions*2+index_param].unsqueeze(-1) for index_param, param in enumerate(rl_parameters)}
+
+        # load true model
+        true_model = QLearning(
             n_actions=n_actions,
-            n_participants=len(participant_ids),
-            **parameters,
+            n_participants=par,
+            **rl_parameters_dataset,
         )
-
-        # load trained spice model
-        path_spice = base_name_params.replace('SESS', str(sess)).replace('IT', str(it)).replace('RUN', str(run))
-        spice_esimator = SpiceEstimator(
-            rnn_class=spice_class.SpiceModel, 
-            spice_config=spice_class.CONFIG, 
+        
+        # load fitted model
+        fitted_model = SpiceEstimator(
+            rnn_class=spice_model.SpiceModel,
+            spice_config=spice_model.CONFIG,
             n_actions=n_actions,
-            n_participants=len(participant_ids),
+            n_participants=par,
             sindy_library_polynomial_degree=2,
-            )
-        spice_esimator.load_spice(path_spice)
-        spice_model = spice_esimator.spice_agent.model
+        )
+        fitted_model.load_spice(path_data.replace('PAR', str(par)).replace('IT', str(it)).replace('data', 'params').replace('/synthetic_', '/spice_synthetic_').replace('.csv', '.pkl'))
+        fitted_model = fitted_model.rnn_model
 
-        for index_participant, participant in enumerate(participant_ids):
-            
-            # get all true parameters of current participant from dataset
-            data_coefs_all = data.loc[data[kw_participant_id]==participant].iloc[-1]
-            index_params = n_true_params(copy(data_coefs_all)) - 1
+        # put all coefs into storage
+        index_coefs_all = 0
+        for module in true_model.get_modules():
+            n_terms_module = fitted_model.sindy_coefficients[module].shape[-1]
 
-            sindy_coefs_array = []
-            data_coefs_array = []
-            feature_names = []
-            
-            index_all_candidate_terms = 0
-            for index_library, library in enumerate(mapping_libraries):
-                # get sindy coefficients
-                sindy_coefs_library = spice_agent.model.sindy_coefficients[library][index_participant, 0, 0].detach().cpu().numpy()
-                # sindy_coefs_presence_library = spice_agent.model.sindy_coefficients_presence[library][index_participant][0].detach().cpu().numpy()
-                # correct for delta-update rule (x[t+1] = x[t] + input*sindy_coefs) in sindy's next state computation (see: spice.resources.rnn.BaseRNN.forward_sindy)
-                sindy_coefs_library[1] += 1
-                # sindy_coefs_presence_library = np.abs(sindy_coefs_library) > coef_threshold
-                sindy_coefs_library *= np.abs(sindy_coefs_library) > coef_threshold
-                
-                feature_names_library = spice_agent.model.sindy_candidate_terms[library]
-                # sindy_coefs_array += (sindy_coefs_library * sindy_coefs_presence_library).tolist()
-                sindy_coefs_array += sindy_coefs_library.tolist()
-                feature_names += feature_names_library
-                
-                # translate data coefficient to sindy coefficients
-                data_coefs_library = np.zeros_like(sindy_coefs_library)
-                for index_feature, feature in enumerate(feature_names_library):
-                    data_coefs_library[index_feature] = mapping_libraries[library].get(feature, lambda *args: 0)(*argument_extractor(data_coefs_all, library))
-                data_coefs_array += data_coefs_library.tolist()
+            # get candidate terms from true model to map into fitted model coef positions
+            candidate_terms_fitted_model = fitted_model.sindy_candidate_terms[module]
+            candidate_terms_true_model = true_model.sindy_candidate_terms[module]
+            for term in candidate_terms_true_model:
+                if term not in candidate_terms_fitted_model:
+                    raise ValueError(f"Candidate term {term} of the true model was not found among the candidate terms of the fitted model ({candidate_terms_fitted_model}).")
 
-            sindy_coefs_array = np.array(sindy_coefs_array)
-            data_coefs_array = np.array(data_coefs_array)
-            data_coefs_array *= np.abs(data_coefs_array) > coef_threshold
-            
-            # initialize param storages if empty
-            if len(true_params) == 0:
-                for s in n_sessions:
-                    true_params.append(np.zeros((s*iterations, len(feature_names))))
-                    recovered_params.append(np.zeros((s*iterations, len(feature_names))))
-            
-            # add true and recovered parameters for later parameter correlation
-            true_params[index_sess][sess*it+index_participant] = data_coefs_array
-            recovered_params[index_sess][sess*it+index_participant] = sindy_coefs_array
-            
-            # compute number of correctly and non-correctly identified parameters
-            identification_count, identification_rates = identified_params(data_coefs_array, sindy_coefs_array)
-            true_pos, true_neg, false_pos, false_neg = identification_count
-            true_pos_rel, true_neg_rel, false_pos_rel, false_neg_rel = identification_rates
-            
-            # add identification counts
-            true_pos_count[index_sess, index_params] += true_pos
-            true_neg_count[index_sess, index_params] += true_neg
-            false_pos_count[index_sess, index_params] += false_pos
-            false_neg_count[index_sess, index_params] += false_neg
-            
-            # add identification rates
-            true_pos_rates[index_sess, it, index_params] += true_pos_rel
-            true_neg_rates[index_sess, it, index_params] += true_neg_rel
-            false_pos_rates[index_sess, it, index_params] += false_pos_rel
-            false_neg_rates[index_sess, it, index_params] += false_neg_rel
-            
-            # add identification rate counter
-            true_pos_rates_count[index_sess, it, index_params] += 1
-            true_neg_rates_count[index_sess, it, index_params] += 1
-            false_pos_rates_count[index_sess, it, index_params] += 1
-            false_neg_rates_count[index_sess, it, index_params] += 1
-            
-            # sample random coefficients for biggest dataset
-            if sess == max(n_sessions):
-                # sample random coefficients for each random sampling strategy
-                for index_rnd, rnd in enumerate(random_sampling):
-                    rnd_coefs = np.random.choice((1, 0), p=(rnd, 1-rnd), size=len(sindy_coefs_array))
-                    rnd_betas = np.random.choice((1, 0), p=(rnd, 1-rnd), size=1)
-                    
-                    # do same stuff as with sindy coefs
-                    # compute number of correctly and non-correctly identified parameters
-                    identification_count, identification_rates = identified_params(data_coefs_array, rnd_coefs*rnd_betas)
-                    true_pos, true_neg, false_pos, false_neg = identification_count
-                    true_pos_rel, true_neg_rel, false_pos_rel, false_neg_rel = identification_rates
-                    
-                    # add identification counts
-                    true_pos_count[len(n_sessions)+index_rnd, index_params] += true_pos
-                    true_neg_count[len(n_sessions)+index_rnd, index_params] += true_neg
-                    false_pos_count[len(n_sessions)+index_rnd, index_params] += false_pos
-                    false_neg_count[len(n_sessions)+index_rnd, index_params] += false_neg
+                index_coef = candidate_terms_fitted_model.index(term)
+                # Extract coefficient values: shape is (n_participants, n_experiments, n_ensemble, n_terms)
+                true_coef_vals = true_model.sindy_coefficients[module][:, 0, 0, candidate_terms_true_model.index(term)].detach().cpu().numpy()
+                true_coefs[index_par, par*it:par*(it+1), index_coefs_all+index_coef] = true_coef_vals
 
-                    # add identification rates
-                    true_pos_rates[len(n_sessions)+index_rnd, it, index_params] += true_pos_rel if not np.isnan(true_pos_rel) else 0
-                    true_neg_rates[len(n_sessions)+index_rnd, it, index_params] += true_neg_rel if not np.isnan(true_neg_rel) else 0
-                    false_pos_rates[len(n_sessions)+index_rnd, it, index_params] += false_pos_rel if not np.isnan(false_pos_rel) else 0
-                    false_neg_rates[len(n_sessions)+index_rnd, it, index_params] += false_neg_rel if not np.isnan(false_neg_rel) else 0
-                    
-                    # add identification rate counter
-                    true_pos_rates_count[len(n_sessions)+index_rnd, it, index_params] += 1 if not np.isnan(true_pos_rel) else 0
-                    true_neg_rates_count[len(n_sessions)+index_rnd, it, index_params] += 1 if not np.isnan(true_neg_rel) else 0
-                    false_pos_rates_count[len(n_sessions)+index_rnd, it, index_params] += 1 if not np.isnan(false_pos_rel) else 0
-                    false_neg_rates_count[len(n_sessions)+index_rnd, it, index_params] += 1 if not np.isnan(false_neg_rel) else 0
+            # place fitted module coefs in storage
+            fitted_coef_vals = fitted_model.sindy_coefficients[module][:, 0, 0, :].detach().cpu().numpy()
+            fitted_coefs[index_par, par*it:par*(it+1), index_coefs_all:index_coefs_all+n_terms_module] = fitted_coef_vals
 
+            index_coefs_all += n_terms_module
 
-# ------------------------------------------------
-# post-processing coefficient correlation
-# ------------------------------------------------
+        # store number of active params per participant
+        active_params[index_par, par*it:par*(it+1), 0] = count_active_params(rl_parameters_dataset)
 
-# remove outliers in both true and recovered coefs where recovered coefficients are bigger than a big threshold (e.g. abs(recovered_coeff) > 1e1)
-# coef_threshold = 1e2
-# removed_params = 0
-# for index_sess in range(len(n_sessions)):
-#     mask_keep = np.all(recovered_params[index_sess] <= coef_threshold, axis=1)
+# -------------------------------------------------------------------------------
+# POST-PROCESSING: Compute classification metrics
+# -------------------------------------------------------------------------------
 
-#     # Count the number of removed rows
-#     removed_params += np.sum(~mask_keep)
-    
-#     # Filter out the rows exceeding the threshold
-#     true_params[index_sess] = true_params[index_sess][mask_keep]
-#     recovered_params[index_sess] = recovered_params[index_sess][mask_keep]
+# Apply threshold to determine active coefficients
+true_active = np.abs(true_coefs) > coefficient_threshold
+fitted_active = np.abs(fitted_coefs) > coefficient_threshold
 
-# if removed_params > 0:
-#     print(f'excluded parameters because of high values: {removed_params}')
+# Get unique active param counts for x-axis
+max_active_params = int(np.nanmax(active_params)) + 1
+n_param_bins = max_active_params
 
-# zero_division_offset = 1e-9
-# for index_sess in range(len(n_sessions)):
+# Initialize metric storage: (n_participant_sizes, n_active_param_bins)
+true_pos_count = np.zeros((len(participants), n_param_bins))
+true_neg_count = np.zeros((len(participants), n_param_bins))
+false_pos_count = np.zeros((len(participants), n_param_bins))
+false_neg_count = np.zeros((len(participants), n_param_bins))
+sample_count = np.zeros((len(participants), n_param_bins))
 
-#     # normalizing params
-#     v_max = np.max(true_params[index_sess], axis=0, keepdims=True) + zero_division_offset
-#     v_min = np.min(true_params[index_sess], axis=0, keepdims=True)
-    
-#     true_params[index_sess] = (true_params[index_sess] - v_min) / (v_max - v_min)
-#     recovered_params[index_sess] = (recovered_params[index_sess] - v_min) / (v_max - v_min)
+# Compute confusion matrix counts
+for index_par in range(len(participants)):
+    par = participants[index_par]
+    n_samples = par * iterations
 
+    for i in range(n_samples):
+        n_active = int(active_params[index_par, i, 0])
+        if n_active == 0:
+            continue
 
-# ------------------------------------------------
-# post-processing identification rates
-# ------------------------------------------------
+        true_act = true_active[index_par, i]
+        fitted_act = fitted_active[index_par, i]
 
-# average across counts
-true_pos_rates[true_pos_rates_count > 0] /= true_pos_rates_count[true_pos_rates_count > 0]
-true_neg_rates[true_neg_rates_count > 0] /= true_neg_rates_count[true_neg_rates_count > 0]
-false_pos_rates[false_pos_rates_count > 0] /= false_pos_rates_count[false_pos_rates_count > 0]
-false_neg_rates[false_neg_rates_count > 0] /= false_neg_rates_count[false_neg_rates_count > 0]
-true_pos_rates[true_pos_rates_count == 0] = np.nan
-true_neg_rates[true_neg_rates_count == 0] = np.nan
-false_pos_rates[false_pos_rates_count == 0] = np.nan
-false_neg_rates[false_neg_rates_count == 0] = np.nan
+        # Compute TP, TN, FP, FN for this sample
+        tp = np.sum(true_act & fitted_act)
+        tn = np.sum(~true_act & ~fitted_act)
+        fp = np.sum(~true_act & fitted_act)
+        fn = np.sum(true_act & ~fitted_act)
 
-true_pos_rates_sessions_mean = np.nanmean(true_pos_rates, axis=1)
-true_neg_rates_sessions_mean = np.nanmean(true_neg_rates, axis=1)
-false_pos_rates_sessions_mean = np.nanmean(false_pos_rates, axis=1)
-false_neg_rates_sessions_mean = np.nanmean(false_neg_rates, axis=1)
+        true_pos_count[index_par, n_active] += tp
+        true_neg_count[index_par, n_active] += tn
+        false_pos_count[index_par, n_active] += fp
+        false_neg_count[index_par, n_active] += fn
+        sample_count[index_par, n_active] += 1
 
-true_pos_rates_sessions_std = np.nanstd(true_pos_rates, axis=1)
-true_neg_rates_sessions_std = np.nanstd(true_neg_rates, axis=1)
-false_pos_rates_sessions_std = np.nanstd(false_pos_rates, axis=1)
-false_neg_rates_sessions_std = np.nanstd(false_neg_rates, axis=1)
+# Compute rates (avoid division by zero)
+eps = 1e-9
+total_count = true_pos_count + true_neg_count + false_pos_count + false_neg_count + eps
 
-# true_pos_count_sessions_mean = np.nanmean(true_pos_count, axis=1)
-# true_neg_count_sessions_mean = np.nanmean(true_neg_count, axis=1)
-# false_pos_count_sessions_mean = np.nanmean(false_pos_count, axis=1)
-# false_neg_count_sessions_mean = np.nanmean(false_neg_count, axis=1)
+true_pos_rate = true_pos_count / (true_pos_count + false_neg_count + eps)
+true_neg_rate = true_neg_count / (true_neg_count + false_pos_count + eps)
+false_pos_rate = false_pos_count / (false_pos_count + true_neg_count + eps)
+false_neg_rate = false_neg_count / (false_neg_count + true_pos_count + eps)
 
-# ------------------------------------------------
-# post-processing identification counts
-# ------------------------------------------------
+# Compute classification metrics
+accuracy = (true_pos_count + true_neg_count) / total_count
+precision = true_pos_count / (true_pos_count + false_pos_count + eps)
+recall = true_pos_count / (true_pos_count + false_neg_count + eps)
+f1_score = 2 * (precision * recall) / (precision + recall + eps)
+f2_score = 5 * (precision * recall) / (4 * precision + recall + eps)
 
-accuracy = (true_pos_count + true_neg_count) / (true_pos_count + true_neg_count + false_pos_count + false_neg_count)
-precision = true_pos_count / (true_pos_count + false_pos_count)
-recall = true_pos_count / (true_pos_count + false_neg_count)
-false_pos_rate = false_pos_count / (false_pos_count + true_neg_count)
-f1_score = 2 * (precision * recall) / (precision + recall)
+# Mask out bins with no samples
+mask_no_samples = sample_count == 0
+true_pos_rate[mask_no_samples] = np.nan
+true_neg_rate[mask_no_samples] = np.nan
+false_pos_rate[mask_no_samples] = np.nan
+false_neg_rate[mask_no_samples] = np.nan
+accuracy[mask_no_samples] = np.nan
+precision[mask_no_samples] = np.nan
+recall[mask_no_samples] = np.nan
+f1_score[mask_no_samples] = np.nan
+f2_score[mask_no_samples] = np.nan
 
-# ------------------------------------------------
-# configuration identification plots
-# ------------------------------------------------
+# -------------------------------------------------------------------------------
+# PLOTTING: 2x2 Confusion Matrix Rates
+# -------------------------------------------------------------------------------
 
-v_min = 0
-v_max = 1#np.nanmax(np.stack((true_pos_sessions_mean, false_pos_sessions_mean, true_neg_sessions_mean, false_neg_sessions_mean)), axis=(-1, -2, -3))
+import seaborn as sns
+from matplotlib.gridspec import GridSpec
+from sklearn.linear_model import LinearRegression
 
-identification_matrix_mean = [
-    [true_pos_rates_sessions_mean , false_pos_rates_sessions_mean], 
-    [false_neg_rates_sessions_mean , true_neg_rates_sessions_mean],
+fig, axs = plt.subplots(nrows=2, ncols=3, figsize=(12, 8),
+                        gridspec_kw={'width_ratios': [10, 10, 1]})
+
+confusion_matrices = [
+    [true_pos_rate, false_pos_rate],
+    [false_neg_rate, true_neg_rate],
+]
+confusion_titles = [
+    ['True Positive Rate', 'False Positive Rate'],
+    ['False Negative Rate', 'True Negative Rate'],
 ]
 
-identification_matrix_std = [
-    [true_pos_rates_sessions_std, false_pos_rates_sessions_std], 
-    [false_neg_rates_sessions_std, true_neg_rates_sessions_std],
-    ]
+x_labels = list(range(n_param_bins))
+y_labels = participants
 
-# identification_matrix_mean = [
-#     [true_pos_count, false_pos_count], 
-#     [false_neg_count, true_neg_count],
-# ]
+for row in range(2):
+    for col in range(2):
+        sns.heatmap(
+            confusion_matrices[row][col],
+            annot=True,
+            fmt='.2f',
+            cmap='viridis',
+            ax=axs[row, col],
+            cbar=(col == 1),
+            cbar_ax=axs[row, 2] if col == 1 else None,
+            xticklabels=x_labels if row == 1 else [''] * n_param_bins,
+            yticklabels=y_labels if col == 0 else [''] * len(participants),
+            vmin=0,
+            vmax=1,
+            mask=np.isnan(confusion_matrices[row][col]),
+        )
+        axs[row, col].set_title(confusion_titles[row][col], fontsize=12)
+        if row == 1:
+            axs[row, col].set_xlabel('Number of Active Parameters', fontsize=10)
+        if col == 0:
+            axs[row, col].set_ylabel('Number of Participants', fontsize=10)
 
-identification_metrics_matrix = [
-    [accuracy, precision],
-    [recall, f1_score],
-]
-
-identification_xlabels = [
-    ['', ''],
-    ['Number of model parameters', 'Number of model parameters'],
-]
-
-identification_ylabels = [
-    ['Number of participants', ''],
-    ['Number of participants', ''],
-]
-
-identification_headers = [
-    ['true positive', 'false pos'],
-    ['false negative', 'true negative'],
-]
-
-identification_metrics_headers = [
-    ['Accuracy', 'Precision'],
-    ['Recall', 'F1 Score'],
-]
-
-bin_edges_params = np.arange(1, n_params_q+1)
-identification_x_axis_ticks = [
-    [bin_edges_params, bin_edges_params],
-    [bin_edges_params, bin_edges_params],
-]
-
-y_tick_labels = n_sessions + random_sampling
-
-linestyles = ['-'] * len(n_sessions) + ['--'] * len(random_sampling)
-alphas = [0.3] * len(n_sessions) + [0] * len(random_sampling)
-
-for index_feature, feature in enumerate(feature_names):
-    for index_symbol, symbol in enumerate(mapping_variable_names):
-        if symbol in feature:
-            feature = feature.replace(symbol, mapping_variable_names[symbol])
-    feature_names[index_feature] = feature
-
-# ------------------------------------------------
-# parameter identification rates
-# ------------------------------------------------
-
-# heatmap of relative true positives, false positives, false negatives, true negatives
-
-fig, axs = plt.subplots(
-    nrows=len(identification_matrix_mean), 
-    ncols=len(identification_matrix_mean[0])+1,
-    gridspec_kw={
-        'width_ratios': [10]*len(identification_matrix_mean[0]) + [1],
-        },
-    )
-
-for index_row, row in enumerate(identification_matrix_mean):
-    for index_col, col in enumerate(row):
-        if col is not None:
-            sns.heatmap(
-                col, 
-                annot=True, 
-                cmap='viridis',
-                center=0,
-                ax=axs[index_row, index_col],
-                cbar=True if index_col == len(identification_matrix_mean[0])-1 else False, 
-                cbar_ax=axs[index_row, len(identification_matrix_mean[0])],
-                xticklabels=np.arange(1, n_params_q+1) if index_row == len(identification_matrix_mean)-1 else ['']*n_params_q, 
-                yticklabels=y_tick_labels if index_col == 0 else ['']*len(n_sessions), 
-                vmin=v_min,
-                vmax=v_max,
-                )
-        axs[index_row, index_col].set_title(identification_headers[index_row][index_col], fontsize=10)
-        axs[index_row, index_col].tick_params(labelsize=10)
-        axs[index_row, index_col].set_xlabel(identification_xlabels[index_row][index_col], fontsize=10)
-        axs[index_row, index_col].set_ylabel(identification_ylabels[index_row][index_col], fontsize=10)
-
-# Print identification rates instead of showing plots
-print(f"\n{'='*80}")
-print(f"IDENTIFICATION RATES (n_sessions={n_sessions[0]})")
-print(f"{'='*80}")
-print(f"\nTrue Positive Rates (Recall):")
-print(true_pos_rates_sessions_mean)
-print(f"\nFalse Positive Rates:")
-print(false_pos_rates_sessions_mean)
-print(f"\nTrue Negative Rates:")
-print(true_neg_rates_sessions_mean)
-print(f"\nFalse Negative Rates:")
-print(false_neg_rates_sessions_mean)
-
-if save_plots:
-    plt.savefig(os.path.join(path_plots, 'ident_rates'), dpi=500)
-    plt.close()
-else:
-    plt.show()
-
-
-# heatmap of accuracy, precision, true positive rate, false positive rate
-
-fig, axs = plt.subplots(
-    nrows=len(identification_metrics_matrix), 
-    ncols=len(identification_metrics_matrix[0])+1,
-    gridspec_kw={
-        'width_ratios': [10]*len(identification_metrics_matrix[0]) + [1],
-        },
-    )
-
-for index_row, row in enumerate(identification_metrics_matrix):
-    for index_col, col in enumerate(row):
-        if col is not None:
-            sns.heatmap(
-                col, 
-                annot=True, 
-                cmap='viridis',
-                center=0,
-                ax=axs[index_row, index_col],
-                cbar=True if index_col == len(identification_metrics_matrix[0])-1 else False, 
-                cbar_ax=axs[index_row, len(identification_metrics_matrix[0])],
-                xticklabels=np.arange(1, n_params_q+1) if index_row == len(identification_metrics_matrix)-1 else ['']*n_params_q, 
-                yticklabels=y_tick_labels if index_col == 0 else ['']*len(n_sessions), 
-                vmin=v_min,
-                vmax=v_max,
-                )
-        axs[index_row, index_col].set_title(identification_metrics_headers[index_row][index_col], fontsize=10)
-        axs[index_row, index_col].tick_params(labelsize=10)
-        axs[index_row, index_col].set_xlabel(identification_xlabels[index_row][index_col], fontsize=10)
-        axs[index_row, index_col].set_ylabel(identification_ylabels[index_row][index_col], fontsize=10)
-
-# Print identification metrics
-print(f"\n{'='*80}")
-print(f"IDENTIFICATION METRICS (n_sessions={n_sessions[0]})")
-print(f"{'='*80}")
-print(f"\nAccuracy:")
-print(accuracy)
-print(f"\nPrecision:")
-print(precision)
-print(f"\nRecall:")
-print(recall)
-print(f"\nF1 Score:")
-print(f1_score)
-print(f"\n{'='*80}\n")
-
-if save_plots:
-    plt.savefig(os.path.join(path_plots, 'ident_metrics'), dpi=500)
-    plt.close()
-else:
-    plt.show()
-
-# ------------------------------------------------
-# parameter correlation coefficients
-# ------------------------------------------------
-
-# box plot
-
-# Parameters for binning
-num_bins = 10  # Number of bins for 5% width (0.05 * 100 = 20 bins)
-bin_edges = np.linspace(0, 1, num_bins + 1)
-color_box = 'cadetblue'
-trend_line_color = 'black'
-
-# fig, axs = plt.subplots(
-#     nrows=max(len(n_sessions), 2),
-#     ncols=len(feature_names),
-#     figsize=(12, 6)
-# )
-
-# Adjust the width of each column
-col_width_ratios = []
-for index_feature in range(len(feature_names)):
-    feature_ranges = [
-        np.max(true_params[index_sess][:, index_feature]) - np.min(true_params[index_sess][:, index_feature])
-        for index_sess in range(len(n_sessions))
-    ]
-    # Use a fallback small value for zero ranges
-    col_width_ratios.append(max(max(feature_ranges), 0.1))  # Ensure non-zero width
-
-# Normalize width ratios
-col_width_ratios = [r / max(col_width_ratios) for r in col_width_ratios]
-
-fig = plt.figure(figsize=(10, 5))
-gs = GridSpec(len(n_sessions), len(feature_names), width_ratios=col_width_ratios)
-
-for index_sess in range(len(n_sessions)):
-    for index_feature in range(len(feature_names)):
-        # ax = axs[index_sess, index_feature]
-        ax = fig.add_subplot(gs[index_sess, index_feature])
-        
-        # Prepare the data
-        true_vals = true_params[index_sess][:, index_feature]
-        recovered_vals = recovered_params[index_sess][:, index_feature]
-        
-        # Bin the data based on true parameters
-        bins = np.digitize(true_vals, bin_edges) - 1  # Binning index
-        bins = np.clip(bins, 0, num_bins - 1)  # Ensure bin indices are within range
-        
-        # Compute box-plot statistics for each bin
-        box_data = [recovered_vals[bins == i] for i in range(num_bins)]
-        median = [np.mean(data) if len(data) > 0 else np.nan for data in box_data]
-
-        # Create box-whisker plot
-        ax.boxplot(
-            box_data, 
-            positions=bin_edges[:-1] + 0.025, 
-            widths=0.04, 
-            patch_artist=True,
-            showfliers=False,
-            boxprops=dict(facecolor=color_box, color=color_box, alpha=0.8),
-            medianprops=dict(color="black", linewidth=2),
-            whiskerprops=dict(color=color_box, linestyle="--", alpha=0.5),
-            capprops=dict(color=color_box, alpha=0.5)
-            )
-        
-        # Plot dashed trend line
-        index_not_nan = (1-(np.isnan(true_params[index_sess][:, index_feature]) + np.isnan(recovered_params[index_sess][:, index_feature]))).astype(bool)
-        model = LinearRegression()
-        model.fit(true_params[index_sess][:, index_feature].reshape(-1, 1)[index_not_nan], recovered_params[index_sess][:, index_feature][index_not_nan])
-        trend_line = model.predict(np.linspace(0, 1, 100).reshape(-1, 1))
-        
-        # Reference line
-        if true_params[index_sess][:, index_feature].max() > 0:
-            ax.plot([0, 1], [0, 1], ':', color='tab:gray', linewidth=1)
-            # Plot dashed trend line
-            ax.plot(np.linspace(0, 1, 100), trend_line, '--', color=trend_line_color, label='Trend line')
-            # Axes settings
-            ax.set_ylim(-.1, 1.1)
-            ax.set_xlim(-.1, 1.1)
-        else:
-            # Axes settings
-            ax.set_ylim(-.1, .1)
-            ax.set_xlim(-.1, .1)
-            # Plot dashed trend line
-            ax.plot(np.linspace(-1, 1, 100), trend_line, '--', color=trend_line_color, label='Trend line')
-        
-        if index_sess != len(n_sessions) - 1:
-            ax.tick_params(axis='x', which='both', labelbottom=False)  # No x-axis ticks
-        else:
-            ax.set_xlabel('True', fontsize=10)
-            ax.tick_params(axis='x', labelsize=8)
-        
-        if index_feature != 0:
-            ax.tick_params(axis='y', which='both', labelleft=False)  # No y-axis ticks
-        else:
-            ax.set_ylabel(f'{n_sessions[index_sess]} participants\nRecovered', fontsize=10)
-            ax.tick_params(axis='y', labelsize=8)
-        
-        if index_sess == 0:
-            ax.set_title(feature_names[index_feature], fontsize=10)
-
+plt.suptitle('Confusion Matrix Rates', fontsize=14)
 plt.tight_layout()
+plt.show()
 
-if save_plots:
-    plt.savefig(os.path.join(path_plots, 'param_recovery_box'), dpi=500)
-    plt.close()
+# -------------------------------------------------------------------------------
+# PLOTTING: 2x2 Classification Metrics
+# -------------------------------------------------------------------------------
+
+fig, axs = plt.subplots(nrows=2, ncols=3, figsize=(12, 8),
+                        gridspec_kw={'width_ratios': [10, 10, 1]})
+
+metrics_matrices = [
+    [accuracy, precision],
+    [recall, f2_score],
+]
+metrics_titles = [
+    ['Accuracy', 'Precision'],
+    ['Recall', 'F2 Score'],
+]
+
+for row in range(2):
+    for col in range(2):
+        sns.heatmap(
+            metrics_matrices[row][col],
+            annot=True,
+            fmt='.2f',
+            cmap='viridis',
+            ax=axs[row, col],
+            cbar=(col == 1),
+            cbar_ax=axs[row, 2] if col == 1 else None,
+            xticklabels=x_labels if row == 1 else [''] * n_param_bins,
+            yticklabels=y_labels if col == 0 else [''] * len(participants),
+            vmin=0,
+            vmax=1,
+            mask=np.isnan(metrics_matrices[row][col]),
+        )
+        axs[row, col].set_title(metrics_titles[row][col], fontsize=12)
+        if row == 1:
+            axs[row, col].set_xlabel('Number of Active Parameters', fontsize=10)
+        if col == 0:
+            axs[row, col].set_ylabel('Number of Participants', fontsize=10)
+
+plt.suptitle('Classification Metrics', fontsize=14)
+plt.tight_layout()
+plt.show()
+
+# -------------------------------------------------------------------------------
+# PLOTTING: Parameter Recovery Box Plots
+# -------------------------------------------------------------------------------
+
+# Get candidate term names from a fitted model for labeling
+# For now, use generic term indices
+n_terms = true_coefs.shape[-1]
+
+# Find which terms have any non-zero true coefficients (active terms)
+active_term_mask = np.any(np.abs(true_coefs) > coefficient_threshold, axis=(0, 1))
+active_term_indices = np.where(active_term_mask)[0]
+
+if len(active_term_indices) == 0:
+    print("No active terms found in true coefficients.")
 else:
-    plt.show()
+    # Create one figure per participant size
+    for index_par, par in enumerate(participants):
+        n_samples = par * iterations
+
+        # Determine grid size for subplots
+        n_active_terms = len(active_term_indices)
+        n_cols = min(6, n_active_terms)
+        n_rows = int(np.ceil(n_active_terms / n_cols))
+
+        fig, axs = plt.subplots(nrows=n_rows, ncols=n_cols, figsize=(3*n_cols, 3*n_rows))
+        if n_active_terms == 1:
+            axs = np.array([[axs]])
+        elif n_rows == 1:
+            axs = axs.reshape(1, -1)
+        elif n_cols == 1:
+            axs = axs.reshape(-1, 1)
+
+        for idx, term_idx in enumerate(active_term_indices):
+            row = idx // n_cols
+            col = idx % n_cols
+            ax = axs[row, col]
+
+            # Get true and fitted coefficients for this term
+            true_vals = true_coefs[index_par, :n_samples, term_idx]
+            fitted_vals = fitted_coefs[index_par, :n_samples, term_idx]
+
+            # Remove NaN values
+            valid_mask = ~(np.isnan(true_vals) | np.isnan(fitted_vals))
+            true_vals_valid = true_vals[valid_mask]
+            fitted_vals_valid = fitted_vals[valid_mask]
+
+            if len(true_vals_valid) == 0:
+                ax.set_visible(False)
+                continue
+
+            # Bin the data for box plot
+            num_bins = 10
+            val_min, val_max = true_vals_valid.min(), true_vals_valid.max()
+            if val_max - val_min < 1e-6:
+                # All values are the same, just scatter plot
+                ax.scatter(true_vals_valid, fitted_vals_valid, alpha=0.5, s=10)
+            else:
+                bin_edges = np.linspace(val_min, val_max, num_bins + 1)
+                bins = np.digitize(true_vals_valid, bin_edges) - 1
+                bins = np.clip(bins, 0, num_bins - 1)
+
+                box_data = [fitted_vals_valid[bins == i] for i in range(num_bins)]
+                bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+                bin_width = (val_max - val_min) / num_bins * 0.8
+
+                # Create box plot
+                bp = ax.boxplot(
+                    box_data,
+                    positions=bin_centers,
+                    widths=bin_width,
+                    patch_artist=True,
+                    showfliers=False,
+                    boxprops=dict(facecolor='cadetblue', alpha=0.7),
+                    medianprops=dict(color='black', linewidth=1.5),
+                    whiskerprops=dict(color='cadetblue', linestyle='--', alpha=0.5),
+                    capprops=dict(color='cadetblue', alpha=0.5),
+                )
+
+            # Plot identity line
+            plot_min = min(val_min, fitted_vals_valid.min())
+            plot_max = max(val_max, fitted_vals_valid.max())
+            ax.plot([plot_min, plot_max], [plot_min, plot_max], ':', color='gray', linewidth=1, label='Identity')
+
+            # Linear regression fit
+            if len(true_vals_valid) > 1:
+                model = LinearRegression()
+                model.fit(true_vals_valid.reshape(-1, 1), fitted_vals_valid)
+                x_line = np.linspace(plot_min, plot_max, 100)
+                y_line = model.predict(x_line.reshape(-1, 1))
+                ax.plot(x_line, y_line, '--', color='black', linewidth=1, label='Linear fit')
+
+            ax.set_xlabel('True coefficient', fontsize=8)
+            ax.set_ylabel('Fitted coefficient', fontsize=8)
+            ax.set_title(f'Term {term_idx}', fontsize=10)
+            ax.tick_params(labelsize=7)
+
+        # Hide unused subplots
+        for idx in range(n_active_terms, n_rows * n_cols):
+            row = idx // n_cols
+            col = idx % n_cols
+            axs[row, col].set_visible(False)
+
+        plt.suptitle(f'Parameter Recovery (N={par} participants)', fontsize=14)
+        plt.tight_layout()
+        plt.show()
+
+print("Analysis complete.")

@@ -23,9 +23,9 @@ class QLearning(BaseRNN):
         
         spice_config = SpiceConfig(
             library_setup={
-                'value_reward_chosen': ['reward[t]'],
-                'value_reward_not_chosen': ['reward_chosen_success', 'reward_chosen_fail'],
-                'value_choice': ['choice[t]'],
+                'value_reward_chosen': ['reward'],
+                'value_reward_not_chosen': [],#['reward_chosen_success', 'reward_chosen_fail'],
+                'value_choice': ['choice'],
             },
             memory_state=['value_reward', 'value_choice'],
         )
@@ -50,8 +50,8 @@ class QLearning(BaseRNN):
         
         # basic SPICE stuff
         self.rnn_training_finished = True  # rnn not necessary here
-        self.setup_module(key_module='value_reward_chosen', input_size=1)
-        self.setup_module(key_module='value_reward_not_chosen', input_size=2)
+        self.setup_module(key_module='value_reward_chosen', input_size=1, include_bias=False)
+        self.setup_module(key_module='value_reward_not_chosen', input_size=0, include_bias=False)
         self.setup_module(key_module='value_choice', input_size=1, include_bias=False)
         
         if not fit_full_model:
@@ -94,8 +94,8 @@ class QLearning(BaseRNN):
                 key_module='value_reward_not_chosen',
                 key_state='value_reward',
                 inputs=(
-                    chosen_reward_success[timestep],
-                    chosen_reward_fail[timestep],
+                    # chosen_reward_success[timestep],
+                    # chosen_reward_fail[timestep],
                 ),
                 action_mask=1-spice_signals.actions[timestep],
                 participant_index=spice_signals.participant_ids,
@@ -139,23 +139,23 @@ class QLearning(BaseRNN):
             #   update = -alpha_penalty value_reward_chosen[t] + alpha_reward reward + (alpha_reward-alpha_penalty) value_reward_chosen[t]*reward
             'value_reward_chosen': (
                 ('value_reward_chosen', -self.alpha_penalty[participant_id.unsqueeze(1), experiment_id]),
-                ('reward[t]', self.beta_reward[participant_id.unsqueeze(1), experiment_id]*self.alpha_reward[participant_id.unsqueeze(1), experiment_id]),
-                ('value_reward_chosen*reward[t]', self.alpha_penalty[participant_id.unsqueeze(1), experiment_id]-self.alpha_reward[participant_id.unsqueeze(1), experiment_id]),
+                ('reward', self.beta_reward[participant_id.unsqueeze(1), experiment_id]*self.alpha_reward[participant_id.unsqueeze(1), experiment_id]),
+                ('value_reward_chosen*reward', self.alpha_penalty[participant_id.unsqueeze(1), experiment_id]-self.alpha_reward[participant_id.unsqueeze(1), experiment_id]),
                 ),
             # forgetting:
             #   update = forget_rate*(self.state['value_reward']|_{t=0}-value_reward_not_chosen[t])
             #   update = forget_rate*Q_init + -forget_rate value_reward_not_chosen[t]
             'value_reward_not_chosen': (
-                ('1', self.beta_reward[participant_id.unsqueeze(1), experiment_id]*self.forget_rate[participant_id.unsqueeze(1), experiment_id]*self.state['value_reward'][0, 0]),
+                # ('1', self.beta_reward[participant_id.unsqueeze(1), experiment_id]*self.forget_rate[participant_id.unsqueeze(1), experiment_id]*self.state['value_reward'][0, 0]),
                 ('value_reward_not_chosen', -self.forget_rate[participant_id.unsqueeze(1), experiment_id]),
-                ('reward_chosen_success', -self.beta_reward[participant_id.unsqueeze(1), experiment_id]*self.countefactual_learning[participant_id.unsqueeze(1), experiment_id]),
-                ('reward_chosen_fail', self.beta_reward[participant_id.unsqueeze(1), experiment_id]*self.countefactual_learning[participant_id.unsqueeze(1), experiment_id]),
+                # ('reward_chosen_success', -self.beta_reward[participant_id.unsqueeze(1), experiment_id]*self.countefactual_learning[participant_id.unsqueeze(1), experiment_id]),
+                # ('reward_chosen_fail', self.beta_reward[participant_id.unsqueeze(1), experiment_id]*self.countefactual_learning[participant_id.unsqueeze(1), experiment_id]),
             ),
             # choice perseverance:
             #   update = choice_perseverance choice
             'value_choice': (
                 ('value_choice', -self.alpha_choice[participant_id.unsqueeze(1), experiment_id]),
-                ('choice[t]', self.beta_choice[participant_id.unsqueeze(1), experiment_id]*self.alpha_choice[participant_id.unsqueeze(1), experiment_id]),
+                ('choice', self.beta_choice[participant_id.unsqueeze(1), experiment_id]*self.alpha_choice[participant_id.unsqueeze(1), experiment_id]),
             ) 
         }
         

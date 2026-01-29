@@ -4,6 +4,7 @@ This runs the full pipeline with SINDy regularization during RNN training.
 """
 import argparse
 import torch
+import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
 
@@ -28,7 +29,7 @@ if __name__=='__main__':
     
     # SINDy training parameters
     parser.add_argument('--sindy_weight', type=float, default=1, help='Weight for SINDy regularization during RNN training')
-    parser.add_argument('--sindy_alpha', type=float, default=0.1, help='L2 Reg of the SINDy coefficients')
+    parser.add_argument('--sindy_alpha', type=float, default=0.01, help='L2 Reg of the SINDy coefficients')
     parser.add_argument('--sindy_threshold', type=float, default=0.05, help='Threshold value for cutting off sindy terms')
     parser.add_argument('--sindy_cutoff', type=int, default=1, help='Number of thresholded terms')
     parser.add_argument('--sindy_cutoff_freq', type=int, default=1, help='Number of epochs after which to cutoff')
@@ -40,11 +41,11 @@ if __name__=='__main__':
     parser.add_argument('--n_items', type=int, default=None, help='Number of items in dataset; Default None: As many items as actions (automatically detected from dataset);')
     parser.add_argument('--additional_columns', type=str, default=None, help='Comma-separated list of columns which are added to the dataset.')
     parser.add_argument('--timeshift_additional_columns', action='store_true', help='Shifts additional columns (defined by the kwarg "additional_columns") [t]->[t-1]; Necessary for e.g. predictor stimuli which are usually listed in the trial of which SPICE has to predict the action.')
+
+    parser.add_argument('--results', action='store_true', help='Shows the results using a fitted SPICE model. The results are value-dynamics-over-time plot, a parameter distribution histogram, and the corresponding symbolic SPICE model.')
     
     args = parser.parse_args()
-    
-    args.epochs=2000
-    
+        
     # args.sindy_weight = 0
     
     # args.model = "weinhardt2025/params/eckstein2022/spice_eckstein2022.pkl"
@@ -56,6 +57,8 @@ if __name__=='__main__':
     # args.data = "weinhardt2025/data/eckstein2024/eckstein2024.csv"
     # args.test_sessions = "1,3"
     
+    # args.results = True
+    # args.epochs = 10
     # args.model = "weinhardt2025/params/dezfouli2019/spice_dezfouli2019.pkl"
     # args.data = "weinhardt2025/data/dezfouli2019/dezfouli2019.csv"
     # args.test_sessions = "3,6,9"
@@ -71,11 +74,13 @@ if __name__=='__main__':
     # args.additional_columns = None,
     # args.test_sessions = "4,8,12"
     
+    args.epochs = 2000
+    args.results = True
     args.data = "weinhardt2025/data/synthetic/synthetic_256p_0_0.csv"
     args.model = args.data.replace("data", "params").replace("/synthetic_", "/spice_synthetic_").replace(".csv", ".pkl")
     
-    example_participant = 1
-    plot_coef_dist = True
+    example_participant = 2
+    plot_coef_dist = False
     
     if args.train_ratio_time and args.test_sessions:
         raise ValueError("kwargs train_ratio_time and test_sessions cannot be assigned at the same time.")
@@ -106,17 +111,17 @@ if __name__=='__main__':
     n_items = args.n_items if args.n_items else n_actions
     
     if n_items == n_actions:
-        if ((dataset.xs[..., n_actions:n_actions*2].nan_to_num(0) == 1).int() + (dataset.xs[..., n_actions:n_actions*2].nan_to_num(0) == 0).int()).sum() == dataset.xs.shape[0]*dataset.xs.shape[1]*n_actions:
-            spice_model = workingmemory_rewardbinary
-        else:
-            spice_model = workingmemory
+        # if ((dataset.xs[..., n_actions:n_actions*2].nan_to_num(0) == 1).int() + (dataset.xs[..., n_actions:n_actions*2].nan_to_num(0) == 0).int()).sum() == dataset.xs.shape[0]*dataset.xs.shape[1]*n_actions:
+        #     spice_model = workingmemory_rewardbinary
+        # else:
+        spice_model = workingmemory
     else:
         spice_model = workingmemory_multiitem
     
     # spice_model = choice
     
     class_rnn = spice_model.SpiceModel
-    spice_config = spice_model.CONFIG
+    spice_config = spice_model.CONFIG 
 
     print(f"Dataset: {n_participants} participants, {n_actions} actions, {n_items} items")
     print(f"Test data: {1-args.train_ratio_time if args.train_ratio_time else args.test_sessions}")
@@ -144,13 +149,13 @@ if __name__=='__main__':
         sindy_threshold_frequency=args.sindy_cutoff_freq,
         sindy_threshold_terms=args.sindy_cutoff,
         sindy_cutoff_patience=args.sindy_cutoff_patience,
-        sindy_epochs=0,#args.epochs,
+        sindy_epochs=args.epochs,
         sindy_alpha=args.sindy_alpha,
         sindy_library_polynomial_degree=2,
         sindy_ensemble_size=1,
         
         # additional generalization parameters
-        batch_size=1024,
+        batch_size=1024*4,
         bagging=True,
         scheduler=True,
         
@@ -172,132 +177,191 @@ if __name__=='__main__':
     
     print(f"\nModel saved to: {args.model}")
     
-    agents={
-        'rnn': estimator.rnn_agent,
-        }
-    
-    if args.sindy_weight > 0:
-        
-        agents['spice'] = estimator.spice_agent
-        
-        # Print example SPICE model for first participant
-        print(f"\nExample SPICE model (participant {example_participant}; n_parameters = {int(estimator.spice_agent.count_parameters()[example_participant, 0])}):")
-        print("-" * 80)
-        estimator.print_spice_model(participant_id=example_participant)
-        print("-" * 80)
-
-    if 'synthetic' in args.data:
-        dataset_df = pd.read_csv(args.data)
-
-        # get the parameters for the selected participant and set up the ground truth model
-        n_trials = 200
-        dataset_df = dataset_df[dataset_df['participant'] == example_participant]
-
-        agents['groundtruth'] = Agent(QLearning(
-            n_actions=2,
-            n_participants=n_participants,
-            n_experiments=n_experiments,
-            beta_reward=dataset_df['beta_reward'].values[0],
-            alpha_reward=dataset_df['alpha_reward'].values[0],
-            alpha_penalty=dataset_df['alpha_penalty'].values[0],
-            forget_rate=dataset_df['forget_rate'].values[0],
-            beta_choice=dataset_df['beta_choice'].values[0],
-            alpha_choice=dataset_df['alpha_choice'].values[0],
-        ), use_sindy=True, deterministic=True)
-
-    fig, axs = plot_session(
-        agents,
-        experiment=dataset.xs[example_participant],
-        signals_to_plot=['value_reward', 'value_choice'],
-        )
-
-    plt.show()
-
-    # =====================================================================
-    # Plotting section: SINDy coefficients across participants
-    # =====================================================================
-    if args.sindy_weight > 0 and plot_coef_dist:
-        print("\nGenerating coefficient variance plots across participants...")
-
-        # Extract coefficients for all participants
-        ensemble_idx = 0  # Use first ensemble member
-        coeff_data = {}
-
-        for module_name in estimator.rnn_model.submodules_rnn:
-            # Get coefficients: [n_participants, n_ensemble, n_library_terms]
-            coeffs = estimator.rnn_model.sindy_coefficients[module_name][:, ensemble_idx, :].detach().cpu().numpy()
-            mask = estimator.rnn_model.sindy_coefficients_presence[module_name][:, ensemble_idx, :].cpu().numpy()
-
-            # Apply mask and adjust identity terms
-            sparse_coeffs = coeffs * mask
-
-            # Add 1 to the identity term (where term == module_name)
-            term_names = estimator.rnn_model.sindy_candidate_terms[module_name]
-            for idx, term in enumerate(term_names):
-                if term == module_name:
-                    sparse_coeffs[..., idx] += 1
-
-            coeff_data[module_name] = {
-                'coeffs': sparse_coeffs,
-                'terms': term_names
+    if args.results:
+        agents={
+            'rnn': estimator.rnn_agent,
             }
+        
+        mask_participant = dataset.xs[:, 0, -1] == example_participant
+        
+        if args.sindy_weight > 0:
+            
+            agents['spice'] = estimator.spice_agent
+            
+            # Print example SPICE model for first participant
+            print(f"\nExample SPICE model (participant {example_participant}; n_parameters = {int(estimator.spice_agent.count_parameters()[example_participant, 0])}):")
+            print("-" * 80)
+            estimator.print_spice_model(participant_id=example_participant)
+            print("-" * 80)
 
-        # Collect all coefficients for one figure
-        all_terms = []
-        all_coeffs_list = []
+        if 'synthetic' in args.data:
+            rl_parameters = ['beta_reward', 'beta_choice', 'alpha_reward', 'alpha_penalty', 'alpha_choice', 'forget_rate']
+            dataset = csv_to_dataset(
+                file=args.data,
+                additional_inputs=rl_parameters,
+            )
+            
+            agents['groundtruth'] = Agent(QLearning(
+                n_actions=2,
+                n_participants=n_participants,
+                n_experiments=n_experiments,
+                beta_reward=dataset.xs[mask_participant][0, 0, n_actions*2+0].item(),
+                beta_choice=dataset.xs[mask_participant][0, 0, n_actions*2+1].item(),
+                alpha_reward=dataset.xs[mask_participant][0, 0, n_actions*2+2].item(),
+                alpha_penalty=dataset.xs[mask_participant][0, 0, n_actions*2+3].item(),
+                alpha_choice=dataset.xs[mask_participant][0, 0, n_actions*2+4].item(),
+                forget_rate=dataset.xs[mask_participant][0, 0, n_actions*2+5].item(),
+            ), use_sindy=True, deterministic=True)
 
-        for module_name, data in coeff_data.items():
-            coeffs = data['coeffs']
-            terms = data['terms']
+        fig, axs = plot_session(
+            agents,
+            experiment=dataset.xs[mask_participant][0],
+            signals_to_plot=['value_reward', 'value_choice'],
+            )
 
-            for idx, term in enumerate(terms):
-                all_terms.append(f"{module_name}: {term}")
-                all_coeffs_list.append(coeffs[..., idx])
-
-        n_total_terms = len(all_terms)
-
-        # Create single figure with all coefficient histograms
-        n_cols = min(4, n_total_terms)
-        n_rows = (n_total_terms + n_cols - 1) // n_cols
-
-        fig, axes = plt.subplots(n_rows, n_cols, figsize=(4*n_cols, 3*n_rows))
-        fig.suptitle('Coefficient Distribution Across Participants (Normalized)', fontsize=14, fontweight='bold')
-
-        if n_total_terms == 1:
-            axes = [axes]
-        else:
-            axes = axes.flatten()
-
-        for idx, (term_name, coeff_values) in enumerate(zip(all_terms, all_coeffs_list)):
-            ax = axes[idx]
-
-            # Calculate mean and std for normalization
-            mean_val = coeff_values.mean()
-            std_val = coeff_values.std()
-
-            # Normalize coefficients: (x - mean) / std
-            if std_val > 0:
-                normalized_coeffs = (coeff_values - mean_val) / std_val
-            else:
-                normalized_coeffs = coeff_values - mean_val
-
-            # Create histogram
-            ax.hist(normalized_coeffs, bins=15, color='steelblue', alpha=0.7, edgecolor='black')
-
-            # Add vertical line at mean (which should be 0 after normalization)
-            ax.axvline(x=0, color='red', linestyle='--', linewidth=2, label='Mean')
-
-            # ax.set_xlabel('Normalized Coefficient Value')
-            # ax.set_ylabel('Frequency')
-            ax.set_title(f'{term_name}', fontsize=9)  # \nμ={mean_val:.3f}, σ={std_val:.3f}
-            ax.grid(True, alpha=0.3, axis='y')
-            ax.legend(fontsize=8)
-
-        # Hide unused subplots
-        for idx in range(n_total_terms, len(axes)):
-            axes[idx].axis('off')
-
-        plt.tight_layout()
         plt.show()
 
-        print(f"Coefficient distribution plot generated with {n_total_terms} coefficients from {len(coeff_data)} modules.")
+        # =====================================================================
+        # Plotting section: SINDy coefficients across participants
+        # =====================================================================
+        if args.sindy_weight > 0 and plot_coef_dist:
+            print("\nGenerating coefficient variance plots across participants...")
+
+            # Extract coefficients for all participants
+            ensemble_idx = 0  # Use first ensemble member
+            coeff_data = {}
+
+            # load ground truth model if given in data
+            if 'synthetic' in args.data:
+                # dataset with ground truth parameters has already been loaded
+                # extract parameters for each participant
+                rl_parameter_dict = {param: torch.zeros(n_participants, n_experiments) for param in rl_parameters}
+                for index_participant in dataset.xs[:, 0, -1].unique().long():
+                    mask_participant = dataset.xs[:, 0, -1] == index_participant
+                    params_participant = dataset.xs[mask_participant][0, 0, n_actions*2:-3]
+                    for index_param, param in enumerate(rl_parameters):
+                        rl_parameter_dict[param][index_participant, 0] = params_participant[index_param]
+                        
+                # initialize the model
+                qlearning = QLearning(
+                    n_actions=n_actions,
+                    n_participants=n_participants,
+                    n_experiments=n_experiments,
+                    **rl_parameter_dict,
+                )
+            else:
+                qlearning = None
+            
+            for module_name in estimator.rnn_model.submodules_rnn:
+                # Get coefficients: [n_participants, n_ensemble, n_library_terms]
+                coeffs = estimator.rnn_model.sindy_coefficients[module_name][:, ensemble_idx, :].detach().cpu().numpy()
+                mask = estimator.rnn_model.sindy_coefficients_presence[module_name][:, ensemble_idx, :].cpu().numpy()
+
+                # Apply mask and adjust identity terms
+                sparse_coeffs = coeffs * mask
+
+                # Add 1 to the identity term (where term == module_name)
+                term_names = estimator.rnn_model.sindy_candidate_terms[module_name]
+                for idx, term in enumerate(term_names):
+                    if term == module_name:
+                        sparse_coeffs[..., idx] += 1
+
+                coeff_data[module_name] = {
+                    'coeffs': sparse_coeffs,
+                    'terms': term_names
+                }
+
+                # Map ground truth coefficients from qlearning to SPICE positions
+                if qlearning is not None:
+                    gt_coeffs = np.zeros((n_participants, len(term_names)))
+                    candidate_terms_qlearning = qlearning.sindy_candidate_terms[module_name]
+                    for term in candidate_terms_qlearning:
+                        if term not in term_names:
+                            raise ValueError(f"Candidate term {term} of the ground truth model was not found among the candidate terms of the fitted model ({term_names}).")
+                        idx_spice = term_names.index(term)
+                        idx_qlearning = candidate_terms_qlearning.index(term)
+                        gt_coeffs[:, idx_spice] = qlearning.sindy_coefficients[module_name][:, 0, 0, idx_qlearning].detach().cpu().numpy()
+
+                    # Add 1 to identity terms (same transformation as SPICE)
+                    for idx, term in enumerate(term_names):
+                        if term == module_name:
+                            gt_coeffs[:, idx] += 1
+
+                    coeff_data[module_name]['gt_coeffs'] = gt_coeffs
+
+            # Collect all coefficients for one figure
+            all_terms = []
+            all_coeffs_list = []
+            all_gt_coeffs_list = []
+
+            for module_name, data in coeff_data.items():
+                coeffs = data['coeffs']
+                terms = data['terms']
+                gt_coeffs = data.get('gt_coeffs', None)
+
+                for idx, term in enumerate(terms):
+                    all_terms.append(f"{module_name}: {term}")
+                    all_coeffs_list.append(coeffs[..., idx])
+                    if gt_coeffs is not None:
+                        all_gt_coeffs_list.append(gt_coeffs[..., idx])
+                    else:
+                        all_gt_coeffs_list.append(None)
+
+            n_total_terms = len(all_terms)
+
+            # Create single figure with all coefficient histograms
+            n_cols = min(4, n_total_terms)
+            n_rows = (n_total_terms + n_cols - 1) // n_cols
+
+            fig, axes = plt.subplots(n_rows, n_cols, figsize=(4*n_cols, 3*n_rows))
+            fig.suptitle('Coefficient Distribution Across Participants (Normalized)', fontsize=14, fontweight='bold')
+
+            if n_total_terms == 1:
+                axes = [axes]
+            else:
+                axes = axes.flatten()
+
+            for idx, (term_name, coeff_values) in enumerate(zip(all_terms, all_coeffs_list)):
+                ax = axes[idx]
+                gt_coeff_values = all_gt_coeffs_list[idx]
+
+                # Calculate mean and std for normalization (using SPICE values as reference)
+                mean_val = coeff_values.mean()
+                std_val = coeff_values.std()
+
+                # Normalize SPICE coefficients: (x - mean) / std
+                if std_val > 0:
+                    normalized_coeffs = (coeff_values - mean_val) / std_val
+                else:
+                    normalized_coeffs = coeff_values - mean_val
+
+                # Normalize ground truth and plot both with shared bin edges
+                if gt_coeff_values is not None:
+                    if std_val > 0:
+                        normalized_gt = (gt_coeff_values - mean_val) / std_val
+                    else:
+                        normalized_gt = gt_coeff_values - mean_val
+                    # Compute shared bin edges for both distributions
+                    all_vals = np.concatenate([normalized_coeffs.flatten(), normalized_gt.flatten()])
+                    bin_edges = np.linspace(all_vals.min(), all_vals.max(), 16)
+                    ax.hist(normalized_gt, bins=bin_edges, color='tab:blue', alpha=0.7, edgecolor='black', label='Ground Truth')
+                    ax.hist(normalized_coeffs, bins=bin_edges, color='tab:orange', alpha=0.7, edgecolor='black', label='SPICE')
+                else:
+                    # Plot SPICE histogram only (orange)
+                    ax.hist(normalized_coeffs, bins=15, color='tab:orange', alpha=0.7, edgecolor='black', label='SPICE')
+
+                # Add vertical line at mean (which should be 0 after normalization)
+                ax.axvline(x=0, color='red', linestyle='--', linewidth=2, label='Mean')
+
+                ax.set_title(f'{term_name}', fontsize=9)
+                ax.grid(True, alpha=0.3, axis='y')
+                ax.legend(fontsize=8)
+
+            # Hide unused subplots
+            for idx in range(n_total_terms, len(axes)):
+                axes[idx].axis('off')
+
+            plt.tight_layout()
+            plt.show()
+
+            print(f"Coefficient distribution plot generated with {n_total_terms} coefficients from {len(coeff_data)} modules.")

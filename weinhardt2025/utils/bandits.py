@@ -798,7 +798,7 @@ def create_dataset(
           'alpha_reward': copy(agent.model.alpha_reward),
           'alpha_penalty': copy(agent.model.alpha_penalty),
           'beta_choice': copy(agent.model.beta_choice),
-          # 'alpha_choice': copy(agent.model.alpha_choice),
+          'alpha_choice': copy(agent.model.alpha_choice),
           'forget_rate': copy(agent.model.forget_rate),
         }
       )
