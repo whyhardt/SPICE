@@ -9,6 +9,8 @@ from copy import copy
 from sklearn.linear_model import LinearRegression
 from scipy import stats
 
+from spice import SpiceEstimator
+from spice.resources.bandits import AgentNetwork
 from spice.utils.setup_agents import setup_agent
 from spice.precoded import workingmemory, choice
 
@@ -249,12 +251,21 @@ for index_sess, sess in enumerate(n_sessions):
         # Load all runs for structural filtering
         spice_agents = []
         path_spice = base_name_params.replace('SESS', str(sess)).replace('IT', str(it))
-        spice_agent = setup_agent(
-            class_rnn=spice_model.SpiceModel,
-            path_model=path_spice,
+        # spice_agent = setup_agent(
+        #     class_rnn=spice_model.SpiceModel,
+        #     path_model=path_spice,
+        #     spice_config=spice_model.CONFIG,
+        # )[0]
+        spice_estimator = SpiceEstimator(
+            rnn_class=spice_model.SpiceModel,
             spice_config=spice_model.CONFIG,
-        )[0]
-
+            n_participants=len(participant_ids),
+            sindy_library_polynomial_degree=2,
+        )
+        spice_estimator.load_spice(path_spice)
+        spice_agent = spice_estimator.spice_agent
+        
+        
         for index_participant, participant in enumerate(participant_ids):
             spice_agent.new_sess(participant_id=participant)
             
