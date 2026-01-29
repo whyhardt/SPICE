@@ -14,7 +14,7 @@ CONFIG = SpiceConfig(
     library_setup={
         # Value learning can depend on recent reward sequence (working memory)
         'value_reward_chosen': [
-            'reward',           
+            'reward[t]',           
             'reward[t-1]', 
             'reward[t-2]',
             'reward[t-3]',
@@ -26,7 +26,7 @@ CONFIG = SpiceConfig(
             'reward[t-3]',
             ],
         'value_choice': [
-            'choice',
+            'choice[t]',
             'choice[t-1]', 
             'choice[t-2]',
             'choice[t-3]',
