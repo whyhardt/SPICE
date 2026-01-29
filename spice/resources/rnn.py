@@ -217,8 +217,6 @@ class BaseRNN(nn.Module):
         dropout: float = 0., 
         polynomial_degree: int = None, 
         include_bias = True, 
-        include_state = True, 
-        fit_linear = True,
         interaction_only = False,
         ):
         """This method creates the standard RNN-module used in computational discovery of cognitive dynamics
@@ -235,10 +233,8 @@ class BaseRNN(nn.Module):
         self.submodules_rnn[key_module] = GRUModule(input_size=input_size, dropout=dropout)
         self.sindy_specs[key_module] = {}
         self.sindy_specs[key_module]['include_bias'] = include_bias
-        self.sindy_specs[key_module]['include_state'] = include_state
         self.sindy_specs[key_module]['interaction_only'] = interaction_only
         self.sindy_specs[key_module]['polynomial_degree'] = polynomial_degree
-        self.sindy_specs[key_module]['fit_linear'] = fit_linear
         self.setup_sindy_coefficients(key_module=key_module, polynomial_degree=polynomial_degree)
         
     def call_module(
@@ -275,8 +271,6 @@ class BaseRNN(nn.Module):
         """
         
         value = self.state[key_state]
-        if not self.sindy_specs[key_module]['include_state']:
-            value *= 0
             
         if inputs is None or (isinstance(inputs, tuple) and len(inputs) == 0):
             inputs = torch.zeros((*value.shape, 0), dtype=torch.float32, device=value.device)
@@ -389,9 +383,7 @@ class BaseRNN(nn.Module):
         if not sindy_specs['include_bias']:
             self.sindy_candidate_terms[key_module].remove('1')
             n_removed += 1
-        # if not sindy_specs['include_state']:
-        #     self.sindy_candidate_terms[key_module].remove(key_module)
-        #     n_removed += 1
+        
         if sindy_specs['interaction_only']:
             # remove all 
             for index_term, term in enumerate(self.sindy_candidate_terms[key_module]):
@@ -456,13 +448,6 @@ class BaseRNN(nn.Module):
         
         # Apply the mask to enforce sparsity during loss computation
         sindy_coeffs = sindy_coeffs * mask.float()
-
-        # Fix linear term coefficients to 1.0 when fit_linear=False
-        if not self.sindy_specs[key_module].get('fit_linear', True):
-            term_degrees = get_library_term_degrees(self.sindy_candidate_terms[key_module])
-            linear_mask = torch.tensor([d == 1 for d in term_degrees], dtype=torch.bool, device=sindy_coeffs.device)
-            # Set linear terms to 1.0, keep non-linear terms as learned
-            sindy_coeffs = torch.where(linear_mask, torch.ones_like(sindy_coeffs), sindy_coeffs)
 
         # Compute polynomial library (shared across ensemble)
         library = compute_polynomial_library(
@@ -572,17 +557,6 @@ class BaseRNN(nn.Module):
                 abs_coeffs = torch.abs(self.sindy_coefficients[module])
                 below_threshold = (abs_coeffs < threshold_e)  # Use < instead of <= to keep coefficients exactly at threshold
 
-                # Protect linear terms from thresholding when fit_linear=False
-                if not self.sindy_specs[module].get('fit_linear', True):
-                    term_degrees = get_library_term_degrees(self.sindy_candidate_terms[module])
-                    linear_protected = torch.tensor([d == 1 for d in term_degrees], dtype=torch.bool, device=below_threshold.device)
-                    below_threshold = below_threshold & ~linear_protected  # Don't threshold linear terms
-
-                # Protect all state-containing terms from thresholding when include_state=False
-                if not self.sindy_specs[module].get('include_state', True):
-                    state_protected = torch.tensor([module in term for term in self.sindy_candidate_terms[module]], dtype=torch.bool, device=below_threshold.device)
-                    below_threshold = below_threshold & ~state_protected  # Don't threshold state-containing terms
-
                 # Update patience counters
                 # Increment counter where coefficient is below threshold
                 self.sindy_cutoff_patience_counters[module] = torch.where(
@@ -606,23 +580,9 @@ class BaseRNN(nn.Module):
             all_masks = torch.cat([self.sindy_coefficients_presence[m] for m in module_list], dim=-1)
             all_patience = torch.cat([self.sindy_cutoff_patience_counters[m] for m in module_list], dim=-1)
 
-            # Build protection mask for linear terms (fit_linear=False) and state-containing terms (include_state=False)
-            protected_list = []
-            for module in module_list:
-                n_terms = self.sindy_coefficients[module].shape[-1]
-                protected = torch.zeros(n_terms, dtype=torch.bool, device=all_coeffs.device)
-                # Protect linear terms when fit_linear=False
-                if not self.sindy_specs[module].get('fit_linear', True):
-                    term_degrees = get_library_term_degrees(self.sindy_candidate_terms[module])
-                    protected = protected | torch.tensor([d == 1 for d in term_degrees], dtype=torch.bool, device=all_coeffs.device)
-                # Protect state-containing terms when include_state=False
-                if not self.sindy_specs[module].get('include_state', True):
-                    protected = protected | torch.tensor([module in term for term in self.sindy_candidate_terms[module]], dtype=torch.bool, device=all_coeffs.device)
-                protected_list.append(protected)
-            all_protected = torch.cat(protected_list, dim=-1)
 
             # Update patience counters for all coefficients (excluding protected terms)
-            below_threshold = (all_coeffs < threshold_e) & (all_masks == 1) & ~all_protected  # Use < instead of <=
+            below_threshold = (all_coeffs < threshold_e) & (all_masks == 1)
             all_patience = torch.where(
                 below_threshold,
                 all_patience + 1,
@@ -630,7 +590,7 @@ class BaseRNN(nn.Module):
             )
 
             # Identify candidates: active coefficients that have exceeded patience (excluding protected terms)
-            is_candidate = (all_patience >= patience) & (all_masks == 1) & ~all_protected
+            is_candidate = (all_patience >= patience) & (all_masks == 1)
 
             # For n_terms_cutoff, only consider coefficients that exceed patience
             temp_coeffs = all_coeffs.clone()
@@ -668,19 +628,6 @@ class BaseRNN(nn.Module):
         coefficients = torch.zeros(self.n_participants, self.n_experiments, device=self.device)
         for module in self.submodules_rnn:
             presence = self.sindy_coefficients_presence[module].clone()
-
-            # Exclude linear terms from count when fit_linear=False (they're fixed at 1, not learned)
-            if not self.sindy_specs[module].get('fit_linear', True):
-                term_degrees = get_library_term_degrees(self.sindy_candidate_terms[module])
-                linear_mask = torch.tensor([d == 1 for d in term_degrees], dtype=torch.bool, device=presence.device)
-                presence = presence & ~linear_mask
-
-            # Exclude all terms containing state from count when include_state=False (linear, quadratic, interactions)
-            if not self.sindy_specs[module].get('include_state', True):
-                for idx, term in enumerate(self.sindy_candidate_terms[module]):
-                    if module in term:
-                        presence[..., idx] = False
-
             coefficients += (presence != 0).sum(dim=-1).float().mean(dim=-1)
         return coefficients
 
@@ -714,17 +661,6 @@ class BaseRNN(nn.Module):
             # Get degree weights: [n_library_terms]
             degree_weights = self.sindy_degree_weights[module_name].clone()
 
-            # Exclude linear terms from penalty when fit_linear=False (they're fixed at 1.0)
-            if not self.sindy_specs[module_name].get('fit_linear', True):
-                term_degrees = get_library_term_degrees(self.sindy_candidate_terms[module_name])
-                linear_mask = torch.tensor([d == 1 for d in term_degrees], dtype=torch.bool, device=degree_weights.device)
-                degree_weights = degree_weights * (~linear_mask).float()
-
-            # Exclude all terms containing state from penalty when include_state=False
-            if not self.sindy_specs[module_name].get('include_state', True):
-                state_mask = torch.tensor([module_name in term for term in self.sindy_candidate_terms[module_name]], dtype=torch.bool, device=degree_weights.device)
-                degree_weights = degree_weights * (~state_mask).float()
-
             # Compute weighted coefficient penalty for each term
             # For each coefficient, penalty = (degree + 1) * |coeff|^norm
             # degree_weights already contains (degree + 1) for each term
@@ -757,18 +693,9 @@ class BaseRNN(nn.Module):
         for module in self.submodules_rnn:
             sparse_coeffs = (self.sindy_coefficients[module][participant_id, experiment_id, ensemble_idx] * self.sindy_coefficients_presence[module][participant_id, experiment_id, ensemble_idx]).detach().cpu().numpy()
 
-            # Fix linear term coefficients to 1.0 when fit_linear=False
-            if not self.sindy_specs[module].get('fit_linear', True):
-                term_degrees = get_library_term_degrees(self.sindy_candidate_terms[module])
-                for idx, degree in enumerate(term_degrees):
-                    if degree == 1:
-                        sparse_coeffs[idx] = 1.0
-
             equation_str = module + "[t+1] = "
-            include_state = self.sindy_specs[module].get('include_state', True)
             for index_term, term in enumerate(self.sindy_candidate_terms[module]):
-                # Skip all terms containing state when include_state=False (linear, quadratic, interactions)
-                if not include_state and module in term:
+                if module in term:
                     continue
                 if term == module:
                     sparse_coeffs[index_term] += 1

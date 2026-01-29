@@ -29,7 +29,7 @@ if __name__=='__main__':
     
     # SINDy training parameters
     parser.add_argument('--sindy_weight', type=float, default=1, help='Weight for SINDy regularization during RNN training')
-    parser.add_argument('--sindy_alpha', type=float, default=0.0001, help='L2 Reg of the SINDy coefficients')
+    parser.add_argument('--sindy_alpha', type=float, default=0.001, help='L2 Reg of the SINDy coefficients')
     parser.add_argument('--sindy_threshold', type=float, default=0.05, help='Threshold value for cutting off sindy terms (lowered for delta-form coefficients)')
     parser.add_argument('--sindy_cutoff', type=int, default=1, help='Number of thresholded terms')
     parser.add_argument('--sindy_cutoff_freq', type=int, default=1, help='Number of epochs after which to cutoff')
@@ -156,9 +156,9 @@ if __name__=='__main__':
         sindy_ensemble_size=1,
         
         # additional generalization parameters
-        batch_size=1024*4,
-        bagging=True,
-        scheduler=True,
+        # batch_size=1024,
+        # bagging=True,
+        # scheduler=False,
         
         # other parameters
         verbose=True,

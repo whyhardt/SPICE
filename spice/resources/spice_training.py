@@ -236,16 +236,30 @@ def batch_train(
         xs_step = xs[:, t:t+n_steps]
         ys_step = ys[:, t:t+n_steps]
         
+        # state = model.get_state(detach=True)
+        # ys_pred, _ = model(xs_step, state, batch_first=True)
+        
+        # # Mask out padding (NaN values) - valid trials have non-NaN actions
+        # mask = ~torch.isnan(xs_step[..., 0])
+        # mask = mask.reshape(-1)
+        
+        # loss_step = loss_fn(
+        #     ys_pred.reshape(-1, model.n_actions)[mask],
+        #     torch.argmax(ys_step.reshape(-1, model.n_actions), dim=1)[mask],
+        #     )
+        
+        # Mask out padding (NaN values) - valid trials have non-NaN actions
+        mask = ~torch.isnan(xs_step[..., :model.n_actions].sum(dim=-1, keepdim=True).repeat(1, 1, model.n_actions))
+        
         state = model.get_state(detach=True)
         ys_pred, _ = model(xs_step, state, batch_first=True)
         
-        # Mask out padding (NaN values) - valid trials have non-NaN actions
-        mask = ~torch.isnan(xs_step[..., 0])
-        mask = mask.reshape(-1)
+        ys_pred = ys_pred * mask
+        ys_step = ys_step * mask
         
         loss_step = loss_fn(
-            ys_pred.reshape(-1, model.n_actions)[mask],
-            torch.argmax(ys_step.reshape(-1, model.n_actions), dim=1)[mask],
+            ys_pred.reshape(-1, model.n_actions),
+            torch.argmax(ys_step.reshape(-1, model.n_actions), dim=1),
             )
         
         if torch.is_grad_enabled():
@@ -540,7 +554,7 @@ def fit_model(
             optimizer=optimizer,
             min_lr=1e-5,
             factor=0.1,
-            patience=10,
+            patience=100,
             restart=True,
         )
         
