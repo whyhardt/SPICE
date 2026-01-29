@@ -61,8 +61,9 @@ if __name__=='__main__':
     # args.n_items=8
     # args.test_sessions="1"
     
-    args.data = "weinhardt2025/data/synthetic/synthetic_2_256p_0.csv"
-    args.model = args.data.replace("data", "params").replace("/synthetic_", "/spice_synthetic_test").replace(".csv", ".pkl")
+    print('This is the old version!')
+    args.data = "weinhardt2025/data/synthetic/synthetic_256p_0_0_new.csv"
+    args.model = args.data.replace("data", "params").replace("/synthetic_", "/spice_synthetic_").replace(".csv", "_OLD.pkl")
     
     args.epochs = 4000
     args.lr = 0.01
@@ -84,6 +85,7 @@ if __name__=='__main__':
     print(f"Loading dataset from {args.data}...")
     dataset = convert_dataset(
         file=args.data,
+        df_participant_id='participant',
         additional_inputs=args.additional_columns.split(',') if args.additional_columns else None,
         timeshift_additional_inputs=args.timeshift_additional_columns,
     )
