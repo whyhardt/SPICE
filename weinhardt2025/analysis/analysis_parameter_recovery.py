@@ -20,7 +20,10 @@ USE_STRUCTURAL_FILTERING = False  # Structural filtering enabled
 # base_name_params = 'weinhardt2025/params/synthetic/spice_synthetic_choice_SESSp_IT.pkl'
 
 spice_model = workingmemory
-base_name_params = 'weinhardt2025/params/synthetic/spice_synthetic_test2_SESSp_IT.pkl'
+base_name_params = 'weinhardt2025/params/synthetic/spice_synthetic_SESSp_IT_0_new_OLD.pkl'
+base_name_data = 'weinhardt2025/data/synthetic/synthetic_SESSp_IT_0_new.csv'
+kw_participant_id = 'participant'
+path_plots = 'analysis/plots_parameter_recovery'
 
 random_sampling = [0.25, 0.5, 0.75]
 n_sessions = [256]#[16, 32, 64, 128, 256]
@@ -202,14 +205,6 @@ def compute_structural_mask(spice_agents, n_participants, mapping_libraries):
 
     return structural_masks
 
-
-# -----------------------------------------------------------------------------------------------
-# configuration
-# -----------------------------------------------------------------------------------------------
-
-base_name_data = 'weinhardt2025/data/synthetic/synthetic_2_SESSp_IT.csv'
-kw_participant_id = 'session'
-path_plots = 'analysis/plots_parameter_recovery'
 
 # ground truth parameters (alpha_reward, alpha_penalty, forget_rate, beta_reward, beta_choice)
 n_params_q = 6

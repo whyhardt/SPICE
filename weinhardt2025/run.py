@@ -61,11 +61,13 @@ if __name__=='__main__':
     # args.n_items=8
     # args.test_sessions="1"
     
-    print('This is the old version!')
+    print('CAUTION: OLD VERSION!')
     args.data = "weinhardt2025/data/synthetic/synthetic_256p_0_0_new.csv"
     args.model = args.data.replace("data", "params").replace("/synthetic_", "/spice_synthetic_").replace(".csv", "_OLD.pkl")
     
-    args.epochs = 4000
+    args.epochs = 1000
+    warmup_steps = 250
+    sindy_epochs = 2000
     args.lr = 0.01
     args.sindy_weight = 0.1
     args.sindy_cutoff_freq = 1
@@ -73,8 +75,7 @@ if __name__=='__main__':
     args.sindy_cutoff_patience = 100
     args.sindy_threshold = 0.05
     args.sindy_alpha = 0.0001
-    sindy_epochs = 2000
-    warmup_steps = 1000
+
     
     example_participant = 1
     plot_coef_dist = True
