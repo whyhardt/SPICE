@@ -14,7 +14,6 @@ from spice.precoded import workingmemory, choice
 
 
 save_plots = False
-USE_STRUCTURAL_FILTERING = False  # Structural filtering enabled
 
 # spice_model = choice
 # base_name_params = 'weinhardt2025/params/synthetic/spice_synthetic_choice_SESSp_IT.pkl'
@@ -249,26 +248,12 @@ for index_sess, sess in enumerate(n_sessions):
 
         # Load all runs for structural filtering
         spice_agents = []
-        for run in range(n_runs):
-            path_spice = base_name_params.replace('SESS', str(sess)).replace('IT', str(it)).replace('RUN', str(run))
-            spice_agent = setup_agent(
-                class_rnn=spice_model.SpiceModel,
-                path_model=path_spice,
-                spice_config=spice_model.CONFIG,
-            )[0]
-            spice_agents.append(spice_agent)
-
-        # Compute structural masks across all runs
-        if USE_STRUCTURAL_FILTERING:
-            print(f"\n{'='*60}")
-            print(f"Computing structural masks for {sess} participants, iteration {it}")
-            print(f"{'='*60}")
-            structural_masks = compute_structural_mask(spice_agents, sess, mapping_libraries)
-        else:
-            structural_masks = None
-
-        # Use first run as the primary agent for analysis (all runs should give similar results after filtering)
-        spice_agent = spice_agents[0]
+        path_spice = base_name_params.replace('SESS', str(sess)).replace('IT', str(it))
+        spice_agent = setup_agent(
+            class_rnn=spice_model.SpiceModel,
+            path_model=path_spice,
+            spice_config=spice_model.CONFIG,
+        )[0]
 
         for index_participant, participant in enumerate(participant_ids):
             spice_agent.new_sess(participant_id=participant)
@@ -291,12 +276,6 @@ for index_sess, sess in enumerate(n_sessions):
                 # sindy_coefs_presence_library = np.abs(sindy_coefs_library) > coef_threshold
                 sindy_coefs_library *= np.abs(sindy_coefs_library) > coef_threshold
                 
-                # Apply structural filtering if enabled
-                if USE_STRUCTURAL_FILTERING and structural_masks is not None:
-                    # Only keep coefficients that pass the structural mask
-                    # sindy_coefs_presence_library = sindy_coefs_presence_library * structural_masks[library]
-                    sindy_coefs_library *= structural_masks[library]
-
                 feature_names_library = spice_agent.model.sindy_candidate_terms[library]
                 # sindy_coefs_array += (sindy_coefs_library * sindy_coefs_presence_library).tolist()
                 sindy_coefs_array += sindy_coefs_library.tolist()
