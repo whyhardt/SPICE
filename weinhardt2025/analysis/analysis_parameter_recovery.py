@@ -15,9 +15,25 @@ spice_model = workingmemory
 rl_parameters = ['beta_reward', 'beta_choice', 'alpha_reward', 'alpha_penalty', 'alpha_choice', 'forget_rate']
 participants = [256]#[32, 64, 128, 256, 512]
 iterations = 1
-coefficient_threshold = 0.05
-n_coefficients_fitted_model = 62
+coefficient_threshold = 0.02  # Lowered for delta-form coefficients
 
+# Dynamically determine n_coefficients from a sample model
+sample_dataset = csv_to_dataset(
+    file=path_data.replace('PAR', str(participants[0])).replace('IT', '0'),
+    additional_inputs=rl_parameters
+)
+sample_model = SpiceEstimator(
+    rnn_class=spice_model.SpiceModel,
+    spice_config=spice_model.CONFIG,
+    n_actions=sample_dataset.ys.shape[-1],
+    n_participants=1,
+    sindy_library_polynomial_degree=2,
+)
+n_coefficients_fitted_model = sum(
+    sample_model.rnn_model.sindy_coefficients[m].shape[-1]
+    for m in sample_model.rnn_model.get_modules()
+)
+print(f"Detected n_coefficients_fitted_model = {n_coefficients_fitted_model}")
 
 # get coefficients storage
 true_coefs = np.zeros((len(participants), participants[-1]*iterations, n_coefficients_fitted_model))
@@ -85,8 +101,11 @@ for index_par, par in enumerate(participants):
                 true_coef_vals = true_model.sindy_coefficients[module][:, 0, 0, candidate_terms_true_model.index(term)].detach().cpu().numpy()
                 true_coefs[index_par, par*it:par*(it+1), index_coefs_all+index_coef] = true_coef_vals
 
-            # place fitted module coefs in storage
-            fitted_coef_vals = fitted_model.sindy_coefficients[module][:, 0, 0, :].detach().cpu().numpy()
+            # place fitted module coefs in storage (apply presence mask)
+            fitted_coef_vals = (
+                fitted_model.sindy_coefficients[module][:, 0, 0, :] *
+                fitted_model.sindy_coefficients_presence[module][:, 0, 0, :]
+            ).detach().cpu().numpy()
             fitted_coefs[index_par, par*it:par*(it+1), index_coefs_all:index_coefs_all+n_terms_module] = fitted_coef_vals
 
             index_coefs_all += n_terms_module
@@ -98,9 +117,9 @@ for index_par, par in enumerate(participants):
 # POST-PROCESSING: Compute classification metrics
 # -------------------------------------------------------------------------------
 
-# Apply threshold to determine active coefficients
-true_active = np.abs(true_coefs) > coefficient_threshold
-fitted_active = np.abs(fitted_coefs) > coefficient_threshold
+# Apply threshold to determine active coefficients (use >= for boundary consistency with training)
+true_active = np.abs(true_coefs) >= coefficient_threshold
+fitted_active = np.abs(fitted_coefs) >= coefficient_threshold
 
 # Get unique active param counts for x-axis
 max_active_params = int(np.nanmax(active_params)) + 1

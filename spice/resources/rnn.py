@@ -570,7 +570,7 @@ class BaseRNN(nn.Module):
             # Simple thresholding: mask all terms below threshold with patience
             for module in module_list:
                 abs_coeffs = torch.abs(self.sindy_coefficients[module])
-                below_threshold = (abs_coeffs <= threshold_e)
+                below_threshold = (abs_coeffs < threshold_e)  # Use < instead of <= to keep coefficients exactly at threshold
 
                 # Protect linear terms from thresholding when fit_linear=False
                 if not self.sindy_specs[module].get('fit_linear', True):
@@ -622,7 +622,7 @@ class BaseRNN(nn.Module):
             all_protected = torch.cat(protected_list, dim=-1)
 
             # Update patience counters for all coefficients (excluding protected terms)
-            below_threshold = (all_coeffs <= threshold_e) & (all_masks == 1) & ~all_protected
+            below_threshold = (all_coeffs < threshold_e) & (all_masks == 1) & ~all_protected  # Use < instead of <=
             all_patience = torch.where(
                 below_threshold,
                 all_patience + 1,

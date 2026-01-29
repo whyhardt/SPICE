@@ -29,8 +29,8 @@ if __name__=='__main__':
     
     # SINDy training parameters
     parser.add_argument('--sindy_weight', type=float, default=1, help='Weight for SINDy regularization during RNN training')
-    parser.add_argument('--sindy_alpha', type=float, default=0.01, help='L2 Reg of the SINDy coefficients')
-    parser.add_argument('--sindy_threshold', type=float, default=0.05, help='Threshold value for cutting off sindy terms')
+    parser.add_argument('--sindy_alpha', type=float, default=0.0001, help='L2 Reg of the SINDy coefficients')
+    parser.add_argument('--sindy_threshold', type=float, default=0.05, help='Threshold value for cutting off sindy terms (lowered for delta-form coefficients)')
     parser.add_argument('--sindy_cutoff', type=int, default=1, help='Number of thresholded terms')
     parser.add_argument('--sindy_cutoff_freq', type=int, default=1, help='Number of epochs after which to cutoff')
     parser.add_argument('--sindy_cutoff_patience', type=int, default=100, help='Number of epochs after which to cutoff')
@@ -74,7 +74,7 @@ if __name__=='__main__':
     # args.additional_columns = None,
     # args.test_sessions = "4,8,12"
     
-    args.epochs = 2000
+    args.epochs = 4000
     args.results = True
     args.data = "weinhardt2025/data/synthetic/synthetic_256p_0_0.csv"
     args.model = args.data.replace("data", "params").replace("/synthetic_", "/spice_synthetic_").replace(".csv", ".pkl")
@@ -139,7 +139,7 @@ if __name__=='__main__':
         
         # rnn training parameters
         epochs=args.epochs,
-        warmup_steps=args.epochs//2,
+        warmup_steps=args.epochs//4,
         l2_rnn=args.l2_rnn,
         learning_rate=args.lr,
         
@@ -152,6 +152,7 @@ if __name__=='__main__':
         sindy_epochs=args.epochs,
         sindy_alpha=args.sindy_alpha,
         sindy_library_polynomial_degree=2,
+        sindy_optimizer_reset=None,
         sindy_ensemble_size=1,
         
         # additional generalization parameters

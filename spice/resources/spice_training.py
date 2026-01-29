@@ -149,6 +149,7 @@ class ReduceOnPlateauWithRestarts:
         self.best = float('inf')
         self.num_bad_epochs = 0
         self.num_cycles_completed = 0
+        self.increase_lr = False
 
     def step(self, metrics):
         """
@@ -158,15 +159,17 @@ class ReduceOnPlateauWithRestarts:
         if metrics < self.best:
             self.best = metrics
             self.num_bad_epochs = 0
+            self.increase_lr = False
         else:
             self.num_bad_epochs += 1
-
+        
         if self.num_bad_epochs > self.patience:
             current_lr = self._get_rnn_lr()
             if current_lr <= self.min_lr and self.restart:
-                self._restart_lr()
-            else:
-                self._reduce_lr()
+                self.increase_lr = True
+            elif current_lr >= self.base_lr_rnn and self.increase_lr:
+                self.increase_lr = False
+            self._adjust_lr()
             self.num_bad_epochs = 0
 
     def _get_rnn_lr(self):
@@ -175,15 +178,17 @@ class ReduceOnPlateauWithRestarts:
             return self.optimizer.param_groups[1]['lr']
         return self.optimizer.param_groups[0]['lr']
 
-    def _reduce_lr(self):
-        """Reduce the learning rate for RNN parameters only (param_groups[1])."""
+    def _adjust_lr(self):
+        """Adjust the learning rate for RNN parameters only (param_groups[1])."""
         if len(self.optimizer.param_groups) > 1:
             param_group = self.optimizer.param_groups[1]
         else:
             param_group = self.optimizer.param_groups[0]
 
         old_lr = param_group['lr']
-        new_lr = max(old_lr * self.factor, self.min_lr)
+        # determine whether to increase or decrease lr
+        factor = 1/self.factor if self.increase_lr else self.factor
+        new_lr = max(old_lr * factor, self.min_lr)
         param_group['lr'] = new_lr
 
     def _restart_lr(self):
@@ -472,6 +477,7 @@ def fit_model(
     sindy_threshold_frequency: int = 1,
     sindy_threshold_terms: int = None,
     sindy_threshold_patience: int = 0,
+    sindy_optimizer_reset: int = None,
     epochs: int = 1,
     batch_size: int = None,
     bagging: bool = False,
@@ -534,7 +540,7 @@ def fit_model(
             optimizer=optimizer,
             min_lr=1e-5,
             factor=0.1,
-            patience=50,
+            patience=10,
             restart=True,
         )
         
@@ -593,7 +599,7 @@ def fit_model(
             # Reset SINDy optimizer state after warmup (when SINDy weight reaches full strength)
             # This is important because optimizer momentum/adaptive LRs were calibrated on
             # scaled-down gradients during warmup and may not be optimal for full-strength gradients
-            if n_calls_to_train_model == n_warmup_steps and n_warmup_steps > 0 and sindy_weight > 0:
+            if sindy_optimizer_reset is not None and n_calls_to_train_model % sindy_optimizer_reset == 0 and n_calls_to_train_model >= n_warmup_steps and sindy_weight > 0:
                 # Only reset state for SINDy parameters (param_groups[0])
                 num_reset = 0
                 for param in optimizer.param_groups[0]['params']:
@@ -687,7 +693,7 @@ def fit_model(
             cutoff_n_terms=sindy_threshold_terms,
             cutoff_patience=sindy_threshold_patience,
             cutoff_warmup=sindy_epochs//4,
-            sindy_alpha=0.001,
+            sindy_alpha=sindy_alpha,  # Pass through actual value instead of hard-coded 0.001
             batch_size=None,
             verbose=verbose,
         )

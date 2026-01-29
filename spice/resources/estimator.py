@@ -62,6 +62,7 @@ class SpiceEstimator(BaseEstimator):
         sindy_ensemble_size: Optional[int] = 10,
         sindy_alpha: Optional[float] = 0,
         sindy_noise_std: Optional[float] = 0.01,  # Noise injection std (0 = disabled)
+        sindy_optimizer_reset: Optional[float] = None,
         use_sindy: Optional[bool] = False,
         
         verbose: Optional[bool] = False,
@@ -126,6 +127,7 @@ class SpiceEstimator(BaseEstimator):
         self.sindy_epochs = sindy_epochs
         self.sindy_ensemble_size = sindy_ensemble_size
         self.sindy_noise_std = sindy_noise_std
+        self.sindy_optimizer_reset = sindy_optimizer_reset
         
         # Data parameters
         self.n_actions = n_actions
@@ -213,6 +215,7 @@ class SpiceEstimator(BaseEstimator):
             sindy_threshold_frequency=self.sindy_threshold_frequency,
             sindy_threshold_terms=self.sindy_threshold_terms,
             sindy_threshold_patience=self.sindy_cutoff_patience,
+            sindy_optimizer_reset=self.sindy_optimizer_reset,
             sindy_epochs=self.sindy_epochs,
             epochs=self.epochs,
             n_warmup_steps=self.warmup_steps,
