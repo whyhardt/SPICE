@@ -9,7 +9,7 @@ from joblib import Parallel, delayed
 from spice.resources.spice_utils import SpiceDataset
 from spice.utils.convert_dataset import csv_to_dataset, split_data_along_sessiondim, reshape_data_along_participantdim
 from spice.utils.agent import Agent
-from spice.resources.spice_training import batch_train
+from spice.resources.spice_training import _run_batch_training
 
 
 class MarginalValueTheoremModel(torch.nn.Module):

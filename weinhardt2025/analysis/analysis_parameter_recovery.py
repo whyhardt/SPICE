@@ -10,12 +10,13 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '.
 from weinhardt2025.benchmarking.benchmarking_qlearning import QLearning
 
 
-path_data = 'weinhardt2025/data/synthetic/synthetic_PARp_IT_0_new.csv'
+path_data = 'weinhardt2025/data/synthetic/synthetic_PARp_IT_0.csv'
+path_model = path_data.replace('data', 'params').replace('/synthetic_', '/spice_synthetic_').replace('.csv', '.pkl')
 spice_model = workingmemory
 rl_parameters = ['beta_reward', 'beta_choice', 'alpha_reward', 'alpha_penalty', 'alpha_choice', 'forget_rate']
 participants = [256]#[32, 64, 128, 256, 512]
 iterations = 1
-coefficient_threshold = 0.02  # Lowered for delta-form coefficients
+coefficient_threshold = 0.05
 
 # Dynamically determine n_coefficients from a sample model
 sample_dataset = csv_to_dataset(
@@ -81,7 +82,7 @@ for index_par, par in enumerate(participants):
             n_participants=par,
             sindy_library_polynomial_degree=2,
         )
-        fitted_model.load_spice(path_data.replace('PAR', str(par)).replace('IT', str(it)).replace('data', 'params').replace('/synthetic_', '/spice_synthetic_').replace('.csv', '_OLD.pkl'))
+        fitted_model.load_spice(path_model=path_model.replace('PAR', str(par)).replace('IT', str(it)))
         fitted_model = fitted_model.rnn_model
 
         # put all coefs into storage
@@ -99,20 +100,24 @@ for index_par, par in enumerate(participants):
                 index_coef = candidate_terms_fitted_model.index(term)
                 # Extract coefficient values: shape is (n_participants, n_experiments, n_ensemble, n_terms)
                 true_coef_vals = true_model.sindy_coefficients[module][:, 0, 0, candidate_terms_true_model.index(term)].detach().cpu().numpy()
+                if module == term:
+                    true_coef_vals += 1
                 true_coefs[index_par, par*it:par*(it+1), index_coefs_all+index_coef] = true_coef_vals
 
             # place fitted module coefs in storage (apply presence mask)
-            fitted_coef_vals = (
-                fitted_model.sindy_coefficients[module][:, 0, 0, :] *
-                fitted_model.sindy_coefficients_presence[module][:, 0, 0, :]
-            ).detach().cpu().numpy()
+            # fitted_coef_vals = (
+            #     fitted_model.sindy_coefficients[module][:, 0, 0, :] *
+            #     fitted_model.sindy_coefficients_presence[module][:, 0, 0, :]
+            # ).detach().cpu().numpy()
+            fitted_coef_vals = fitted_model.sindy_coefficients[module][:, 0, 0, :].detach().cpu().numpy()
+            fitted_coef_vals[:, 1] += 1
             fitted_coefs[index_par, par*it:par*(it+1), index_coefs_all:index_coefs_all+n_terms_module] = fitted_coef_vals
 
             index_coefs_all += n_terms_module
 
         # store number of active params per participant
         active_params[index_par, par*it:par*(it+1), 0] = count_active_params(rl_parameters_dataset)
-
+        
 # -------------------------------------------------------------------------------
 # POST-PROCESSING: Compute classification metrics
 # -------------------------------------------------------------------------------
@@ -184,6 +189,8 @@ precision[mask_no_samples] = np.nan
 recall[mask_no_samples] = np.nan
 f1_score[mask_no_samples] = np.nan
 f2_score[mask_no_samples] = np.nan
+
+print(precision)
 
 # -------------------------------------------------------------------------------
 # PLOTTING: 2x2 Confusion Matrix Rates

@@ -10,7 +10,7 @@ from typing import List
 from spice.resources.spice_utils import SpiceDataset
 from spice.utils.convert_dataset import csv_to_dataset, split_data_along_sessiondim, reshape_data_along_participantdim
 from spice.utils.agent import Agent
-from spice.resources.spice_training import batch_train
+from spice.resources.spice_training import _run_batch_training
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 from weinhardt2025.utils.config_model_comparison import ConfigModelComparison
@@ -243,7 +243,7 @@ def training(model_config: str, n_actions: int, dimensions: int,  dataset_traini
         for e in epoch_pbar:
             
             # Train model
-            model_participant, optimizer, current_loss = batch_train(
+            model_participant, optimizer, current_loss = _run_batch_training(
                 model=model_participant,
                 xs=xs,
                 ys=ys,
@@ -265,7 +265,7 @@ def training(model_config: str, n_actions: int, dimensions: int,  dataset_traini
                     
                 with torch.no_grad():
                     model_participant.eval()
-                    _, _, loss_test = batch_train(
+                    _, _, loss_test = _run_batch_training(
                         model=model_participant,
                         xs=xs_test,
                         ys=ys_test,

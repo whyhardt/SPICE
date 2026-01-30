@@ -8,7 +8,7 @@ import numpy as np
 from sklearn.base import BaseEstimator
 from typing import Dict, Optional, Tuple, List, Union
 
-from .spice_training import fit_model
+from .spice_training import fit_spice
 from .rnn import BaseRNN
 from .spice_utils import SpiceConfig, SpiceDataset
 from ..utils.agent import Agent
@@ -53,16 +53,15 @@ class SpiceEstimator(BaseEstimator):
         # SPICE training parameters
         sindy_weight: Optional[float] = 0.1,  # Weight for SINDy regularization loss
         sindy_epochs: Optional[int] = 1000,
-        sindy_threshold: Optional[float] = 0.05,
-        sindy_threshold_frequency: Optional[int] = 1,
-        sindy_threshold_terms: Optional[int] = 1,
-        sindy_cutoff_patience: Optional[int] = 0,
-        sindy_regularization: Optional[float] = 1e-2,
+        sindy_pruning_threshold: Optional[float] = 0.05,
+        sindy_pruning_frequency: Optional[int] = 1,
+        sindy_pruning_terms: Optional[int] = 1,
+        sindy_pruning_patience: Optional[int] = 100,
         sindy_library_polynomial_degree: Optional[int] = 1,
-        sindy_ensemble_size: Optional[int] = 10,
-        sindy_alpha: Optional[float] = 0,
-        sindy_noise_std: Optional[float] = 0.01,  # Noise injection std (0 = disabled)
+        sindy_ensemble_size: Optional[int] = 1,
+        sindy_l2_lambda: Optional[float] = 1e-4,
         sindy_optimizer_reset: Optional[float] = None,
+        sindy_confidence_threshold: Optional[float] = None,  # Filter terms by cross-participant confidence (0-1)
         use_sindy: Optional[bool] = False,
         
         verbose: Optional[bool] = False,
@@ -117,17 +116,16 @@ class SpiceEstimator(BaseEstimator):
 
         # SINDy training parameters
         self.sindy_weight = sindy_weight
-        self.sindy_alpha = sindy_alpha
-        self.sindy_threshold_frequency = sindy_threshold_frequency
-        self.sindy_threshold = sindy_threshold
-        self.sindy_cutoff_patience = sindy_cutoff_patience
-        self.sindy_threshold_terms = sindy_threshold_terms
+        self.sindy_alpha = sindy_l2_lambda
+        self.sindy_pruning_frequency = sindy_pruning_frequency
+        self.sindy_pruning_threshold = sindy_pruning_threshold
+        self.sindy_pruning_patience = sindy_pruning_patience
+        self.sindy_pruning_terms = sindy_pruning_terms
         self.sindy_library_polynomial_degree = sindy_library_polynomial_degree
-        self.sindy_regularization = sindy_regularization
         self.sindy_epochs = sindy_epochs
         self.sindy_ensemble_size = sindy_ensemble_size
-        self.sindy_noise_std = sindy_noise_std
         self.sindy_optimizer_reset = sindy_optimizer_reset
+        self.sindy_confidence_threshold = sindy_confidence_threshold
         
         # Data parameters
         self.n_actions = n_actions
@@ -156,9 +154,6 @@ class SpiceEstimator(BaseEstimator):
             use_sindy=use_sindy,
             n_items=n_items,
         ).to(device)
-
-        # Set noise injection parameter
-        self.rnn_model.sindy_noise_std = sindy_noise_std
         
         sindy_params = []
         rnn_params = []
@@ -198,25 +193,23 @@ class SpiceEstimator(BaseEstimator):
         # Fit RNN
         # ------------------------------------------------------------------------
         
-        # if self.verbose:
-        print('\nTraining the RNN...')
-        
         batch_size = data.shape[0] if self.batch_size is None else self.batch_size
         
-        rnn_model, rnn_optimizer, _ = fit_model(
+        rnn_model, rnn_optimizer = fit_spice(
             model=self.rnn_model,
             dataset_train=dataset,
             dataset_test=dataset_test,
             optimizer=self.rnn_optimizer,
             convergence_threshold=self.convergence_threshold,
             sindy_weight=self.sindy_weight,
-            sindy_alpha=self.sindy_alpha,
-            sindy_threshold=self.sindy_threshold,
-            sindy_threshold_frequency=self.sindy_threshold_frequency,
-            sindy_threshold_terms=self.sindy_threshold_terms,
-            sindy_threshold_patience=self.sindy_cutoff_patience,
+            sindy_l2_lambda=self.sindy_alpha,
+            sindy_pruning_threshold=self.sindy_pruning_threshold,
+            sindy_pruning_frequency=self.sindy_pruning_frequency,
+            sindy_pruning_terms=self.sindy_pruning_terms,
+            sindy_pruning_patience=self.sindy_pruning_patience,
             sindy_optimizer_reset=self.sindy_optimizer_reset,
             sindy_epochs=self.sindy_epochs,
+            sindy_confidence_threshold=self.sindy_confidence_threshold,
             epochs=self.epochs,
             n_warmup_steps=self.warmup_steps,
             batch_size=batch_size,

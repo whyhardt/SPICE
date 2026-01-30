@@ -10,6 +10,7 @@ import pandas as pd
 
 from spice import SpiceEstimator, csv_to_dataset, split_data_along_sessiondim, split_data_along_timedim, plot_session, Agent
 from spice.precoded import workingmemory_multiitem, workingmemory, workingmemory_rewardbinary, choice
+from spice.resources.spice_training import _get_terminal_width
 
 from benchmarking.benchmarking_qlearning import QLearning
 
@@ -25,15 +26,15 @@ if __name__=='__main__':
     # RNN training parameters
     parser.add_argument('--epochs', type=int, default=4000, help='Number of training epochs')
     parser.add_argument('--lr', type=float, default=0.01, help='Learning rate')
-    parser.add_argument('--l2_rnn', type=float, default=0., help='L2 Reg of the RNN parameters')
+    parser.add_argument('--rnn_l2_lambda', type=float, default=0., help='L2 Reg of the RNN parameters')
     
     # SINDy training parameters
-    parser.add_argument('--sindy_weight', type=float, default=1, help='Weight for SINDy regularization during RNN training')
-    parser.add_argument('--sindy_alpha', type=float, default=0.001, help='L2 Reg of the SINDy coefficients')
-    parser.add_argument('--sindy_threshold', type=float, default=0.05, help='Threshold value for cutting off sindy terms (lowered for delta-form coefficients)')
-    parser.add_argument('--sindy_cutoff', type=int, default=1, help='Number of thresholded terms')
-    parser.add_argument('--sindy_cutoff_freq', type=int, default=1, help='Number of epochs after which to cutoff')
-    parser.add_argument('--sindy_cutoff_patience', type=int, default=100, help='Number of epochs after which to cutoff')
+    parser.add_argument('--sindy_weight', type=float, default=0.1, help='Weight for SINDy regularization during RNN training')
+    parser.add_argument('--sindy_l2_lambda', type=float, default=0.0001, help='L2 Reg of the SINDy coefficients')
+    parser.add_argument('--sindy_pruning_threshold', type=float, default=0.05, help='Threshold value for cutting off sindy terms (lowered for delta-form coefficients)')
+    parser.add_argument('--sindy_pruning_terms', type=int, default=1, help='Number of thresholded terms')
+    parser.add_argument('--sindy_pruning_freq', type=int, default=1, help='Number of epochs after which to prune')
+    parser.add_argument('--sindy_pruning_patience', type=int, default=100, help='Number of epochs after which to prune')
     
     # Data setup parameters
     parser.add_argument('--train_ratio_time', type=float, default=None, help='Ratio of data used for training. Split along time dimension. Not combinable with test_sessions')
@@ -74,10 +75,10 @@ if __name__=='__main__':
     # args.additional_columns = None,
     # args.test_sessions = "4,8,12"
     
-    args.epochs = 4000
-    args.results = True
-    args.data = "weinhardt2025/data/synthetic/synthetic_256p_0_0.csv"
-    args.model = args.data.replace("data", "params").replace("/synthetic_", "/spice_synthetic_").replace(".csv", ".pkl")
+    # args.epochs = 0
+    # args.results = True
+    # args.data = "weinhardt2025/data/synthetic/synthetic_256p_0_0.csv"
+    # args.model = args.data.replace("data", "params").replace("/synthetic_", "/spice_synthetic_").replace(".csv", ".pkl")
     
     example_participant = 2
     plot_coef_dist = False
@@ -85,7 +86,8 @@ if __name__=='__main__':
     if args.train_ratio_time and args.test_sessions:
         raise ValueError("kwargs train_ratio_time and test_sessions cannot be assigned at the same time.")
     
-    print(f"Loading dataset from {args.data}...")
+    print("\n"+"="*_get_terminal_width())
+    print(f"Dataset: {args.data}")
     dataset = csv_to_dataset(
         file=args.data,
         df_participant_id='participant',
@@ -100,7 +102,7 @@ if __name__=='__main__':
         args.test_sessions = [int(item) for item in args.test_sessions.split(',')]
         dataset_train, dataset_test = split_data_along_sessiondim(dataset, args.test_sessions)
     else:
-        print("No split into training and test data.")
+        print("Training/test split: None")
         dataset_train, dataset_test = dataset, dataset
     
     dataset_tuple = dataset_train.xs, dataset_train.ys, dataset_train.xs, dataset_train.ys
@@ -123,10 +125,8 @@ if __name__=='__main__':
     class_rnn = spice_model.SpiceModel
     spice_config = spice_model.CONFIG 
 
-    print(f"Dataset: {n_participants} participants, {n_actions} actions, {n_items} items")
-    print(f"Test data: {1-args.train_ratio_time if args.train_ratio_time else args.test_sessions}")
-
-    print(f"\nInitializing SpiceEstimator with end-to-end SINDy training (weight={args.sindy_weight})...")
+    print(f"Dataset size: {n_participants} participants, {n_actions} actions, {n_items} items")
+    
     estimator = SpiceEstimator(
         
         # model paramaeters
@@ -140,25 +140,26 @@ if __name__=='__main__':
         # rnn training parameters
         epochs=args.epochs,
         warmup_steps=args.epochs//4,
-        l2_rnn=args.l2_rnn,
+        l2_rnn=args.rnn_l2_lambda,
         learning_rate=args.lr,
         
         # sindy fitting parameters
         sindy_weight=args.sindy_weight,
-        sindy_threshold=args.sindy_threshold,
-        sindy_threshold_frequency=args.sindy_cutoff_freq,
-        sindy_threshold_terms=args.sindy_cutoff,
-        sindy_cutoff_patience=args.sindy_cutoff_patience,
-        sindy_epochs=args.epochs,
-        sindy_alpha=args.sindy_alpha,
+        sindy_pruning_threshold=args.sindy_pruning_threshold,
+        sindy_pruning_frequency=args.sindy_pruning_freq,
+        sindy_pruning_terms=args.sindy_pruning_terms,
+        sindy_pruning_patience=args.sindy_pruning_patience,
+        sindy_epochs=2*args.epochs,
+        sindy_l2_lambda=args.sindy_l2_lambda,
         sindy_library_polynomial_degree=2,
         sindy_optimizer_reset=None,
         sindy_ensemble_size=1,
+        sindy_confidence_threshold=0.1,
         
         # additional generalization parameters
-        # batch_size=1024,
-        # bagging=True,
-        # scheduler=False,
+        batch_size=1024,
+        bagging=True,
+        scheduler=True,
         
         # other parameters
         verbose=True,
@@ -168,12 +169,13 @@ if __name__=='__main__':
     
     if args.epochs == 0:
         estimator.load_spice(args.model)
-    
-    print(f"\nStarting training on {estimator.device}...")
-    print("=" * 80)
+
+    training_device_str = "CUDA" if estimator.device == torch.device('cuda') else "CPU"
+    print("Training device:", training_device_str)
+    print("="*_get_terminal_width())
     if estimator.sindy_epochs > 0 or estimator.epochs > 0:
         estimator.fit(*dataset_tuple)
-    print("=" * 80)
+    
     print("\nTraining complete!")
     
     print(f"\nModel saved to: {args.model}")
@@ -191,9 +193,9 @@ if __name__=='__main__':
             
             # Print example SPICE model for first participant
             print(f"\nExample SPICE model (participant {example_participant}; n_parameters = {int(estimator.spice_agent.count_parameters()[example_participant, 0])}):")
-            print("-" * 80)
+            print("-" * _get_terminal_width())
             estimator.print_spice_model(participant_id=example_participant)
-            print("-" * 80)
+            print("-" * _get_terminal_width())
 
         if 'synthetic' in args.data:
             rl_parameters = ['beta_reward', 'beta_choice', 'alpha_reward', 'alpha_penalty', 'alpha_choice', 'forget_rate']

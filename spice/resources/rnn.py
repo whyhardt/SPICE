@@ -14,18 +14,18 @@ class GRUModule(nn.Module):
         self.linear_in = nn.Linear(input_size, 8+input_size)
         self.dropout = nn.Dropout(p=dropout)
         self.gru_in = nn.GRU(8+input_size, 1)
-        self.linear_out = nn.Linear(1, 1)
+        # self.linear_out = nn.Linear(1, 1)
         
         #Simple weight initialization for all parameters
-        self.initialize_weights()
+    #     self.initialize_weights()
     
-    def initialize_weights(self):
-        """Apply Xavier uniform to all parameters"""
-        for param in self.parameters():
-            if param.dim() > 1:  # Only weight matrices, skip biases
-                nn.init.xavier_uniform_(param)
-            else:
-                nn.init.zeros_(param)
+    # def initialize_weights(self):
+    #     """Apply Xavier uniform to all parameters"""
+    #     for param in self.parameters():
+    #         if param.dim() > 1:  # Only weight matrices, skip biases
+    #             nn.init.xavier_uniform_(param)
+    #         else:
+    #             nn.init.zeros_(param)
 
     def forward(self, inputs):
         n_actions = inputs.shape[1]
@@ -34,7 +34,7 @@ class GRUModule(nn.Module):
         x = inputs[..., 1:]
         y = self.dropout(self.linear_in(x))
         next_state = self.gru_in(y,state)[1].view(-1, n_actions, 1)
-        next_state = self.linear_out(next_state)
+        # next_state = self.linear_out(next_state)
         return next_state
     
     
@@ -88,7 +88,7 @@ class BaseRNN(nn.Module):
         self.sindy_coefficients_presence = {}  # Binary masks to permanently zero out coefficients
         self.sindy_candidate_terms = {}
         self.sindy_degree_weights = {}  # Weights for coefficient penalty based on polynomial degree
-        self.sindy_cutoff_patience_counters = {}  # Patience counters for thresholding
+        self.sindy_pruning_patience_counters = {}  # Patience counters for thresholding
         self.sindy_specs = {}  # sindy-specific specifications for each module (e.g. include_bias, interaction_only, ...)
         
         # Ensemble SINDy for stage 1 training (helps RNN learn better representations)
@@ -192,7 +192,7 @@ class BaseRNN(nn.Module):
         for module_name in self.sindy_coefficients_presence:
             self.sindy_coefficients_presence[module_name] = self.sindy_coefficients_presence[module_name].to(device)
             self.sindy_degree_weights[module_name] = self.sindy_degree_weights[module_name].to(device)
-            self.sindy_cutoff_patience_counters[module_name] = self.sindy_cutoff_patience_counters[module_name].to(device)
+            self.sindy_pruning_patience_counters[module_name] = self.sindy_pruning_patience_counters[module_name].to(device)
 
         return self
         
@@ -411,7 +411,7 @@ class BaseRNN(nn.Module):
         self.sindy_degree_weights[key_module] = degree_weights
 
         # Initialize patience counters to zero
-        self.sindy_cutoff_patience_counters[key_module] = torch.zeros(
+        self.sindy_pruning_patience_counters[key_module] = torch.zeros(
             self.n_participants, self.n_experiments, ensemble_size, n_library_terms,
             dtype=torch.int32, device=self.device
         )
@@ -536,14 +536,14 @@ class BaseRNN(nn.Module):
         
         return sindy_loss
         
-    def sindy_coefficient_cutoff(self, threshold, n_terms_cutoff: int = None, base_threshold: float = 0.0, patience: int = 1):
+    def sindy_coefficient_pruning(self, threshold, n_terms_pruning: int = None, base_threshold: float = 0.0, patience: int = 1):
         """
         Apply hard thresholding to SINDy coefficients with patience counter.
         A coefficient is only thresholded out if it has been below threshold for 'patience' consecutive calls.
 
         Args:
             threshold (float): Base threshold value
-            n_terms_cutoff (int, optional): Number of smallest terms below threshold to be cut off across all modules
+            n_terms_pruning (int, optional): Number of smallest terms below threshold to be pruned across all modules
                                         for each participant and ensemble member. If None, all terms below threshold are cut.
             base_threshold (float): Additive base threshold (default: 0.0)
             patience (int): Number of consecutive epochs a coefficient must be below threshold before being cut (default: 1)
@@ -551,7 +551,7 @@ class BaseRNN(nn.Module):
         threshold_e = threshold + base_threshold
         module_list = list(self.submodules_rnn.keys())
 
-        if n_terms_cutoff is None:
+        if n_terms_pruning is None:
             # Simple thresholding: mask all terms below threshold with patience
             for module in module_list:
                 abs_coeffs = torch.abs(self.sindy_coefficients[module])
@@ -559,26 +559,26 @@ class BaseRNN(nn.Module):
 
                 # Update patience counters
                 # Increment counter where coefficient is below threshold
-                self.sindy_cutoff_patience_counters[module] = torch.where(
+                self.sindy_pruning_patience_counters[module] = torch.where(
                     below_threshold,
-                    self.sindy_cutoff_patience_counters[module] + 1,
-                    torch.zeros_like(self.sindy_cutoff_patience_counters[module])  # Reset to 0 if above threshold
+                    self.sindy_pruning_patience_counters[module] + 1,
+                    torch.zeros_like(self.sindy_pruning_patience_counters[module])  # Reset to 0 if above threshold
                 )
 
                 # Only threshold if patience exceeded
-                mask = (self.sindy_cutoff_patience_counters[module] < patience)
+                mask = (self.sindy_pruning_patience_counters[module] < patience)
                 # Update the permanent mask
                 self.sindy_coefficients_presence[module] &= mask
                 # Zero out the coefficients
                 self.sindy_coefficients[module].data *= mask.float()
                 # Reset patience counters for thresholded coefficients
-                self.sindy_cutoff_patience_counters[module] *= mask.int()
+                self.sindy_pruning_patience_counters[module] *= mask.int()
         else:
             # Collect all coefficients, masks, and patience counters across modules
             # Shape: [n_participants, n_ensemble, total_library_terms]
             all_coeffs = torch.cat([self.sindy_coefficients[m].abs() for m in module_list], dim=-1)
             all_masks = torch.cat([self.sindy_coefficients_presence[m] for m in module_list], dim=-1)
-            all_patience = torch.cat([self.sindy_cutoff_patience_counters[m] for m in module_list], dim=-1)
+            all_patience = torch.cat([self.sindy_pruning_patience_counters[m] for m in module_list], dim=-1)
 
 
             # Update patience counters for all coefficients (excluding protected terms)
@@ -592,18 +592,18 @@ class BaseRNN(nn.Module):
             # Identify candidates: active coefficients that have exceeded patience (excluding protected terms)
             is_candidate = (all_patience >= patience) & (all_masks == 1)
 
-            # For n_terms_cutoff, only consider coefficients that exceed patience
+            # For n_terms_pruning, only consider coefficients that exceed patience
             temp_coeffs = all_coeffs.clone()
             temp_coeffs[~is_candidate] = torch.inf
 
             # Find k smallest per [participant, ensemble]
-            _, indices = torch.topk(temp_coeffs, min(n_terms_cutoff, is_candidate.sum().item()), dim=-1, largest=False)
+            _, indices = torch.topk(temp_coeffs, min(n_terms_pruning, is_candidate.sum().item()), dim=-1, largest=False)
             # Shape: [n_participants, n_ensemble, k]
 
-            # Create cutoff mask
-            cutoff_mask = torch.zeros_like(all_coeffs, dtype=torch.bool)
-            cutoff_mask.scatter_(-1, indices, torch.ones_like(indices, dtype=torch.bool))
-            cutoff_mask &= is_candidate  # Safety: only cut actual candidates
+            # Create pruning mask
+            pruning_mask = torch.zeros_like(all_coeffs, dtype=torch.bool)
+            pruning_mask.scatter_(-1, indices, torch.ones_like(indices, dtype=torch.bool))
+            pruning_mask &= is_candidate  # Safety: only cut actual candidates
 
             # Split back to modules and update
             start_idx = 0
@@ -612,15 +612,15 @@ class BaseRNN(nn.Module):
                     n_terms = self.sindy_coefficients[module].shape[-1]
 
                     # Update patience counters for this module
-                    self.sindy_cutoff_patience_counters[module] = all_patience[..., start_idx:start_idx + n_terms]
+                    self.sindy_pruning_patience_counters[module] = all_patience[..., start_idx:start_idx + n_terms]
 
-                    keep_mask = ~cutoff_mask[..., start_idx:start_idx + n_terms]
+                    keep_mask = ~pruning_mask[..., start_idx:start_idx + n_terms]
                     # Update the permanent mask
                     self.sindy_coefficients_presence[module] &= keep_mask
                     # Zero out the coefficients
                     self.sindy_coefficients[module] *= keep_mask.float()
                     # Reset patience counters for thresholded coefficients
-                    self.sindy_cutoff_patience_counters[module] *= keep_mask.int()
+                    self.sindy_pruning_patience_counters[module] *= keep_mask.int()
 
                     start_idx += n_terms
             
@@ -690,13 +690,13 @@ class BaseRNN(nn.Module):
             String representation of the SPICE model equations
         """
         lines = []
+        max_len_module = max([len(module) for module in self.get_modules()])
+        
         for module in self.submodules_rnn:
             sparse_coeffs = (self.sindy_coefficients[module][participant_id, experiment_id, ensemble_idx] * self.sindy_coefficients_presence[module][participant_id, experiment_id, ensemble_idx]).detach().cpu().numpy()
-
-            equation_str = module + "[t+1] = "
+            space_filler = " "+" "*(max_len_module-len(module)) if max_len_module > len(module) else " "
+            equation_str = module + "[t+1]" + space_filler + "= "
             for index_term, term in enumerate(self.sindy_candidate_terms[module]):
-                if module in term:
-                    continue
                 if term == module:
                     sparse_coeffs[index_term] += 1
                 if np.abs(sparse_coeffs[index_term]) != 0:

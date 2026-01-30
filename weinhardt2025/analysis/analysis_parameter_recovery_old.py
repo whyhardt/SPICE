@@ -38,7 +38,7 @@ mapping_value_reward_chosen = {
     }
 
 mapping_value_reward_not_chosen = {
-    '1': lambda forget_rate, beta_reward: beta_reward*0.5*forget_rate,
+    '1': lambda forget_rate, beta_reward: 0,#beta_reward*0.5*forget_rate,
     'value_reward_not_chosen': lambda forget_rate, beta_reward: 1-forget_rate if beta_reward > 0 else 0,
     }
 
