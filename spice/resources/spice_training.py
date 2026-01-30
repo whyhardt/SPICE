@@ -366,8 +366,8 @@ def _run_batch_training(
 def _run_sindy_training(
     model: BaseRNN,
     dataset_train: SpiceDataset,
+    optimizer: torch.optim.Optimizer,
     dataset_test: SpiceDataset = None,
-    learning_rate: float = 1e-3,
     epochs: int = 1,
     pruning_threshold: float = 0.05,
     pruning_frequency: int = 1,
@@ -410,19 +410,8 @@ def _run_sindy_training(
     criterion = nn.MSELoss()
     
     # Freeze all RNN parameters, only train SINDy coefficients
-    for param in model.parameters():
-        param.requires_grad = False
-    
-    # COLLAPSE ENSEMBLE TO SINGLE MODEL -> Set ensemble size to 1 for stage 2 (no ensemble in second stage)
-    model.sindy_ensemble_size = 1
-
-    # Re-initialize SINDy coefficients with single model (ensemble_size=1)
-    for key_module in model.submodules_rnn:
-        model.setup_sindy_coefficients(key_module=key_module)
-    model.to(model.device)
-    
-    # Create optimizer for only SINDy coefficients
-    optimizer_sindy = torch.optim.AdamW(list(model.sindy_coefficients.values()), lr=learning_rate)
+    for name, param in model.named_parameters():
+        param.requires_grad = 'sindy' in name
     
     model.eval(use_sindy=False)
     
@@ -488,7 +477,7 @@ def _run_sindy_training(
         
         for idx in range(0, len_dataset, batch_size):
             
-            optimizer_sindy.zero_grad()
+            optimizer.zero_grad()
             
             batched_nan_mask = nan_mask[idx:idx+batch_size].to(model.device)
             batched_input_state_buffer, batched_target_state_buffer = {}, {}
@@ -516,8 +505,8 @@ def _run_sindy_training(
             loss_batch.backward()
             # Apply gradient masks to prevent updating zeroed coefficients
             # model.apply_gradient_masks()
-            optimizer_sindy.step()
-                
+            optimizer.step()
+            
             loss_train += loss_batch.item()
             iterations += 1
             
@@ -834,6 +823,43 @@ def _reset_model_with_masks(
     return model, optimizer
 
 
+def _reset_sindy_with_masks(
+    model: BaseRNN,
+    confidence_masks: dict,
+    lr: float,
+    verbose: bool = True,
+) -> Tuple[BaseRNN, torch.optim.Optimizer]:
+    """
+    Reset RNN weights and SINDy coefficients, applying confidence masks.
+
+    This prepares the model for retraining with a filtered candidate library.
+    """
+    if verbose:
+        print("SINDy reset with confidence-filtered mask.")
+
+    # Reinitialize SINDy coefficients with confidence masks applied
+    for module in model.submodules_rnn:
+        model.setup_sindy_coefficients(key_module=module)
+        if confidence_masks is not None:
+            confidence_mask = confidence_masks[module].to(model.device)
+            confidence_mask = confidence_mask.reshape(1, 1, 1, -1).repeat(model.n_participants, model.n_experiments, model.sindy_ensemble_size, 1)
+            model.sindy_coefficients_presence[module] = confidence_mask.clone().to(model.device)
+            model.sindy_coefficients[module].data *= confidence_mask.float().to(torch.device('cpu'))
+
+    model.rnn_training_finished = True
+    model.to(model.device)
+
+    # Recreate optimizer with new parameters
+    sindy_params = []
+    for name, param in model.named_parameters():
+        if 'sindy' in name:
+            sindy_params.append(param)
+
+    optimizer = torch.optim.AdamW(sindy_params, lr=lr)
+    
+    return model, optimizer
+
+
 def fit_spice(
     model: BaseRNN,
     dataset_train: SpiceDataset,
@@ -980,6 +1006,7 @@ def fit_spice(
     # ══════════════════════════════════════════════════════════════════════════
     # STAGE 2: Confidence Filtering (optional)
     # ══════════════════════════════════════════════════════════════════════════
+    confidence_masks = None
     if epochs > 0 and sindy_weight > 0 and sindy_confidence_threshold is not None and sindy_confidence_threshold > 0:
         if verbose:
             terminal_width = _get_terminal_width()
@@ -1028,16 +1055,17 @@ def fit_spice(
         
         # SINDy finetuning
         if sindy_weight > 0 and sindy_epochs > 0:
+            model, optimizer_sindy = _reset_sindy_with_masks(model=model, confidence_masks=confidence_masks, lr=original_lr)
             model = _run_sindy_training(
                 model=model,
+                optimizer=optimizer_sindy,
                 dataset_train=dataset_train,
                 dataset_test=dataset_test,
-                learning_rate=original_lr,
                 epochs=sindy_epochs,
                 pruning_threshold=sindy_pruning_threshold,
                 pruning_n_terms=sindy_pruning_terms,
                 pruning_patience=sindy_pruning_patience,
-                pruning_warmup=sindy_epochs // 4,
+                pruning_warmup=sindy_epochs//4,
                 sindy_alpha=sindy_l2_lambda,
                 batch_size=None,
                 verbose=verbose,
@@ -1048,20 +1076,23 @@ def fit_spice(
     # STAGE 3: SINDy finetuning (if not already happened in previous stages)
     # ══════════════════════════════════════════════════════════════════════════
     if not sindy_finetuned and sindy_weight > 0 and sindy_epochs > 0:
-            model = _run_sindy_training(
-                model=model,
-                dataset_train=dataset_train,
-                dataset_test=dataset_test,
-                learning_rate=original_lr,
-                epochs=sindy_epochs,
-                pruning_threshold=sindy_pruning_threshold,
-                pruning_n_terms=sindy_pruning_terms,
-                pruning_patience=sindy_pruning_patience,
-                pruning_warmup=sindy_epochs//4,
-                sindy_alpha=sindy_l2_lambda,
-                batch_size=None,
-                verbose=verbose,
-            )
+        confidence_masks = _compute_confidence_masks(model, sindy_confidence_threshold, verbose)
+        model, optimizer_sindy = _reset_sindy_with_masks(model=model, confidence_masks=confidence_masks, lr=original_lr)
+        model = _run_sindy_training(
+            model=model,
+            optimizer=optimizer_sindy,
+            dataset_train=dataset_train,
+            dataset_test=dataset_test,
+            epochs=sindy_epochs,
+            pruning_threshold=sindy_pruning_threshold,
+            pruning_n_terms=sindy_pruning_terms,
+            pruning_patience=sindy_pruning_patience,
+            pruning_warmup=sindy_epochs//4,
+            sindy_alpha=sindy_l2_lambda,
+            batch_size=None,
+            verbose=verbose,
+        )
+        sindy_finetuned=True
     
     # ══════════════════════════════════════════════════════════════════════════
     # STAGE 4: Final evaluation summary

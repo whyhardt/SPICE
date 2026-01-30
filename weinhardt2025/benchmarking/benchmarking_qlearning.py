@@ -164,7 +164,8 @@ class QLearning(BaseRNN):
             self.sindy_coefficients[module].data[participant_id.unsqueeze(1), experiment_id] = torch.nn.Parameter(torch.zeros_like(self.sindy_coefficients[module][participant_id.unsqueeze(1), experiment_id]))
             for candidate_term, value in coefficient_maps[module]:
                 self.sindy_coefficients[module].data[participant_id.unsqueeze(1), experiment_id, 0, self.sindy_candidate_terms[module].index(candidate_term)] = value
-
+            self.sindy_coefficients_presence[module] = torch.where(self.sindy_coefficients[module] != 0, 1, 0)
+            
     def eval(self, *args, **kwargs):
         super().eval()
         self.use_sindy=True

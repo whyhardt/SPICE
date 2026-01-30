@@ -149,7 +149,7 @@ if __name__=='__main__':
         sindy_pruning_frequency=args.sindy_pruning_freq,
         sindy_pruning_terms=args.sindy_pruning_terms,
         sindy_pruning_patience=args.sindy_pruning_patience,
-        sindy_epochs=2*args.epochs,
+        sindy_epochs=4000,#2*args.epochs,
         sindy_l2_lambda=args.sindy_l2_lambda,
         sindy_library_polynomial_degree=2,
         sindy_optimizer_reset=None,
