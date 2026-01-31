@@ -35,6 +35,7 @@ if __name__=='__main__':
     parser.add_argument('--sindy_pruning_terms', type=int, default=1, help='Number of thresholded terms')
     parser.add_argument('--sindy_pruning_freq', type=int, default=1, help='Number of epochs after which to prune')
     parser.add_argument('--sindy_pruning_patience', type=int, default=100, help='Number of epochs after which to prune')
+    parser.add_argument('--sindy_confidence', type=float, default=0.1, help='Threshold used for confidence-based pruning across models (participants x experiments)')
     
     # Data setup parameters
     parser.add_argument('--train_ratio_time', type=float, default=None, help='Ratio of data used for training. Split along time dimension. Not combinable with test_sessions')
@@ -46,7 +47,7 @@ if __name__=='__main__':
     parser.add_argument('--results', action='store_true', help='Shows the results using a fitted SPICE model. The results are value-dynamics-over-time plot, a parameter distribution histogram, and the corresponding symbolic SPICE model.')
     
     args = parser.parse_args()
-        
+    
     # args.sindy_weight = 0
     
     # args.model = "weinhardt2025/params/eckstein2022/spice_eckstein2022.pkl"
@@ -75,10 +76,10 @@ if __name__=='__main__':
     # args.additional_columns = None,
     # args.test_sessions = "4,8,12"
     
-    # args.epochs = 0
+    # args.epochs = 10
     # args.results = True
     # args.data = "weinhardt2025/data/synthetic/synthetic_256p_0_0.csv"
-    # args.model = args.data.replace("data", "params").replace("/synthetic_", "/spice_synthetic_").replace(".csv", ".pkl")
+    # args.model = args.data.replace("data", "params").replace("/synthetic_", "/spice_synthetic_").replace(".csv", "_test.pkl")
     
     example_participant = 2
     plot_coef_dist = False
@@ -139,27 +140,25 @@ if __name__=='__main__':
         
         # rnn training parameters
         epochs=args.epochs,
+        learning_rate=args.lr,
         warmup_steps=args.epochs//4,
         l2_rnn=args.rnn_l2_lambda,
-        learning_rate=args.lr,
+        batch_size=1024,
+        bagging=True,
+        scheduler=True,
         
         # sindy fitting parameters
+        sindy_epochs=args.epochs,
         sindy_weight=args.sindy_weight,
+        sindy_l2_lambda=args.sindy_l2_lambda,
         sindy_pruning_threshold=args.sindy_pruning_threshold,
         sindy_pruning_frequency=args.sindy_pruning_freq,
         sindy_pruning_terms=args.sindy_pruning_terms,
         sindy_pruning_patience=args.sindy_pruning_patience,
-        sindy_epochs=4000,#2*args.epochs,
-        sindy_l2_lambda=args.sindy_l2_lambda,
+        sindy_confidence_threshold=args.sindy_confidence,
         sindy_library_polynomial_degree=2,
         sindy_optimizer_reset=None,
         sindy_ensemble_size=1,
-        sindy_confidence_threshold=0.1,
-        
-        # additional generalization parameters
-        batch_size=1024,
-        bagging=True,
-        scheduler=True,
         
         # other parameters
         verbose=True,

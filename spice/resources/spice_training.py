@@ -374,7 +374,7 @@ def _run_sindy_training(
     pruning_n_terms: int = None,
     pruning_patience: int = 1,
     pruning_warmup: int = 0,
-    sindy_alpha: float = 0.,
+    l2_lambda: float = 0.,
     batch_size: int = None,
     verbose: bool = True,
     ):
@@ -497,8 +497,8 @@ def _run_sindy_training(
             #     loss_batch += model.sindy_coefficients[module].abs().sum() * sindy_alpha
 
             # Polynomial degree weighted coefficient penalty for SINDy coefficients
-            if sindy_alpha > 0:
-                coefficient_penalty = model.compute_weighted_coefficient_penalty(sindy_alpha)
+            if l2_lambda > 0:
+                coefficient_penalty = model.compute_weighted_coefficient_penalty(l2_lambda)
                 loss_batch += coefficient_penalty
 
             # Backward pass - only update SINDy coefficients
@@ -845,7 +845,7 @@ def _reset_sindy_with_masks(
             confidence_mask = confidence_mask.reshape(1, 1, 1, -1).repeat(model.n_participants, model.n_experiments, model.sindy_ensemble_size, 1)
             model.sindy_coefficients_presence[module] = confidence_mask.clone().to(model.device)
             model.sindy_coefficients[module].data *= confidence_mask.float().to(torch.device('cpu'))
-
+            
     model.rnn_training_finished = True
     model.to(model.device)
 
@@ -962,11 +962,18 @@ def fit_spice(
             
         model, optimizer, loss_train, loss_test_rnn, loss_test_sindy = _run_joint_training(
             model=model,
+            optimizer=optimizer,
             dataset_train=dataset_train,
             dataset_test=dataset_test,
-            optimizer=optimizer,
+            
             epochs=epochs,
+            n_warmup_steps=n_warmup_steps,
+            n_steps=n_steps,
+            use_scheduler=scheduler,
+            bagging=bagging,
+            batch_size=batch_size,
             convergence_threshold=convergence_threshold,
+            
             sindy_weight=sindy_weight,
             sindy_l2_lambda=sindy_l2_lambda,
             sindy_pruning_threshold=sindy_pruning_threshold,
@@ -974,31 +981,31 @@ def fit_spice(
             sindy_pruning_terms=sindy_pruning_terms,
             sindy_pruning_patience=sindy_pruning_patience,
             sindy_optimizer_reset=sindy_optimizer_reset,
-            n_warmup_steps=n_warmup_steps,
-            n_steps=n_steps,
-            use_scheduler=scheduler,
-            bagging=bagging,
-            batch_size=batch_size,
+            
             verbose=verbose,
             keep_log=keep_log,
             path_save_checkpoints=path_save_checkpoints,
         )
         model.rnn_training_finished = True
-    
+
         # SINDy finetuning (freeze RNN weights -> steady optimization target)
         if sindy_weight > 0 and sindy_epochs > 0:
+            model, optimizer_sindy = _reset_sindy_with_masks(model=model, confidence_masks=None, lr=original_lr, verbose=verbose)
             model = _run_sindy_training(
                 model=model,
+                optimizer=optimizer_sindy,
                 dataset_train=dataset_train,
                 dataset_test=dataset_test,
-                learning_rate=original_lr,
+                
                 epochs=sindy_epochs,
+                batch_size=None,
+
+                l2_lambda=sindy_l2_lambda,
                 pruning_threshold=sindy_pruning_threshold,
                 pruning_n_terms=sindy_pruning_terms,
                 pruning_patience=sindy_pruning_patience,
                 pruning_warmup=sindy_epochs // 4,
-                sindy_alpha=sindy_l2_lambda,
-                batch_size=None,
+
                 verbose=verbose,
             )
             sindy_finetuned = True
@@ -1027,9 +1034,9 @@ def fit_spice(
 
         model, optimizer, loss_train, loss_test_rnn, loss_test_sindy = _run_joint_training(
             model=model,
+            optimizer=optimizer,
             dataset_train=dataset_train,
             dataset_test=dataset_test,
-            optimizer=optimizer,
             
             epochs=epochs,
             n_warmup_steps=n_warmup_steps,
@@ -1061,13 +1068,16 @@ def fit_spice(
                 optimizer=optimizer_sindy,
                 dataset_train=dataset_train,
                 dataset_test=dataset_test,
+                
                 epochs=sindy_epochs,
+                batch_size=None,
+                
+                l2_lambda=sindy_l2_lambda,
                 pruning_threshold=sindy_pruning_threshold,
                 pruning_n_terms=sindy_pruning_terms,
                 pruning_patience=sindy_pruning_patience,
                 pruning_warmup=sindy_epochs//4,
-                sindy_alpha=sindy_l2_lambda,
-                batch_size=None,
+                
                 verbose=verbose,
             )
             sindy_finetuned=True
@@ -1076,20 +1086,23 @@ def fit_spice(
     # STAGE 3: SINDy finetuning (if not already happened in previous stages)
     # ══════════════════════════════════════════════════════════════════════════
     if not sindy_finetuned and sindy_weight > 0 and sindy_epochs > 0:
-        confidence_masks = _compute_confidence_masks(model, sindy_confidence_threshold, verbose)
+        # confidence_masks = _compute_confidence_masks(model, sindy_confidence_threshold, verbose)
         model, optimizer_sindy = _reset_sindy_with_masks(model=model, confidence_masks=confidence_masks, lr=original_lr)
         model = _run_sindy_training(
             model=model,
             optimizer=optimizer_sindy,
             dataset_train=dataset_train,
             dataset_test=dataset_test,
+            
             epochs=sindy_epochs,
+            batch_size=None,
+            
+            l2_lambda=sindy_l2_lambda,
             pruning_threshold=sindy_pruning_threshold,
             pruning_n_terms=sindy_pruning_terms,
             pruning_patience=sindy_pruning_patience,
             pruning_warmup=sindy_epochs//4,
-            sindy_alpha=sindy_l2_lambda,
-            batch_size=None,
+            
             verbose=verbose,
         )
         sindy_finetuned=True
