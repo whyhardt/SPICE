@@ -7,6 +7,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 from copy import deepcopy
+import matplotlib.colors as mcolors
 
 from spice.utils.convert_dataset import csv_to_dataset
 from spice.utils.agent import Agent, get_update_dynamics
@@ -14,7 +15,6 @@ from spice.resources.rnn import RLRNN_eckstein2022 as RLRNN
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 from weinhardt2025.utils.model_evaluation import log_likelihood, bayesian_information_criterion, akaike_information_criterion
-from weinhardt2025.analysis.colormap import truncate_colormap
 from weinhardt2025.benchmarking import benchmarking_eckstein2022, benchmarking_dezfouli2019
 
 
@@ -41,6 +41,18 @@ path_data = f'data/{study}/{study}_simulated_SIMULATED_test.csv'
 path_model_spice = f'params/{study}/rnn_{study}_SIMULATED.pkl'
 
 n_actions = 2
+
+#----------------------------------------------------------------------------------------------
+# HELPER FUNCTION
+#----------------------------------------------------------------------------------------------
+
+# Create a truncated colormap
+def truncate_colormap(cmap, minval=0.0, maxval=1.0, n=100):
+    new_cmap = mcolors.LinearSegmentedColormap.from_list(
+        f"trunc({cmap.name},{minval:.2f},{maxval:.2f})",
+        cmap(np.linspace(minval, maxval, n))
+    )
+    return new_cmap
 
 #----------------------------------------------------------------------------------------------
 # SETUP MODELS

@@ -14,8 +14,8 @@ path_data = 'weinhardt2025/data/synthetic/synthetic_PARp_IT_0.csv'
 path_model = path_data.replace('data', 'params').replace('/synthetic_', '/spice_synthetic_').replace('.csv', '.pkl')
 spice_model = workingmemory
 rl_parameters = ['beta_reward', 'beta_choice', 'alpha_reward', 'alpha_penalty', 'alpha_choice', 'forget_rate']
-participants = [256]#[32, 64, 128, 256, 512]
-iterations = 1
+participants = [32, 64, 128, 256, 512]
+iterations = 8
 coefficient_threshold = 0.05
 
 # Dynamically determine n_coefficients from a sample model

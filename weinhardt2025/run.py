@@ -50,16 +50,17 @@ if __name__=='__main__':
     
     # args.sindy_weight = 0
     
-    # args.model = "weinhardt2025/params/eckstein2022/spice_eckstein2022.pkl"
-    # args.data = "weinhardt2025/data/eckstein2022/eckstein2022.csv"
-    # args.train_ratio_time = 0.8
-    # include_validation = False
+    args.eopchs = 10
+    args.model = "weinhardt2025/params/eckstein2022/spice_eckstein2022.pkl"
+    args.data = "weinhardt2025/data/eckstein2022/eckstein2022.csv"
+    args.train_ratio_time = 0.8
+    include_validation = False
     
     # args.model = "weinhardt2025/params/eckstein2024/spice_eckstein2024.pkl"
     # args.data = "weinhardt2025/data/eckstein2024/eckstein2024.csv"
     # args.test_sessions = "1,3"
     
-    # args.results = True
+    # args.results = False
     # args.epochs = 10
     # args.model = "weinhardt2025/params/dezfouli2019/spice_dezfouli2019.pkl"
     # args.data = "weinhardt2025/data/dezfouli2019/dezfouli2019.csv"
