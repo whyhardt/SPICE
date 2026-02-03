@@ -11,7 +11,7 @@ from weinhardt2025.benchmarking.benchmarking_qlearning import QLearning
 
 
 n_concepts = 6  # Start with fewer concepts (≈ n_features / 2)
-use_real = True
+use_real = True  # if True: load trained sindy coefs; else: load groundtruth RL parameters from data file and convert into sindy coefs (baseline parameter recovery)
 
 path_data = 'weinhardt2025/data/synthetic/synthetic_256p_0_0.csv'
 path_model = 'weinhardt2025/params/synthetic/spice_synthetic_256p_0_0.pkl'
