@@ -238,7 +238,7 @@ class SpiceEstimator(BaseEstimator):
         rnn_agent_model = self.rnn_class(
                 n_actions=rnn_model.n_actions,
                 n_participants=rnn_model.n_participants,
-                n_experiments=len(dataset.xs[..., -2].unique()),
+                n_experiments=rnn_model.n_experiments,
                 dropout=0,
                 spice_config=rnn_model.spice_config,
                 sindy_polynomial_degree=rnn_model.sindy_polynomial_degree,
