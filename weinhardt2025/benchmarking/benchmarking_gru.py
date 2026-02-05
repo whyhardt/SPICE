@@ -1,8 +1,6 @@
 import torch
 
-from spice.resources.spice_utils import SpiceDataset
-from spice.utils.convert_dataset import csv_to_dataset, split_data_along_timedim, split_data_along_sessiondim
-from spice.utils.agent import Agent
+from spice import SpiceDataset, csv_to_dataset, split_data_along_sessiondim, split_data_along_timedim, Agent, cross_entropy_loss
 
 
 class GRU(torch.nn.Module):
@@ -57,7 +55,7 @@ def training(
     dataset_test: SpiceDataset = None, 
     epochs = 3000,
     batch_size = None,
-    criterion = torch.nn.CrossEntropyLoss(), 
+    criterion = cross_entropy_loss,
     device: torch.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu'),
     ):
     
@@ -84,16 +82,18 @@ def training(
             logits, _ = gru(xs)
             
             # Reshape for loss computation
-            nan_mask = ~xs[..., :n_actions].sum(dim=-1).reshape(-1).isnan().to(device)
-            logits_flat = logits.reshape(-1, n_actions)[nan_mask]
-            labels_flat = torch.argmax(ys[..., :n_actions].reshape(-1, n_actions)[nan_mask], dim=-1).reshape(-1).long()
+            nan_mask = ~torch.isnan(xs[..., :gru.n_actions].sum(dim=-1, keepdim=True).repeat(1, 1, gru.n_actions))
+            logits = logits * nan_mask
+            labels = ys[..., :n_actions] *nan_mask
             
             # Compute loss
-            loss = criterion(logits_flat, labels_flat)
+            loss = criterion(logits, labels)
             
             # Backward pass
             loss.backward()
             optimizer.step()
+        
+        msg = f"Epoch {epoch+1}/{epochs}: L(Train): {loss.item()}"
         
         # test data
         if dataset_test is not None:
@@ -105,8 +105,10 @@ def training(
                 labels_flat = torch.argmax(dataset_test.ys[..., :n_actions].to(device).reshape(-1, n_actions)[nan_mask], dim=-1).reshape(-1).long()
                 loss_test = criterion(logits_flat, labels_flat)
             gru.train()
+            
+            msg += f"; L(Test): {loss_test.item()}"
         
-        print(f"Epoch {epoch+1}/{epochs}: L(Train): {loss.item()}; L(Test): {loss_test.item()}")
+        print(msg)
         
     return gru
 

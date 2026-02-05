@@ -8,7 +8,7 @@ import numpy as np
 from sklearn.base import BaseEstimator
 from typing import Dict, Optional, Tuple, List, Union
 
-from .spice_training import fit_spice
+from .spice_training import fit_spice, cross_entropy_loss
 from .rnn import BaseRNN
 from .spice_utils import SpiceConfig, SpiceDataset
 from ..utils.agent import Agent
@@ -50,6 +50,7 @@ class SpiceEstimator(BaseEstimator):
         scheduler: Optional[bool] = False, 
         l2_rnn: Optional[float] = 0,
         dropout: Optional[float] = 0.,
+        loss_fn: Optional[callable] = cross_entropy_loss,
         
         # SPICE training parameters
         sindy_weight: Optional[float] = 0.1,  # Weight for SINDy regularization loss
@@ -112,7 +113,8 @@ class SpiceEstimator(BaseEstimator):
         self.keep_log = keep_log
         self.deterministic = False
         self.l2_rnn = l2_rnn
-
+        self.loss_fn = loss_fn,
+        
         # Save parameters
         self.save_path_model = save_path_spice
 

@@ -9,6 +9,8 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 from typing import Tuple
 import shutil
 
+from torch.nn.functional import mse_loss  # using standard mse loss for spice should be fine most of the time
+
 from .rnn import BaseRNN
 from .spice_utils import SpiceDataset
 from .sindy_differentiable import get_library_term_degrees
@@ -224,6 +226,16 @@ class ReduceOnPlateauWithRestarts:
         return [group['lr'] for group in self.optimizer.param_groups]
 
 
+def cross_entropy_loss(prediction: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    """Wrapper for torch's cross entropy loss which does all the reshaping when getting SpiceDataset.ys tensors as predicitons and targets."""
+    n_actions = target.shape[-1]
+    
+    prediction = prediction.reshape(-1, n_actions)
+    target = torch.argmax(target.reshape(-1, n_actions), dim=1)
+    
+    return torch.nn.functional.cross_entropy(prediction, target)
+
+
 def _setup_dataloaders(
     dataset_train: SpiceDataset,
     dataset_test: SpiceDataset,
@@ -289,7 +301,8 @@ def _run_batch_training(
     sindy_weight: float = 0.,
     sindy_alpha: float = 0.,
     n_steps: int = None,
-    loss_fn: nn.modules.loss._Loss = nn.CrossEntropyLoss(label_smoothing=0.),
+    # loss_fn: nn.modules.loss._Loss = nn.CrossEntropyLoss(label_smoothing=0.),
+    loss_fn: callable = cross_entropy_loss,
     ):
 
     """
@@ -330,10 +343,12 @@ def _run_batch_training(
         ys_pred = ys_pred * mask
         ys_step = ys_step * mask
         
-        loss_step = loss_fn(
-            ys_pred.reshape(-1, model.n_actions),
-            torch.argmax(ys_step.reshape(-1, model.n_actions), dim=1),
-            )
+        # loss_step = loss_fn(
+        #     ys_pred.reshape(-1, model.n_actions),
+        #     torch.argmax(ys_step.reshape(-1, model.n_actions), dim=1),
+        #     )
+        
+        loss_step = loss_fn(ys_pred, ys_step)
         
         if torch.is_grad_enabled():
             # Add SINDy regularization loss
@@ -554,6 +569,7 @@ def _run_joint_training(
     n_warmup_steps: int,
     n_steps: int,
     use_scheduler: bool,
+    loss_fn: callable,
     
     sindy_weight: float,
     sindy_l2_lambda: float,
@@ -873,6 +889,7 @@ def fit_spice(
     scheduler: bool = False,
     n_steps: int = None,
     convergence_threshold: float = 1e-7,
+    loss_fn: callable = cross_entropy_loss,
     
     sindy_weight: float = 0.,
     sindy_l2_lambda: float = 0.,
@@ -985,6 +1002,7 @@ def fit_spice(
             bagging=bagging,
             batch_size=batch_size,
             convergence_threshold=convergence_threshold,
+            loss_fn=loss_fn,
             
             sindy_weight=sindy_weight,
             sindy_l2_lambda=sindy_l2_lambda,
@@ -1057,6 +1075,7 @@ def fit_spice(
             bagging=bagging,
             batch_size=batch_size,
             convergence_threshold=convergence_threshold,
+            loss_fn=loss_fn,
             
             sindy_weight=sindy_weight,
             sindy_l2_lambda=sindy_l2_lambda,
@@ -1139,12 +1158,16 @@ def fit_spice(
                     optimizer=optimizer,
                     dataset_train=dataset_train,
                     dataset_test=dataset_test,
+                    
                     epochs=0,
-                    batch_size=None,
-                    bagging=False,
                     n_warmup_steps=999,
+                    batch_size=None,
+                    convergence_threshold=0,
                     n_steps=n_steps,
+                    bagging=False,
                     use_scheduler=False,
+                    loss_fn=loss_fn,
+                    
                     sindy_weight=sindy_weight,
                     sindy_l2_lambda=0,
                     sindy_pruning_threshold=0,
@@ -1152,11 +1175,12 @@ def fit_spice(
                     sindy_pruning_terms=0,
                     sindy_pruning_patience=999,
                     sindy_optimizer_reset=None,
-                    convergence_threshold=0,
+                    
                     verbose=False,
                     keep_log=False,
                     path_save_checkpoints=None,
                 )
+                
             msg += f"L(Val, RNN):   {loss_test_rnn:.7f}"
             if sindy_weight > 0:
                 msg += "\n\t"
