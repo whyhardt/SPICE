@@ -10,9 +10,10 @@ from sklearn.linear_model import LinearRegression
 from scipy import stats
 
 from spice import Agent, SpiceEstimator, csv_to_dataset
-from spice.precoded import workingmemory_rewardbinary, workingmemory, choice
+from spice.precoded import workingmemory_rewardbinary, choice
 
 sys.path.append(os.path.abspath(os.path.join(os.path.__file__, '..', '..')))
+from spice.precoded import workingmemory_rewardbinary
 from weinhardt2025.benchmarking.benchmarking_qlearning import QLearning
 
 

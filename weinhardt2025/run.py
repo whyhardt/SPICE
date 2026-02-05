@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 from spice import SpiceEstimator, csv_to_dataset, split_data_along_sessiondim, split_data_along_timedim, plot_session, Agent
-from spice.precoded import workingmemory_multiitem, workingmemory, workingmemory_rewardbinary, choice
+from spice.precoded import workingmemory, workingmemory_multiitem, workingmemory_rewardbinary, choice
 from spice.resources.spice_training import _get_terminal_width
 
 from benchmarking.benchmarking_qlearning import QLearning
@@ -25,6 +25,9 @@ if __name__=='__main__':
     
     # RNN training parameters
     parser.add_argument('--epochs', type=int, default=4000, help='Number of training epochs')
+    parser.add_argument('--epochs_confidence', type=int, default=None, help='Number of training epochs for stage 2 (confidence pruning)')
+    parser.add_argument('--epochs_finetuning', type=int, default=None, help='Number of training epochs for stage 3 (SINDy-only finetuning)')
+    parser.add_argument('--epochs_warmup', type=int, default=None, help='Number of training epochs for warmup (exp increase of sindy-weight; no pruning)')
     parser.add_argument('--lr', type=float, default=0.01, help='Learning rate')
     parser.add_argument('--rnn_l2_lambda', type=float, default=0., help='L2 Reg of the RNN parameters')
     
@@ -35,7 +38,7 @@ if __name__=='__main__':
     parser.add_argument('--sindy_pruning_terms', type=int, default=1, help='Number of thresholded terms')
     parser.add_argument('--sindy_pruning_freq', type=int, default=1, help='Number of epochs after which to prune')
     parser.add_argument('--sindy_pruning_patience', type=int, default=100, help='Number of epochs after which to prune')
-    parser.add_argument('--sindy_confidence', type=float, default=0.1, help='Threshold used for confidence-based pruning across models (participants x experiments)')
+    parser.add_argument('--sindy_confidence', type=float, default=0.05, help='Threshold used for confidence-based pruning across models (participants x experiments)')
     
     # Data setup parameters
     parser.add_argument('--train_ratio_time', type=float, default=None, help='Ratio of data used for training. Split along time dimension. Not combinable with test_sessions')
@@ -50,7 +53,7 @@ if __name__=='__main__':
     
     # args.sindy_weight = 0
     
-    # args.eopchs = 10
+    # args.epochs = 0
     # args.model = "weinhardt2025/params/eckstein2022/spice_eckstein2022.pkl"
     # args.data = "weinhardt2025/data/eckstein2022/eckstein2022.csv"
     # args.train_ratio_time = 0.8
@@ -107,18 +110,21 @@ if __name__=='__main__':
         print("Training/test split: None")
         dataset_train, dataset_test = dataset, dataset
     
-    dataset_tuple = dataset_train.xs, dataset_train.ys, dataset_train.xs, dataset_train.ys
-    
+    if args.sindy_weight > 0:
+        dataset_tuple = dataset_train.xs, dataset_train.ys, dataset_train.xs, dataset_train.ys
+    else:
+        dataset_tuple = dataset_train.xs, dataset_train.ys, None, None
+         
     n_actions = dataset_train.ys.shape[-1]
     n_participants = len(dataset_train.xs[..., -1].unique())
     n_experiments = len(dataset_train.xs[..., -2].unique())
     n_items = args.n_items if args.n_items else n_actions
     
     if n_items == n_actions:
-        # if ((dataset.xs[..., n_actions:n_actions*2].nan_to_num(0) == 1).int() + (dataset.xs[..., n_actions:n_actions*2].nan_to_num(0) == 0).int()).sum() == dataset.xs.shape[0]*dataset.xs.shape[1]*n_actions:
-        #     spice_model = workingmemory_rewardbinary
-        # else:
-        spice_model = workingmemory
+        if ((dataset.xs[..., n_actions:n_actions*2].nan_to_num(0) == 1).int() + (dataset.xs[..., n_actions:n_actions*2].nan_to_num(0) == 0).int()).sum() == dataset.xs.shape[0]*dataset.xs.shape[1]*n_actions:
+            spice_model = workingmemory_rewardbinary
+        else:
+            spice_model = workingmemory_rewardbinary
     else:
         spice_model = workingmemory_multiitem
     
@@ -141,15 +147,16 @@ if __name__=='__main__':
         
         # rnn training parameters
         epochs=args.epochs,
+        epochs_confidence=args.epochs_confidence,
         learning_rate=args.lr,
-        warmup_steps=args.epochs//4,
+        warmup_steps=args.epochs_warmup,
         l2_rnn=args.rnn_l2_lambda,
-        batch_size=1024,
+        batch_size=min(1024, n_participants*4),
         bagging=True,
         scheduler=True,
         
         # sindy fitting parameters
-        sindy_epochs=args.epochs,
+        sindy_epochs=args.epochs_finetuning,
         sindy_weight=args.sindy_weight,
         sindy_l2_lambda=args.sindy_l2_lambda,
         sindy_pruning_threshold=args.sindy_pruning_threshold,
@@ -173,8 +180,8 @@ if __name__=='__main__':
     training_device_str = "CUDA" if estimator.device == torch.device('cuda') else "CPU"
     print("Training device:", training_device_str)
     print("="*_get_terminal_width())
-    if estimator.sindy_epochs > 0 or estimator.epochs > 0:
-        estimator.fit(*dataset_tuple)
+    # if estimator.sindy_epochs > 0 or estimator.epochs > 0:
+    estimator.fit(*dataset_tuple)
     
     print("\nTraining complete!")
     

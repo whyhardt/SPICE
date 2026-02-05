@@ -587,10 +587,10 @@ def _run_joint_training(
     lr_scheduler = _setup_lr_scheduler(optimizer=optimizer) if use_scheduler else None
     
     # Handle zero epochs case
-    if epochs == 0:
-        if verbose:
-            print('No training epochs specified. Model will not be trained.')
-        return model, optimizer, 0., 0.
+    # if epochs == 0:
+    #     if verbose:
+    #         print('No training epochs specified. Model will not be trained.')
+    #     return model, optimizer, 0., 0.
 
     # Training state
     continue_training = True
@@ -867,6 +867,7 @@ def fit_spice(
     optimizer: torch.optim.Optimizer = None,
     
     epochs: int = 1,
+    epochs_confidence: int = None,
     batch_size: int = None,
     bagging: bool = False,
     scheduler: bool = False,
@@ -945,11 +946,22 @@ def fit_spice(
         if sindy_epochs > 0:
             print("\tSINDy-only training: active")
         print(status_lines)
-        
+    
     # Store original learning rate for Stage 3
     original_lr = optimizer.param_groups[1]['lr']
     sindy_finetuned = False
-    
+    if epochs_confidence is None:
+        epochs_confidence = epochs
+    if sindy_epochs is None:
+        sindy_epochs = epochs
+    if n_warmup_steps is None:
+        if epochs is not None:
+            n_warmup_steps = epochs//4
+        elif epochs_confidence is not None:
+            n_warmup_steps = epochs_confidence//4
+        else:
+            n_warmup_steps = 0
+
     # ══════════════════════════════════════════════════════════════════════════
     # STAGE 1: Joint RNN-SINDy Training
     # ══════════════════════════════════════════════════════════════════════════
@@ -1014,7 +1026,7 @@ def fit_spice(
     # STAGE 2: Confidence Filtering (optional)
     # ══════════════════════════════════════════════════════════════════════════
     confidence_masks = None
-    if epochs > 0 and sindy_weight > 0 and sindy_confidence_threshold is not None and sindy_confidence_threshold > 0:
+    if epochs_confidence > 0 and sindy_weight > 0 and sindy_confidence_threshold is not None and sindy_confidence_threshold > 0:
         if verbose:
             terminal_width = _get_terminal_width()
             print("\n" + "="*terminal_width)
@@ -1038,7 +1050,7 @@ def fit_spice(
             dataset_train=dataset_train,
             dataset_test=dataset_test,
             
-            epochs=epochs,
+            epochs=epochs_confidence,
             n_warmup_steps=n_warmup_steps,
             n_steps=n_steps,
             use_scheduler=scheduler,
@@ -1108,25 +1120,21 @@ def fit_spice(
         sindy_finetuned=True
     
     # ══════════════════════════════════════════════════════════════════════════
-    # STAGE 4: Final evaluation summary
+    # Final evaluation summary
     # ══════════════════════════════════════════════════════════════════════════
     if verbose:
         status_lines = "=" * _get_terminal_width()
         print("\n"+status_lines)
         print("Training results:")
-        msg = ""
-        
-        if epochs > 0:
-            msg += f"\tL(Train): {loss_train:.7f}"
-            msg += " --- "
+        msg = "\t"
 
-        if epochs > 0 and dataset_test is not None:
-            msg += f"L(Val, RNN): {loss_test_rnn:.7f}"
-            msg += " --- "
-         
-        if sindy_weight > 0 and dataset_test is not None:
+        if epochs > 0:
+            msg += f"L(Train, RNN): {loss_train:.7f}"
+            msg += "\n\t"
+            
+        if dataset_test is not None:
             with torch.no_grad():
-                loss_test_sindy = _run_joint_training(
+                _, _, _, loss_test_rnn, loss_test_sindy = _run_joint_training(
                     model=model,
                     optimizer=optimizer,
                     dataset_train=dataset_train,
@@ -1137,7 +1145,7 @@ def fit_spice(
                     n_warmup_steps=999,
                     n_steps=n_steps,
                     use_scheduler=False,
-                    sindy_weight=1,
+                    sindy_weight=sindy_weight,
                     sindy_l2_lambda=0,
                     sindy_pruning_threshold=0,
                     sindy_pruning_frequency=999,
@@ -1148,8 +1156,11 @@ def fit_spice(
                     verbose=False,
                     keep_log=False,
                     path_save_checkpoints=None,
-                )[-1]
-            msg += f"L(Val, SINDy): {loss_test_sindy:.7f}"
+                )
+            msg += f"L(Val, RNN):   {loss_test_rnn:.7f}"
+            if sindy_weight > 0:
+                msg += "\n\t"
+                msg += f"L(Val, SINDy): {loss_test_sindy:.7f}"
             
         print(msg)
         print(status_lines)

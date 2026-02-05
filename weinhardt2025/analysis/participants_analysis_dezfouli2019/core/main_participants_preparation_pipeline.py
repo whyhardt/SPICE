@@ -12,7 +12,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '.
 from spice import csv_to_dataset, SpiceDataset, SpiceEstimator
 from weinhardt2025.utils.model_evaluation import log_likelihood, bayesian_information_criterion
 from spice.utils.agent import get_update_dynamics
-from spice.precoded import workingmemory
+from spice.precoded import workingmemory_rewardbinary
 
 # ─── BEHAVIORAL METRICS ─────────────────────────────────────────────────────────────────────────────────
 additional_inputs = ['diag']  # include diagnosis as an additional input
@@ -142,9 +142,9 @@ print(f"Behavioral metrics computed for {len(behavior_df)} participants.")
 model_spice_path = 'weinhardt2025/params/dezfouli2019/spice_dezfouli2019.pkl'
 
 #class_rnn = RLRNN_meta_dezfouli2019
-class_rnn = workingmemory.SpiceModel
+class_rnn = workingmemory_rewardbinary.SpiceModel
 
-sindy_config = workingmemory.CONFIG
+sindy_config = workingmemory_rewardbinary.CONFIG
 
 estimator = SpiceEstimator(
     rnn_class=class_rnn,

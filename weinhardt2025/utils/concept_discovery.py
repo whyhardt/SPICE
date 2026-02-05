@@ -3,7 +3,7 @@ import torch
 from sklearn.decomposition import NMF
 
 from spice import csv_to_dataset, SpiceEstimator
-from spice.precoded import workingmemory
+from spice.precoded import workingmemory, workingmemory_rewardbinary
 
 import sys, os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
@@ -26,8 +26,8 @@ n_actions = dataset.ys.shape[-1]
 
 if use_real:
     estimator = SpiceEstimator(
-        rnn_class=workingmemory.SpiceModel,
-        spice_config=workingmemory.CONFIG,
+        rnn_class=workingmemory_rewardbinary.SpiceModel,
+        spice_config=workingmemory_rewardbinary.CONFIG,
         n_actions=n_actions,
         n_participants=n_participants,
         n_experiments=n_experiments,

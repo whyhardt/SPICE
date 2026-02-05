@@ -39,6 +39,7 @@ class SpiceEstimator(BaseEstimator):
         
         # RNN training parameters
         epochs: Optional[int] = 1,
+        epochs_confidence: Optional[int] = None,
         warmup_steps: Optional[int] = 0,
         bagging: Optional[bool] = False,
         n_steps_per_call: Optional[int] = None,  # number of timesteps in one backward-call; -1 for full sequence
@@ -98,6 +99,7 @@ class SpiceEstimator(BaseEstimator):
         
         # Training parameters
         self.epochs = epochs
+        self.epochs_confidence = epochs_confidence
         self.warmup_steps = warmup_steps
         self.bagging = bagging
         self.n_steps_per_call = n_steps_per_call
@@ -197,10 +199,19 @@ class SpiceEstimator(BaseEstimator):
         
         rnn_model, rnn_optimizer = fit_spice(
             model=self.rnn_model,
+            optimizer=self.rnn_optimizer,
             dataset_train=dataset,
             dataset_test=dataset_test,
-            optimizer=self.rnn_optimizer,
+            
+            epochs=self.epochs,
+            epochs_confidence=self.epochs_confidence,
+            n_warmup_steps=self.warmup_steps,
+            batch_size=batch_size,
+            bagging=self.bagging,
+            scheduler=self.scheduler,
+            n_steps=self.n_steps_per_call,
             convergence_threshold=self.convergence_threshold,
+            
             sindy_weight=self.sindy_weight,
             sindy_l2_lambda=self.sindy_alpha,
             sindy_pruning_threshold=self.sindy_pruning_threshold,
@@ -210,12 +221,7 @@ class SpiceEstimator(BaseEstimator):
             sindy_optimizer_reset=self.sindy_optimizer_reset,
             sindy_epochs=self.sindy_epochs,
             sindy_confidence_threshold=self.sindy_confidence_threshold,
-            epochs=self.epochs,
-            n_warmup_steps=self.warmup_steps,
-            batch_size=batch_size,
-            bagging=self.bagging,
-            scheduler=self.scheduler,
-            n_steps=self.n_steps_per_call,
+            
             verbose=self.verbose,
             keep_log=self.keep_log,
             path_save_checkpoints=None,

@@ -7,7 +7,7 @@ from spice.utils.agent import Agent
 
 class GRU(torch.nn.Module):
     
-    def __init__(self, n_actions, additional_inputs: int = 0, hidden_size: int = 32, **kwargs):
+    def __init__(self, n_actions, additional_inputs: int = 0, hidden_size: int = 16, **kwargs):
         super().__init__()
         
         self.gru_features = hidden_size
@@ -124,7 +124,7 @@ def main(path_save_model:str, path_data: str, epochs: int, lr: float, split_rati
     optimizer = torch.optim.Adam(gru.parameters(), lr=lr)
     
     print('Training GRU...')
-    gru = training(dataset_train=dataset_training, dataset_test=dataset_training, gru=gru, optimizer=optimizer, epochs=epochs, device=device)
+    gru = training(dataset_train=dataset_training, dataset_test=dataset_test, gru=gru, optimizer=optimizer, epochs=epochs, device=device)
     print('Training GRU done!')
     
     # save GRU model
@@ -133,21 +133,21 @@ def main(path_save_model:str, path_data: str, epochs: int, lr: float, split_rati
     
 if __name__=='__main__':
     
-    dataset_name = 'eckstein2022'
-    split_ratio = 0.8
+    # dataset_name = 'eckstein2022'
+    # split_ratio = 0.8
     
     # dataset_name = 'eckstein2024'
     # split_ratio = [1, 3]
     
-    # dataset_name = 'dezfouli2019'
-    # split_ratio = [3, 6, 9]
+    dataset_name = 'dezfouli2019'
+    split_ratio = [3, 6, 9]
     
     # dataset_name = 'gershmanB2018'
     # split_ratio = [4, 8, 12, 16]
     
     path_save_model = f'weinhardt2025/params/{dataset_name}/gru_{dataset_name}.pkl'
     path_data = f'weinhardt2025/data/{dataset_name}/{dataset_name}.csv'
-    epochs = 10000
+    epochs = 4000
     lr = 1e-2
     
     device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
