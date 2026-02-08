@@ -1,6 +1,6 @@
 import numpy as np
 import torch
-from sklearn.decomposition import NMF
+from sklearn.decomposition import NMF, DictionaryLearning
 
 from spice import csv_to_dataset, SpiceEstimator
 from spice.precoded import workingmemory, workingmemory_rewardbinary
@@ -11,6 +11,7 @@ from weinhardt2025.benchmarking.benchmarking_qlearning import QLearning
 
 
 n_concepts = 6  # Start with fewer concepts (≈ n_features / 2)
+method = 'nmf'  # 'nmf' or 'dict' (DictionaryLearning)
 use_real = True  # if True: load trained sindy coefs; else: load groundtruth RL parameters from data file and convert into sindy coefs (baseline parameter recovery)
 
 path_data = 'weinhardt2025/data/synthetic/synthetic_256p_0_0.csv'
@@ -93,60 +94,84 @@ print(f"Unique presence patterns: {len(np.unique(C_extended, axis=0))}")
 
 print(f"Extended coefficient matrix shape: {C_extended.shape}")
 
-# Fit sparse NMF (adjust n_concepts if needed for initialization)
+# Factorization choice (NMF or Dictionary Learning)
 n_features = C_extended.shape[1]
 n_components_actual = min(n_concepts, n_features, n_participants)
 use_overcomplete = n_concepts > n_features
 
-# Use fewer concepts if we have few features
-if not use_overcomplete:
-    n_concepts = n_components_actual
+if method.lower() == 'nmf':
+    # Use fewer concepts if we have few features
+    if not use_overcomplete:
+        n_concepts = n_components_actual
 
-nmf = NMF(
-    n_components=n_concepts,
-    init='random',    # random init to avoid degenerate solutions
-    alpha_W=0.0,      # no sparsity penalty initially - let data speak
-    l1_ratio=1.0,
-    max_iter=1000,
-    random_state=42,
-)
+    nmf = NMF(
+        n_components=n_concepts,
+        init='random',    # random init to avoid degenerate solutions
+        alpha_W=0.0,      # no sparsity penalty initially - let data speak
+        l1_ratio=1.0,
+        max_iter=1000,
+        random_state=42,
+    )
 
-print(f"NMF: {n_concepts} concepts from {n_features} features, init={'random' if use_overcomplete else 'nndsvd'}")
+    print(f"NMF: {n_concepts} concepts from {n_features} features, init={'random' if use_overcomplete else 'nndsvd'}")
 
-W = nmf.fit_transform(C_extended)  # (n_participants, n_concepts)
-H = nmf.components_                 # (n_concepts, n_terms_extended)
+    W = nmf.fit_transform(C_extended)  # (n_participants, n_concepts)
+    H = nmf.components_                 # (n_concepts, n_terms_extended)
+
+elif method.lower() in ('dict', 'dictionary', 'dictionary_learning'):
+    # Dictionary Learning on binary presence matrix (allows signed atoms/codes)
+    n_concepts = min(n_concepts, max(1, n_features))
+    dl = DictionaryLearning(
+        n_components=n_concepts,
+        alpha=1.0,
+        max_iter=1000,
+        fit_algorithm='lars',
+        transform_algorithm='lasso_lars',
+        transform_alpha=0.1,
+        random_state=42,
+    )
+    print(f"DictionaryLearning: {n_concepts} atoms from {n_features} features")
+    W = dl.fit_transform(C_extended)   # (n_participants, n_concepts)
+    H = dl.components_                 # (n_concepts, n_terms_extended)
+else:
+    raise ValueError(f"Unknown method '{method}'. Use 'nmf' or 'dict'.")
 
 # Reconstruction error
 reconstruction = W @ H
 recon_error = np.linalg.norm(C_extended - reconstruction, 'fro')
 print(f"Reconstruction error: {recon_error:.4f}")
 
-# Sparsity statistics (use relative threshold based on W magnitude)
-w_threshold = max(0.01, W.max() * 0.05)  # 5% of max or 0.01, whichever is larger
-active_per_participant = (W > w_threshold).sum(axis=1)
+# Sparsity statistics (use relative threshold based on |W| magnitude; handles signed codes)
+w_threshold = max(0.01, np.max(np.abs(W)) * 0.05)  # 5% of max |usage| or 0.01
+active_per_participant = (np.abs(W) > w_threshold).sum(axis=1)
 print(f"W range: [{W.min():.4f}, {W.max():.4f}], threshold: {w_threshold:.4f}")
 print(f"Active concepts per participant: {active_per_participant.mean():.1f} ± {active_per_participant.std():.1f}")
 
 
 def interpret_concepts(H, candidate_terms, top_k=5, threshold=0.05):
-    """Extract interpretable concept definitions from NMF components."""
+    """Extract interpretable concept definitions from factor components.
+
+    Works for both NMF (nonnegative H) and DictionaryLearning (signed H):
+    selects top |weight| terms and includes sign in the label.
+    """
     concepts = []
 
     for concept_idx in range(H.shape[0]):
         weights = H[concept_idx]
 
         # Skip near-empty concepts
-        if weights.max() < threshold:
+        if np.max(np.abs(weights)) < threshold:
             continue
 
         # Get top contributing terms (by weight)
-        top_indices = np.argsort(weights)[::-1][:top_k]
+        top_indices = np.argsort(np.abs(weights))[::-1][:top_k]
 
         terms = []
         for idx in top_indices:
             w = weights[idx]
-            if w > threshold * weights.max():
-                terms.append((candidate_terms[idx], w))
+            if np.abs(w) > threshold * np.max(np.abs(weights)):
+                # Keep signed weight; labels already include +/- variant if applicable
+                terms.append((candidate_terms[idx], float(w)))
 
         if terms:
             concepts.append({
@@ -159,16 +184,16 @@ def interpret_concepts(H, candidate_terms, top_k=5, threshold=0.05):
 
 
 def get_participant_concepts(W, concepts, threshold=None):
-    """Get dominant concepts for each participant."""
+    """Get dominant concepts for each participant (uses |usage| for signed codes)."""
     if threshold is None:
-        threshold = max(0.01, W.max() * 0.05)
+        threshold = max(0.01, np.max(np.abs(W)) * 0.05)
 
     participant_concepts = []
 
     for p in range(W.shape[0]):
         active = []
         for c in concepts:
-            usage = W[p, c['index']]
+            usage = float(abs(W[p, c['index']]))
             if usage > threshold:
                 active.append((c['index'], c['definition'], usage))
 
@@ -181,7 +206,7 @@ def get_participant_concepts(W, concepts, threshold=None):
 
 # Debug: show H matrix stats
 print(f"\nH matrix shape: {H.shape}")
-print(f"H row maxes: {H.max(axis=1)}")
+print(f"H row max |abs|: {np.max(np.abs(H), axis=1)}")
 
 # Interpret discovered concepts
 print("\n" + "="*60)
