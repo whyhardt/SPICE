@@ -82,9 +82,9 @@ def training(
             logits, _ = gru(xs)
             
             # Reshape for loss computation
-            nan_mask = ~torch.isnan(xs[..., :gru.n_actions].sum(dim=-1, keepdim=True).repeat(1, 1, gru.n_actions))
-            logits = logits * nan_mask
-            labels = ys[..., :n_actions] *nan_mask
+            nan_mask = ~torch.isnan(xs[..., :gru.n_actions].sum(dim=-1))
+            logits = logits[nan_mask]
+            labels = ys[nan_mask]
             
             # Compute loss
             loss = criterion(logits, labels)
@@ -100,10 +100,11 @@ def training(
             gru.eval()
             with torch.no_grad():
                 logits_test, _ = gru(dataset_test.xs.to(device))
-                nan_mask = ~dataset_test.xs[..., :n_actions].sum(dim=-1).reshape(-1).isnan().to(device)
-                logits_flat = logits_test.reshape(-1, n_actions)[nan_mask]
-                labels_flat = torch.argmax(dataset_test.ys[..., :n_actions].to(device).reshape(-1, n_actions)[nan_mask], dim=-1).reshape(-1).long()
-                loss_test = criterion(logits_flat, labels_flat)
+                nan_mask = ~torch.isnan(dataset_test.xs[..., :gru.n_actions].sum(dim=-1))
+                logits_test = logits_test[nan_mask].to(device)
+                # labels_test = torch.argmax(dataset_test.ys[..., :n_actions].to(device).reshape(-1, n_actions)[nan_mask], dim=-1).reshape(-1).long()
+                labels_test = dataset_test.ys[nan_mask].to(device)
+                loss_test = criterion(logits_test, labels_test)
             gru.train()
             
             msg += f"; L(Test): {loss_test.item()}"

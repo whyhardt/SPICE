@@ -1,7 +1,7 @@
 import sys
 import os
 
-from typing import List, Optional
+from typing import List, Optional, Union, Iterable
 
 import pandas as pd
 import numpy as np
@@ -14,21 +14,49 @@ from ..resources.spice_utils import SpiceDataset
 
 def csv_to_dataset(
     file: str,
-    device = None,
-    sequence_length: int = None,
     df_participant_id: str = 'participant',
     df_block: str = 'block',
     df_experiment_id: str = 'experiment',
     df_choice: str = 'choice',
-    df_feedback: str = 'reward',
-    additional_inputs: List[str] = None,
-    timeshift_additional_inputs: bool = False,
+    df_feedback: Union[str, Iterable[str]] = 'reward',
+    additional_inputs: Optional[Union[str, Iterable[str]]] = None,
+    device = None,
+    sequence_length: int = None,
+    timeshift_additional_inputs: Optional[Iterable[int]] = None,
     remove_failed_trials: bool = True,
     ) -> SpiceDataset:
+    """_summary_
+
+    Args:
+        file (str): _description_
+        df_participant_id (str, optional): _description_. Defaults to 'participant'.
+        df_block (str, optional): _description_. Defaults to 'block'.
+        df_experiment_id (str, optional): _description_. Defaults to 'experiment'.
+        df_choice (Union[str, Iterable[str]], optional): _description_. Defaults to 'choice'.
+        df_feedback (Union[str, Iterable[str]], optional): _description_. Defaults to 'reward'.
+        additional_inputs (Optional[Union[str, Iterable[str]]], optional): _description_. Defaults to None.
+        device (_type_, optional): _description_. Defaults to None.
+        sequence_length (int, optional): _description_. Defaults to None.
+        timeshift_additional_inputs (Optional[Iterable[str]], optional): Marks which additional inputs to shift how many timesteps into which direction (e.g. one timestep back: -1; leave as is: 0; one timestep forward: 1). Defaults to None.
+        remove_failed_trials (bool, optional): _description_. Defaults to True.
+        
+    Returns:
+        SpiceDataset: _description_
+    """
+    
+    if timeshift_additional_inputs is not None and \
+        additional_inputs is not None and \
+            len(timeshift_additional_inputs) != len(additional_inputs):
+                raise ValueError(f"timeshift_additional_inputs must have the same length as additional_inputs but has length {len(timeshift_additional_inputs)} compared to length {len(additional_inputs)} in additional_inputs")
+    
     df = pd.read_csv(file, index_col=None)
     
     # replace all nan values with -1
     df = df.replace(np.nan, -1)
+    
+    # --------------------------------------------------------------------------------
+    # GROUPING BY PARTICIPANT, EXPERIMENT, BLOCK
+    # --------------------------------------------------------------------------------
     
     original_df = copy(df)
     
@@ -64,45 +92,57 @@ def csv_to_dataset(
     n_groups = len(df.groupby(groupby_kw).size())
     max_trials = df.groupby(groupby_kw).size().max()
     
-    # let actions begin from 0
+    # --------------------------------------------------------------------------------
+    # ACTIONS
+    # --------------------------------------------------------------------------------
+    
+    # map str values to numeric values
     if isinstance(df[df_choice].iloc[0], str):
         choices = df[df_choice].astype('category').cat.codes.values.copy()
         print(f"ValueWarning: Values from choice column ({df_choice}) had to be converted from str to int. The mapping is sorted alphabetically: {tuple([(index, key) for index, key in enumerate(np.sort(df[df_choice].unique()))])}")
     else:
         choices = df[df_choice].values
+    # let actions begin from 0
     choice_min = np.nanmin(choices[choices != -1])
     choices[choices != -1] = choices[choices != -1] - choice_min
+    # number of possible actions
+    n_actions = int(df[df_choice].max() + 1)
+    # map transformed values into dfs
     df[df_choice] = choices
     original_df[df_choice] = choices
     
-    # number of possible actions
-    n_actions = int(df[df_choice].max() + 1)
+    # --------------------------------------------------------------------------------
+    # FEEDBACK
+    # --------------------------------------------------------------------------------
     
-    # get all columns with rewards
-    if df_feedback + '_0' in df.columns:
-        # counterfactual dataset
-        reward_cols = []
-        for reward_column in df.columns:
-            if df_feedback in reward_column:
-                reward_cols.append(reward_column)
-    else:
-        reward_cols = [df_feedback]
+    # set df_feedback as iterable
+    if isinstance(df_feedback, str):
+        df_feedback = df_feedback,
     
-    # normalize rewards (exclude -1 which represents missing/NaN values)
+    # normalize rewards
     r_min, r_max = [], []
-    for reward_column in reward_cols:
-        valid_rewards = df[reward_column][df[reward_column] != -1]
-        if len(valid_rewards) > 0:
-            r_min.append(valid_rewards.min())
-            r_max.append(valid_rewards.max())
-    r_min = np.min(r_min) if r_min else 0
-    r_max = np.max(r_max) if r_max else 1
-    # Avoid division by zero if all rewards are the same
-    r_range = r_max - r_min if r_max != r_min else 1
-    for reward_column in reward_cols:
-        # Only normalize valid rewards, keep -1 as-is (will be handled as NaN later)
-        mask = df[reward_column] != -1
-        df.loc[mask, reward_column] = (df.loc[mask, reward_column] - r_min) / r_range
+    for feedback_column in df_feedback:
+        # valid_rewards = df[reward_column][df[reward_column] != -1]
+        # if len(valid_rewards) > 0:
+        r_min.append(np.nanmin(df[feedback_column]))
+        r_max.append(np.nanmax(df[feedback_column]))
+    r_min = 0 if np.min(r_min) >= 0 else np.min(r_min)
+    r_max = 0 if np.max(r_max) <= 0 else np.max(r_max)
+    # No scaling if rewards are always the same
+    if r_max != r_min:
+        for feedback_column in df_feedback:
+            # normalize to range [0,1] --- additional adjustments in next lines if necessary
+            df[feedback_column] = (df[feedback_column] - r_min) / (r_max - r_min)
+            if r_min < 0 and r_max == 0:
+                # scale to range [-1,0] if only negative rewards
+                df[feedback_column] = df[feedback_column]-1
+            if r_min < 0 and r_max > 0:
+                # scale to range [-1,1] if negative and positive rewards
+                df[feedback_column] = (df[feedback_column]-0.5)*2
+
+    # --------------------------------------------------------------------------------
+    # ADDITIONAL INPUTS
+    # --------------------------------------------------------------------------------
     
     # check whether the additional inputs are in the dataset
     additional_inputs_xs = 0
@@ -130,7 +170,11 @@ def csv_to_dataset(
                 
                 print(f"Values in column {additional} in dataset {file} are not numerical. Converted values are:")
                 print(id_map)
-            
+    
+    # --------------------------------------------------------------------------------
+    # MAIN PROCESSING
+    # --------------------------------------------------------------------------------
+    
     n_ids = 0
     if df_participant_id is not None:
         n_ids += 1
@@ -144,18 +188,18 @@ def csv_to_dataset(
     # for index_group, participant_id in enumerate(participant_ids):
     for index_group, group in enumerate(df.groupby(groupby_kw)):
 
-        # Filter out failed trials (where choice == -1) if requested
+        # Filter out failed trials (where choice == np.nan) if requested
         group_df = group[1]
         if remove_failed_trials:
-            valid_trials_mask = group_df[df_choice] != -1
+            valid_trials_mask = ~np.isnan(group_df[df_choice])
             group_df = group_df[valid_trials_mask]
 
         choice = np.eye(n_actions)[group_df[df_choice].values.astype(int)]
         rewards = np.full((len(choice), n_actions), np.nan)
-        for index_column, reward_column in enumerate(reward_cols):
+        for index_column, feedback_column in enumerate(df_feedback):
             # add reward into the correct column
-            reward = group_df[reward_column].values
-            if len(reward_cols) > 1:
+            reward = group_df[feedback_column].values
+            if len(df_feedback) > 1:
                 # counterfactual data
                 rewards[:, index_column] = reward
             else:
@@ -181,10 +225,18 @@ def csv_to_dataset(
                 xs[index_group, :len(choice)-1, n_actions*2+index] = group_df[additional_input].values[:-1]
         
     # move additional inputs one timestep back in order to make the next decision being based on them
-    if timeshift_additional_inputs:
-        xs[:, :-1, n_actions*2:-3] = xs[:, 1:, n_actions*2:-3]
-        xs = xs[:, :-1]
-        ys = ys[:, :-1]
+    if timeshift_additional_inputs is not None:
+        if isinstance(timeshift_additional_inputs, int):
+            timeshift_additional_inputs = timeshift_additional_inputs,
+        for index_timeshift, timeshift in enumerate(timeshift_additional_inputs):
+            if timeshift == -1:
+                xs[:, :-1, n_actions*2+index_timeshift] = xs[:, 1:, n_actions*2+index_timeshift]
+            elif timeshift == 1:
+                xs[:, 1:, n_actions*2+index_timeshift] = xs[:, :-1, n_actions*2+index_timeshift]
+                xs[:, 0, n_actions*2+index_timeshift] = 0
+        if any(['-' == timeshift for timeshift in timeshift_additional_inputs]):
+            xs = xs[:, :-1]
+            ys = ys[:, :-1]
     
     dataset = SpiceDataset(xs, ys, device=device, sequence_length=sequence_length)
     

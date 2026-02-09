@@ -63,7 +63,7 @@ class BaseRNN(nn.Module):
         device=torch.device('cpu'),
         **kwargs,
         ):
-        super(BaseRNN, self).__init__()
+        super().__init__()
         
         # define general network parameters
         self.spice_config = spice_config
@@ -466,7 +466,6 @@ class BaseRNN(nn.Module):
 
         return h_next_sindy     
 
-    
     def compute_sindy_loss_for_module(
         self,
         module_name: str,

@@ -113,7 +113,7 @@ class SpiceEstimator(BaseEstimator):
         self.keep_log = keep_log
         self.deterministic = False
         self.l2_rnn = l2_rnn
-        self.loss_fn = loss_fn,
+        self.loss_fn = loss_fn
         
         # Save parameters
         self.save_path_model = save_path_spice
@@ -213,6 +213,7 @@ class SpiceEstimator(BaseEstimator):
             scheduler=self.scheduler,
             n_steps=self.n_steps_per_call,
             convergence_threshold=self.convergence_threshold,
+            loss_fn=self.loss_fn,
             
             sindy_weight=self.sindy_weight,
             sindy_l2_lambda=self.sindy_alpha,

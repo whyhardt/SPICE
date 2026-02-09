@@ -334,14 +334,13 @@ def _run_batch_training(
         #     torch.argmax(ys_step.reshape(-1, model.n_actions), dim=1)[mask],
         #     )
         
-        # Mask out padding (NaN values) - valid trials have non-NaN actions
-        mask = ~torch.isnan(xs_step[..., :model.n_actions].sum(dim=-1, keepdim=True).repeat(1, 1, model.n_actions))
-        
         state = model.get_state(detach=True)
         ys_pred, _ = model(xs_step, state, batch_first=True)
         
-        ys_pred = ys_pred * mask
-        ys_step = ys_step * mask
+        # Mask out padding (NaN values) - valid trials have non-NaN actions
+        mask = ~torch.isnan(xs_step[..., :model.n_actions].sum(dim=-1))
+        ys_pred = ys_pred[mask]
+        ys_step = ys_step[mask]
         
         # loss_step = loss_fn(
         #     ys_pred.reshape(-1, model.n_actions),
@@ -648,6 +647,7 @@ def _run_joint_training(
                         n_steps=n_steps,
                         sindy_weight=sindy_weight_epoch,
                         sindy_alpha=sindy_l2_lambda,
+                        loss_fn=loss_fn,
                     )
                     loss_train += loss_i
 
@@ -958,10 +958,16 @@ def fit_spice(
         print("SPICE Training Configuration:")
         if epochs > 0:
             print("\tSPICE joint training: active")
-        if sindy_confidence_threshold is not None and sindy_confidence_threshold > 0:
+        else:
+            print("\tSPICE joint training: deactived")
+        if sindy_confidence_threshold is not None and sindy_confidence_threshold > 0 and epochs_confidence > 0:
             print("\tConfidence-based SINDy coefficient filtering: active")
+        else:
+            print("\tConfidence-based SINDy coefficient filtering: deactived")
         if sindy_epochs > 0:
-            print("\tSINDy-only training: active")
+            print("\tSINDy-only finetuning: active")
+        else:
+            print("\tSINDy-only finetuning: deactived")
         print(status_lines)
     
     # Store original learning rate for Stage 3
