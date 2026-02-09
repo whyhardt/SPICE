@@ -399,3 +399,4 @@ class SpiceEstimator(BaseEstimator):
             'sindy_coefficients_presence': self.rnn_model.sindy_coefficients_presence,
             }
         torch.save(state_dict, path_rnn)
+        
