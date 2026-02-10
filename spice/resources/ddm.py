@@ -22,6 +22,7 @@ def wasserstein_loss(prediction: torch.Tensor, target: torch.Tensor) -> torch.Te
     Sorts both predicted and target signed RTs and computes the mean absolute
     difference between corresponding quantiles.
     """
+    
     prediction = prediction.reshape(-1)
     target = target.reshape(-1)
     return torch.mean(torch.abs(prediction.sort()[0] - target.sort()[0]))
@@ -62,31 +63,10 @@ class ThresholdFunction(torch.autograd.Function):
         return grads, None, None, None, None, None, None
 
 
-class GRUModule(torch.nn.Module):
-    
-    def __init__(self, input_size: int, dropout: float = 0., **kwargs):
-        super().__init__()
-        
-        self.hidden_size = input_size+8
-        self.gru = torch.nn.GRU(input_size=input_size, hidden_size=self.hidden_size, batch_first=False)
-        self.linear_out = torch.nn.Linear(in_features=self.hidden_size, out_features=1)
-        self.dropout = torch.nn.Dropout(p=dropout)
-
-    def forward(self, inputs: torch.Tensor, state: torch.Tensor = None):
-        
-        if state is None:
-            state = torch.zeros((inputs.shape[1], self.hidden_size))
-        
-        y, state = self.gru(inputs, state)
-        y = self.dropout(y)
-        y = self.linear_out(y)
-        return y, state
-
-
 class DDMRNN(BaseRNN):
-    
+
     def __init__(
-        self, 
+        self,
         n_participants: int,
         n_experiments: int,
         max_steps: int = 100,
@@ -94,89 +74,101 @@ class DDMRNN(BaseRNN):
         device: torch.device = torch.device('cpu'),
         **kwargs,
         ):
-        
+
         super().__init__(
             n_actions=2,
             spice_config=SPICE_CONFIG,
             n_participants=n_participants,
             n_experiments=n_experiments,
+            n_reward_features=0,
             sindy_polynomial_degree=2,
             sindy_ensemble_size=1,
             device=device,
             )
-        
+
         self.dropout = 0.1
         self.max_steps = max_steps
         self.t_max = t_max
         self.dt = t_max / max_steps
+        self.threshold = 1.0
+        self.init_time = 0.2
         self.init_traces()
-        
+
         self.participant_embedding = self.setup_embedding(num_embeddings=self.n_participants, embedding_size=self.embedding_size, dropout=self.dropout)
-        
+
         self.setup_module(key_module='drift', input_size=1+self.embedding_size, dropout=self.dropout)
-        self.setup_module(key_module='diffusion', input_size=0+self.embedding_size, dropout=self.dropout)
-        
+        # self.setup_module(key_module='diffusion', input_size=0+self.embedding_size, dropout=self.dropout)
+
     def forward(self, inputs: torch.Tensor, prev_state: torch.Tensor = None, batch_first: bool = False):
-        
-        if batch_first:
-            inputs = inputs.swapaxes(1, 0)
-        
-        # inputs carries only the stimulus signal and IDs
-        stimulus = inputs[..., 0].unsqueeze(-1).repeat(1, 1, self.n_actions)
-        
-        # experiment_ids = inputs[0, :, -2]
-        participants_ids = inputs[0, :, -1].long()
-        participant_embeddings = self.participant_embedding(participants_ids)
-        
+        spice_signals = self.init_forward_pass(inputs, prev_state, batch_first)
+
+        experiment_ids = spice_signals.experiment_ids
+        participant_ids = spice_signals.participant_ids
+        participant_emb = self.participant_embedding(participant_ids)
+
+        # Single outer timestep (T_out=1): additional_inputs[0] is [W=max_steps, B, n_add]
+        # additional_inputs layout: abs_time(0), stimulus_strength(1), choice(2), response_time(3)
+        stimulus = spice_signals.additional_inputs[0, :, :, 1].unsqueeze(-1).expand(-1, -1, self.n_actions)
+        # [W, B, n_actions]
+
         self.traces['drift'] = self.call_module(
             key_module='drift',
             key_state='drift',
             action_mask=None,
             inputs=(stimulus,),
-            participant_index=participants_ids,
-            participant_embedding=participant_embeddings,
-            activation_rnn=torch.exp,
-        )
+            participant_index=participant_ids,
+            participant_embedding=participant_emb,
+            # activation_rnn=torch.exp,
+        )   # [W, B, n_actions]
         
-        self.traces['diffusion'] = self.call_module(
-            key_module='diffusion',
-            key_state='diffusion',
-            action_mask=None,
-            inputs=None,
-            participant_index=participants_ids,
-            participant_embedding=participant_embeddings,
-            activation_rnn=torch.exp,
-        )
+        # self.traces['diffusion'] = self.call_module(
+        #     key_module='diffusion',
+        #     key_state='diffusion',
+        #     action_mask=None,
+        #     inputs=None,
+        #     participant_index=participant_ids,
+        #     participant_embedding=participant_emb,
+        #     activation_rnn=torch.exp,
+        # )   # [1, B, n_actions] — constant per trial, broadcasts across W
+        self.traces['diffusion'] = torch.ones_like(self.traces['drift'])
         
-        epsilon = torch.randn((inputs.shape[1], self.max_steps, 1), device=self.device, requires_grad=False)
-        
-        evidence_t = self.traces['drift'] * self.dt + self.traces['diffusion'] * epsilon * torch.sqrt(self.dt)
-        self.traces['evidence'] = torch.cumsum(evidence_t, dim=1)
-        
+        batch_size = participant_ids.shape[0]
+        epsilon = torch.randn((self.max_steps, batch_size, 1), device=self.device, requires_grad=False)
+
+        # Single-accumulator DDM: use first action's drift/diffusion
+        drift = self.traces['drift'][:, :, 0:1]          # [W, B, 1]
+        diffusion = self.traces['diffusion'][:, :, 0:1]  # [1, B, 1]
+
+        evidence_t = drift * self.dt + diffusion * epsilon * torch.sqrt(torch.tensor(self.dt))
+        self.traces['evidence'] = torch.cumsum(evidence_t, dim=0)  # [W, B, 1]
+
+        # ThresholdFunction expects batch-first: [B, max_steps, 1]
+        evidence_bf = self.traces['evidence'].permute(1, 0, 2)
+        evidence_t_bf = evidence_t.permute(1, 0, 2)
+
         response_time, final_evidence, decision_times = ThresholdFunction.apply(
-            trajectory=torch.abs(self.traces['evidence']) - self.threshold,
-            dsdt_trajectory=evidence_t,
-            x=self.traces['evidence'],
-            b=self.threshold,
-            dt=self.dt,
-            tnd=self.init_time,
+            torch.abs(evidence_bf) - self.threshold,
+            evidence_t_bf,
+            evidence_bf,
+            self.threshold,
+            self.dt,
+            self.init_time,
             )
         
-        signed_response_time = response_time * torch.sign(final_evidence)
+        output = torch.concat((response_time, experiment_ids.view(-1, 1), participant_ids.view(-1, 1)), dim=0)
         
-        return signed_response_time, self.get_state()
-    
-    def init_traces(self, batch_size=1):
-        
-        self.traces = {
-            'evidence': torch.zeros(batch_size, self.max_steps, self.n_actions),
-            'drift': torch.zeros(batch_size, self.max_steps, self.n_actions),
-            'diffusion': torch.zeros(batch_size, self.max_steps, self.n_actions),
-        }
-        
-        return self.traces
-    
+        # Return [B, T_out=1] to match training loop expectations
+        return output, self.get_state()
 
+    def init_traces(self, batch_size=1):
+
+        self.traces = {
+            'evidence': torch.zeros(self.max_steps, batch_size, self.n_actions),
+            'drift': torch.zeros(self.max_steps, batch_size, self.n_actions),
+            'diffusion': torch.zeros(1, batch_size, self.n_actions),
+        }
+
+        return self.traces
 
 
 # --------------------------------------------------------------------------------------------------------------
@@ -198,9 +190,9 @@ def simulate_ddm(
 ):
     """Simulate DDM evidence accumulation and return data as a SpiceDataset.
 
+    xs shape: (n_trials, 1, max_steps, 9) — 4D with outer_ts=1, within_ts=max_steps.
     xs features: (choice_0, choice_1, abs_time, stimulus_strength, choice, response_time, trial, experiment_id, participant_id)
-    All features are constant across timesteps within a trial.
-    ys: signed response time.
+    ys shape: (n_trials, 1, 1, 1) — signed response time (one scalar per trial).
     """
     if device is None:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -211,14 +203,14 @@ def simulate_ddm(
 
     # features: choice_0(0), choice_1(1), abs_time(2), stimulus_strength(3),
     #           choice(4), response_time(5), trial(6), experiment_id(7), participant_id(8)
-    xs = torch.full((n_total, max_steps, 9), float('nan'), device=device)
+    xs = torch.full((n_total, max_steps, 10), float('nan'), device=device)
 
     # sample stimulus direction per trial: (n_total,)
-    stimuli = torch.full((n_total,), 0.5, device=device)
+    stimuli = torch.full((n_total,), drift_rate, device=device)
 
     # simulate evidence accumulation: (n_total, max_steps)
     noise = torch.randn(n_total, max_steps, device=device)
-    increments = drift_rate * stimuli.unsqueeze(1) * dt + diffusion_rate * (dt ** 0.5) * noise
+    increments = stimuli.unsqueeze(1) * dt + diffusion_rate * (dt ** 0.5) * noise
     evidence = torch.cumsum(increments, dim=1)
 
     # find first boundary crossing per trial
@@ -254,10 +246,10 @@ def simulate_ddm(
     xs[:, :, 4] = choice.unsqueeze(1).float()               # choice index
     xs[:, :, 5] = signed_rt.unsqueeze(1)                    # signed response time
     xs[:, :, 6] = trial_ids.unsqueeze(1).float()            # trial
-    xs[:, :, 7] = 0                                         # experiment_id
-    xs[:, :, 8] = participant_ids.unsqueeze(1).float()      # participant_id
-    ys = xs[:, :, 5:6].clone()
-
+    xs[:, :, 7] = 0                                         # block
+    xs[:, :, 8] = 0                                         # experiment_id
+    xs[:, :, 9] = participant_ids.unsqueeze(1).float()      # participant_id
+    
     if save_path is not None:
         import pandas as pd
         columns = ['choice_0', 'choice_1', 'abs_time', 'stimulus_strength',
@@ -266,57 +258,83 @@ def simulate_ddm(
         df = pd.DataFrame(rows, columns=columns)
         df.to_csv(save_path, index=False)
 
-    # move to cpu for SpiceDataset
-    return SpiceDataset(xs=xs.cpu(), ys=ys.cpu())
+    # Reshape to 4D: (n_trials, outer_ts=1, within_ts=max_steps, features)
+    xs = xs.unsqueeze(1).cpu()                               # [n_total, 1, max_steps, 9]
+    ys = signed_rt.reshape(n_total, 1, 1, 1).cpu()           # [n_total, 1, 1, 1]
     
+    return SpiceDataset(xs=xs, ys=ys)
+
 
 if __name__=='__main__':
-    
-    # dataset = csv_to_dataset(
-    #     file='ddm/ddm.csv',
-    #     additional_inputs=('stimulus'),
-    # )
-    
+
     max_steps = 100
     t_max = 5
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    drift_rates = [0., 0.5, 1.0]
     
-    dataset = simulate_ddm(
-        n_participants=1,
-        n_trials=1000,
-        t_max=t_max,
-        max_steps=max_steps,
-        drift_rate=1.0,
-        diffusion_rate=1.0,
-        threshold=1.0,
-        non_decision_time=0.2,
-    )
-    
-    # Check dataset
-    # print("Choices:")
-    # print(dataset.xs[:, 0, 4])
-    # print("RTs")
-    # print(dataset.ys[:, 0].sort(dim=0)[0].reshape(-1))
-    
-    # import matplotlib.pyplot as plt
-    # plt.hist(dataset.ys[:, 0, 0], bins=50, range=(-5.2, 5.2))
-    # plt.show()
+    datasets = []
+    xs, ys = [], []
+    for index_rate, rate in enumerate(drift_rates):
+        dataset = simulate_ddm(
+            n_participants=1,
+            n_trials=1000,
+            t_max=t_max,
+            max_steps=max_steps,
+            drift_rate=rate,
+            diffusion_rate=1.0,
+            threshold=1.0,
+            non_decision_time=0.2,
+        )
+        
+        xs_rate = dataset.xs
+        xs_rate[..., -1] = index_rate
+        
+        xs.append(xs_rate)
+        ys.append(dataset.ys)
+    dataset = SpiceDataset(torch.concat(xs), torch.concat(ys))
     
     spice_estimator = SpiceEstimator(
         spice_config=SPICE_CONFIG,
         rnn_class=DDMRNN,
         kwargs_rnn_class={
             'max_steps': max_steps,
-            't_max': t_max,  
+            't_max': t_max,
         },
+        loss_fn=wasserstein_loss,
         
         n_actions=2,
-        n_participants=1,
-        
-        epochs=1,
+        n_participants=len(drift_rates),
+
+        epochs=1000,
+        learning_rate=0.0001,
+        bagging=False,
         device=device,
-        
+
         sindy_weight=0.,
+        
+        verbose=True,
     )
-    
+
     spice_estimator.fit(dataset.xs, dataset.ys)
+    
+    model = spice_estimator.rnn_agent.model
+    signed_rt, _ = model(dataset.xs.to(device), batch_first=True)
+    
+    import matplotlib.pyplot as plt
+    
+    plt.hist(dataset.xs[:1000, 0, 0, 5].cpu().numpy(), bins=50, range=(-5.2, 5.2), alpha=0.4, label="Real", color='tab:blue')
+    plt.hist(signed_rt[:1000, 0].detach().cpu().numpy(), bins=50, range=(-5.2, 5.2), alpha=0.4, label="Fake", color='tab:orange')
+    plt.legend()
+    plt.show()
+    
+    plt.hist(dataset.xs[1000:2000, 0, 0, 5].cpu().numpy(), bins=50, range=(-5.2, 5.2), alpha=0.4, label="Real", color='tab:blue')
+    plt.hist(signed_rt[1000:2000, 0].detach().cpu().numpy(), bins=50, range=(-5.2, 5.2), alpha=0.4, label="Fake", color='tab:orange')
+    plt.legend()
+    plt.show()
+    
+    plt.hist(dataset.xs[2000:3000, 0, 0, 5].cpu().numpy(), bins=50, range=(-5.2, 5.2), alpha=0.4, label="Real", color='tab:blue')
+    plt.hist(signed_rt[2000:3000, 0].detach().cpu().numpy(), bins=50, range=(-5.2, 5.2), alpha=0.4, label="Fake", color='tab:orange')
+    plt.legend()
+    plt.show()
+    

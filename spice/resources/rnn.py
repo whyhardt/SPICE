@@ -10,32 +10,24 @@ from .spice_utils import SpiceConfig, SpiceSignals
 class GRUModule(nn.Module):
     def __init__(self, input_size, dropout=0., **kwargs):
         super().__init__()
-        
+
         self.linear_in = nn.Linear(input_size, 8+input_size)
         self.dropout = nn.Dropout(p=dropout)
         self.gru_in = nn.GRU(8+input_size, 1)
-        # self.linear_out = nn.Linear(1, 1)
-        
-        #Simple weight initialization for all parameters
-    #     self.initialize_weights()
-    
-    # def initialize_weights(self):
-    #     """Apply Xavier uniform to all parameters"""
-    #     for param in self.parameters():
-    #         if param.dim() > 1:  # Only weight matrices, skip biases
-    #             nn.init.xavier_uniform_(param)
-    #         else:
-    #             nn.init.zeros_(param)
 
-    def forward(self, inputs):
-        n_actions = inputs.shape[1]
-        inputs = inputs.view(inputs.shape[0]*inputs.shape[1], inputs.shape[2])[None, :]
-        state = inputs[..., :1].contiguous()
-        x = inputs[..., 1:]
-        y = self.dropout(self.linear_in(x))
-        next_state = self.gru_in(y,state)[1].view(-1, n_actions, 1)
-        # next_state = self.linear_out(next_state)
-        return next_state
+    def forward(self, inputs, state):
+        # inputs: [within_ts, batch, n_items, features]
+        # state:  [batch, n_items] — GRU hidden state (interpretable value)
+        W, B, I, F = inputs.shape
+
+        x = inputs.reshape(W, B * I, F)        # [W, B*I, F]
+        h = state.reshape(1, B * I, 1)          # [1, B*I, 1]
+
+        y = self.dropout(self.linear_in(x))      # [W, B*I, 8+F]
+        output, _ = self.gru_in(y, h)            # [W, B*I, 1]
+        output = output.reshape(W, B, I, 1)
+
+        return output
     
     
 class ParameterModule(nn.Module):
@@ -105,40 +97,43 @@ class BaseRNN(nn.Module):
         raise NotImplementedError('This method is not implemented.')
     
     def init_forward_pass(self, inputs: torch.Tensor, prev_state: Dict[str, torch.Tensor], batch_first: bool) -> SpiceSignals:
+        # canonical shape: (outer_ts, within_ts, batch, features)
         if batch_first:
-            inputs = inputs.permute(1, 0, 2)
-        
+            inputs = inputs.permute(1, 2, 0, 3)
+
         self.sindy_loss = torch.tensor(0, requires_grad=True, device=self.device, dtype=torch.float32)
-        
+
         spice_signals = SpiceSignals()
-        
+
         inputs = inputs.nan_to_num(0.)
-        
-        # create a mask of valid trials
-        spice_signals.mask_valid_trials = inputs[:, :, :self.n_actions].sum(dim=-1, keepdim=True) > 0
-        
-        # item-specific signals
-        spice_signals.actions = inputs[:, :, :self.n_actions].float()
-        spice_signals.rewards = inputs[:, :, self.n_actions:2*self.n_actions].float()
-        
-        # additional signals (individual pre processing in forward pass possible)
-        spice_signals.additional_inputs = inputs[:, :, 2*self.n_actions:-3].float()
-        
+
+        # create a mask of valid trials: [outer_ts, batch, 1]
+        spice_signals.mask_valid_trials = inputs[:, :, :, :self.n_actions].sum(dim=(1, 3)).unsqueeze(-1) > 0
+
+        reward_end = self.n_actions + self.n_reward_features
+
+        # item-specific signals: [outer_ts, within_ts, batch, n_actions/n_rewards]
+        spice_signals.actions = inputs[:, :, :, :self.n_actions].float()
+        spice_signals.rewards = inputs[:, :, :, self.n_actions:reward_end].float()
+
+        # additional signals: [outer_ts, within_ts, batch, n_additional]
+        spice_signals.additional_inputs = inputs[:, :, :, reward_end:-3].float()
+
         # static identifiers
-        spice_signals.blocks = inputs[:, :, -3].int()
-        spice_signals.experiment_ids = inputs[0, :, -2].int()
-        spice_signals.participant_ids = inputs[0, :, -1].int()
-        
+        spice_signals.blocks = inputs[:, 0, :, -3].int()           # [outer_ts, batch]
+        spice_signals.experiment_ids = inputs[0, 0, :, -2].int()   # [batch]
+        spice_signals.participant_ids = inputs[0, 0, :, -1].int()  # [batch]
+
         # use previous state or initialize state if not given
         if prev_state is not None:
             self.set_state(prev_state)
         else:
-            self.init_state(batch_size=inputs.shape[1])
-        
+            self.init_state(batch_size=inputs.shape[2])
+
         # output signals
-        spice_signals.timesteps = torch.arange(spice_signals.actions.shape[0], device=self.device)
-        spice_signals.logits = torch.zeros((*spice_signals.actions.shape[:-1], self.n_actions), device=self.device)
-        
+        spice_signals.timesteps = torch.arange(inputs.shape[0], device=self.device)
+        spice_signals.logits = torch.zeros((inputs.shape[0], inputs.shape[2], self.n_actions), device=self.device)
+
         return spice_signals
 
     def post_forward_pass(self, spice_signals: SpiceSignals, batch_first: bool) -> SpiceSignals:
@@ -245,112 +240,120 @@ class BaseRNN(nn.Module):
         key_state: str,
         action_mask: torch.Tensor = None,
         inputs: Union[torch.Tensor, Tuple[torch.Tensor]] = None,
-        participant_embedding: torch.Tensor = None, 
+        participant_embedding: torch.Tensor = None,
         participant_index: torch.Tensor = None,
         experiment_embedding: torch.Tensor = None,
         experiment_index: torch.Tensor = None,
         activation_rnn: Callable = None,
         ):
-        """Used to call a submodule of the RNN. Can be either: 
-            1. RNN-module (saved in 'self.submodules_rnn')
-            2. SINDy-module (saved in 'self.submodules_sindy')
-            3. hard-coded equation (saved in 'self.submodules_eq')
+        """Call a submodule (RNN, SINDy, or equation) to compute the next state value.
 
-        Args:
-            key_module (str): _description_
-            key_state (str): _description_
-            action (torch.Tensor, optional): _description_. Defaults to None.
-            inputs (Union[torch.Tensor, Tuple[torch.Tensor]], optional): _description_. Defaults to None.
-            participant_embedding (torch.Tensor, optional): _description_. Defaults to None.
-            participant_index (torch.Tensor, optional): _description_. Defaults to None.
-            activation_rnn (Callable, optional): _description_. Defaults to None.
-
-        Raises:
-            ValueError: _description_
+        Inputs can be a mix of [W, B, I] (within-trial signals) and [B, I] (cross-trial state).
+        2D inputs are broadcast to match the within-trial dimension W of any 3D inputs.
 
         Returns:
-            _type_: _description_
+            torch.Tensor: [within_ts, batch, n_items] — full within-trial trajectory
         """
-        
-        value = self.state[key_state]
-            
+
+        value = self.state[key_state]  # [B, I]
+
+        # --- Process inputs into [W, B, I, features] ---
+        W = 1
+        if isinstance(inputs, tuple):
+            for inp in inputs:
+                if inp.dim() >= 3:
+                    W = inp.shape[0]
+                    break
+
         if inputs is None or (isinstance(inputs, tuple) and len(inputs) == 0):
-            inputs = torch.zeros((*value.shape, 0), dtype=torch.float32, device=value.device)
+            inputs = torch.zeros((W, *value.shape, 0), dtype=torch.float32, device=value.device)
         elif isinstance(inputs, tuple):
-            inputs = torch.concat([inputs_i.unsqueeze(-1) for inputs_i in inputs], dim=-1)
+            expanded = []
+            for inp in inputs:
+                if inp.dim() == 2:   # [B, I] -> [W, B, I, 1]
+                    expanded.append(inp.unsqueeze(0).unsqueeze(-1).expand(W, -1, -1, -1))
+                elif inp.dim() == 3: # [W, B, I] -> [W, B, I, 1]
+                    expanded.append(inp.unsqueeze(-1))
+                else:
+                    expanded.append(inp)
+            inputs = torch.cat(expanded, dim=-1)
         elif isinstance(inputs, torch.Tensor):
-            inputs = inputs.unsqueeze(-1)
-        
+            if inputs.dim() == 2:    # [B, I] -> [1, B, I, 1]
+                inputs = inputs.unsqueeze(0).unsqueeze(-1)
+            elif inputs.dim() == 3:  # [W, B, I] -> [W, B, I, 1]
+                inputs = inputs.unsqueeze(-1)
+            W = inputs.shape[0]
+
         if experiment_index is None:
             experiment_index = torch.zeros_like(participant_index)
-        
-        if participant_embedding is None:
-            participant_embedding = torch.zeros((*value.shape, 0), dtype=torch.float32, device=value.device)
-        else:
-            participant_embedding = participant_embedding.unsqueeze(1).repeat(1, self.n_items, 1)
 
+        # --- Process embeddings into [W, B, I, emb] ---
+        if participant_embedding is None:
+            participant_embedding = torch.zeros(value.shape[0], 0, dtype=torch.float32, device=value.device)
         if experiment_embedding is None:
-            experiment_embedding = torch.zeros((*value.shape, 0), dtype=torch.float32, device=value.device)
-        else:
-            experiment_embedding = experiment_embedding.unsqueeze(1).repeat(1, self.n_items, 1)
-        
-        embedding = torch.concat((experiment_embedding, participant_embedding), dim=-1)
-        
-        # Replace NaN in inputs with 0 to prevent NaN propagation through the network
-        # NaN values should be masked out by action_mask, but we need to clean them before forward pass
+            experiment_embedding = torch.zeros(value.shape[0], 0, dtype=torch.float32, device=value.device)
+
+        embedding = torch.cat((experiment_embedding, participant_embedding), dim=-1)  # [B, emb]
+        embedding = embedding.unsqueeze(0).unsqueeze(2).expand(inputs.shape[0], -1, value.shape[1], -1)  # [W, B, I, emb]
+
+        # Replace NaN in inputs
         inputs = torch.nan_to_num(inputs, nan=0.0)
 
         if key_module in self.submodules_rnn.keys():
             if not self.use_sindy:
-                # use rnn module
-                inputs_rnn = torch.concat((value.unsqueeze(-1), inputs, embedding), dim=-1)
-                next_value = self.submodules_rnn[key_module](inputs_rnn).squeeze(-1)
+                # RNN module
+                inputs_rnn = torch.cat((inputs, embedding), dim=-1)  # [W, B, I, feat+emb]
+                next_value = self.submodules_rnn[key_module](inputs_rnn, state=value).squeeze(-1)  # [W, B, I]
                 if activation_rnn is not None:
                     next_value = activation_rnn(next_value)
             else:
-                # use sindy coefficients
+                # SINDy — operates on last within-trial step
                 if participant_index is not None:
                     next_value = self.forward_sindy(
-                        h_current = value, 
-                        key_module = key_module, 
-                        participant_ids = participant_index,
-                        experiment_ids = experiment_index,
-                        controls = inputs, 
-                        polynomial_degree = self.sindy_polynomial_degree,
+                        h_current=value,
+                        key_module=key_module,
+                        participant_ids=participant_index,
+                        experiment_ids=experiment_index,
+                        controls=inputs[-1],  # [B, I, n_controls]
+                        polynomial_degree=self.sindy_polynomial_degree,
                         ensemble_idx=0,
-                        ).squeeze(1)
+                    ).squeeze(1).unsqueeze(0)  # [1, B, I]
                 else:
-                    next_value = torch.zeros_like(value)
-        
+                    next_value = torch.zeros((1, *value.shape), device=value.device)
+
         elif key_module in self.submodules_eq.keys():
-            # use hard-coded equation
-            next_value = self.submodules_eq[key_module](value, inputs).unsqueeze(1)
+            # hard-coded equation — operates on last within-trial step
+            next_value = self.submodules_eq[key_module](value, inputs[-1]).unsqueeze(0)  # [1, B, I]
 
         else:
             raise ValueError(f'Invalid module key {key_module}.')
-            
+
+        # SINDy loss (uses unclipped values, last within-trial step)
         if self.training and not self.rnn_training_finished and participant_index is not None:
+            action_mask_2d = action_mask[-1] if action_mask is not None and action_mask.dim() >= 3 else action_mask
             self.sindy_loss = self.sindy_loss + self.compute_sindy_loss_for_module(
                     key_module,
                     self.state[key_state],
-                    next_value,
-                    inputs,
-                    action_mask,
+                    next_value[-1],
+                    inputs[-1],
+                    action_mask_2d,
                     participant_index.squeeze(),
                     experiment_index.squeeze(),
                     self.sindy_polynomial_degree,
                 )
-        
+
         # clip next_value to a specific range
         next_value = torch.clip(input=next_value, min=-1e1, max=1e1)
-        
-        # update memory state
+
+        # update memory state with last within-trial value
+        state_update = next_value[-1]  # [B, I]
         if action_mask is not None:
-            self.state[key_state] = torch.where(action_mask == 1, next_value, self.state[key_state])
+            mask = action_mask[-1] if action_mask.dim() >= 3 else action_mask
+            self.state[key_state] = torch.where(mask == 1, state_update, self.state[key_state])
         else:
-            self.state[key_state] = next_value
-            
-        return next_value
+            self.state[key_state] = state_update
+
+        return next_value  # [W, B, I]
     
     def setup_sindy_coefficients(self, key_module: str, polynomial_degree: int = None, ensemble_size: int = None):
         """

@@ -338,7 +338,8 @@ def _run_batch_training(
         ys_pred, _ = model(xs_step, state, batch_first=True)
         
         # Mask out padding (NaN values) - valid trials have non-NaN actions
-        mask = ~torch.isnan(xs_step[..., :model.n_actions].sum(dim=-1))
+        # xs_step is 4D: [B, T_out, T_in, F] — aggregate over T_in and n_actions
+        mask = ~torch.isnan(xs_step[:, :, :, :model.n_actions].sum(dim=(-1, -2)))
         ys_pred = ys_pred[mask]
         ys_step = ys_step[mask]
         
@@ -459,8 +460,12 @@ def _run_sindy_training(
                     state_buffer_next[state][t*len_dataset:(t+1)*len_dataset] = updated_state[state]
         
         # reshape the dataset to be aligned with state buffer
-        xs = dataset.xs.transpose(0, 1).reshape(n_timesteps*len_dataset, 1, -1)
-        ys = dataset.ys.transpose(0, 1).reshape(n_timesteps*len_dataset, 1, -1)
+        # dataset.xs: [sessions, outer_ts, within_ts, features] (4D)
+        within_ts = dataset.xs.shape[2]
+        n_features_x = dataset.xs.shape[3]
+        n_features_y = dataset.ys.shape[3]
+        xs = dataset.xs.transpose(0, 1).reshape(n_timesteps*len_dataset, 1, within_ts, n_features_x)
+        ys = dataset.ys.transpose(0, 1).reshape(n_timesteps*len_dataset, 1, within_ts, n_features_y)
         dataset = SpiceDataset(xs, ys)
         
         return state_buffer_current, state_buffer_next, dataset
@@ -476,7 +481,7 @@ def _run_sindy_training(
     
     model.use_sindy = True
     xs = dataset_train.xs
-    nan_mask = ~torch.isnan(xs[:, 0, :model.n_actions].sum(dim=-1))
+    nan_mask = ~torch.isnan(xs[:, 0, :, :model.n_actions].sum(dim=(-1, -2)))
     batch_size = dataset_train.xs.shape[0] if batch_size is None else batch_size
     len_dataset = dataset_train.xs.shape[0]
     len_last_print = 0

@@ -83,32 +83,36 @@ class SpiceModel(BaseRNN):
         
         # Value learning module (slow updates)
         # Can use recent reward history to modulate learning
-        self.submodules_rnn['value_reward_chosen'] = self.setup_module(input_size=4 + self.embedding_size)  # -> 21 terms
-        self.submodules_rnn['value_reward_not_chosen'] = self.setup_module(input_size=3 + self.embedding_size)  # -> 15 terms
-        self.submodules_rnn['value_reward_not_displayed'] = self.setup_module(input_size=3 + self.embedding_size)  # -> 15 terms
-        self.submodules_rnn['value_choice_chosen'] = self.setup_module(input_size=3 + self.embedding_size) # -> 15 terms
-        self.submodules_rnn['value_choice_not_chosen'] = self.setup_module(input_size=3 + self.embedding_size) # -> 15 terms -> 21+15+15+15 = 66 terms in total
-        self.submodules_rnn['value_choice_not_displayed'] = self.setup_module(input_size=3 + self.embedding_size) # -> 15 terms -> 21+15+15+15 = 66 terms in total
+        self.setup_module(key_module='value_reward_chosen', input_size=4 + self.embedding_size)  # -> 21 terms
+        self.setup_module(key_module='value_reward_not_chosen', input_size=3 + self.embedding_size)  # -> 15 terms
+        self.setup_module(key_module='value_reward_not_displayed', input_size=3 + self.embedding_size)  # -> 15 terms
+        self.setup_module(key_module='value_choice_chosen', input_size=3 + self.embedding_size) # -> 15 terms
+        self.setup_module(key_module='value_choice_not_chosen', input_size=3 + self.embedding_size) # -> 15 terms -> 21+15+15+15 = 66 terms in total
+        self.setup_module(key_module='value_choice_not_displayed', input_size=3 + self.embedding_size) # -> 15 terms -> 21+15+15+15 = 66 terms in total
 
     def forward(self, inputs, prev_state=None, batch_first=False):
         spice_signals = self.init_forward_pass(inputs, prev_state, batch_first)
 
         # Get shown items (raw indices) - these are time-shifted, so they refer to the NEXT trial
-        shown_at_0_current = spice_signals.additional_inputs[..., 0].long()
-        shown_at_1_current = spice_signals.additional_inputs[..., 1].long()
-        shown_at_0_next = spice_signals.additional_inputs[..., 2].long()
-        shown_at_1_next = spice_signals.additional_inputs[..., 3].long()
-        
+        # additional_inputs shape: [T_out, W, B, n_add]; for RL W=1
+        shown_at_0_current = spice_signals.additional_inputs[:, 0, :, 0].long()  # [T_out, B]
+        shown_at_1_current = spice_signals.additional_inputs[:, 0, :, 1].long()  # [T_out, B]
+        shown_at_0_next = spice_signals.additional_inputs[:, 0, :, 2].long()     # [T_out, B]
+        shown_at_1_next = spice_signals.additional_inputs[:, 0, :, 3].long()     # [T_out, B]
+
         # perform time-invariant computations
         participant_embedding = self.participant_embedding(spice_signals.participant_ids)
-        
+
         # perform time-variant computations
         for timestep in spice_signals.timesteps:
-            
+
+            actions_t = spice_signals.actions[timestep, 0]   # [B, n_actions]
+            rewards_t = spice_signals.rewards[timestep, 0]   # [B, n_actions]
+
             # Transform input data from action space to item space
 
             # Determine which action was chosen
-            action_idx = spice_signals.actions[timestep].argmax(dim=-1)
+            action_idx = actions_t.argmax(dim=-1)
 
             # Map to item indices using current trial's shown items
             item_chosen_idx = torch.where(action_idx == 0, shown_at_0_current[timestep], shown_at_1_current[timestep])
@@ -120,7 +124,7 @@ class SpiceModel(BaseRNN):
             item_not_displayed_onehot = 1 - (item_chosen_onehot + item_not_chosen_onehot)
 
             # Map rewards from action space to item space
-            reward_action = spice_signals.rewards[timestep, :]  # shape: (batch, n_actions)
+            reward_action = rewards_t  # shape: (batch, n_actions)
 
             # Create reward tensor in item space (batch, n_items)
             reward_item = torch.zeros(reward_action.shape[0], self.n_items, device=reward_action.device)

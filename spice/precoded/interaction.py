@@ -53,10 +53,10 @@ class SpiceModel(BaseRNN):
         # self.betas['value_choice'] = self.setup_constant(embedding_size=self.embedding_size)
         
         # set up the submodules
-        self.submodules_rnn['value_reward_chosen'] = self.setup_module(input_size=2+self.embedding_size)
-        self.submodules_rnn['value_reward_not_chosen'] = self.setup_module(input_size=1+self.embedding_size)
-        self.submodules_rnn['value_choice_chosen'] = self.setup_module(input_size=1+self.embedding_size)
-        self.submodules_rnn['value_choice_not_chosen'] = self.setup_module(input_size=1+self.embedding_size)
+        self.setup_module(key_module='value_reward_chosen', input_size=2+self.embedding_size)
+        self.setup_module(key_module='value_reward_not_chosen', input_size=1+self.embedding_size)
+        self.setup_module(key_module='value_choice_chosen', input_size=1+self.embedding_size)
+        self.setup_module(key_module='value_choice_not_chosen', input_size=1+self.embedding_size)
 
     def forward(self, inputs, prev_state=None, batch_first=False):
         """Forward pass of the RNN
@@ -81,43 +81,43 @@ class SpiceModel(BaseRNN):
             self.call_module(
                 key_module='value_reward_chosen',
                 key_state='value_reward',
-                action_mask=spice_signals.actions[timestep],
+                action_mask=spice_signals.actions[timestep, 0],
                 inputs=(
-                    spice_signals.rewards[timestep], 
+                    spice_signals.rewards[timestep, 0],
                     self.state['value_choice'],
                     ),
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
                 # activation_rnn=torch.nn.functional.sigmoid,
                 )
-            
+
             self.call_module(
                 key_module='value_reward_not_chosen',
                 key_state='value_reward',
-                action_mask=1-spice_signals.actions[timestep],
+                action_mask=1-spice_signals.actions[timestep, 0],
                 inputs=(
-                    # spice_signals.rewards[timestep],   # enable only for Eckstein et al (2022) dataset
+                    # spice_signals.rewards[timestep, 0],   # enable only for Eckstein et al (2022) dataset
                     self.state['value_choice'],
                     ),
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
                 )
-            
+
             # updates for value_choice
             self.call_module(
                 key_module='value_choice_chosen',
                 key_state='value_choice',
-                action_mask=spice_signals.actions[timestep],
+                action_mask=spice_signals.actions[timestep, 0],
                 inputs=(self.state['value_reward']),
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
                 # activation_rnn=torch.nn.functional.sigmoid,
                 )
-            
+
             self.call_module(
                 key_module='value_choice_not_chosen',
                 key_state='value_choice',
-                action_mask=1-spice_signals.actions[timestep],
+                action_mask=1-spice_signals.actions[timestep, 0],
                 inputs=self.state['value_reward'],
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
