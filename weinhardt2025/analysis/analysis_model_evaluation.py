@@ -8,7 +8,7 @@ from copy import copy
 
 # standard methods and classes used for every model evaluation
 from spice import SpiceEstimator, Agent, get_update_dynamics, csv_to_dataset, split_data_along_sessiondim, split_data_along_timedim
-from spice.precoded import choice, workingmemory, workingmemory_multiitem, workingmemory_rewardbinary
+from spice.precoded import choice, workingmemory, workingmemory_multiitem, workingmemory_rewardbinary, workingmemory_rewardflags
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 from weinhardt2025.utils.model_evaluation import get_scores
@@ -19,8 +19,8 @@ from weinhardt2025.benchmarking import benchmarking_dezfouli2019, benchmarking_e
 # MODEL EVALUATION CONFIGURATION
 # -------------------------------------------------------------------------------
 
-study = 'eckstein2022'
-# study = 'dezfouli2019'
+# study = 'eckstein2022'
+study = 'dezfouli2019'
 # study = 'eckstein2024'
 
 agents = [
@@ -51,7 +51,7 @@ use_test = True
 # ------------------------- CONFIGURATION FILE PATHS ------------------------
 
 path_data = f'weinhardt2025/data/{study}/{study}.csv'
-path_spice = f'weinhardt2025/params/{study}/spice_{study}.pkl' if 'spice' in agents else None
+path_spice = f'weinhardt2025/params/{study}/spice_{study}_rewardflags.pkl' if 'spice' in agents else None
 path_baseline = os.path.join(f'weinhardt2025/params/{study}/', baseline_file) if 'baseline' in agents else None
 path_benchmark = os.path.join(f'weinhardt2025/params/{study}', benchmark_file) if 'benchmark' in agents else None
 path_gru = f'weinhardt2025/params/{study}/gru_{study}.pkl' if 'gru' in agents else None
@@ -93,8 +93,8 @@ elif study == 'eckstein2024':
 elif study == 'dezfouli2019':
     train_test_ratio = [3, 6, 9]
     models_benchmark = ['PhiChiBetaKappaC']
-    spice_config = workingmemory_rewardbinary.CONFIG
-    spice_model = workingmemory_rewardbinary.SpiceModel
+    spice_config = workingmemory_rewardflags.CONFIG
+    spice_model = workingmemory_rewardflags.SpiceModel
     additional_inputs = []
     setup_agent_benchmark = benchmarking_dezfouli2019.setup_agent_gql
     gql_model = benchmarking_dezfouli2019.Dezfouli2019GQL
