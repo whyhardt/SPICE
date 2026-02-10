@@ -69,6 +69,8 @@ class SpiceEstimator(BaseEstimator):
         verbose: Optional[bool] = False,
         keep_log: Optional[bool] = False,
         save_path_spice: Optional[str] = None,
+        
+        kwargs_rnn_class: Optional[dict] = {},
     ):
         """
         Args:
@@ -157,6 +159,7 @@ class SpiceEstimator(BaseEstimator):
             sindy_ensemble_size = sindy_ensemble_size,
             use_sindy=use_sindy,
             n_items=n_items,
+            **kwargs_rnn_class,
         ).to(device)
         
         sindy_params = []

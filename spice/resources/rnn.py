@@ -56,6 +56,7 @@ class BaseRNN(nn.Module):
         n_participants: int = 1,
         n_experiments: int = 1,
         n_items: int = None,
+        n_reward_features: int = None,
         embedding_size: int = 32,
         use_sindy: bool = False,
         sindy_polynomial_degree: int = 1,
@@ -64,11 +65,12 @@ class BaseRNN(nn.Module):
         **kwargs,
         ):
         super().__init__()
-        
+
         # define general network parameters
         self.spice_config = spice_config
         self.device = device
         self.n_actions = n_actions
+        self.n_reward_features = n_reward_features if n_reward_features is not None else n_actions
         self.embedding_size = embedding_size
         self.n_participants = n_participants
         self.n_experiments = n_experiments
