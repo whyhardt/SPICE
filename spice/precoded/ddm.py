@@ -186,6 +186,7 @@ class DDMRNN(BaseRNN):
 # --------------------------------------------------------------------------------------------------------------
 # AUXILIARY FUNCTIONS
 # --------------------------------------------------------------------------------------------------------------
+
 import numpy as np
 
 def simulate_ddm(
@@ -276,11 +277,16 @@ def simulate_ddm(
 
 if __name__=='__main__':
 
+    # --------------------------------------------------------------------------------------------------------------
+    # PIPELINE
+    # --------------------------------------------------------------------------------------------------------------
+    
     max_steps = 100
     t_max = 5
+    n_trials = 1000
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    drift_rates = [0.5, 1.0, 0.2]#[0.2, 0.5, 1.0]
+    drift_rates = [0.5, 1.0, 0.2, 1.0, 0.5, 0.2]#[0.2, 0.5, 1.0]
     n_participants = len(drift_rates)
     
     datasets = []
@@ -288,7 +294,7 @@ if __name__=='__main__':
     for index_rate, rate in enumerate(drift_rates):
         dataset = simulate_ddm(
             n_participants=1,
-            n_trials=1000,
+            n_trials=n_trials,
             t_max=t_max,
             max_steps=max_steps,
             drift_rate=rate,
@@ -324,8 +330,8 @@ if __name__=='__main__':
         scheduler=False,
         device=device,
 
-        sindy_weight=0.1,
-        sindy_l2_lambda=0.001,
+        sindy_weight=0.00001,
+        sindy_l2_lambda=0.0001,
         sindy_library_polynomial_degree=2,
         
         # save_path_spice='spice_ddm.pkl',
@@ -334,26 +340,31 @@ if __name__=='__main__':
     
     spice_estimator.fit(data=dataset.xs, targets=dataset.ys, data_test=dataset.xs, target_test=dataset.ys)
     
+    # --------------------------------------------------------------------------------------------------------------
+    # ANALYSIS
+    # --------------------------------------------------------------------------------------------------------------
+    
     model_rnn = spice_estimator.rnn_agent.model
     model_spice = spice_estimator.spice_agent.model
     signed_rt_rnn, state_rnn = model_rnn(dataset.xs.to(device), batch_first=True)
-    signed_rt_spice, state_spice = model_spice(dataset.xs.to(device), batch_first=True)
-    
-    model_spice.print_spice_model(participant_id=0)
-    model_spice.print_spice_model(participant_id=1)
-    model_spice.print_spice_model(participant_id=2)
+    if spice_estimator.sindy_weight > 0:
+        signed_rt_spice, state_spice = model_spice(dataset.xs.to(device), batch_first=True)
     
     import matplotlib.pyplot as plt
     
     fig, axs = plt.subplots(n_participants, 2)
     
     for index in range(n_participants):
-        axs[index, 1].hist(dataset.ys[index*1000:(index+1)*1000, 0, 0, 0].cpu().numpy(), bins=50, range=(-5.2, 5.2), alpha=0.4, label="Real", color='tab:blue')
-        axs[index, 1].hist(signed_rt_rnn[index*1000:(index+1)*1000, 0, 0, 0].detach().cpu().numpy(), bins=50, range=(-5.2, 5.2), alpha=0.4, label="RNN", color='tab:orange')
-        axs[index, 1].hist(signed_rt_spice[index*1000:(index+1)*1000, 0, 0, 0].detach().cpu().numpy(), bins=50, range=(-5.2, 5.2), alpha=0.4, label="SPICE", color='tab:green')
-        axs[index, 1].legend()
+        axs[index, 1].hist(dataset.ys[index*n_trials:(index+1)*n_trials, 0, 0, 0].cpu().numpy(), bins=50, range=(-5.2, 5.2), alpha=0.4, label="Real", color='tab:blue')
+        axs[index, 1].hist(signed_rt_rnn[index*n_trials:(index+1)*n_trials, 0, 0, 0].detach().cpu().numpy(), bins=50, range=(-5.2, 5.2), alpha=0.4, label="RNN", color='tab:orange')
         
-        axs[index, 0].plot(dataset.xs[500+1000*index, 0, :, 2].detach().cpu().numpy(), label="Real", color='tab:blue')
-        axs[index, 0].plot(state_rnn['drift'][:, 500+1000*index, 0].detach().cpu().numpy(), label="RNN", color='tab:orange')
-        axs[index, 0].plot(state_spice['drift'][:, 500+1000*index, 0].detach().cpu().numpy(), label="SPICE", color='tab:green')
+        axs[index, 0].plot(dataset.xs[500+n_trials*index, 0, :, 2].detach().cpu().numpy(), label="Real", color='tab:blue')
+        axs[index, 0].plot(state_rnn['drift'][:, 500+n_trials*index, 0].detach().cpu().numpy(), label="RNN", color='tab:orange')
+        
+        if spice_estimator.sindy_weight > 0:
+            model_spice.print_spice_model(participant_id=index)
+            axs[index, 1].hist(signed_rt_spice[index*n_trials:(index+1)*n_trials, 0, 0, 0].detach().cpu().numpy(), bins=50, range=(-5.2, 5.2), alpha=0.4, label="SPICE", color='tab:green')
+            axs[index, 0].plot(state_spice['drift'][:, 500+n_trials*index, 0].detach().cpu().numpy(), label="SPICE", color='tab:green')
+        
+    axs[0, 1].legend()
     plt.show()
