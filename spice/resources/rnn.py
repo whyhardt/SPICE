@@ -21,7 +21,7 @@ class GRUModule(nn.Module):
         W, B, I, F = inputs.shape
 
         x = inputs.reshape(W, B * I, F)        # [W, B*I, F]
-        h = state.reshape(1, B * I, 1)          # [1, B*I, 1]
+        h = state[-1].reshape(1, B * I, 1)          # [1, B*I, 1]
 
         y = self.dropout(self.linear_in(x))      # [W, B*I, 8+F]
         output, _ = self.gru_in(y, h)            # [W, B*I, 1]
@@ -115,11 +115,13 @@ class BaseRNN(nn.Module):
         # item-specific signals: [outer_ts, within_ts, batch, n_actions/n_rewards]
         spice_signals.actions = inputs[:, :, :, :self.n_actions].float()
         spice_signals.rewards = inputs[:, :, :, self.n_actions:reward_end].float()
-
+        
         # additional signals: [outer_ts, within_ts, batch, n_additional]
-        spice_signals.additional_inputs = inputs[:, :, :, reward_end:-3].float()
+        spice_signals.additional_inputs = inputs[:, :, :, reward_end:-5].float()
 
         # static identifiers
+        spice_signals.time_trial = inputs[0, :, :, -5].int()       # [inner_ts, batch]
+        spice_signals.trials = inputs[:, 0, :, -4].int()           # [outer_ts, batch]
         spice_signals.blocks = inputs[:, 0, :, -3].int()           # [outer_ts, batch]
         spice_signals.experiment_ids = inputs[0, 0, :, -2].int()   # [batch]
         spice_signals.participant_ids = inputs[0, 0, :, -1].int()  # [batch]
@@ -128,7 +130,7 @@ class BaseRNN(nn.Module):
         if prev_state is not None:
             self.set_state(prev_state)
         else:
-            self.init_state(batch_size=inputs.shape[2])
+            self.init_state(batch_size=inputs.shape[2], within_ts=inputs.shape[1])
 
         # output signals
         spice_signals.timesteps = torch.arange(inputs.shape[0], device=self.device)
@@ -143,7 +145,7 @@ class BaseRNN(nn.Module):
         
         return spice_signals
     
-    def init_state(self, batch_size=1):
+    def init_state(self, batch_size=1, within_ts=1):
         """this method initializes the hidden state
         
         Args:
@@ -153,7 +155,7 @@ class BaseRNN(nn.Module):
             Tuple[torch.Tensor]: initial hidden state
         """
         
-        state = {key: torch.full(size=[batch_size, self.n_items], fill_value=self.spice_config.memory_state[key], dtype=torch.float32, device=self.device) for key in self.spice_config.memory_state}
+        state = {key: torch.full(size=[within_ts, batch_size, self.n_items], fill_value=self.spice_config.memory_state[key], dtype=torch.float32, device=self.device) for key in self.spice_config.memory_state}
         
         self.set_state(state)
         return self.get_state()
@@ -255,7 +257,7 @@ class BaseRNN(nn.Module):
             torch.Tensor: [within_ts, batch, n_items] — full within-trial trajectory
         """
 
-        value = self.state[key_state]  # [B, I]
+        value = self.state[key_state]  # [W, B, I]
 
         # --- Process inputs into [W, B, I, features] ---
         W = 1
@@ -289,12 +291,12 @@ class BaseRNN(nn.Module):
 
         # --- Process embeddings into [W, B, I, emb] ---
         if participant_embedding is None:
-            participant_embedding = torch.zeros(value.shape[0], 0, dtype=torch.float32, device=value.device)
+            participant_embedding = torch.zeros(value.shape[1], 0, dtype=torch.float32, device=value.device)
         if experiment_embedding is None:
-            experiment_embedding = torch.zeros(value.shape[0], 0, dtype=torch.float32, device=value.device)
+            experiment_embedding = torch.zeros(value.shape[1], 0, dtype=torch.float32, device=value.device)
 
         embedding = torch.cat((experiment_embedding, participant_embedding), dim=-1)  # [B, emb]
-        embedding = embedding.unsqueeze(0).unsqueeze(2).expand(inputs.shape[0], -1, value.shape[1], -1)  # [W, B, I, emb]
+        embedding = embedding.unsqueeze(0).unsqueeze(2).expand(inputs.shape[0], -1, value.shape[-1], -1)  # [W, B, I, emb]
 
         # Replace NaN in inputs
         inputs = torch.nan_to_num(inputs, nan=0.0)
@@ -309,15 +311,19 @@ class BaseRNN(nn.Module):
             else:
                 # SINDy — operates on last within-trial step
                 if participant_index is not None:
-                    next_value = self.forward_sindy(
-                        h_current=value,
-                        key_module=key_module,
-                        participant_ids=participant_index,
-                        experiment_ids=experiment_index,
-                        controls=inputs[-1],  # [B, I, n_controls]
-                        polynomial_degree=self.sindy_polynomial_degree,
-                        ensemble_idx=0,
-                    ).squeeze(1).unsqueeze(0)  # [1, B, I]
+                    next_value = torch.zeros((inputs.shape[:-1]), device=inputs.device)
+                    next_value_t = value[-1]
+                    for timestep in range(inputs.shape[0]):
+                        next_value_t = self.forward_sindy(
+                            h_current=next_value_t.unsqueeze(0),
+                            key_module=key_module,
+                            participant_ids=participant_index,
+                            experiment_ids=experiment_index,
+                            controls=inputs[timestep].unsqueeze(0),  # [B, I, n_controls]
+                            polynomial_degree=self.sindy_polynomial_degree,
+                            ensemble_idx=0,
+                        ).squeeze(0, 2)  # [1, B, I]
+                        next_value[timestep] += next_value_t
                 else:
                     next_value = torch.zeros((1, *value.shape), device=value.device)
 
@@ -332,21 +338,21 @@ class BaseRNN(nn.Module):
         if self.training and not self.rnn_training_finished and participant_index is not None:
             action_mask_2d = action_mask[-1] if action_mask is not None and action_mask.dim() >= 3 else action_mask
             self.sindy_loss = self.sindy_loss + self.compute_sindy_loss_for_module(
-                    key_module,
-                    self.state[key_state],
-                    next_value[-1],
-                    inputs[-1],
-                    action_mask_2d,
-                    participant_index.squeeze(),
-                    experiment_index.squeeze(),
-                    self.sindy_polynomial_degree,
+                    module_name=key_module,
+                    h_current=torch.concat((self.state[key_state][-1].unsqueeze(0), next_value[:-1])),
+                    h_next_rnn=next_value,
+                    controls=inputs,
+                    action_mask=action_mask_2d,
+                    participant_ids=participant_index.squeeze(),
+                    experiment_ids=experiment_index.squeeze(),
+                    polynomial_degree=self.sindy_polynomial_degree,
                 )
 
         # clip next_value to a specific range
         next_value = torch.clip(input=next_value, min=-1e1, max=1e1)
 
         # update memory state with last within-trial value
-        state_update = next_value[-1]  # [B, I]
+        state_update = next_value  # [B, I]
         if action_mask is not None:
             mask = action_mask[-1] if action_mask.dim() >= 3 else action_mask
             self.state[key_state] = torch.where(mask == 1, state_update, self.state[key_state])
@@ -467,7 +473,7 @@ class BaseRNN(nn.Module):
         # library: [batch, actions, library_terms]
         # coeffs_sparse: [batch, ensemble, library_terms]
         # We want: [batch, ensemble, actions]
-        h_next_sindy = h_current.unsqueeze(1) + torch.einsum('bax,bex->bea', library, sindy_coeffs)
+        h_next_sindy = h_current.unsqueeze(-2) + torch.einsum('wbax,bex->wbea', library, sindy_coeffs)
 
         return h_next_sindy     
 
@@ -518,7 +524,7 @@ class BaseRNN(nn.Module):
         # Compute reconstruction loss for each ensemble member
         # h_next_rnn: [batch, n_actions] -> [batch, 1, n_actions]
         # h_next_sindy_ensemble: [batch, n_ensemble, n_actions]
-        diff = (h_next_rnn.unsqueeze(1) - h_next_sindy_ensemble) ** 2  # [batch, n_ensemble, n_actions]
+        diff = (h_next_rnn.unsqueeze(-2) - h_next_sindy_ensemble) ** 2  # [batch, n_ensemble, n_actions]
 
         # Apply action mask: [batch, n_actions] -> [batch, 1, n_actions]
         # masked_diff = diff * action_mask.unsqueeze(1)

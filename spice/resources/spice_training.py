@@ -312,7 +312,7 @@ def _run_batch_training(
     if n_steps is None:
         n_steps = xs.shape[1]
 
-    model.init_state(batch_size=len(xs))
+    model.init_state(batch_size=xs.shape[0], within_ts=xs.shape[2])
     state = model.get_state(detach=True)
 
     loss_batch = 0
@@ -339,7 +339,7 @@ def _run_batch_training(
         
         # Mask out padding (NaN values) - valid trials have non-NaN actions
         # xs_step is 4D: [B, T_out, T_in, F] — aggregate over T_in and n_actions
-        mask = ~torch.isnan(xs_step[:, :, :, :model.n_actions].sum(dim=(-1, -2)))
+        mask = ~torch.isnan(xs_step[..., :model.n_actions].sum(dim=(-1)))
         ys_pred = ys_pred[mask]
         ys_step = ys_step[mask]
         
@@ -439,34 +439,40 @@ def _run_sindy_training(
         # Initialize model state for correct batch size based on actual dataset
         # dataset.xs.shape[0] gives the number of sessions/participants in first dimension
         len_dataset = dataset.xs.shape[0]
-        n_timesteps = dataset.xs.shape[1]
-        model.init_state(batch_size=len_dataset)
+        n_trials = dataset.xs.shape[1]
+        n_timesteps = dataset.xs.shape[2]
+        
+        model.init_state(batch_size=len_dataset, within_ts=n_timesteps)
 
         # initialize state buffer with time-flattened batch-dim
-        state_buffer_current = {state: torch.zeros((n_timesteps*len_dataset, model.n_items), dtype=torch.float32, device=model.device) for state in model.get_state()}
-        state_buffer_next = {state: torch.zeros((n_timesteps*len_dataset, model.n_items), dtype=torch.float32, device=model.device) for state in model.get_state()}
-
+        state_buffer_current = {state: torch.zeros((n_timesteps, n_trials*len_dataset, model.n_items), dtype=torch.float32, device=model.device) for state in model.get_state()}
+        state_buffer_next = {state: torch.zeros((n_timesteps, n_trials*len_dataset, model.n_items), dtype=torch.float32, device=model.device) for state in model.get_state()}
+        
         with torch.no_grad():
-            for t in range(n_timesteps):
+            for t in range(n_trials):
                 # save current state (input to forward-pass) in state buffer
-                for state in state_buffer_next:
-                    state_buffer_current[state][t*len_dataset:(t+1)*len_dataset] = model.get_state()[state]
-
+                for state in model.get_state():
+                    state_buffer_current[state][0, t*len_dataset:(t+1)*len_dataset] = model.get_state()[state][-1]
+                
                 # compute updated state
                 updated_state = model(dataset.xs[:, t][:, None].to(model.device), model.get_state(), batch_first=True)[1]
                 
                 # save updated state (training target) in state buffer
-                for state in state_buffer_next:
-                    state_buffer_next[state][t*len_dataset:(t+1)*len_dataset] = updated_state[state]
+                for state in model.get_state():
+                    state_buffer_current[state][1:, t*len_dataset:(t+1)*len_dataset] = updated_state[state][:-1]
+                    state_buffer_next[state][:, t*len_dataset:(t+1)*len_dataset] = updated_state[state]
         
         # reshape the dataset to be aligned with state buffer
         # dataset.xs: [sessions, outer_ts, within_ts, features] (4D)
         within_ts = dataset.xs.shape[2]
-        n_features_x = dataset.xs.shape[3]
-        n_features_y = dataset.ys.shape[3]
-        xs = dataset.xs.transpose(0, 1).reshape(n_timesteps*len_dataset, 1, within_ts, n_features_x)
-        ys = dataset.ys.transpose(0, 1).reshape(n_timesteps*len_dataset, 1, within_ts, n_features_y)
+        n_features_x = dataset.xs.shape[-1]
+        n_features_y = dataset.ys.shape[-1]
+        xs = dataset.xs.transpose(0, 1).reshape(within_ts*n_trials*len_dataset, 1, 1, n_features_x)
+        ys = dataset.ys.transpose(0, 1).reshape(within_ts*n_trials*len_dataset, 1, 1, n_features_y)
         dataset = SpiceDataset(xs, ys)
+        for state in model.get_state():
+            state_buffer_current[state] = state_buffer_current[state].permute(1, 0, 2).reshape(1, within_ts*n_trials*len_dataset, model.n_items)
+            state_buffer_next[state] = state_buffer_next[state].permute(1, 0, 2).reshape(1, within_ts*n_trials*len_dataset, model.n_items)
         
         return state_buffer_current, state_buffer_next, dataset
     
@@ -501,8 +507,8 @@ def _run_sindy_training(
             batched_nan_mask = nan_mask[idx:idx+batch_size].to(model.device)
             batched_input_state_buffer, batched_target_state_buffer = {}, {}
             for state in input_state_buffer_train:
-                batched_input_state_buffer[state] = input_state_buffer_train[state][idx:idx+batch_size][batched_nan_mask]
-                batched_target_state_buffer[state] = target_state_buffer_train[state][idx:idx+batch_size][batched_nan_mask]
+                batched_input_state_buffer[state] = input_state_buffer_train[state][0, idx:idx+batch_size][batched_nan_mask].unsqueeze(0)
+                batched_target_state_buffer[state] = target_state_buffer_train[state][0, idx:idx+batch_size][batched_nan_mask].unsqueeze(0)
             
             # get sindy-based state updates from original rnn states
             _, state_pred = model(xs[idx:idx+batch_size, :1].to(model.device)[batched_nan_mask], batched_input_state_buffer, batch_first=True)
@@ -680,7 +686,7 @@ def _run_joint_training(
                     if xs.device != model.device:
                         xs = xs.to(model.device)
                         ys = ys.to(model.device)
-                    _, _, loss_test_rnn = _run_batch_training(model=model, xs=xs, ys=ys)
+                    _, _, loss_test_rnn = _run_batch_training(model=model, xs=xs, ys=ys, loss_fn=loss_fn)
 
                 if sindy_weight > 0:
                     model = model.eval(use_sindy=True)
@@ -689,7 +695,7 @@ def _run_joint_training(
                         if xs.device != model.device:
                             xs = xs.to(model.device)
                             ys = ys.to(model.device)
-                        _, _, loss_test_sindy = _run_batch_training(model=model, xs=xs, ys=ys)
+                        _, _, loss_test_sindy = _run_batch_training(model=model, xs=xs, ys=ys, loss_fn=loss_fn)
                 
                 model = model.train()
 
@@ -976,7 +982,7 @@ def fit_spice(
         print(status_lines)
     
     # Store original learning rate for Stage 3
-    original_lr = optimizer.param_groups[1]['lr']
+    original_lr = optimizer.param_groups[0]['lr']
     sindy_finetuned = False
     if epochs_confidence is None:
         epochs_confidence = epochs

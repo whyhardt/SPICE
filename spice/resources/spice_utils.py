@@ -165,6 +165,8 @@ class SpiceSignals:
         self.blocks = None
         self.actions = None
         self.rewards = None
+        self.trials = None
+        self.time_trial = None
         self.additional_inputs = None
         self.logits = None
         self.timesteps = None
