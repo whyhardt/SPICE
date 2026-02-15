@@ -63,13 +63,13 @@ if __name__=='__main__':
     # args.data = "weinhardt2025/data/eckstein2024/eckstein2024.csv"
     # args.test_sessions = "1,3"
     
-    args.results = False
-    args.epochs = 10
-    args.epochs_confidence = 0
-    args.epochs_finetuning = 10
-    args.model = "weinhardt2025/params/dezfouli2019/spice_dezfouli2019.pkl"
-    args.data = "weinhardt2025/data/dezfouli2019/dezfouli2019.csv"
-    args.test_sessions = "3,6,9"
+    # args.results = False
+    # args.epochs = 10
+    # args.epochs_confidence = 0
+    # args.epochs_finetuning = 10
+    # args.model = "weinhardt2025/params/dezfouli2019/spice_dezfouli2019.pkl"
+    # args.data = "weinhardt2025/data/dezfouli2019/dezfouli2019.csv"
+    # args.test_sessions = "3,6,9"
     
     # args.data="weinhardt2025/data/sugawara2021/sugawara2021.csv" 
     # args.model="weinhardt2025/params/sugawara2021/spice_sugawara2021.pkl" 
