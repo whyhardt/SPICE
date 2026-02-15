@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 from spice import SpiceEstimator, csv_to_dataset, split_data_along_sessiondim, split_data_along_timedim, plot_session, Agent
-from spice.precoded import workingmemory, workingmemory_multiitem, workingmemory_rewardbinary, workingmemory_rewardflags, choice
+from spice.precoded import workingmemory, workingmemory_multiitem, workingmemory_rewardbinary, workingmemory_rewardflags, choice, workingmemory_rewardtransform
 from spice.resources.spice_training import _get_terminal_width
 
 from benchmarking.benchmarking_qlearning import QLearning
@@ -127,7 +127,7 @@ if __name__=='__main__':
         if ((dataset.xs[..., n_actions:n_actions*2].nan_to_num(0) == 1).int() + (dataset.xs[..., n_actions:n_actions*2].nan_to_num(0) == 0).int()).sum() == dataset.xs.shape[0]*dataset.xs.shape[1]*n_actions:
             # binary rewards
             # spice_model = workingmemory_rewardbinary
-            spice_model = workingmemory_rewardflags
+            spice_model = workingmemory_rewardtransform
         else:
             spice_model = workingmemory
     else:
