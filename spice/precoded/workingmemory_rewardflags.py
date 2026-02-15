@@ -91,13 +91,13 @@ class SpiceModel(BaseRNN):
         rewards_chosen_fail = (spice_signals.rewards.nan_to_num(0).sum(dim=-1, keepdim=True).repeat(1, 1, 1, self.n_actions) == 0).float()
         choice_chosen = spice_signals.actions
         choice_not_chosen = 1-spice_signals.actions
-                
+        
         # perform time-variant computations
-        for timestep in spice_signals.timesteps:
+        for trial in spice_signals.trials:
             
-            actions_t = spice_signals.actions[timestep, 0]
-            rewards_t = spice_signals.rewards[timestep, 0]
-
+            actions_t = spice_signals.actions[trial]
+            rewards_t = spice_signals.rewards[trial]
+            
             # REWARD VALUE UPDATES
             self.call_module(
                 key_module='value_reward_chosen',
@@ -105,8 +105,8 @@ class SpiceModel(BaseRNN):
                 action_mask=actions_t,
                 inputs=(
                     # rewards_t,
-                    rewards_chosen_success[timestep, 0],
-                    rewards_chosen_fail[timestep, 0],
+                    rewards_chosen_success[trial],
+                    rewards_chosen_fail[trial],
                     self.state['buffer_reward_1'],  # Recent reward history
                     self.state['buffer_reward_2'],
                     self.state['buffer_reward_3'],
@@ -120,8 +120,8 @@ class SpiceModel(BaseRNN):
                 key_state='value_reward',
                 action_mask=1-actions_t,
                 inputs=(
-                    rewards_chosen_success[timestep, 0],
-                    rewards_chosen_fail[timestep, 0],
+                    rewards_chosen_success[trial],
+                    rewards_chosen_fail[trial],
                     self.state['buffer_reward_1'],  # Recent reward history
                     self.state['buffer_reward_2'],
                     self.state['buffer_reward_3'],
@@ -136,8 +136,8 @@ class SpiceModel(BaseRNN):
                 key_state='value_choice',
                 action_mask=None,
                 inputs=(
-                    choice_chosen[timestep, 0],
-                    choice_not_chosen[timestep, 0],
+                    choice_chosen[trial],
+                    choice_not_chosen[trial],
                     self.state['buffer_choice_1'],  # Recent choice history
                     self.state['buffer_choice_2'],
                     self.state['buffer_choice_3'],
@@ -157,7 +157,7 @@ class SpiceModel(BaseRNN):
             self.state['buffer_choice_1'] = actions_t
             
             # compute logits for current timestep
-            spice_signals.logits[timestep] = self.state['value_reward'] + self.state['value_choice']
+            spice_signals.logits[trial] = self.state['value_reward'] + self.state['value_choice']
             # spice_signals.logits[timestep] = self.call_module(
             #     key_module='logits',
             #     key_state='logits',

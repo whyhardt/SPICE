@@ -56,7 +56,7 @@ class SpiceModel(BaseRNN):
         # First, we have to initialize all the inputs and outputs (i.e. logits)
         spice_signals = self.init_forward_pass(inputs, prev_state, batch_first)
                 
-        for timestep in spice_signals.timesteps:
+        for timestep in spice_signals.trials:
             
             # Let's compute the learning rate dynamically
             # Now we have to use a sigmoid activation function on the output learning rate to constrain it to a value range of (0, 1)

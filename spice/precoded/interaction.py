@@ -75,7 +75,7 @@ class SpiceModel(BaseRNN):
         # beta_reward = self.betas['value_reward'](participant_embedding)
         # beta_choice = self.betas['value_choice'](participant_embedding)
         
-        for timestep in spice_signals.timesteps: #, rewards_not_chosen
+        for timestep in spice_signals.trials: #, rewards_not_chosen
             
             # updates for value_reward
             self.call_module(

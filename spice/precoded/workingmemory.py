@@ -86,7 +86,7 @@ class SpiceModel(BaseRNN):
         # rewards_chosen = spice_signals.rewards.nan_to_num(0).sum(dim=-1, keepdim=True).repeat(1, 1, self.n_actions)
         
         # perform time-variant computations
-        for timestep in spice_signals.timesteps:
+        for timestep in spice_signals.trials:
             
             actions_t = spice_signals.actions[timestep, 0]   # [B, n_actions]
             rewards_t = spice_signals.rewards[timestep, 0]   # [B, n_actions]

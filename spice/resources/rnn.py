@@ -125,7 +125,7 @@ class BaseRNN(nn.Module):
         spice_signals.blocks = inputs[:, 0, :, -3].int()           # [outer_ts, batch]
         spice_signals.experiment_ids = inputs[0, 0, :, -2].int()   # [batch]
         spice_signals.participant_ids = inputs[0, 0, :, -1].int()  # [batch]
-
+        
         # use previous state or initialize state if not given
         if prev_state is not None:
             self.set_state(prev_state)
@@ -133,15 +133,15 @@ class BaseRNN(nn.Module):
             self.init_state(batch_size=inputs.shape[2], within_ts=inputs.shape[1])
 
         # output signals
-        spice_signals.timesteps = torch.arange(inputs.shape[0], device=self.device)
-        spice_signals.logits = torch.zeros((inputs.shape[0], inputs.shape[2], self.n_actions), device=self.device)
+        spice_signals.trials = torch.arange(inputs.shape[0], device=self.device)
+        spice_signals.logits = torch.zeros((inputs.shape[0], 1, inputs.shape[2], self.n_actions), device=self.device)
 
         return spice_signals
 
     def post_forward_pass(self, spice_signals: SpiceSignals, batch_first: bool) -> SpiceSignals:
         
         if batch_first:
-            spice_signals.logits = spice_signals.logits.permute(1, 0, 2)
+            spice_signals.logits = spice_signals.logits.permute(2, 0, 1, 3)
         
         return spice_signals
     

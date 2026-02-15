@@ -446,10 +446,10 @@ def split_data_along_sessiondim(dataset: SpiceDataset, list_test_sessions: List[
         xs, ys = dataset.xs.cpu(), dataset.ys.cpu()
         
         # get participant ids
-        participants_ids = xs[:, 0, -1].unique()
+        participants_ids = xs[:, 0, 0, -1].unique()
         
         # get sessions ids
-        session_ids = xs[:, 0, -3].unique()
+        session_ids = xs[:, 0, 0, -3].unique()
         
         # set training sessions
         if list_test_sessions:
@@ -472,7 +472,7 @@ def split_data_along_sessiondim(dataset: SpiceDataset, list_test_sessions: List[
 
         for pid in participants_ids:
             for sid in session_ids:
-                mask_ids = torch.logical_and(xs[:, 0, -3] == sid, xs[:, 0, -1] == pid)
+                mask_ids = torch.logical_and(xs[:, 00, 0, -3] == sid, xs[:, 0, 0, -1] == pid)
                 if mask_ids.max():
                     if sid in session_ids_train:
                         train_xs_list.append(xs[mask_ids])

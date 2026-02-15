@@ -104,7 +104,7 @@ class SpiceModel(BaseRNN):
         participant_embedding = self.participant_embedding(spice_signals.participant_ids)
 
         # perform time-variant computations
-        for timestep in spice_signals.timesteps:
+        for timestep in spice_signals.trials:
 
             actions_t = spice_signals.actions[timestep, 0]   # [B, n_actions]
             rewards_t = spice_signals.rewards[timestep, 0]   # [B, n_actions]

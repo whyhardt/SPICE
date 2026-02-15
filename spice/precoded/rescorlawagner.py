@@ -40,7 +40,7 @@ class SpiceModel(BaseRNN):
         
         participant_embedding = self.participant_embedding(spice_signals.participant_ids)
         
-        for timestep in spice_signals.timesteps:
+        for timestep in spice_signals.trials:
 
             # Let's perform the belief update for the reward-based value of the chosen option
             # since all values are given to the rnn-module (independent of each other), the chosen value is selected by setting the action to the chosen one

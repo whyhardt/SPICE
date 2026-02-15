@@ -53,7 +53,7 @@ class SpiceModel(BaseRNN):
         participant_embedding = self.participant_embedding(spice_signals.participant_ids)
         experiment_embedding = self.experiment_embedding(spice_signals.experiment_ids)
         
-        for timestep in spice_signals.timesteps:
+        for timestep in spice_signals.trials:
             
             # updates for value_reward
             self.call_module(

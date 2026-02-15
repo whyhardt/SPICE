@@ -76,7 +76,7 @@ class QLearning(BaseRNN):
         chosen_reward_success = spice_signals.rewards.sum(dim=-1, keepdim=True).repeat(1, 1, self.n_actions) == 1
         chosen_reward_fail = spice_signals.rewards.sum(dim=-1, keepdim=True).repeat(1, 1, self.n_actions) != 1
         
-        for timestep in spice_signals.timesteps:
+        for timestep in spice_signals.trials:
             
             # perform reward update for chosen action
             self.call_module(

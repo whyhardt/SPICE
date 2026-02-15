@@ -71,7 +71,7 @@ class SpiceModel(BaseRNN):
         # Here we compute now the participant embeddings for each entry in the batch
         participant_embedding = self.participant_embedding(spice_signals.participant_ids)
         
-        for timestep in spice_signals.timesteps:
+        for timestep in spice_signals.trials:
             
             # Let's perform the belief update for the reward-based value of the chosen option            
             self.call_module(
