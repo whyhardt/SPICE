@@ -64,6 +64,7 @@ if __name__=='__main__':
     # args.test_sessions = "1,3"
     
     args.results = True
+    args.sindy_weight = 0.1
     args.epochs = 1000
     args.epochs_warmup = 500
     args.epochs_confidence = 0

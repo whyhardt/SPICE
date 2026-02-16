@@ -19,8 +19,8 @@ from weinhardt2025.benchmarking import benchmarking_dezfouli2019, benchmarking_e
 # MODEL EVALUATION CONFIGURATION
 # -------------------------------------------------------------------------------
 
-study = 'eckstein2022'
-# study = 'dezfouli2019'
+# study = 'eckstein2022'
+study = 'dezfouli2019'
 # study = 'eckstein2024'
 
 agents = [
@@ -30,7 +30,7 @@ agents = [
     'spice',
 ]
 
-use_test = False
+use_test = True
 
 
 
