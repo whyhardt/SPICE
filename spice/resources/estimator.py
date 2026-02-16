@@ -69,6 +69,8 @@ class SpiceEstimator(BaseEstimator):
         verbose: Optional[bool] = False,
         keep_log: Optional[bool] = False,
         save_path_spice: Optional[str] = None,
+        
+        kwargs_rnn_class: Optional[dict] = {},
     ):
         """
         Args:
@@ -157,6 +159,7 @@ class SpiceEstimator(BaseEstimator):
             sindy_ensemble_size = sindy_ensemble_size,
             use_sindy=use_sindy,
             n_items=n_items,
+            **kwargs_rnn_class,
         ).to(device)
         
         sindy_params = []
@@ -174,7 +177,7 @@ class SpiceEstimator(BaseEstimator):
         #   rescaling brings the gradient back to normal size -> desired updates;
         self.rnn_optimizer = torch.optim.AdamW(
             [
-            {'params': sindy_params, 'weight_decay': 0, 'lr': learning_rate},#/sindy_weight * len(self.rnn_model.submodules_rnn) if sindy_weight > 0 else learning_rate},
+            {'params': sindy_params, 'weight_decay': 0, 'lr': 0.01},#/sindy_weight * len(self.rnn_model.submodules_rnn) if sindy_weight > 0 else learning_rate},
             {'params': rnn_params, 'weight_decay': l2_rnn, 'lr': learning_rate},
             ], 
             )
@@ -249,7 +252,7 @@ class SpiceEstimator(BaseEstimator):
             )
         rnn_agent_model.sindy_ensemble_size = rnn_model.sindy_ensemble_size  # Match trained ensemble size
         for key_module in rnn_agent_model.submodules_rnn:
-            rnn_agent_model.setup_sindy_coefficients(key_module=key_module)
+            rnn_agent_model.setup_sindy_coefficients(key_module=key_module, polynomial_degree=rnn_agent_model.sindy_specs[key_module]['polynomial_degree'])
         rnn_agent_model.load_state_dict(state_dict)
         self.rnn_agent = Agent(rnn_agent_model, self.n_actions, device=self.device, use_sindy=False)
 
@@ -265,7 +268,7 @@ class SpiceEstimator(BaseEstimator):
             )
         spice_agent_model.sindy_ensemble_size = rnn_model.sindy_ensemble_size  # Match trained ensemble size
         for key_module in spice_agent_model.submodules_rnn:
-            spice_agent_model.setup_sindy_coefficients(key_module=key_module)
+            spice_agent_model.setup_sindy_coefficients(key_module=key_module, polynomial_degree=rnn_agent_model.sindy_specs[key_module]['polynomial_degree'])
         spice_agent_model.load_state_dict(state_dict)
         spice_agent_model.sindy_coefficients_presence = rnn_model.sindy_coefficients_presence
         self.spice_agent = Agent(spice_agent_model, self.n_actions, device=self.device, use_sindy=True)
@@ -353,7 +356,7 @@ class SpiceEstimator(BaseEstimator):
         
         self.rnn_model.sindy_ensemble_size = loaded_parameters['model']['sindy_coefficients.'+next(iter(self.rnn_model.submodules_rnn))].shape[1]
         for module in self.get_modules():
-            self.rnn_model.setup_sindy_coefficients(key_module=module)
+            self.rnn_model.setup_sindy_coefficients(key_module=module, polynomial_degree=self.rnn_model.sindy_specs[module]['polynomial_degree'])
         self.rnn_model.sindy_coefficients_presence = loaded_parameters['sindy_coefficients_presence']
         
         self.rnn_model.load_state_dict(loaded_parameters['model'])

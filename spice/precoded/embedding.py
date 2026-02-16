@@ -53,8 +53,8 @@ class SpiceModel(BaseRNN):
         # and here we specify the general module architecture
         # add to the input_size the embedding_size as well because we are going to pass the participant-embedding to the RNN-modules
         # set up the submodules
-        self.submodules_rnn['value_reward_chosen'] = self.setup_module(input_size=1+self.embedding_size)
-        self.submodules_rnn['value_reward_not_chosen'] = self.setup_module(input_size=0+self.embedding_size)
+        self.setup_module(key_module='value_reward_chosen', input_size=1+self.embedding_size)
+        self.setup_module(key_module='value_reward_not_chosen', input_size=0+self.embedding_size)
         
     def forward(self, inputs, prev_state=None, batch_first=False):
         """Forward pass of the RNN
@@ -71,25 +71,25 @@ class SpiceModel(BaseRNN):
         # Here we compute now the participant embeddings for each entry in the batch
         participant_embedding = self.participant_embedding(spice_signals.participant_ids)
         
-        for timestep in spice_signals.timesteps:
+        for timestep in spice_signals.trials:
             
             # Let's perform the belief update for the reward-based value of the chosen option            
             self.call_module(
                 key_module='value_reward_chosen',
                 key_state='value_reward',
-                action_mask=spice_signals.actions[timestep],
-                inputs=spice_signals.rewards[timestep],
-                # add participant-embedding (for RNN-modules) and participant-index (later for SINDy-modules) 
+                action_mask=spice_signals.actions[timestep, 0],
+                inputs=spice_signals.rewards[timestep, 0],
+                # add participant-embedding (for RNN-modules) and participant-index (later for SINDy-modules)
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
                 activation_rnn=torch.nn.functional.sigmoid,
                 )
-            
+
             # Update of the not-chosen reward-based value
             self.call_module(
                 key_module='value_reward_not_chosen',
                 key_state='value_reward',
-                action_mask=1-spice_signals.actions[timestep],
+                action_mask=1-spice_signals.actions[timestep, 0],
                 inputs=None,
                 participant_embedding=participant_embedding,
                 participant_index=spice_signals.participant_ids,

@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 from spice import SpiceEstimator, csv_to_dataset, split_data_along_sessiondim, split_data_along_timedim, plot_session, Agent
-from spice.precoded import workingmemory, workingmemory_multiitem, workingmemory_rewardbinary, choice
+from spice.precoded import workingmemory, workingmemory_multiitem, workingmemory_rewardbinary, workingmemory_rewardflags, choice, workingmemory_rewardtransform
 from spice.resources.spice_training import _get_terminal_width
 
 from benchmarking.benchmarking_qlearning import QLearning
@@ -25,8 +25,8 @@ if __name__=='__main__':
     
     # RNN training parameters
     parser.add_argument('--epochs', type=int, default=4000, help='Number of training epochs')
-    parser.add_argument('--epochs_confidence', type=int, default=None, help='Number of training epochs for stage 2 (confidence pruning)')
-    parser.add_argument('--epochs_finetuning', type=int, default=None, help='Number of training epochs for stage 3 (SINDy-only finetuning)')
+    parser.add_argument('--epochs_confidence', type=int, default=0, help='Number of training epochs for stage 2 (confidence pruning)')
+    parser.add_argument('--epochs_finetuning', type=int, default=0, help='Number of training epochs for stage 3 (SINDy-only finetuning)')
     parser.add_argument('--epochs_warmup', type=int, default=None, help='Number of training epochs for warmup (exp increase of sindy-weight; no pruning)')
     parser.add_argument('--lr', type=float, default=0.01, help='Learning rate')
     parser.add_argument('--rnn_l2_lambda', type=float, default=0., help='L2 Reg of the RNN parameters')
@@ -63,11 +63,14 @@ if __name__=='__main__':
     # args.data = "weinhardt2025/data/eckstein2024/eckstein2024.csv"
     # args.test_sessions = "1,3"
     
-    # args.results = False
-    # args.epochs = 10
-    # args.model = "weinhardt2025/params/dezfouli2019/spice_dezfouli2019.pkl"
-    # args.data = "weinhardt2025/data/dezfouli2019/dezfouli2019.csv"
-    # args.test_sessions = "3,6,9"
+    args.results = True
+    args.epochs = 1000
+    args.epochs_warmup = 500
+    args.epochs_confidence = 0
+    args.epochs_finetuning = 4000
+    args.model = "weinhardt2025/params/dezfouli2019/spice_dezfouli2019.pkl"
+    args.data = "weinhardt2025/data/dezfouli2019/dezfouli2019.csv"
+    args.test_sessions = "3,6,9"
     
     # args.data="weinhardt2025/data/sugawara2021/sugawara2021.csv" 
     # args.model="weinhardt2025/params/sugawara2021/spice_sugawara2021.pkl" 
@@ -80,10 +83,11 @@ if __name__=='__main__':
     # args.additional_columns = None,
     # args.test_sessions = "4,8,12"
     
-    # args.epochs = 10
+    # args.epochs = 1
     # args.results = True
+    # args.sindy_weight = 0
     # args.data = "weinhardt2025/data/synthetic/synthetic_256p_0_0.csv"
-    # args.model = args.data.replace("data", "params").replace("/synthetic_", "/spice_synthetic_").replace(".csv", "_test.pkl")
+    # args.model = args.data.replace("data", "params").replace("/synthetic_", "/spice_synthetic_test_").replace(".csv", ".pkl")
     
     example_participant = 2
     plot_coef_dist = False
@@ -122,12 +126,14 @@ if __name__=='__main__':
     
     if n_items == n_actions:
         if ((dataset.xs[..., n_actions:n_actions*2].nan_to_num(0) == 1).int() + (dataset.xs[..., n_actions:n_actions*2].nan_to_num(0) == 0).int()).sum() == dataset.xs.shape[0]*dataset.xs.shape[1]*n_actions:
+            # binary rewards
             spice_model = workingmemory_rewardbinary
         else:
-            spice_model = workingmemory_rewardbinary
+            spice_model = workingmemory
     else:
         spice_model = workingmemory_multiitem
     
+    spice_model = workingmemory_rewardtransform
     # spice_model = choice
     
     class_rnn = spice_model.SpiceModel
@@ -192,7 +198,7 @@ if __name__=='__main__':
             'rnn': estimator.rnn_agent,
             }
         
-        mask_participant = dataset.xs[:, 0, -1] == example_participant
+        mask_participant = dataset.xs[:, 0, 0, -1] == example_participant
         
         if args.sindy_weight > 0:
             
@@ -215,12 +221,12 @@ if __name__=='__main__':
                 n_actions=2,
                 n_participants=n_participants,
                 n_experiments=n_experiments,
-                beta_reward=dataset.xs[mask_participant][0, 0, n_actions*2+0].item(),
-                beta_choice=dataset.xs[mask_participant][0, 0, n_actions*2+1].item(),
-                alpha_reward=dataset.xs[mask_participant][0, 0, n_actions*2+2].item(),
-                alpha_penalty=dataset.xs[mask_participant][0, 0, n_actions*2+3].item(),
-                alpha_choice=dataset.xs[mask_participant][0, 0, n_actions*2+4].item(),
-                forget_rate=dataset.xs[mask_participant][0, 0, n_actions*2+5].item(),
+                beta_reward=dataset.xs[mask_participant][0, 0, 0, n_actions*2+0].item(),
+                beta_choice=dataset.xs[mask_participant][0, 0, 0, n_actions*2+1].item(),
+                alpha_reward=dataset.xs[mask_participant][0, 0, 0, n_actions*2+2].item(),
+                alpha_penalty=dataset.xs[mask_participant][0, 0, 0, n_actions*2+3].item(),
+                alpha_choice=dataset.xs[mask_participant][0, 0, 0, n_actions*2+4].item(),
+                forget_rate=dataset.xs[mask_participant][0, 0, 0, n_actions*2+5].item(),
             ), use_sindy=True, deterministic=True)
 
         fig, axs = plot_session(

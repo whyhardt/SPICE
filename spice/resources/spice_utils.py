@@ -13,14 +13,14 @@ class SpiceDataset(torch.utils.data.Dataset):
         stride: int = 1,
         device=None,
         ):
-        """Initializes the dataset for training the RNN. Holds information about the previous actions and rewards as well as the next action.
-        Actions can be either one-hot encoded or indexes.
+        """Initializes the dataset for training the RNN.
 
         Args:
-            xs (torch.Tensor): Actions and rewards in the shape (n_sessions, n_timesteps, n_features)
-            ys (torch.Tensor): Next action
-            batch_size (Optional[int], optional): Sets batch size if desired else uses n_samples as batch size.
-            device (torch.Device, optional): Torch device. If None, uses cuda if available else cpu.
+            xs (torch.Tensor): Input features. Accepts 3D (sessions, outer_ts, features) which is auto-promoted
+                to 4D (sessions, outer_ts, within_trial_ts, features) with within_trial_ts=1.
+                Also accepts 4D directly for within-trial sequence data (e.g. DDM).
+            ys (torch.Tensor): Targets. Same shape conventions as xs.
+            device (torch.Device, optional): Torch device. If None, uses cpu.
         """
         
         if device is None:
@@ -32,17 +32,21 @@ class SpiceDataset(torch.utils.data.Dataset):
         if not isinstance(ys, torch.Tensor):
             ys = torch.tensor(ys, dtype=torch.float32)
         
-        # check dimensions of xs and ys
+        # check dimensions of xs and ys — target shape: (sessions, outer_ts, within_ts, features)
         if len(xs.shape) == 2:
             xs = xs.unsqueeze(0)
         if len(ys.shape) == 2:
             ys = ys.unsqueeze(0)
+        if len(xs.shape) == 3:
+            xs = xs.unsqueeze(2)  # add within_trial_timesteps=1
+        if len(ys.shape) == 3:
+            ys = ys.unsqueeze(2)
             
         if normalize_features is not None:
             if isinstance(normalize_features, int):
                 normalize_features = tuple(normalize_features)
             for feature in normalize_features:
-                xs[:, :, feature] = self.normalize(xs[:, :, feature])
+                xs[:, :, :, feature] = self.normalize(xs[:, :, :, feature])
         
         # normalize data
         # x_std = xs.std(dim=(0, 1))
@@ -67,18 +71,14 @@ class SpiceDataset(torch.utils.data.Dataset):
         
     def set_sequences(self, xs, ys):
         # sets sequences of length sequence_length with specified stride from the dataset
+        # slices along dim=1 (outer_ts / block_timesteps)
         xs_sequences = []
         ys_sequences = []
         for i in range(0, max(1, xs.shape[1]-self.sequence_length), self.stride):
-            xs_sequences.append(xs[:, i:i+self.sequence_length, :])
-            ys_sequences.append(ys[:, i:i+self.sequence_length, :])
+            xs_sequences.append(xs[:, i:i+self.sequence_length])
+            ys_sequences.append(ys[:, i:i+self.sequence_length])
         xs = torch.cat(xs_sequences, dim=0)
         ys = torch.cat(ys_sequences, dim=0)
-        
-        if len(xs.shape) == 2:
-            xs = xs.unsqueeze(1)
-            ys = ys.unsqueeze(1)
-            
         return xs, ys
     
     def __len__(self):
@@ -165,8 +165,10 @@ class SpiceSignals:
         self.blocks = None
         self.actions = None
         self.rewards = None
+        self.trials = None
+        self.time_trial = None
         self.additional_inputs = None
         self.logits = None
-        self.timesteps = None
+        self.trials = None
         self.sindy_loss_timesteps = None
         self.mask_valid_trials = None

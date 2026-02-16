@@ -24,7 +24,7 @@ class SpiceModel(BaseRNN):
         self.participant_embedding = self.setup_embedding(num_embeddings=self.n_participants, embedding_size=self.embedding_size, dropout=0.1)
         
         # set up the submodules
-        self.submodules_rnn['value_reward_chosen'] = self.setup_module(input_size=1+self.embedding_size)
+        self.setup_module(key_module='value_reward_chosen', input_size=1+self.embedding_size)
         
     def forward(self, inputs, prev_state=None, batch_first=False):
         """Forward pass of the RNN
@@ -40,7 +40,7 @@ class SpiceModel(BaseRNN):
         
         participant_embedding = self.participant_embedding(spice_signals.participant_ids)
         
-        for timestep in spice_signals.timesteps:
+        for timestep in spice_signals.trials:
 
             # Let's perform the belief update for the reward-based value of the chosen option
             # since all values are given to the rnn-module (independent of each other), the chosen value is selected by setting the action to the chosen one
@@ -48,8 +48,8 @@ class SpiceModel(BaseRNN):
             self.call_module(
                 key_module='value_reward_chosen',
                 key_state='value_reward',
-                action_mask=spice_signals.actions[timestep],
-                inputs=spice_signals.rewards[timestep],
+                action_mask=spice_signals.actions[timestep, 0],
+                inputs=spice_signals.rewards[timestep, 0],
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
                 )

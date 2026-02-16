@@ -6,7 +6,7 @@ Based on SINDy-SHRED approach: sparse coefficients learned during RNN training.
 import torch
 import torch.nn as nn
 import numpy as np
-from typing import List, Tuple, Dict
+from typing import List, Tuple, Iterable
 from itertools import combinations_with_replacement
 
 
@@ -120,8 +120,8 @@ def compute_polynomial_library(
     x: torch.Tensor,
     controls: torch.Tensor,
     degree: int,
-    include_bias: bool = True,
-    interaction_only: bool = False,
+    feature_names: Iterable[str],
+    library: Iterable[str],
 ) -> torch.Tensor:
     """
     Compute polynomial library features in PyTorch (fully differentiable).
@@ -136,56 +136,67 @@ def compute_polynomial_library(
     Returns:
         Library tensor [batch, n_actions, n_library_terms] or [batch, time, n_actions, n_library_terms]
     """
-    # Handle different input shapes
-    if x.dim() == 2:  # [batch, n_actions]
-        x = x.unsqueeze(1)  # [batch, 1, n_actions]
-        controls = controls.unsqueeze(1) if controls.dim() == 3 else controls
-        squeeze_time = True
-    else:
-        squeeze_time = False
-
-    # Combine state and controls
-    if controls.dim() == 3:  # [batch, n_actions, n_controls]
-        controls = controls.unsqueeze(1)  # [batch, 1, n_actions, n_controls]
 
     # x: [batch, time, n_actions]
     # controls: [batch, time, n_actions, n_controls]
 
     x_expanded = x.unsqueeze(-1)  # [batch, time, n_actions, 1]
-    features = torch.cat([x_expanded, controls], dim=-1)  # [batch, time, n_actions, 1+n_controls]
+    if len(feature_names) == controls.shape[-1]:
+        features = controls
+    elif len(feature_names) > controls.shape[-1]:
+        if len(feature_names) == controls.shape[-1]+1:
+            features = torch.cat([x_expanded, controls], dim=-1)  # [batch, time, n_actions, 1+n_controls]
+        else:
+            raise ValueError(f"Size of feature names ({len(feature_names)}) must be size of control features ({controls.shape[-1]}) + 1")
+    else:
+        raise ValueError(f"Size of feature names ({len(feature_names)}) must be at least of size of control features ({controls.shape[-1]})")
+    library_values = torch.zeros((*features.shape[:-1], len(library)), device=x.device)
+    
+    # compute library values from x and controls
+    if degree > 0:
+        # loop through the whole library to compute each term value
+        for index_term, term in enumerate(library):
+            if term == '1':
+                value = 1
+            else:
+                # first split into single product terms
+                terms_products = term.split('*')
+                value = 1
+                # loop through each product term and aggregate values
+                for index_tp, tp in enumerate(terms_products):
+                    # find correct feature to aggregate
+                    tp_pow = tp.split('^')
+                    index_feature = feature_names.index(tp_pow[0])
+                    exp = float(tp_pow[-1]) if len(tp_pow) > 1 else 1
+                    value *= torch.pow(features[..., index_feature], exp)
+            library_values[..., index_term] += value
 
-    n_features = features.shape[-1]
-    library_terms = []
+    # # Generate all polynomial terms
+    # for d in range(degree + 1):
+    #     for combo in combinations_with_replacement(range(n_features), d):
+    #         if len(combo) == 0 and include_bias:
+    #             # Constant term
+    #             term = torch.ones_like(features[..., :1])
+    #             library_terms.append(term)
+    #         elif len(combo) > 0:
+    #             # Check if we should skip this term based on interaction_only
+    #             if interaction_only and d > 1:
+    #                 # For degree > 1: only include if it's an interaction term
+    #                 # An interaction has at least 2 different feature indices
+    #                 unique_indices = len(set(combo))
+    #                 if unique_indices == 1:
+    #                     # Pure power term (e.g., x^2, x^3), skip it
+    #                     continue
 
-    # Generate all polynomial terms
-    for d in range(degree + 1):
-        for combo in combinations_with_replacement(range(n_features), d):
-            if len(combo) == 0 and include_bias:
-                # Constant term
-                term = torch.ones_like(features[..., :1])
-                library_terms.append(term)
-            elif len(combo) > 0:
-                # Check if we should skip this term based on interaction_only
-                if interaction_only and d > 1:
-                    # For degree > 1: only include if it's an interaction term
-                    # An interaction has at least 2 different feature indices
-                    unique_indices = len(set(combo))
-                    if unique_indices == 1:
-                        # Pure power term (e.g., x^2, x^3), skip it
-                        continue
+    #             # Polynomial term
+    #             term = torch.ones_like(features[..., :1])
+    #             for idx in combo:
+    #                 term = term * features[..., idx:idx+1]
+    #             library_terms.append(term)
 
-                # Polynomial term
-                term = torch.ones_like(features[..., :1])
-                for idx in combo:
-                    term = term * features[..., idx:idx+1]
-                library_terms.append(term)
+    # library = torch.cat(library_terms, dim=-1)  # [batch, time, n_actions, n_library_terms]
 
-    library = torch.cat(library_terms, dim=-1)  # [batch, time, n_actions, n_library_terms]
-
-    if squeeze_time:
-        library = library.squeeze(1)  # [batch, n_actions, n_library_terms]
-
-    return library
+    return library_values
 
 
 def threshold_coefficients(coefficients: torch.Tensor, masks: torch.Tensor,

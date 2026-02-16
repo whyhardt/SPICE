@@ -27,7 +27,7 @@ class GRU(torch.nn.Module):
         if state is not None and len(inputs.shape) == 3:
             state = state.reshape(1, 1, self.gru_features)
         
-        y = self.linear_in(inputs.nan_to_num(0))
+        y = self.linear_in(inputs[:, 0].nan_to_num(0))
         y = self.dropout(y)
         y, state = self.gru(y, state)
         y = self.dropout(y)

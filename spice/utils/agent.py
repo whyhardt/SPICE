@@ -65,7 +65,7 @@ class Agent:
       
     choice = torch.eye(self.n_actions, dtype=torch.float32)[int(choice)]
     
-    xs = torch.concat([choice, torch.tensor(reward, dtype=torch.float32), torch.tensor(additional_inputs, dtype=torch.float32), torch.tensor(block, dtype=torch.float32).view(1), self.meta_data.view(-1)]).view(1, 1, -1).to(device=self.device)
+    xs = torch.concat([choice, torch.tensor(reward, dtype=torch.float32), torch.tensor(additional_inputs, dtype=torch.float32), torch.tensor(block, dtype=torch.float32).view(1), self.meta_data.view(-1)]).view(1, 1, 1, -1).to(device=self.device)
     
     with torch.no_grad():
       logits, state = self.model(xs, self.get_state()[1] if isinstance(self.model, BaseRNN) else self.get_state()[1]['hidden'])
@@ -114,14 +114,14 @@ class Agent:
 
   def get_choice_probs(self) -> np.ndarray:
     """Compute the choice probabilities as softmax over q."""
-    logits = self.logits
+    logits = self.logits.reshape(self.n_actions)
     if isinstance(logits, torch.Tensor):
       logits = logits.detach().cpu().numpy()
       
     decision_variable = logits - logits.min()
     decision_variable = np.exp(decision_variable)
     choice_probs = decision_variable / np.sum(decision_variable)
-    return choice_probs.reshape(self.n_actions)
+    return choice_probs
   
   def get_choice(self):
     """Sample choice."""
@@ -146,17 +146,17 @@ def get_update_dynamics(experiment: Union[np.ndarray, torch.Tensor], agent: Agen
   if isinstance(experiment, np.ndarray) or isinstance(experiment, torch.Tensor):
     if isinstance(experiment, torch.Tensor):
       experiment = experiment.detach().cpu().numpy()
-    if len(experiment.shape) == 3:
+    if len(experiment.shape) == 4:
       experiment = experiment.squeeze(0)
     # get number of actual trials
-    n_trials = len(experiment) - np.where(~np.isnan(experiment[::-1][:, 0]))[0][0]
-    choices = np.nan_to_num(experiment[:n_trials, :agent.n_actions])
-    rewards = np.nan_to_num(experiment[:n_trials, agent.n_actions:2*agent.n_actions])
+    n_trials = len(experiment) - np.where(~np.isnan(experiment[::-1][:, 0, 0]))[0][0]
+    choices = np.nan_to_num(experiment[:n_trials, 0, :agent.n_actions])
+    rewards = np.nan_to_num(experiment[:n_trials, 0, agent.n_actions:2*agent.n_actions])
     # TODO: additional_inputs are currently treated as signals and as meta-information for the embedding
-    additional_inputs = np.nan_to_num(experiment[0, 2*agent.n_actions:-3])
-    current_block = np.nan_to_num(int(experiment[0, -3]))
-    experiment_id = np.nan_to_num(int(experiment[0, -2]))
-    participant_id = np.nan_to_num(int(experiment[0, -1]))
+    additional_inputs = np.nan_to_num(experiment[0, 0, 2*agent.n_actions:-3])
+    current_block = np.nan_to_num(int(experiment[0, 0, -3]))
+    experiment_id = np.nan_to_num(int(experiment[0, 0, -2]))
+    participant_id = np.nan_to_num(int(experiment[0, 0, -1]))
   else:
     raise TypeError("experiment is of not of class numpy.ndarray or torch.Tensor")
   
@@ -176,13 +176,13 @@ def get_update_dynamics(experiment: Union[np.ndarray, torch.Tensor], agent: Agen
   for trial in range(n_trials):
     # track all states
     current_logits, state = agent.get_state(numpy=True)      
-    logits[trial] = current_logits[0]
+    logits[trial] = current_logits.reshape(agent.n_actions)
     for signal in additional_signals:
       if isinstance(agent.state, dict):
         if signal in state:
-          value = state[signal]
+          value = state[signal].reshape(agent.n_actions)
         else: 
-          value = np.zeros_like(agent.logits)
+          value = np.zeros_like(agent.n_actions)
       else:
         value = np.zeros(agent.n_actions)
       if isinstance(value, torch.Tensor):

@@ -386,10 +386,10 @@ def split_data_along_timedim(dataset: SpiceDataset, split_ratio: float, device: 
     xs, ys = dataset.xs, dataset.ys
     
     # Create a mask of non-zero elements
-    non_zero_mask = (xs[..., 0] != -1).int()
+    non_nan_mask = 1-np.isnan(xs[..., 0]).int()
     
     # Find cumulative sum along the specified dimension in reverse order
-    cumsum = torch.cumsum(non_zero_mask, dim)
+    cumsum = torch.cumsum(non_nan_mask, dim)
     
     # Find the index where the cumulative sum becomes 1 in the reversed array
     last_nonzero_indices = torch.argmax(cumsum, dim=dim)
@@ -398,15 +398,15 @@ def split_data_along_timedim(dataset: SpiceDataset, split_ratio: float, device: 
     split_indices = (last_nonzero_indices * split_ratio).int()
     
     # initialize training data and testing data storages
-    train_xs = torch.zeros((xs.shape[0], max(split_indices), xs.shape[2]), device=dataset.device) - 1
-    test_xs = torch.zeros((xs.shape[0], max(last_nonzero_indices - split_indices), xs.shape[2]), device=dataset.device) - 1
-    train_ys = torch.zeros((xs.shape[0], max(split_indices), ys.shape[2]), device=dataset.device) - 1
-    test_ys = torch.zeros((xs.shape[0], max(last_nonzero_indices - split_indices), ys.shape[2]), device=dataset.device) - 1
+    train_xs = torch.zeros((xs.shape[0], max(split_indices), xs.shape[2], xs.shape[3]), device=dataset.device) - 1
+    test_xs = torch.zeros((xs.shape[0], max(last_nonzero_indices - split_indices), xs.shape[2], xs.shape[3]), device=dataset.device) - 1
+    train_ys = torch.zeros((xs.shape[0], max(split_indices), ys.shape[2], ys.shape[3]), device=dataset.device) - 1
+    test_ys = torch.zeros((xs.shape[0], max(last_nonzero_indices - split_indices), ys.shape[2], ys.shape[3]), device=dataset.device) - 1
     
     # get columns which had no -1 values in the first place to fill them up entirely in the training and testing data
     # necessary for e.g. participant-IDs because otherwise -1 will be passed to embedding layer -> Error
     example_session_id = torch.argmax((last_nonzero_indices < xs.shape[1]-1).int()).item()
-    full_columns = xs[example_session_id, -1] != -1
+    full_columns = 1-np.isnan(xs[example_session_id, -1, 0]).int()
     
     # fill up training and testing data
     for index_session in range(xs.shape[0]):
@@ -416,8 +416,8 @@ def split_data_along_timedim(dataset: SpiceDataset, split_ratio: float, device: 
         test_ys[index_session, :last_nonzero_indices[index_session]-split_indices[index_session]] = ys[index_session, split_indices[index_session]:last_nonzero_indices[index_session]]
 
         # fill up non-"-1"-columns (only applicable for xs)
-        train_xs[index_session, :, full_columns] = xs[index_session, :train_xs.shape[1], full_columns]
-        test_xs[index_session, :, full_columns] = xs[index_session, :test_xs.shape[1], full_columns]
+        train_xs[index_session, :, :, full_columns] = xs[index_session, :train_xs.shape[1], :, full_columns]
+        test_xs[index_session, :, :, full_columns] = xs[index_session, :test_xs.shape[1], :, full_columns]
     
     return SpiceDataset(train_xs, train_ys, device=device), SpiceDataset(test_xs, test_ys, device=device)
 
@@ -446,10 +446,10 @@ def split_data_along_sessiondim(dataset: SpiceDataset, list_test_sessions: List[
         xs, ys = dataset.xs.cpu(), dataset.ys.cpu()
         
         # get participant ids
-        participants_ids = xs[:, 0, -1].unique()
+        participants_ids = xs[:, 0, 0, -1].unique()
         
         # get sessions ids
-        session_ids = xs[:, 0, -3].unique()
+        session_ids = xs[:, 0, 0, -3].unique()
         
         # set training sessions
         if list_test_sessions:
@@ -472,7 +472,7 @@ def split_data_along_sessiondim(dataset: SpiceDataset, list_test_sessions: List[
 
         for pid in participants_ids:
             for sid in session_ids:
-                mask_ids = torch.logical_and(xs[:, 0, -3] == sid, xs[:, 0, -1] == pid)
+                mask_ids = torch.logical_and(xs[:, 00, 0, -3] == sid, xs[:, 0, 0, -1] == pid)
                 if mask_ids.max():
                     if sid in session_ids_train:
                         train_xs_list.append(xs[mask_ids])

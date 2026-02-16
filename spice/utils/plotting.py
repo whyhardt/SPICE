@@ -180,11 +180,11 @@ def plot_session(
     if isinstance(experiment, np.ndarray) or isinstance(experiment, torch.Tensor):
         if isinstance(experiment, torch.Tensor):
             experiment = experiment.detach().cpu().numpy()
-        assert experiment.ndim == 2, 'Experiment data should have only two dimensions -> (timesteps, features)'
+        # assert experiment.ndim == 2, 'Experiment data should have only two dimensions -> (timesteps, features)'
         # choices = experiment[:, :n_actions].argmax(axis=-1)
         # rewards = np.array([exp[choices[i]] for i, exp in enumerate(experiment[:, n_actions:2*n_actions])])  
-        choices = experiment[:, display_choice]
-        rewards = experiment[:, n_actions]  
+        choices = experiment[:, 0, display_choice]
+        rewards = experiment[:, 0, n_actions]  
     
     list_probs = []
     list_q_value = []

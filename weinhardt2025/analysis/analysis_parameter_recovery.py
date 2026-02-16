@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 import torch
 
 from spice import SpiceEstimator, csv_to_dataset
-from spice.precoded import choice, workingmemory, workingmemory_rewardbinary
+from spice.precoded import choice, workingmemory, workingmemory_rewardbinary, workingmemory_rewardflags
 
 import sys, os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))

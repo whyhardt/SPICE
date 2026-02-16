@@ -30,8 +30,8 @@ class SpiceModel(BaseRNN):
         super().__init__(**kwargs)
         
         # set up the submodules
-        self.submodules_rnn['learning_rate_reward'] = self.setup_module(input_size=2)
-        self.submodules_rnn['value_reward_not_chosen'] = self.setup_module(input_size=0)
+        self.setup_module(key_module='learning_rate_reward', input_size=2)
+        self.setup_module(key_module='value_reward_not_chosen', input_size=0)
 
         # set up hard-coded equations
         # add here a RNN-module in the form of an hard-coded equation to compute the update for the chosen reward-based value
@@ -56,7 +56,7 @@ class SpiceModel(BaseRNN):
         # First, we have to initialize all the inputs and outputs (i.e. logits)
         spice_signals = self.init_forward_pass(inputs, prev_state, batch_first)
                 
-        for timestep in spice_signals.timesteps:
+        for timestep in spice_signals.trials:
             
             # Let's compute the learning rate dynamically
             # Now we have to use a sigmoid activation function on the output learning rate to constrain it to a value range of (0, 1)
@@ -69,35 +69,34 @@ class SpiceModel(BaseRNN):
             #       But we can circumvein this by applying the sigmoid activation to the learning rate to staying conform with the reward-prediction error
             #       and later applying the inverse noise temperature (i.e. trainable parameter) to the updated value 
             
-            learning_rate_reward, sindy_loss_learning_rate = self.call_module(
+            learning_rate_reward = self.call_module(
                 key_module='learning_rate_reward',
                 key_state='learning_rate_reward',
-                action_mask=spice_signals.actions[timestep],
+                action_mask=spice_signals.actions[timestep, 0],
                 inputs=(
-                    spice_signals.rewards[timestep],
+                    spice_signals.rewards[timestep, 0],
                     self.state['value_reward'],
                     ),
                 activation_rnn=torch.nn.functional.sigmoid,
             )
-            sindy_loss_learning_rate
-            
+
             # Let's perform the belief update for the reward-based value of the chosen option
-            # no sindy loss has to be tracked because sindy won't approximate the hard-coded module (the functional structure is already known)            
+            # no sindy loss has to be tracked because sindy won't approximate the hard-coded module (the functional structure is already known)
             self.call_module(
                 key_module='value_reward_chosen',
                 key_state='value_reward',
-                action_mask=spice_signals.actions[timestep],
+                action_mask=spice_signals.actions[timestep, 0],
                 inputs=(
-                    spice_signals.rewards[timestep], 
+                    spice_signals.rewards[timestep, 0],
                     learning_rate_reward,
                     ),
                 )
-            
+
             # Update of the not-chosen reward-based value
             self.call_module(
                 key_module='value_reward_not_chosen',
                 key_state='value_reward',
-                action_mask=1-spice_signals.actions[timestep],
+                action_mask=1-spice_signals.actions[timestep, 0],
                 inputs=None,
                 )
             
