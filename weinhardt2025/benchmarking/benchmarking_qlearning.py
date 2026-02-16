@@ -73,8 +73,8 @@ class QLearning(BaseRNN):
         
         spice_signals = self.init_forward_pass(inputs, prev_state, batch_first)
         
-        chosen_reward_success = spice_signals.rewards.sum(dim=-1, keepdim=True).repeat(1, 1, self.n_actions) == 1
-        chosen_reward_fail = spice_signals.rewards.sum(dim=-1, keepdim=True).repeat(1, 1, self.n_actions) != 1
+        chosen_reward_success = spice_signals.rewards.sum(dim=-1, keepdim=True).repeat(1, 1, 1, self.n_actions) == 1
+        chosen_reward_fail = spice_signals.rewards.sum(dim=-1, keepdim=True).repeat(1, 1, 1, self.n_actions) != 1
         
         for timestep in spice_signals.trials:
             

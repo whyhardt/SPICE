@@ -8,7 +8,7 @@ from copy import copy
 
 # standard methods and classes used for every model evaluation
 from spice import SpiceEstimator, Agent, get_update_dynamics, csv_to_dataset, split_data_along_sessiondim, split_data_along_timedim
-from spice.precoded import choice, workingmemory, workingmemory_multiitem, workingmemory_rewardbinary, workingmemory_rewardflags
+from spice.precoded import choice, workingmemory, workingmemory_multiitem, workingmemory_rewardbinary, workingmemory_rewardflags, workingmemory_rewardtransform
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 from weinhardt2025.utils.model_evaluation import get_scores
@@ -19,8 +19,8 @@ from weinhardt2025.benchmarking import benchmarking_dezfouli2019, benchmarking_e
 # MODEL EVALUATION CONFIGURATION
 # -------------------------------------------------------------------------------
 
-# study = 'eckstein2022'
-study = 'dezfouli2019'
+study = 'eckstein2022'
+# study = 'dezfouli2019'
 # study = 'eckstein2024'
 
 agents = [
@@ -30,7 +30,7 @@ agents = [
     'spice',
 ]
 
-use_test = True
+use_test = False
 
 
 
@@ -51,7 +51,7 @@ use_test = True
 # ------------------------- CONFIGURATION FILE PATHS ------------------------
 
 path_data = f'weinhardt2025/data/{study}/{study}.csv'
-path_spice = f'weinhardt2025/params/{study}/spice_{study}_rewardflags.pkl' if 'spice' in agents else None
+path_spice = f'weinhardt2025/params/{study}/spice_{study}.pkl' if 'spice' in agents else None
 path_baseline = os.path.join(f'weinhardt2025/params/{study}/', baseline_file) if 'baseline' in agents else None
 path_benchmark = os.path.join(f'weinhardt2025/params/{study}', benchmark_file) if 'benchmark' in agents else None
 path_gru = f'weinhardt2025/params/{study}/gru_{study}.pkl' if 'gru' in agents else None
@@ -65,8 +65,8 @@ path_gru = f'weinhardt2025/params/{study}/gru_{study}.pkl' if 'gru' in agents el
 if study == 'eckstein2022':
     models_benchmark = ['ApAnBrBcfBch']
     train_test_ratio = 0.8
-    spice_config = workingmemory_rewardbinary.CONFIG
-    spice_model = workingmemory_rewardbinary.SpiceModel
+    spice_config = workingmemory_rewardtransform.CONFIG
+    spice_model = workingmemory_rewardtransform.SpiceModel
     additional_inputs = None
     setup_agent_benchmark = benchmarking_eckstein2022.setup_agent_benchmark
     rl_model = benchmarking_eckstein2022.rl_model
@@ -93,8 +93,8 @@ elif study == 'eckstein2024':
 elif study == 'dezfouli2019':
     train_test_ratio = [3, 6, 9]
     models_benchmark = ['PhiChiBetaKappaC']
-    spice_config = workingmemory_rewardflags.CONFIG
-    spice_model = workingmemory_rewardflags.SpiceModel
+    spice_config = workingmemory_rewardtransform.CONFIG
+    spice_model = workingmemory_rewardtransform.SpiceModel
     additional_inputs = []
     setup_agent_benchmark = benchmarking_dezfouli2019.setup_agent_gql
     gql_model = benchmarking_dezfouli2019.Dezfouli2019GQL
@@ -131,7 +131,7 @@ dataset = csv_to_dataset(
     )
 # use these participant_ids if not defined later
 participant_ids = dataset.xs[:, 0, -1].unique().cpu().numpy()
-n_participants = len(participant_ids)
+n_participants = int(max(participant_ids)+1)
 n_actions = dataset.ys.shape[-1]
 # dataset.xs = dataset.xs.nan_to_num(0.)
 # dataset.ys = dataset.ys.nan_to_num(0.)
@@ -235,90 +235,90 @@ best_benchmarks_participant, considered_trials_participant = np.array(['' for _ 
 # dataset_test = DatasetRNN(dataset_test.xs[mask_dataset_test], dataset_test.ys[mask_dataset_test])
 
 for index_data in tqdm(range(len(dataset_test))):
-    try:
-        # use whole session to include warm-up phase; make sure to exclude warm-up phase when computing metrics
-        pid = dataset_test.xs[index_data, 0, -1].int().item()
-        
-        if not pid in participant_ids:
-            print(f"Skipping participant {index_data} because they could not be found in the SPICE participants. Probably due to prior filtering of badly fitted participants.")
-            continue
-        
-        # Baseline model
-        probs_baseline = get_update_dynamics(experiment=data_input[index_data], agent=agent_baseline)[1]
-        
-        # get number of actual trials
-        n_trials = len(probs_baseline)
-        data_ys = data_test[index_data, :n_trials].cpu().numpy()
-        
-        if isinstance(train_test_ratio, float):
-            n_trials_test = int(n_trials*(1-train_test_ratio))
-            if use_test:
-                index_start = n_trials - n_trials_test
-                index_end = n_trials
-            else:
-                index_start = 0
-                index_end = n_trials - n_trials_test
+    # try:
+    # use whole session to include warm-up phase; make sure to exclude warm-up phase when computing metrics
+    pid = dataset_test.xs[index_data, 0, 0, -1].int().item()
+    
+    if not pid in participant_ids:
+        print(f"Skipping participant {index_data} because they could not be found in the SPICE participants. Probably due to prior filtering of badly fitted participants.")
+        continue
+    
+    # Baseline model
+    probs_baseline = get_update_dynamics(experiment=data_input[index_data], agent=agent_baseline)[1]
+    
+    # get number of actual trials
+    n_trials = len(probs_baseline)
+    data_ys = data_test[index_data, :n_trials, 0].cpu().numpy()
+    
+    if isinstance(train_test_ratio, float):
+        n_trials_test = int(n_trials*(1-train_test_ratio))
+        if use_test:
+            index_start = n_trials - n_trials_test
+            index_end = n_trials
         else:
             index_start = 0
-            index_end = n_trials
+            index_end = n_trials - n_trials_test
+    else:
+        index_start = 0
+        index_end = n_trials
+        
             
-             
-        # SPICE
-        if path_spice is not None:
-            probs_spice = get_update_dynamics(experiment=data_input[index_data], agent=agent_spice)[1]
-            if np.isnan(probs_spice).any():
-                raise ValueError(f"Participant {pid}: computed probabilities contained NaN")
-            scores_spice = np.array(get_scores(data=data_ys[index_start:index_end], probs=probs_spice[index_start:index_end], n_parameters=n_parameters_spice[pid]))
-            metric_participant[4, index_data] = scores_spice[0]        
-            parameters_participant[0, index_data] = n_parameters_spice[pid]
+    # SPICE
+    if path_spice is not None:
+        probs_spice = get_update_dynamics(experiment=data_input[index_data], agent=agent_spice)[1]
+        if np.isnan(probs_spice).any():
+            raise ValueError(f"Participant {pid}: computed probabilities contained NaN")
+        scores_spice = np.array(get_scores(data=data_ys[index_start:index_end], probs=probs_spice[index_start:index_end], n_parameters=n_parameters_spice[pid]))
+        metric_participant[4, index_data] = scores_spice[0]        
+        parameters_participant[0, index_data] = n_parameters_spice[pid]
+    
+    scores_baseline = np.array(get_scores(data=data_ys[index_start:index_end], probs=probs_baseline[index_start:index_end], n_parameters=n_parameters_baseline))
+    metric_participant[0, index_data] += scores_baseline[0]
+    
+    # get scores of all mcmc benchmark models but keep only the best one for each session
+    if path_benchmark:
+        scores_benchmark = np.zeros((len(models_benchmark), 3))
+        for index_model, model in enumerate(models_benchmark):
+            n_parameters_model = agent_benchmark[model][1]
+            probs_benchmark = get_update_dynamics(experiment=data_input[index_data], agent=agent_benchmark[model][0][pid])[1]
+            scores_benchmark[index_model] += np.array(get_scores(data=data_ys[index_start:index_end], probs=probs_benchmark[index_start:index_end], n_parameters=n_parameters_model))
+        index_best_benchmark = np.argmin(scores_benchmark, axis=0)[1] # index 0 -> NLL is indicating metric
+        n_parameters_benchmark += agent_benchmark[models_benchmark[index_best_benchmark]][1]
+        best_benchmarks_participant[index_data] += models_benchmark[index_best_benchmark]
+        metric_participant[1, index_data] += scores_benchmark[index_best_benchmark, 0]
+        metric_participant[5:, index_data] += scores_benchmark[:, 0]
+    
+    # Benchmark GRU
+    if path_gru:
+        probs_gru = get_update_dynamics(experiment=data_input[index_data], agent=agent_gru)[1]
+        scores_gru = np.array(get_scores(data=data_ys[index_start:index_end], probs=probs_gru[index_start:index_end], n_parameters=n_parameters_gru))
+        metric_participant[2, index_data] += scores_gru[0]
         
-        scores_baseline = np.array(get_scores(data=data_ys[index_start:index_end], probs=probs_baseline[index_start:index_end], n_parameters=n_parameters_baseline))
-        metric_participant[0, index_data] += scores_baseline[0]
+    # SPICE-RNN
+    if path_spice is not None:
+        probs_rnn = get_update_dynamics(experiment=data_input[index_data], agent=agent_rnn)[1]
+        scores_rnn = np.array(get_scores(data=data_ys[index_start:index_end], probs=probs_rnn[index_start:index_end], n_parameters=n_parameters_rnn))
+        metric_participant[3, index_data] = scores_rnn[0]
         
-        # get scores of all mcmc benchmark models but keep only the best one for each session
-        if path_benchmark:
-            scores_benchmark = np.zeros((len(models_benchmark), 3))
-            for index_model, model in enumerate(models_benchmark):
-                n_parameters_model = agent_benchmark[model][1]
-                probs_benchmark = get_update_dynamics(experiment=data_input[index_data], agent=agent_benchmark[model][0][pid])[1]
-                scores_benchmark[index_model] += np.array(get_scores(data=data_ys[index_start:index_end], probs=probs_benchmark[index_start:index_end], n_parameters=n_parameters_model))
-            index_best_benchmark = np.argmin(scores_benchmark, axis=0)[1] # index 0 -> NLL is indicating metric
-            n_parameters_benchmark += agent_benchmark[models_benchmark[index_best_benchmark]][1]
-            best_benchmarks_participant[index_data] += models_benchmark[index_best_benchmark]
-            metric_participant[1, index_data] += scores_benchmark[index_best_benchmark, 0]
-            metric_participant[5:, index_data] += scores_benchmark[:, 0]
+    considered_trials_participant[index_data] += index_end - index_start
+    considered_trials += index_end - index_start
+    
+    # track scores
+    scores[0] += scores_baseline
+    if path_benchmark:
+        scores[1] += scores_benchmark[index_best_benchmark]
+        scores[5:] += scores_benchmark
+    if path_gru:
+        scores[2] += scores_gru
+    if path_spice is not None:
+        scores[3] += scores_rnn
+        scores[4] += scores_spice
         
-        # Benchmark GRU
-        if path_gru:
-            probs_gru = get_update_dynamics(experiment=data_input[index_data], agent=agent_gru)[1]
-            scores_gru = np.array(get_scores(data=data_ys[index_start:index_end], probs=probs_gru[index_start:index_end], n_parameters=n_parameters_gru))
-            metric_participant[2, index_data] += scores_gru[0]
-            
-        # SPICE-RNN
-        if path_spice is not None:
-            probs_rnn = get_update_dynamics(experiment=data_input[index_data], agent=agent_rnn)[1]
-            scores_rnn = np.array(get_scores(data=data_ys[index_start:index_end], probs=probs_rnn[index_start:index_end], n_parameters=n_parameters_rnn))
-            metric_participant[3, index_data] = scores_rnn[0]
-            
-        considered_trials_participant[index_data] += index_end - index_start
-        considered_trials += index_end - index_start
-        
-        # track scores
-        scores[0] += scores_baseline
-        if path_benchmark:
-            scores[1] += scores_benchmark[index_best_benchmark]
-            scores[5:] += scores_benchmark
-        if path_gru:
-            scores[2] += scores_gru
-        if path_spice is not None:
-            scores[3] += scores_rnn
-            scores[4] += scores_spice
-        
-    except ValueError as e:  
-        # print(e)
-        # raise e
-        failed_attempts += 1
-        failed_participants.append(pid)
+    # except ValueError as e:  
+    #     # print(e)
+    #     # raise e
+    #     failed_attempts += 1
+    #     failed_participants.append(pid)
 
 # ------------------------------------------------------------
 # Post processing

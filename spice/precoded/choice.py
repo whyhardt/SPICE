@@ -33,9 +33,9 @@ class SpiceModel(BaseRNN):
         self.experiment_embedding = self.setup_embedding(self.n_experiments, 1)
                 
         # set up the submodules
-        self.setup_module(key_module='value_reward_chosen', input_size=1+self.embedding_size+1, dropout=dropout, include_bias=True)
-        self.setup_module(key_module='value_reward_not_chosen', input_size=0+self.embedding_size+1, dropout=dropout, include_bias=True)
-        self.setup_module(key_module='value_choice', input_size=1+self.embedding_size+1, dropout=dropout, include_bias=False)
+        self.setup_module(key_module='value_reward_chosen', input_size=1+self.embedding_size+1, dropout=dropout)
+        self.setup_module(key_module='value_reward_not_chosen', input_size=0+self.embedding_size+1, dropout=dropout)
+        self.setup_module(key_module='value_choice', input_size=1+self.embedding_size+1, dropout=dropout)
         
     def forward(self, inputs, prev_state=None, batch_first=False):
         """Forward pass of the RNN
@@ -59,25 +59,23 @@ class SpiceModel(BaseRNN):
             self.call_module(
                 key_module='value_reward_chosen',
                 key_state='value_reward',
-                action_mask=spice_signals.actions[timestep, 0],
-                inputs=spice_signals.rewards[timestep, 0],
+                action_mask=spice_signals.actions[timestep],
+                inputs=spice_signals.rewards[timestep],
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
                 experiment_index=spice_signals.experiment_ids,
                 experiment_embedding=experiment_embedding,
-                # activation_rnn=torch.nn.functional.leaky_relu,
                 )
 
             self.call_module(
                 key_module='value_reward_not_chosen',
                 key_state='value_reward',
-                action_mask=1-spice_signals.actions[timestep, 0],
+                action_mask=1-spice_signals.actions[timestep],
                 inputs=None,
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
                 experiment_index=spice_signals.experiment_ids,
                 experiment_embedding=experiment_embedding,
-                # activation_rnn=torch.nn.functional.leaky_relu,
                 )
 
             # updates for value_choice
@@ -85,12 +83,11 @@ class SpiceModel(BaseRNN):
                 key_module='value_choice',
                 key_state='value_choice',
                 action_mask=None,
-                inputs=spice_signals.actions[timestep, 0],
+                inputs=spice_signals.actions[timestep],
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
                 experiment_index=spice_signals.experiment_ids,
                 experiment_embedding=experiment_embedding,
-                # activation_rnn=torch.nn.functional.leaky_relu,
                 )
             
             # Now keep track of the logit in the output array

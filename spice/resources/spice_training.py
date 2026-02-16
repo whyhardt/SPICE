@@ -314,7 +314,7 @@ def _run_batch_training(
 
     model.init_state(batch_size=xs.shape[0], within_ts=xs.shape[2])
     state = model.get_state(detach=True)
-
+    
     loss_batch = 0
     iterations = 0
     for t in range(0, xs.shape[1], n_steps):
@@ -866,7 +866,7 @@ def _reset_sindy_with_masks(
 
     # Reinitialize SINDy coefficients with confidence masks applied
     for module in model.submodules_rnn:
-        model.setup_sindy_coefficients(key_module=module)
+        model.setup_sindy_coefficients(key_module=module, polynomial_degree=model.sindy_specs[module]['polynomial_degree'])
         if confidence_masks is not None:
             confidence_mask = confidence_masks[module].to(model.device)
             confidence_mask = confidence_mask.reshape(1, 1, 1, -1).repeat(model.n_participants, model.n_experiments, model.sindy_ensemble_size, 1)

@@ -54,14 +54,12 @@ CONFIG = SpiceConfig(
         'value_reward': 0.,      # reward value (enables slow learning)
         'value_choice': 0.,      # choice value (enables slow learning)
         # 'logits': 0,             # logits for decision
-        'buffer_reward_1': 0.,   # t-1 reward
-        'buffer_reward_2': 0.,   # t-2 reward
-        'buffer_reward_3': 0.,   # t-3 reward
-        'buffer_choice_1': 0.,   # t-1 choice
-        'buffer_choice_2': 0.,   # t-2 choice
-        'buffer_choice_3': 0.,   # t-3 choice
-        'reward_transformed': 0.,
-        'choice_transformed': 0.,
+        'wm_reward_1': 0.,   # t-1 reward
+        'wm_reward_2': 0.,   # t-2 reward
+        'wm_reward_3': 0.,   # t-3 reward
+        'wm_choice_1': 0.,   # t-1 choice
+        'wm_choice_2': 0.,   # t-2 choice
+        'wm_choice_3': 0.,   # t-3 choice
     },
     
     states_in_logit=['value_reward', 'value_choice'],
@@ -88,11 +86,11 @@ class SpiceModel(BaseRNN):
         
         # Value learning module (slow updates)
         # Can use recent reward history to modulate learning
-        self.setup_module(key_module='reward_transform', input_size=5+self.embedding_size, dropout=dropout, include_bias=True)  # -> 21 terms
-        self.setup_module(key_module='choice_transform', input_size=4+self.embedding_size, dropout=dropout, include_bias=True)  # -> 21 terms
-        self.setup_module(key_module='value_reward_chosen', input_size=4+self.embedding_size, dropout=dropout, include_bias=True)  # -> 21 terms
-        self.setup_module(key_module='value_reward_not_chosen', input_size=4+self.embedding_size, dropout=dropout, include_bias=True)  # -> 21 terms
-        self.setup_module(key_module='value_choice', input_size=4+self.embedding_size, dropout=dropout, include_bias=True) # -> 21 terms; bias not necessary when module is applied equally to all options
+        self.setup_module(key_module='reward_transform', input_size=5+self.embedding_size, dropout=dropout, include_state=False)  # -> 21 terms
+        self.setup_module(key_module='choice_transform', input_size=4+self.embedding_size, dropout=dropout, include_state=False)  # -> 21 terms
+        self.setup_module(key_module='value_reward_chosen', input_size=4+self.embedding_size, dropout=dropout)  # -> 21 terms
+        self.setup_module(key_module='value_reward_not_chosen', input_size=4+self.embedding_size, dropout=dropout)  # -> 21 terms
+        self.setup_module(key_module='value_choice', input_size=4+self.embedding_size, dropout=dropout) # -> 21 terms; bias not necessary when module is applied equally to all options
         # self.setup_module(key_module='logits', input_size=2+self.embedding_size, dropout=dropout, include_bias=False, fit_linear=False, include_state=False) # -> 8 terms
         
     def forward(self, inputs, prev_state=None, batch_first=False):
@@ -112,36 +110,30 @@ class SpiceModel(BaseRNN):
             
             reward_transformed = self.call_module(
                 key_module='reward_transform',
-                key_state='reward_transformed',
-                action_mask=None,
                 inputs=(
                     rewards_t,
                     rewards_t.flip(-1),  # other rewards
-                    self.state['buffer_reward_1'],  # Recent reward history
-                    self.state['buffer_reward_2'],
-                    self.state['buffer_reward_3'],
+                    self.state['wm_reward_1'],  # Recent reward history
+                    self.state['wm_reward_2'],
+                    self.state['wm_reward_3'],
                 ),
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
                 activation_rnn=torch.nn.functional.tanh,  # tanh to keep in range
             )
-            self.state['reward_transformed'] = torch.zeros_like(self.state['reward_transformed'])  # reset state -> no dynamics but simple mapping
             
             choice_transformed = self.call_module(
                 key_module='choice_transform',
-                key_state='choice_transformed',
-                action_mask=None,
                 inputs=(
                     actions_t,
-                    self.state['buffer_choice_1'],  # Recent reward history
-                    self.state['buffer_choice_2'],
-                    self.state['buffer_choice_3'],
+                    self.state['wm_choice_1'],  # Recent choice history
+                    self.state['wm_choice_2'],
+                    self.state['wm_choice_3'],
                 ),
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
                 activation_rnn=torch.nn.functional.tanh,  # tanh to keep in range
             )
-            self.state['choice_transformed'] = torch.zeros_like(self.state['choice_transformed'])  # reset state -> no dynamics but simple mapping
             
             # Value updates
             
@@ -152,9 +144,9 @@ class SpiceModel(BaseRNN):
                 action_mask=actions_t,
                 inputs=(
                     reward_transformed,
-                    self.state['buffer_reward_1'],  # Recent reward history
-                    self.state['buffer_reward_2'],
-                    self.state['buffer_reward_3'],
+                    self.state['wm_reward_1'],  # Recent reward history
+                    self.state['wm_reward_2'],
+                    self.state['wm_reward_3'],
                 ),
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
@@ -166,9 +158,9 @@ class SpiceModel(BaseRNN):
                 action_mask=1-actions_t,
                 inputs=(
                     reward_transformed,
-                    self.state['buffer_reward_1'],  # Recent reward history
-                    self.state['buffer_reward_2'],
-                    self.state['buffer_reward_3'],
+                    self.state['wm_reward_1'],  # Recent reward history
+                    self.state['wm_reward_2'],
+                    self.state['wm_reward_3'],
                     ),
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
@@ -181,9 +173,9 @@ class SpiceModel(BaseRNN):
                 action_mask=None,
                 inputs=(
                     choice_transformed,
-                    self.state['buffer_choice_1'],  # Recent choice history
-                    self.state['buffer_choice_2'],
-                    self.state['buffer_choice_3'],
+                    self.state['wm_choice_1'],  # Recent choice history
+                    self.state['wm_choice_2'],
+                    self.state['wm_choice_3'],
                 ),
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
@@ -192,13 +184,13 @@ class SpiceModel(BaseRNN):
             # Buffer updates
             # REWARD BUFFER UPDATES: Shift reward buffer for chosen action, keep for not chosen action (NOTE: deterministic; not learned by SPICE -> Could be made learnable: e.g. decay-rate for not chosen action)
             # CHOICE BUFFER UPDATES: Shift all buffer entries according to action
-            self.state['buffer_reward_3'] = self.state['buffer_reward_2']# * actions_t + self.state['buffer_reward_3'] * (1-actions_t)
-            self.state['buffer_reward_2'] = self.state['buffer_reward_1']# * actions_t + self.state['buffer_reward_2'] * (1-actions_t)
-            # self.state['buffer_reward_1'] = torch.where(actions_t==1, reward_transformed, 0) + torch.where(actions_t==0, reward_transformed, 0)  # updating buffer_reward[t-1] with reward for chosen action and keeping values for not-chosen actions
-            self.state['buffer_reward_1'] = reward_transformed
-            self.state['buffer_choice_3'] = self.state['buffer_choice_2']
-            self.state['buffer_choice_2'] = self.state['buffer_choice_1']
-            self.state['buffer_choice_1'] = choice_transformed
+            self.state['wm_reward_3'] = self.state['wm_reward_2']# * actions_t + self.state['wm_reward_3'] * (1-actions_t)
+            self.state['wm_reward_2'] = self.state['wm_reward_1']# * actions_t + self.state['wm_reward_2'] * (1-actions_t)
+            # self.state['wm_reward_1'] = torch.where(actions_t==1, reward_transformed, 0) + torch.where(actions_t==0, reward_transformed, 0)  # updating wm_reward[t-1] with reward for chosen action and keeping values for not-chosen actions
+            self.state['wm_reward_1'] = reward_transformed
+            self.state['wm_choice_3'] = self.state['wm_choice_2']
+            self.state['wm_choice_2'] = self.state['wm_choice_1']
+            self.state['wm_choice_1'] = choice_transformed
             
             # compute logits for current timestep
             spice_signals.logits[timestep] = self.state['value_reward'] + self.state['value_choice']

@@ -63,13 +63,14 @@ if __name__=='__main__':
     # args.data = "weinhardt2025/data/eckstein2024/eckstein2024.csv"
     # args.test_sessions = "1,3"
     
-    # args.results = False
-    # args.epochs = 10
-    # args.epochs_confidence = 0
-    # args.epochs_finetuning = 10
-    # args.model = "weinhardt2025/params/dezfouli2019/spice_dezfouli2019.pkl"
-    # args.data = "weinhardt2025/data/dezfouli2019/dezfouli2019.csv"
-    # args.test_sessions = "3,6,9"
+    args.results = True
+    args.epochs = 1000
+    args.epochs_warmup = 500
+    args.epochs_confidence = 0
+    args.epochs_finetuning = 4000
+    args.model = "weinhardt2025/params/dezfouli2019/spice_dezfouli2019.pkl"
+    args.data = "weinhardt2025/data/dezfouli2019/dezfouli2019.csv"
+    args.test_sessions = "3,6,9"
     
     # args.data="weinhardt2025/data/sugawara2021/sugawara2021.csv" 
     # args.model="weinhardt2025/params/sugawara2021/spice_sugawara2021.pkl" 
@@ -126,13 +127,13 @@ if __name__=='__main__':
     if n_items == n_actions:
         if ((dataset.xs[..., n_actions:n_actions*2].nan_to_num(0) == 1).int() + (dataset.xs[..., n_actions:n_actions*2].nan_to_num(0) == 0).int()).sum() == dataset.xs.shape[0]*dataset.xs.shape[1]*n_actions:
             # binary rewards
-            # spice_model = workingmemory_rewardbinary
-            spice_model = workingmemory_rewardtransform
+            spice_model = workingmemory_rewardbinary
         else:
             spice_model = workingmemory
     else:
         spice_model = workingmemory_multiitem
     
+    spice_model = workingmemory_rewardtransform
     # spice_model = choice
     
     class_rnn = spice_model.SpiceModel
