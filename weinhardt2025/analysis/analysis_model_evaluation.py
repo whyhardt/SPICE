@@ -19,8 +19,8 @@ from weinhardt2025.benchmarking import benchmarking_dezfouli2019, benchmarking_e
 # MODEL EVALUATION CONFIGURATION
 # -------------------------------------------------------------------------------
 
-# study = 'eckstein2022'
-study = 'dezfouli2019'
+study = 'eckstein2022'
+# study = 'dezfouli2019'
 # study = 'eckstein2024'
 
 agents = [
@@ -30,7 +30,7 @@ agents = [
     'spice',
 ]
 
-use_test = True
+use_test = False
 
 
 
@@ -45,16 +45,6 @@ use_test = True
 
 
 
-
-
-
-# ------------------------- CONFIGURATION FILE PATHS ------------------------
-
-path_data = f'weinhardt2025/data/{study}/{study}.csv'
-path_spice = f'weinhardt2025/params/{study}/spice_{study}.pkl' if 'spice' in agents else None
-path_baseline = os.path.join(f'weinhardt2025/params/{study}/', baseline_file) if 'baseline' in agents else None
-path_benchmark = os.path.join(f'weinhardt2025/params/{study}', benchmark_file) if 'benchmark' in agents else None
-path_gru = f'weinhardt2025/params/{study}/gru_{study}.pkl' if 'gru' in agents else None
 
 
 # -------------------------------------------------------------------------------
@@ -65,8 +55,8 @@ path_gru = f'weinhardt2025/params/{study}/gru_{study}.pkl' if 'gru' in agents el
 if study == 'eckstein2022':
     models_benchmark = ['ApAnBrBcfBch']
     train_test_ratio = 0.8
-    spice_config = workingmemory_rewardtransform.CONFIG
-    spice_model = workingmemory_rewardtransform.SpiceModel
+    spice_config = workingmemory_rewardbinary.CONFIG
+    spice_model = workingmemory_rewardbinary.SpiceModel
     additional_inputs = None
     setup_agent_benchmark = benchmarking_eckstein2022.setup_agent_benchmark
     rl_model = benchmarking_eckstein2022.rl_model
@@ -116,6 +106,17 @@ elif study == 'dezfouli2019':
 #     benchmark_file = f'ql_{study}_MODEL.pkl'
 #     model_config_baseline = 'PhiBeta'
 #     baseline_file = f'ql_{study}_PhiBeta.pkl'
+
+
+
+# ------------------------- CONFIGURATION FILE PATHS ------------------------
+
+path_data = f'weinhardt2025/data/{study}/{study}.csv'
+path_spice = f'weinhardt2025/params/{study}/spice_{study}.pkl' if 'spice' in agents else None
+path_baseline = os.path.join(f'weinhardt2025/params/{study}/', baseline_file) if 'baseline' in agents else None
+path_benchmark = os.path.join(f'weinhardt2025/params/{study}', benchmark_file) if 'benchmark' in agents else None
+path_gru = f'weinhardt2025/params/{study}/gru_{study}.pkl' if 'gru' in agents else None
+
 
 # -------------------------------------------------------------------------------
 # MODEL COMPARISON PIPELINE
