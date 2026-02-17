@@ -3,7 +3,7 @@ import torch.nn as nn
 from typing import Optional, Tuple, Dict, Iterable, Callable, Union, List
 import numpy as np
 
-from .sindy_differentiable import compute_library_size, compute_polynomial_library, get_library_feature_names, get_library_term_degrees
+from .sindy_differentiable import compute_library_size, compute_polynomial_library, get_library_feature_names, get_library_term_degrees, solve_sindy_stlsq
 from .spice_utils import SpiceConfig, SpiceSignals
 
 
@@ -88,6 +88,9 @@ class BaseRNN(nn.Module):
         # Ensemble SINDy for stage 1 training (helps RNN learn better representations)
         self.sindy_ensemble_size = sindy_ensemble_size  # Number of ensemble members (num_replicates in sindy-shred)
         
+        # Data accumulator for direct least-squares SINDy solve (None = disabled)
+        self._sindy_solve_data = None
+
         # Setup initial values of RNN
         self.sindy_loss = torch.tensor(0, requires_grad=True, device=device, dtype=torch.float32)
         self.state = None
@@ -347,20 +350,41 @@ class BaseRNN(nn.Module):
         else:
             raise ValueError(f'Invalid module key {key_module}.')
 
-        # SINDy loss (uses unclipped values, last within-trial step)
-        if self.training and not self.rnn_training_finished and participant_index is not None:
+        # SINDy: compute loss and/or accumulate data for direct solve
+        if key_module in self.submodules_rnn and participant_index is not None:
             action_mask_2d = action_mask[-1] if action_mask is not None and action_mask.dim() >= 3 else action_mask
             value_0 = self.state[key_state][-1].unsqueeze(0) if key_state is not None else torch.zeros(W, B, I, device=self.device)
-            self.sindy_loss = self.sindy_loss + self.compute_sindy_loss_for_module(
-                    module_name=key_module,
-                    h_current=torch.concat((value_0, next_value[:-1])),
-                    h_next_rnn=next_value,
-                    controls=inputs,
-                    action_mask=action_mask_2d,
-                    participant_ids=participant_index.squeeze(),
-                    experiment_ids=experiment_index.squeeze(),
-                    polynomial_degree=self.sindy_polynomial_degree,
+            h_current = torch.concat((value_0, next_value[:-1]))
+
+            # Gradient-based sindy loss for RNN regularization (Stage 1 only)
+            if self.training and not self.rnn_training_finished:
+                self.sindy_loss = self.sindy_loss + self.compute_sindy_loss_for_module(
+                        module_name=key_module,
+                        h_current=h_current,
+                        h_next_rnn=next_value,
+                        controls=inputs,
+                        action_mask=action_mask_2d,
+                        participant_ids=participant_index.squeeze(),
+                        experiment_ids=experiment_index.squeeze(),
+                        polynomial_degree=self.sindy_polynomial_degree,
+                    )
+
+            # Accumulate data for direct least-squares solve
+            if self._sindy_solve_data is not None and key_module in self._sindy_solve_data:
+                library = compute_polynomial_library(
+                    h_current.detach(), inputs.detach(),
+                    degree=self.sindy_polynomial_degree,
+                    feature_names=self.sindy_specs[key_module]['input_names'],
+                    library=self.sindy_candidate_terms[key_module],
                 )
+                delta_h = (next_value - h_current).detach()
+                self._sindy_solve_data[key_module].append({
+                    'library': library,       # [W, B, I, n_terms]
+                    'delta_h': delta_h,       # [W, B, I]
+                    'action_mask': action_mask_2d.detach() if action_mask_2d is not None else None,
+                    'participant_ids': participant_index.squeeze().detach(),
+                    'experiment_ids': experiment_index.squeeze().detach(),
+                })
 
         # clip next_value to a specific range
         next_value = torch.clip(input=next_value, min=-1e1, max=1e1)
@@ -566,7 +590,144 @@ class BaseRNN(nn.Module):
         sindy_loss = torch.clamp(sindy_loss, max=100.0)
         
         return sindy_loss
-        
+
+    def solve_sindy_coefficients_direct(self, threshold: float = 0.05, max_iter: int = 10, ridge_alpha: float = 1e-4):
+        """
+        Solve SINDy coefficients via batched STLSQ using accumulated data from forward passes.
+
+        Vectorizes across all (participant, experiment) pairs in a single lstsq call
+        per module. Ensemble members sharing the same presence mask are solved once
+        and broadcast.
+
+        Args:
+            threshold: STLSQ coefficient threshold (0 = plain least squares)
+            max_iter: Maximum STLSQ iterations
+            ridge_alpha: Ridge regularization strength
+        """
+        if self._sindy_solve_data is None:
+            return
+
+        with torch.no_grad():
+            for module_name in self.submodules_rnn:
+                if module_name not in self._sindy_solve_data or not self._sindy_solve_data[module_name]:
+                    continue
+
+                entries = self._sindy_solve_data[module_name]
+
+                # Concatenate all accumulated entries along the time dimension (dim=0)
+                all_library = torch.cat([e['library'] for e in entries], dim=0)   # [T_total, B, I, n_terms]
+                all_delta_h = torch.cat([e['delta_h'] for e in entries], dim=0)   # [T_total, B, I]
+
+                # Action masks: broadcast to [T_total, B, I]
+                all_masks = []
+                for e in entries:
+                    T = e['library'].shape[0]
+                    if e['action_mask'] is not None:
+                        all_masks.append(e['action_mask'].unsqueeze(0).expand(T, -1, -1))
+                    else:
+                        all_masks.append(torch.ones(T, e['library'].shape[1], e['library'].shape[2],
+                                                    dtype=torch.bool, device=self.device))
+                all_action_mask = torch.cat(all_masks, dim=0)  # [T_total, B, I]
+
+                all_pids = entries[0]['participant_ids']   # [B]
+                all_eids = entries[0]['experiment_ids']    # [B]
+                n_terms = all_library.shape[-1]
+
+                # Collect per-(p, e) data into lists for batched stacking
+                pe_libs = []
+                pe_dhs = []
+                pe_indices = []  # (p, e) tuples
+
+                for p in range(self.n_participants):
+                    for e in range(self.n_experiments):
+                        if all_pids.dim() == 0:
+                            batch_mask = (all_pids == p) & (all_eids == e)
+                            batch_mask = batch_mask.unsqueeze(0)
+                        else:
+                            batch_mask = (all_pids == p) & (all_eids == e)
+
+                        if not batch_mask.any():
+                            continue
+
+                        lib_pe = all_library[:, batch_mask]
+                        dh_pe = all_delta_h[:, batch_mask]
+                        mask_pe = all_action_mask[:, batch_mask]
+
+                        lib_flat = lib_pe.reshape(-1, n_terms)
+                        dh_flat = dh_pe.reshape(-1)
+                        mask_flat = mask_pe.reshape(-1).bool()
+
+                        lib_valid = lib_flat[mask_flat]
+                        dh_valid = dh_flat[mask_flat]
+
+                        if lib_valid.shape[0] == 0:
+                            continue
+
+                        pe_libs.append(lib_valid)
+                        pe_dhs.append(dh_valid)
+                        pe_indices.append((p, e))
+
+                if not pe_libs:
+                    continue
+
+                # Pad to max N_valid and stack (zero rows don't affect lstsq)
+                max_n = max(lib.shape[0] for lib in pe_libs)
+                lib_stacked = torch.zeros(len(pe_libs), max_n, n_terms, dtype=pe_libs[0].dtype, device=self.device)
+                dh_stacked = torch.zeros(len(pe_libs), max_n, dtype=pe_libs[0].dtype, device=self.device)
+                for i, (lib, dh) in enumerate(zip(pe_libs, pe_dhs)):
+                    lib_stacked[i, :lib.shape[0]] = lib
+                    dh_stacked[i, :dh.shape[0]] = dh
+                n_pe = lib_stacked.shape[0]
+                K = self.sindy_ensemble_size
+
+                # Gather presence masks: [n_pe, K, n_terms]
+                presence_stacked = torch.stack([
+                    self.sindy_coefficients_presence[module_name][p, e]
+                    for p, e in pe_indices
+                ])
+
+                # Check if all ensemble members share the same mask
+                all_ens_same = (presence_stacked[:, 0:1] == presence_stacked).all()
+
+                if all_ens_same:
+                    # Solve once per (p, e) and broadcast to all ensemble members
+                    presence_pe = presence_stacked[:, 0]  # [n_pe, n_terms]
+                    coeffs_pe, new_presence_pe = solve_sindy_stlsq(
+                        library=lib_stacked,
+                        delta_h=dh_stacked,
+                        threshold=threshold,
+                        max_iter=max_iter,
+                        presence_mask=presence_pe,
+                        ridge_alpha=ridge_alpha,
+                    )  # [n_pe, n_terms] each
+
+                    for i, (p, e) in enumerate(pe_indices):
+                        self.sindy_coefficients[module_name].data[p, e] = coeffs_pe[i].unsqueeze(0).expand(K, -1)
+                        self.sindy_coefficients_presence[module_name][p, e] = new_presence_pe[i].unsqueeze(0).expand(K, -1)
+                else:
+                    # Different masks per ensemble: expand and solve all at once
+                    lib_expanded = lib_stacked.unsqueeze(1).expand(-1, K, -1, -1).reshape(n_pe * K, -1, n_terms)
+                    dh_expanded = dh_stacked.unsqueeze(1).expand(-1, K, -1).reshape(n_pe * K, -1)
+                    presence_expanded = presence_stacked.reshape(n_pe * K, n_terms)
+
+                    coeffs_all, presence_all = solve_sindy_stlsq(
+                        library=lib_expanded,
+                        delta_h=dh_expanded,
+                        threshold=threshold,
+                        max_iter=max_iter,
+                        presence_mask=presence_expanded,
+                        ridge_alpha=ridge_alpha,
+                    )
+
+                    coeffs_all = coeffs_all.reshape(n_pe, K, n_terms)
+                    presence_all = presence_all.reshape(n_pe, K, n_terms)
+
+                    for i, (p, e) in enumerate(pe_indices):
+                        self.sindy_coefficients[module_name].data[p, e] = coeffs_all[i]
+                        self.sindy_coefficients_presence[module_name][p, e] = presence_all[i]
+
+        self._sindy_solve_data = None
+
     def sindy_coefficient_pruning(self, threshold, n_terms_pruning: int = None, base_threshold: float = 0.0, patience: int = 1):
         """
         Apply hard thresholding to SINDy coefficients with patience counter.

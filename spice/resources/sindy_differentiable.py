@@ -199,6 +199,91 @@ def compute_polynomial_library(
     return library_values
 
 
+def solve_sindy_stlsq(
+    library: torch.Tensor,
+    delta_h: torch.Tensor,
+    threshold: float = 0.05,
+    max_iter: int = 10,
+    presence_mask: torch.Tensor = None,
+    ridge_alpha: float = 1e-4,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Batched Sequentially Thresholded Least Squares (STLSQ) for SINDy with ridge regularization.
+
+    Solves ξ = argmin ||Θ·ξ - Δh||² + α||ξ||² with iterative hard thresholding.
+    Supports batched inputs to solve K independent systems in a single lstsq call.
+
+    Inactive columns (from presence_mask) are zeroed in the library matrix.
+    Ridge regularization on those columns drives their coefficients to exactly 0,
+    giving identical results to column removal while enabling batched solves
+    with divergent active sets.
+
+    Args:
+        library: Library matrix Θ [N, n_terms] or batched [K, N, n_terms]
+        delta_h: Target state changes [N] or batched [K, N]
+        threshold: Coefficient magnitude threshold for pruning
+        max_iter: Maximum STLSQ iterations
+        presence_mask: Active terms mask [n_terms] or [K, n_terms] (bool). If None, all active.
+        ridge_alpha: Ridge regularization strength.
+
+    Returns:
+        Tuple of (coefficients, presence_mask) with same batch dims as input.
+    """
+    unbatched = library.dim() == 2
+    if unbatched:
+        library = library.unsqueeze(0)
+        delta_h = delta_h.unsqueeze(0)
+        if presence_mask is not None:
+            presence_mask = presence_mask.unsqueeze(0)
+
+    K, N, n_terms = library.shape
+    device = library.device
+    dtype = library.dtype
+
+    if presence_mask is None:
+        active = torch.ones(K, n_terms, dtype=torch.bool, device=device)
+    else:
+        active = presence_mask.clone().bool()
+
+    coeffs = torch.zeros(K, n_terms, dtype=dtype, device=device)
+
+    for _ in range(max_iter):
+        if not active.any():
+            break
+
+        # Zero out inactive columns: [K, N, n_terms]
+        library_masked = library * active.unsqueeze(1).float()
+
+        if ridge_alpha > 0:
+            # Ridge via augmented least squares: [Θ_masked; √α·I] ξ ≈ [Δh; 0]
+            # Full identity (not masked) ensures full rank — inactive columns
+            # have zero data so regularization drives their coefficients to 0.
+            sqrt_alpha = ridge_alpha ** 0.5
+            ridge_rows = sqrt_alpha * torch.eye(n_terms, device=device, dtype=dtype).unsqueeze(0).expand(K, -1, -1)
+            Theta_aug = torch.cat([library_masked, ridge_rows], dim=1)  # [K, N+n_terms, n_terms]
+            dh_aug = torch.cat([
+                delta_h,
+                torch.zeros(K, n_terms, dtype=dtype, device=device),
+            ], dim=1)  # [K, N+n_terms]
+            result = torch.linalg.lstsq(Theta_aug, dh_aug.unsqueeze(-1))
+        else:
+            result = torch.linalg.lstsq(library_masked, delta_h.unsqueeze(-1))
+
+        coeffs = result.solution.squeeze(-1)  # [K, n_terms]
+        coeffs *= active.float()  # explicitly zero inactive
+
+        # Threshold small coefficients
+        small = coeffs.abs() < threshold
+        newly_removed = small & active
+        if not newly_removed.any():
+            break
+        active &= ~small
+
+    if unbatched:
+        return coeffs.squeeze(0), active.squeeze(0)
+    return coeffs, active
+
+
 def threshold_coefficients(coefficients: torch.Tensor, masks: torch.Tensor,
                            threshold: float) -> torch.Tensor:
     """

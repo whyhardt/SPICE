@@ -177,7 +177,7 @@ class SpiceEstimator(BaseEstimator):
         #   rescaling brings the gradient back to normal size -> desired updates;
         self.rnn_optimizer = torch.optim.AdamW(
             [
-            {'params': sindy_params, 'weight_decay': 0, 'lr': 0.01},#/sindy_weight * len(self.rnn_model.submodules_rnn) if sindy_weight > 0 else learning_rate},
+            {'params': sindy_params, 'weight_decay': 0, 'lr': 0.},#/sindy_weight * len(self.rnn_model.submodules_rnn) if sindy_weight > 0 else learning_rate},
             {'params': rnn_params, 'weight_decay': l2_rnn, 'lr': learning_rate},
             ], 
             )
