@@ -11,12 +11,13 @@ from weinhardt2025.benchmarking.benchmarking_qlearning import QLearning
 
 
 path_data = 'weinhardt2025/data/synthetic/synthetic_PARp_IT_0.csv'
-path_model = path_data.replace('data', 'params').replace('/synthetic_', '/spice_synthetic_').replace('.csv', '.pkl')
+path_model = path_data.replace('data', 'params').replace('/synthetic_', '/spice_synthetic_test_ensfilter_').replace('.csv', '.pkl')
 spice_model = workingmemory_rewardbinary
 rl_parameters = ['beta_reward', 'beta_choice', 'alpha_reward', 'alpha_penalty', 'alpha_choice', 'forget_rate']
-participants = [32, 64, 128, 256, 512]
-iterations = 8
+participants = [256]#[32, 64, 128, 256, 512]
+iterations = 1#8
 coefficient_threshold = 0.05
+ensemble_size = 10
 
 # Dynamically determine n_coefficients from a sample model
 sample_dataset = csv_to_dataset(
@@ -60,12 +61,12 @@ def count_active_params(dict_rl_parameters):
 
 for index_par, par in enumerate(participants):
     for it in range(iterations):
-
+        
         # load dataset and collect true rl parameters
         dataset = csv_to_dataset(file=path_data.replace('PAR', str(par)).replace('IT', str(it)), additional_inputs=rl_parameters)
         n_actions = dataset.ys.shape[-1]
-        mask = dataset.xs[:, 0, -3] == 0  # block -> 0; each participant only once
-        rl_parameters_dataset = {param: dataset.xs[mask, 0, n_actions*2+index_param].unsqueeze(-1) for index_param, param in enumerate(rl_parameters)}
+        mask = dataset.xs[:, 0, 0, -3] == 0  # block -> 0; each participant only once
+        rl_parameters_dataset = {param: dataset.xs[mask, 0, 0, n_actions*2+index_param].unsqueeze(-1) for index_param, param in enumerate(rl_parameters)}
 
         # load true model
         true_model = QLearning(
@@ -81,6 +82,7 @@ for index_par, par in enumerate(participants):
             n_actions=n_actions,
             n_participants=par,
             sindy_library_polynomial_degree=2,
+            ensemble_size=ensemble_size,
         )
         fitted_model.load_spice(path_model=path_model.replace('PAR', str(par)).replace('IT', str(it)))
         fitted_model = fitted_model.rnn_model
@@ -98,18 +100,18 @@ for index_par, par in enumerate(participants):
                     raise ValueError(f"Candidate term {term} of the true model was not found among the candidate terms of the fitted model ({candidate_terms_fitted_model}).")
 
                 index_coef = candidate_terms_fitted_model.index(term)
-                # Extract coefficient values: shape is (n_participants, n_experiments, n_ensemble, n_terms)
-                true_coef_vals = true_model.sindy_coefficients[module][:, 0, 0, candidate_terms_true_model.index(term)].detach().cpu().numpy()
+                # Extract coefficient values: shape is (n_ensemble, n_participants, n_experiments, n_terms)
+                true_coef_vals = true_model.sindy_coefficients[module][0, :, 0, candidate_terms_true_model.index(term)].detach().cpu().numpy()
                 if module == term:
                     true_coef_vals += 1
                 true_coefs[index_par, par*it:par*(it+1), index_coefs_all+index_coef] = true_coef_vals
 
             # place fitted module coefs in storage (apply presence mask)
             # fitted_coef_vals = (
-            #     fitted_model.sindy_coefficients[module][:, 0, 0, :] *
-            #     fitted_model.sindy_coefficients_presence[module][:, 0, 0, :]
+            #     fitted_model.sindy_coefficients[module][0, :, 0, :] *
+            #     fitted_model.sindy_coefficients_presence[module][0, :, 0, :]
             # ).detach().cpu().numpy()
-            fitted_coef_vals = fitted_model.sindy_coefficients[module][:, 0, 0, :].detach().cpu().numpy()
+            fitted_coef_vals = fitted_model.sindy_coefficients[module][0, :, 0, :].detach().cpu().numpy()
             fitted_coef_vals[:, 1] += 1
             fitted_coefs[index_par, par*it:par*(it+1), index_coefs_all:index_coefs_all+n_terms_module] = fitted_coef_vals
 

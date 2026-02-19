@@ -26,7 +26,7 @@ if __name__=='__main__':
     # RNN training parameters
     parser.add_argument('--epochs', type=int, default=4000, help='Number of training epochs')
     parser.add_argument('--epochs_confidence', type=int, default=0, help='Number of training epochs for stage 2 (confidence pruning)')
-    parser.add_argument('--epochs_finetuning', type=int, default=0, help='Number of training epochs for stage 3 (SINDy-only finetuning)')
+    parser.add_argument('--epochs_finetuning', type=int, default=4000, help='Number of training epochs for stage 3 (SINDy-only finetuning)')
     parser.add_argument('--epochs_warmup', type=int, default=None, help='Number of training epochs for warmup (exp increase of sindy-weight; no pruning)')
     parser.add_argument('--lr', type=float, default=0.01, help='Learning rate')
     parser.add_argument('--rnn_l2_lambda', type=float, default=0., help='L2 Reg of the RNN parameters')
@@ -51,16 +51,17 @@ if __name__=='__main__':
     
     args = parser.parse_args()
     
-    args.results = True
-    args.sindy_weight = 0.1
-    args.epochs = 1000
-    args.epochs_warmup = 250
-    args.epochs_confidence = 0
-    args.epochs_finetuning = 4000
+    # args.results = False
+    # args.sindy_weight = 0.1
+    # args.epochs = 1000
+    # args.epochs_warmup = 500
+    # args.epochs_confidence = 0
+    # args.epochs_finetuning = 2000
+    ensemble_size = 20
     
-    args.model = "weinhardt2025/params/eckstein2022/spice_eckstein2022.pkl"
-    args.data = "weinhardt2025/data/eckstein2022/eckstein2022.csv"
-    # args.train_ratio_time = 0.8
+    # args.model = "weinhardt2025/params/eckstein2022/spice_eckstein2022.pkl"
+    # args.data = "weinhardt2025/data/eckstein2022/eckstein2022.csv"
+    # # args.train_ratio_time = 0.8
     
     # args.model = "weinhardt2025/params/eckstein2024/spice_eckstein2024.pkl"
     # args.data = "weinhardt2025/data/eckstein2024/eckstein2024.csv"
@@ -81,9 +82,6 @@ if __name__=='__main__':
     # args.additional_columns = None,
     # args.test_sessions = "4,8,12"
     
-    # args.epochs = 1
-    # args.results = True
-    # args.sindy_weight = 0
     # args.data = "weinhardt2025/data/synthetic/synthetic_256p_0_0.csv"
     # args.model = args.data.replace("data", "params").replace("/synthetic_", "/spice_synthetic_test_").replace(".csv", ".pkl")
     
@@ -154,9 +152,8 @@ if __name__=='__main__':
         epochs_confidence=args.epochs_confidence,
         learning_rate=args.lr,
         warmup_steps=args.epochs_warmup,
+        ensemble_size=ensemble_size,
         l2_rnn=args.rnn_l2_lambda,
-        batch_size=min(1024, n_participants*4),
-        bagging=True,
         scheduler=True,
         
         # sindy fitting parameters
@@ -167,10 +164,10 @@ if __name__=='__main__':
         sindy_pruning_frequency=args.sindy_pruning_freq,
         sindy_pruning_terms=args.sindy_pruning_terms,
         sindy_pruning_patience=args.sindy_pruning_patience,
-        sindy_confidence_threshold=args.sindy_confidence,
+        sindy_confidence_threshold=None,#args.sindy_confidence,
+        sindy_ensemble_alpha=None,
         sindy_library_polynomial_degree=2,
         sindy_optimizer_reset=None,
-        sindy_ensemble_size=1,
         
         # other parameters
         verbose=True,
@@ -267,9 +264,9 @@ if __name__=='__main__':
                 qlearning = None
             
             for module_name in estimator.rnn_model.submodules_rnn:
-                # Get coefficients: [n_participants, n_ensemble, n_library_terms]
-                coeffs = estimator.rnn_model.sindy_coefficients[module_name][:, ensemble_idx, :].detach().cpu().numpy()
-                mask = estimator.rnn_model.sindy_coefficients_presence[module_name][:, ensemble_idx, :].cpu().numpy()
+                # Get coefficients: [n_participants, n_experiments, n_library_terms]
+                coeffs = estimator.rnn_model.sindy_coefficients[module_name][ensemble_idx].detach().cpu().numpy()
+                mask = estimator.rnn_model.sindy_coefficients_presence[module_name][ensemble_idx].cpu().numpy()
 
                 # Apply mask and adjust identity terms
                 sparse_coeffs = coeffs * mask
@@ -294,7 +291,7 @@ if __name__=='__main__':
                             raise ValueError(f"Candidate term {term} of the ground truth model was not found among the candidate terms of the fitted model ({term_names}).")
                         idx_spice = term_names.index(term)
                         idx_qlearning = candidate_terms_qlearning.index(term)
-                        gt_coeffs[:, idx_spice] = qlearning.sindy_coefficients[module_name][:, 0, 0, idx_qlearning].detach().cpu().numpy()
+                        gt_coeffs[:, idx_spice] = qlearning.sindy_coefficients[module_name][0, :, 0, idx_qlearning].detach().cpu().numpy()
 
                     # Add 1 to identity terms (same transformation as SPICE)
                     for idx, term in enumerate(term_names):

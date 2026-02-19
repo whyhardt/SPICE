@@ -18,7 +18,7 @@ def csv_to_dataset(
     df_block: str = 'block',
     df_experiment_id: str = 'experiment',
     df_choice: str = 'choice',
-    df_feedback: Union[str, Iterable[str]] = 'reward',
+    df_feedback: Optional[Union[str, Iterable[str]]] = 'reward',
     additional_inputs: Optional[Union[str, Iterable[str]]] = None,
     device = None,
     sequence_length: int = None,
@@ -115,30 +115,31 @@ def csv_to_dataset(
     # FEEDBACK
     # --------------------------------------------------------------------------------
     
-    # set df_feedback as iterable
-    if isinstance(df_feedback, str):
-        df_feedback = df_feedback,
-    
-    # normalize rewards
-    r_min, r_max = [], []
-    for feedback_column in df_feedback:
-        # valid_rewards = df[reward_column][df[reward_column] != -1]
-        # if len(valid_rewards) > 0:
-        r_min.append(np.nanmin(df[feedback_column]))
-        r_max.append(np.nanmax(df[feedback_column]))
-    r_min = 0 if np.min(r_min) >= 0 else np.min(r_min)
-    r_max = 0 if np.max(r_max) <= 0 else np.max(r_max)
-    # No scaling if rewards are always the same
-    if r_max != r_min:
+    if df_feedback is not None:
+        # set df_feedback as iterable
+        if isinstance(df_feedback, str):
+            df_feedback = df_feedback,
+
+        # normalize rewards
+        r_min, r_max = [], []
         for feedback_column in df_feedback:
-            # normalize to range [0,1] --- additional adjustments in next lines if necessary
-            df[feedback_column] = (df[feedback_column] - r_min) / (r_max - r_min)
-            if r_min < 0 and r_max == 0:
-                # scale to range [-1,0] if only negative rewards
-                df[feedback_column] = df[feedback_column]-1
-            if r_min < 0 and r_max > 0:
-                # scale to range [-1,1] if negative and positive rewards
-                df[feedback_column] = (df[feedback_column]-0.5)*2
+            # valid_rewards = df[reward_column][df[reward_column] != -1]
+            # if len(valid_rewards) > 0:
+            r_min.append(np.nanmin(df[feedback_column]))
+            r_max.append(np.nanmax(df[feedback_column]))
+        r_min = 0 if np.min(r_min) >= 0 else np.min(r_min)
+        r_max = 0 if np.max(r_max) <= 0 else np.max(r_max)
+        # No scaling if rewards are always the same
+        if r_max != r_min:
+            for feedback_column in df_feedback:
+                # normalize to range [0,1] --- additional adjustments in next lines if necessary
+                df[feedback_column] = (df[feedback_column] - r_min) / (r_max - r_min)
+                if r_min < 0 and r_max == 0:
+                    # scale to range [-1,0] if only negative rewards
+                    df[feedback_column] = df[feedback_column]-1
+                if r_min < 0 and r_max > 0:
+                    # scale to range [-1,1] if negative and positive rewards
+                    df[feedback_column] = (df[feedback_column]-0.5)*2
 
     # --------------------------------------------------------------------------------
     # ADDITIONAL INPUTS
@@ -175,14 +176,10 @@ def csv_to_dataset(
     # MAIN PROCESSING
     # --------------------------------------------------------------------------------
     
-    n_ids = 0
-    if df_participant_id is not None:
-        n_ids += 1
-    if df_experiment_id is not None:
-        n_ids += 1
-        
     # Use NaN for padding instead of -1 for cleaner handling in RNN computations
-    xs = np.full((n_groups, max_trials, n_actions*2 + n_ids + additional_inputs_xs + 1 if df_block is not None else 0), np.nan)
+    # Trailing 5 columns always present: time_trial, trials, block, experiment_id, participant_id
+    n_reward_cols = n_actions if df_feedback is not None else 0
+    xs = np.full((n_groups, max_trials, n_actions + n_reward_cols + additional_inputs_xs + 5), np.nan)
     ys = np.full((n_groups, max_trials, n_actions), np.nan)
 
     # for index_group, participant_id in enumerate(participant_ids):
@@ -195,45 +192,51 @@ def csv_to_dataset(
             group_df = group_df[valid_trials_mask]
 
         choice = np.eye(n_actions)[group_df[df_choice].values.astype(int)]
-        rewards = np.full((len(choice), n_actions), np.nan)
-        for index_column, feedback_column in enumerate(df_feedback):
-            # add reward into the correct column
-            reward = group_df[feedback_column].values
-            if len(df_feedback) > 1:
-                # counterfactual data
-                rewards[:, index_column] = reward
-            else:
-                for index_choice, ch in enumerate(choice):
-                    rewards[index_choice, np.argmax(ch)] = reward[index_choice]
 
         # write arrays for DatasetRNN
         # IMPORTANT: Only include timesteps that have valid targets (exclude last timestep)
         # xs[t] should predict ys[t] = choice[t+1]
         # So we only include choice[:-1] in xs to match ys which contains choice[1:]
         xs[index_group, :len(choice)-1, :n_actions] = choice[:-1]
-        xs[index_group, :len(choice)-1, n_actions:n_actions*2] = rewards[:-1]
 
-        # add all grouping variables to the end (use original group for ID values)
+        # rewards (if feedback is provided)
+        if df_feedback is not None:
+            rewards = np.full((len(choice), n_actions), np.nan)
+            for index_column, feedback_column in enumerate(df_feedback):
+                # add reward into the correct column
+                reward = group_df[feedback_column].values
+                if len(df_feedback) > 1:
+                    # counterfactual data
+                    rewards[:, index_column] = reward
+                else:
+                    for index_choice, ch in enumerate(choice):
+                        rewards[index_choice, np.argmax(ch)] = reward[index_choice]
+            xs[index_group, :len(choice)-1, n_actions:n_actions+n_reward_cols] = rewards[:-1]
+
+        # write additional inputs after choices and rewards and before trailing metadata
+        if additional_inputs is not None and len(additional_inputs) > 0:
+            for index, additional_input in enumerate(additional_inputs):
+                xs[index_group, :len(choice)-1, n_actions+n_reward_cols+index] = group_df[additional_input].values[:-1]
+
+        # trailing metadata columns (always present, default to 0)
+        xs[index_group, :, -5] = 0  # time_trial (within-trial timestep; 0 for trial-level data)
+        xs[index_group, :, -4] = np.arange(max_trials)  # trial index
         xs[index_group, :, -3] = group[1][df_block].values[0]
         xs[index_group, :, -2] = group[1][df_experiment_id].values[0]
         xs[index_group, :, -1] = group[1][df_participant_id].values[0]
         ys[index_group, :len(choice)-1] = choice[1:]
-
-        # write additional inputs after choices and rewards and before grouping variables
-        if additional_inputs is not None and len(additional_inputs) > 0:
-            for index, additional_input in enumerate(additional_inputs):
-                xs[index_group, :len(choice)-1, n_actions*2+index] = group_df[additional_input].values[:-1]
         
     # move additional inputs one timestep back in order to make the next decision being based on them
     if timeshift_additional_inputs is not None:
+        additional_start = n_actions + n_reward_cols
         if isinstance(timeshift_additional_inputs, int):
             timeshift_additional_inputs = timeshift_additional_inputs,
         for index_timeshift, timeshift in enumerate(timeshift_additional_inputs):
             if timeshift == -1:
-                xs[:, :-1, n_actions*2+index_timeshift] = xs[:, 1:, n_actions*2+index_timeshift]
+                xs[:, :-1, additional_start+index_timeshift] = xs[:, 1:, additional_start+index_timeshift]
             elif timeshift == 1:
-                xs[:, 1:, n_actions*2+index_timeshift] = xs[:, :-1, n_actions*2+index_timeshift]
-                xs[:, 0, n_actions*2+index_timeshift] = 0
+                xs[:, 1:, additional_start+index_timeshift] = xs[:, :-1, additional_start+index_timeshift]
+                xs[:, 0, additional_start+index_timeshift] = 0
         if any(['-' == timeshift for timeshift in timeshift_additional_inputs]):
             xs = xs[:, :-1]
             ys = ys[:, :-1]
@@ -256,29 +259,32 @@ def dataset_to_csv(
     """Writes a SpiceDataset object to a csv file.
 
     SpiceDataset has the shape (n_participants * n_experiments * n_blocks, n_trials, features).
-    The features are in the order (action_0, action_1, ..., action_m, feedback_0, feedback_1, ..., feedback_m, *additional_inputs, block_id, experiment_id, participant_id)
-    The action is one-hot-encoded.
+    The features are in the order (action_0, ..., action_m, feedback_0, ..., feedback_m, *additional_inputs, time_trial, trials, block_id, experiment_id, participant_id)
+    The action is one-hot-encoded. Feedback columns may be absent (n_reward_cols=0).
     The feedback can be provided fully (feedback observed for all actions including unchosen ones) or partially (feedback observed only for chosen action; feedback values for unchosen values are torch.nan).
-    A pandas.DataFrame object has to be created of the shape (n_participants * n_experiments * n_blocks * n_trials, features_dataframe)
-    features_dataframe has the shape (participant, experiment, block, action, feedback, *additional_inputs)
-    For full feedback each feedback feature from SpiceDataset is written into the pandas.DataFrame by extending df_feedback with f'_{index_action}'
-    For partial feedback only the feedback value of the chosen action is written into the pandas.DataFrame; df_feedback is taken as given.
 
     Note: Due to the time-shifted structure of SpiceDataset (xs[t] predicts ys[t] = choice[t+1]),
     only the trials stored in xs are output. The final choice (in ys) is the prediction target
     for the last xs entry and is reconstructed when loading with csv_to_dataset.
     """
 
-    # Convert to numpy if needed
+    # Convert to numpy if needed — shape: (sessions, outer_ts, within_ts, features)
     xs = dataset.xs.cpu().numpy() if hasattr(dataset.xs, 'cpu') else np.array(dataset.xs)
     ys = dataset.ys.cpu().numpy() if hasattr(dataset.ys, 'cpu') else np.array(dataset.ys)
 
-    n_groups, max_trials, n_features = xs.shape
+    n_groups, max_trials, n_within_ts, n_features = xs.shape
     n_actions = ys.shape[-1]
 
     # Calculate number of additional inputs
-    # n_features = n_actions * 2 (choice + reward) + n_additional_inputs + 3 (block, experiment, participant)
-    n_additional_inputs = n_features - n_actions * 2 - 3
+    # n_features = n_actions + n_reward_cols + n_additional_inputs + 5 (time_trial, trials, block, experiment, participant)
+    n_trailing = 5  # time_trial, trials, block, experiment, participant
+    remaining = n_features - n_actions - n_trailing
+    # If remaining >= n_actions, assume reward columns are present
+    if remaining >= n_actions:
+        n_reward_cols = n_actions
+    else:
+        n_reward_cols = 0
+    n_additional_inputs = n_features - n_actions - n_reward_cols - n_trailing
 
     # Validate additional_inputs list length
     if additional_inputs is not None and len(additional_inputs) != n_additional_inputs:
@@ -290,74 +296,65 @@ def dataset_to_csv(
         additional_inputs = [f'additional_input_{i}' for i in range(n_additional_inputs)]
 
     # Determine if feedback is full or partial by checking if unchosen actions have non-NaN feedback
-    # Check first valid trial to detect feedback type
+    has_feedback = n_reward_cols > 0
     is_full_feedback = False
-    for group_idx in range(n_groups):
-        valid_mask = ~np.isnan(xs[group_idx, :, 0])
-        if np.any(valid_mask):
-            first_valid_idx = np.argmax(valid_mask)
-            choice_onehot = xs[group_idx, first_valid_idx, :n_actions]
-            chosen_action = int(np.argmax(choice_onehot))
-            rewards = xs[group_idx, first_valid_idx, n_actions:n_actions*2]
-            # Check if any unchosen action has non-NaN feedback
-            for action_idx in range(n_actions):
-                if action_idx != chosen_action and not np.isnan(rewards[action_idx]):
-                    is_full_feedback = True
-                    break
-            break
+    if has_feedback:
+        for group_idx in range(n_groups):
+            valid_mask = ~np.isnan(xs[group_idx, :, 0, 0])
+            if np.any(valid_mask):
+                first_valid_idx = np.argmax(valid_mask)
+                choice_onehot = xs[group_idx, first_valid_idx, 0, :n_actions]
+                chosen_action = int(np.argmax(choice_onehot))
+                rewards = xs[group_idx, first_valid_idx, 0, n_actions:n_actions+n_reward_cols]
+                # Check if any unchosen action has non-NaN feedback
+                for action_idx in range(n_actions):
+                    if action_idx != chosen_action and not np.isnan(rewards[action_idx]):
+                        is_full_feedback = True
+                        break
+                break
 
     # Prepare list to collect rows
     rows = []
 
     for group_idx in range(n_groups):
         # Get metadata (constant across trials within a group)
-        block_id = xs[group_idx, 0, -3]
-        experiment_id = xs[group_idx, 0, -2]
-        participant_id = xs[group_idx, 0, -1]
+        block_id = xs[group_idx, 0, 0, -3]
+        experiment_id = xs[group_idx, 0, 0, -2]
+        participant_id = xs[group_idx, 0, 0, -1]
 
-        # Find number of valid timesteps in xs (non-NaN)
-        valid_mask = ~np.isnan(xs[group_idx, :, 0])
+        # Find number of valid outer timesteps in xs (non-NaN)
+        valid_mask = ~np.isnan(xs[group_idx, :, 0, 0])
         n_valid = int(np.sum(valid_mask))
 
-        # Reconstruct trials from SpiceDataset
-        # In CSV format: row t has choice_t and reward_t (reward received at trial t)
-        # In SpiceDataset: xs[t] = (choice_t, reward_t) - same time alignment
-        # The last trial's choice is in ys, but its reward is not stored
-
-        # Trials 0 to n_valid-1: choice and reward from xs[t]
         for trial_idx in range(n_valid):
-            choice_onehot = xs[group_idx, trial_idx, :n_actions]
-            choice = int(np.argmax(choice_onehot))
+            for within_idx in range(n_within_ts):
+                choice_onehot = xs[group_idx, trial_idx, within_idx, :n_actions]
+                choice = int(np.argmax(choice_onehot))
 
-            # Get reward from the same timestep
-            rewards = xs[group_idx, trial_idx, n_actions:n_actions*2]
+                row = {
+                    df_participant_id: int(participant_id),
+                    df_experiment_id: int(experiment_id),
+                    df_block: int(block_id),
+                    'trial': int(xs[group_idx, trial_idx, within_idx, -4]),
+                    'timestep': int(xs[group_idx, trial_idx, within_idx, -5]),
+                    df_choice: choice,
+                }
 
-            row = {
-                df_participant_id: int(participant_id),
-                df_experiment_id: int(experiment_id),
-                df_block: int(block_id),
-                'trial': trial_idx,
-                df_choice: choice,
-            }
+                # Add feedback (if present)
+                if has_feedback:
+                    rewards = xs[group_idx, trial_idx, within_idx, n_actions:n_actions+n_reward_cols]
+                    if is_full_feedback:
+                        for action_idx in range(n_actions):
+                            row[f'{df_feedback}_{action_idx}'] = rewards[action_idx]
+                    else:
+                        row[df_feedback] = rewards[choice] if not np.isnan(rewards[choice]) else np.nan
 
-            # Add feedback from the same trial
-            if is_full_feedback:
-                for action_idx in range(n_actions):
-                    row[f'{df_feedback}_{action_idx}'] = rewards[action_idx]
-            else:
-                row[df_feedback] = rewards[choice] if not np.isnan(rewards[choice]) else np.nan
+                # Add additional inputs from current trial
+                if additional_inputs is not None:
+                    for i, name in enumerate(additional_inputs):
+                        row[name] = xs[group_idx, trial_idx, within_idx, n_actions + n_reward_cols + i]
 
-            # Add additional inputs from current trial
-            if additional_inputs is not None:
-                for i, name in enumerate(additional_inputs):
-                    row[name] = xs[group_idx, trial_idx, n_actions*2 + i]
-
-            rows.append(row)
-
-        # Note: We don't output the final trial (from ys) because:
-        # 1. Its choice is already the target for the last xs timestep
-        # 2. Its reward is not stored in the dataset
-        # 3. Including it causes csv_to_dataset to create NaN entries in ys
+                rows.append(row)
 
     # Create DataFrame and save to CSV
     df = pd.DataFrame(rows)

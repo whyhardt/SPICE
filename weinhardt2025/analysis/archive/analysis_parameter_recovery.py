@@ -126,8 +126,8 @@ def compute_structural_mask(spice_agents, n_participants, mapping_libraries):
         coefs_runs = []
         for spice_agent in spice_agents:
             # Get coefficients for this library across all participants
-            coefs_library = spice_agent.model.sindy_coefficients[library][:, 0].detach().cpu().numpy()
-            presence_library = spice_agent.model.sindy_coefficients_presence[library][:, 0].detach().cpu().numpy()
+            coefs_library = spice_agent.model.sindy_coefficients[library][0, :].detach().cpu().numpy()
+            presence_library = spice_agent.model.sindy_coefficients_presence[library][0, :].detach().cpu().numpy()
             coefs_runs.append(coefs_library * presence_library)
 
         coefs_all_libs[library] = np.stack(coefs_runs)  # Shape: (n_runs, n_participants, n_terms)
@@ -250,7 +250,7 @@ for index_sess, sess in enumerate(n_sessions):
             index_all_candidate_terms = 0
             for index_library, library in enumerate(mapping_libraries):
                 # get sindy coefficients
-                sindy_coefs_library = spice_agent.model.sindy_coefficients[library][index_participant, 0, 0].detach().cpu().numpy()
+                sindy_coefs_library = spice_agent.model.sindy_coefficients[library][0, index_participant, 0].detach().cpu().numpy()
                 # sindy_coefs_presence_library = spice_agent.model.sindy_coefficients_presence[library][index_participant][0].detach().cpu().numpy()
                 # correct for delta-update rule (x[t+1] = x[t] + input*sindy_coefs) in sindy's next state computation (see: spice.resources.rnn.BaseRNN.forward_sindy)
                 sindy_coefs_library[1] += 1

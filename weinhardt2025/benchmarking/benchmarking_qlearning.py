@@ -37,22 +37,22 @@ class QLearning(BaseRNN):
             n_experiments=n_experiments, 
             use_sindy=True, 
             sindy_polynomial_degree=2,
-            sindy_ensemble_size=1)
+            ensemble_size=1)
         self.rnn_training_finished = True
         
-        self.beta_reward = torch.full((self.n_participants, self.n_experiments), beta_reward) if isinstance(beta_reward, float) else beta_reward
-        self.alpha_reward = torch.full((self.n_participants, self.n_experiments), alpha_reward) if isinstance(alpha_reward, float) else alpha_reward
-        self.alpha_penalty = torch.full((self.n_participants, self.n_experiments), alpha_penalty) if isinstance(alpha_penalty, float) else alpha_penalty
-        self.forget_rate = torch.full((self.n_participants, self.n_experiments), forget_rate) if isinstance(forget_rate, float) else forget_rate
-        self.beta_choice = torch.full((self.n_participants, self.n_experiments), beta_choice) if isinstance(beta_choice, float) else beta_choice
-        self.alpha_choice = torch.full((self.n_participants, self.n_experiments), alpha_choice) if isinstance(alpha_choice, float) else alpha_choice
-        self.countefactual_learning = torch.full((self.n_participants, self.n_experiments), counterfactual_learning) if isinstance(counterfactual_learning, float) else counterfactual_learning
+        self.beta_reward = torch.full((self.n_participants, self.n_experiments), beta_reward) if isinstance(beta_reward, float) else beta_reward.reshape(n_participants, n_experiments)
+        self.alpha_reward = torch.full((self.n_participants, self.n_experiments), alpha_reward) if isinstance(alpha_reward, float) else alpha_reward.reshape(n_participants, n_experiments)
+        self.alpha_penalty = torch.full((self.n_participants, self.n_experiments), alpha_penalty) if isinstance(alpha_penalty, float) else alpha_penalty.reshape(n_participants, n_experiments)
+        self.forget_rate = torch.full((self.n_participants, self.n_experiments), forget_rate) if isinstance(forget_rate, float) else forget_rate.reshape(n_participants, n_experiments)
+        self.beta_choice = torch.full((self.n_participants, self.n_experiments), beta_choice) if isinstance(beta_choice, float) else beta_choice.reshape(n_participants, n_experiments)
+        self.alpha_choice = torch.full((self.n_participants, self.n_experiments), alpha_choice) if isinstance(alpha_choice, float) else alpha_choice.reshape(n_participants, n_experiments)
+        self.countefactual_learning = torch.full((self.n_participants, self.n_experiments), counterfactual_learning) if isinstance(counterfactual_learning, float) else counterfactual_learning.reshape(n_participants, n_experiments)
         
         # basic SPICE stuff
         self.rnn_training_finished = True  # rnn not necessary here
         self.setup_module(key_module='value_reward_chosen', input_size=1, include_bias=True)
         self.setup_module(key_module='value_reward_not_chosen', input_size=0, include_bias=True)
-        self.setup_module(key_module='value_choice', input_size=1, include_bias=True)
+        self.setup_module(key_module='value_choice', input_size=1, include_bias=False)
         
         if not fit_full_model:
             self.update_coefficients(
@@ -140,7 +140,7 @@ class QLearning(BaseRNN):
             'value_reward_chosen': (
                 ('value_reward_chosen', -self.alpha_penalty[participant_id.unsqueeze(1), experiment_id] * (self.beta_reward[participant_id.unsqueeze(1), experiment_id] > 0) ),
                 ('reward[t]', self.beta_reward[participant_id.unsqueeze(1), experiment_id]*self.alpha_reward[participant_id.unsqueeze(1), experiment_id]),
-                ('value_reward_chosen*reward[t]', self.alpha_penalty[participant_id.unsqueeze(1), experiment_id]-self.alpha_reward[participant_id.unsqueeze(1), experiment_id] * (self.beta_reward[participant_id.unsqueeze(1), experiment_id] > 0) ),
+                ('value_reward_chosen*reward[t]', (self.alpha_penalty[participant_id.unsqueeze(1), experiment_id]-self.alpha_reward[participant_id.unsqueeze(1), experiment_id]) * (self.beta_reward[participant_id.unsqueeze(1), experiment_id] > 0) ),
                 ),
             # forgetting:
             #   update = forget_rate*(self.state['value_reward']|_{t=0}-value_reward_not_chosen[t])
@@ -161,9 +161,9 @@ class QLearning(BaseRNN):
         
         for module in self.get_modules():
             self.sindy_coefficients[module].requires_grad = False
-            self.sindy_coefficients[module].data[participant_id.unsqueeze(1), experiment_id] = torch.nn.Parameter(torch.zeros_like(self.sindy_coefficients[module][participant_id.unsqueeze(1), experiment_id]))
+            self.sindy_coefficients[module].data[0, participant_id.unsqueeze(1), experiment_id] = torch.nn.Parameter(torch.zeros_like(self.sindy_coefficients[module][0, participant_id.unsqueeze(1), experiment_id]))
             for candidate_term, value in coefficient_maps[module]:
-                self.sindy_coefficients[module].data[participant_id.unsqueeze(1), experiment_id, 0, self.sindy_candidate_terms[module].index(candidate_term)] = value
+                self.sindy_coefficients[module].data[0, participant_id.unsqueeze(1), experiment_id, self.sindy_candidate_terms[module].index(candidate_term)] = value
             self.sindy_coefficients_presence[module] = torch.where(self.sindy_coefficients[module] != 0, 1, 0)
             
     def eval(self, *args, **kwargs):

@@ -24,10 +24,10 @@ def wasserstein_loss(prediction: torch.Tensor, target: torch.Tensor) -> torch.Te
     """
     
     # Extract components
-    pred_values = prediction[:, 0]  # shape: (batch,)
-    experiment_ids = prediction[:, 1]  # shape: (batch,)
-    participant_ids = prediction[:, 2]  # shape: (batch,)
-    target_values = target[:, 0]  # shape: (batch,)
+    pred_values = prediction[..., 0]  # shape: (batch,)
+    experiment_ids = prediction[..., 1]  # shape: (batch,)
+    participant_ids = prediction[..., 2]  # shape: (batch,)
+    target_values = target[..., 0]  # shape: (batch,)
     
     # Create unique group identifier
     # Combine participant and experiment IDs into a single group key
@@ -98,24 +98,12 @@ class DDMRNN(BaseRNN):
 
     def __init__(
         self,
-        n_participants: int,
-        n_experiments: int,
         max_steps: int = 100,
         t_max: float = 5.0,
-        device: torch.device = torch.device('cpu'),
         **kwargs,
         ):
 
-        super().__init__(
-            n_actions=2,
-            spice_config=SPICE_CONFIG,
-            n_participants=n_participants,
-            n_experiments=n_experiments,
-            n_reward_features=0,
-            sindy_polynomial_degree=2,
-            sindy_ensemble_size=1,
-            device=device,
-            )
+        super().__init__(**kwargs)
 
         self.dropout = 0.
         self.max_steps = max_steps
@@ -125,20 +113,20 @@ class DDMRNN(BaseRNN):
         self.init_time = 0.2
         
         self.participant_embedding = self.setup_embedding(num_embeddings=self.n_participants, embedding_size=self.embedding_size, dropout=self.dropout)
-
         self.setup_module(key_module='drift', input_size=1+self.embedding_size, dropout=self.dropout)
 
     def forward(self, inputs: torch.Tensor, prev_state: torch.Tensor = None, batch_first: bool = False):
         spice_signals = self.init_forward_pass(inputs, prev_state, batch_first)
 
+        T, _W, E, B, A = spice_signals.actions.shape
+        
         experiment_ids = spice_signals.experiment_ids
         participant_ids = spice_signals.participant_ids
         participant_emb = self.participant_embedding(participant_ids)
 
         # Single outer timestep (T_out=1): additional_inputs[0] is [W=max_steps, B, n_add]
         # additional_inputs layout: stimulus_strength(0)
-        stimulus = spice_signals.additional_inputs[0, :, :, 0].unsqueeze(-1).expand(-1, -1, self.n_actions)
-        # [W, B, n_actions]
+        stimulus = spice_signals.additional_inputs[0, :, :, :, 0].unsqueeze(-1).expand(-1, -1, -1, self.n_actions) # [W, E, B, n_actions]
 
         self.call_module(
             key_module='drift',
@@ -147,22 +135,22 @@ class DDMRNN(BaseRNN):
             inputs=(stimulus,),
             participant_index=participant_ids,
             participant_embedding=participant_emb,
-        )   # [W, B, n_actions]
+        )   # [W, E, B, n_actions]
         
-        batch_size = participant_ids.shape[0]
-        epsilon = torch.randn((self.max_steps, batch_size, 1), device=self.device, requires_grad=False)
-
+        batch_size = participant_ids.shape[1]
+        epsilon = torch.randn((self.max_steps, self.ensemble_size, batch_size, 1), device=self.device, requires_grad=False)
+        
         # Single-accumulator DDM: use first action's drift/diffusion
-        drift = self.state['drift'][:, :, 0:1]          # [W, B, 1]
+        drift = self.state['drift'][..., 0:1]          # [W, E, B, 1]
         # diffusion = self.state['diffusion'][:, :, 0:1]  # [W, B, 1]
         diffusion = torch.ones_like(drift)
         
         evidence_t = drift * self.dt + diffusion * epsilon * torch.sqrt(torch.tensor(self.dt))
-        evidence = torch.cumsum(evidence_t, dim=0)  # [W, B, 1]
+        evidence = torch.cumsum(evidence_t, dim=0)  # [W, E, B, 1]
 
-        # ThresholdFunction expects batch-first: [B, max_steps, 1]
-        evidence_bf = evidence.permute(1, 0, 2)
-        evidence_t_bf = evidence_t.permute(1, 0, 2)
+        # ThresholdFunction expects batch-first: [E*B, max_steps, 1]
+        evidence_bf = evidence.permute(1, 2, 0, 3).reshape(E*B, self.max_steps, 1)
+        evidence_t_bf = evidence_t.permute(1, 2, 0, 3).reshape(E*B, self.max_steps, 1)
 
         response_time, final_evidence, decision_times = ThresholdFunction.apply(
             torch.abs(evidence_bf) - self.threshold,
@@ -173,13 +161,15 @@ class DDMRNN(BaseRNN):
             self.init_time,
             )
         
+        # response_time, final_evidence, decision_times = response_time.reshape(E, B, 1), final_evidence.reshape(E, B, 1), decision_times.reshape(E, B, 1) 
+        
         output = torch.concat((
             response_time, 
-            experiment_ids.view(-1, 1), 
-            participant_ids.view(-1, 1)
-            ), dim=-1).reshape(-1, 1, 1, 3).repeat(1, 1, self.max_steps, 1)  # add trial dimension
+            experiment_ids.reshape(-1, 1), 
+            participant_ids.reshape(-1, 1)
+            ), dim=-1).reshape(E, B, 1, 1, 3).repeat(1, 1, 1, self.max_steps, 1)  # add trial dimension
         
-        # Return [B, T_in=1, T_out=max_steps, 3] to match training loop expectations
+        # Return [E, B, T_in=1, T_out=max_steps, 3] to match training loop expectations
         return output, self.get_state()
 
 
@@ -316,20 +306,24 @@ if __name__=='__main__':
         kwargs_rnn_class={
             'max_steps': dataset.xs.shape[2],
             't_max': t_max,
+            'n_reward_features': 0,
         },
         loss_fn=wasserstein_loss,
         
         n_actions=2,
         n_participants=n_participants,
 
-        epochs=2000,
-        sindy_epochs=2000,
+        epochs=10,#2000,
+        epochs_confidence=0,
+        sindy_epochs=1,#2000,
         warmup_steps=1000,
         learning_rate=0.00001,
-        bagging=False,
         scheduler=False,
         device=device,
 
+        ensemble_size=6,
+        batch_size=1000,
+        
         sindy_weight=0.00001,
         sindy_l2_lambda=0.0001,
         sindy_library_polynomial_degree=2,
@@ -346,9 +340,17 @@ if __name__=='__main__':
     
     model_rnn = spice_estimator.rnn_agent.model
     model_spice = spice_estimator.spice_agent.model
-    signed_rt_rnn, state_rnn = model_rnn(dataset.xs.to(device), batch_first=True)
+    signed_rt_rnn, state_rnn = model_rnn(dataset.xs.unsqueeze(0).repeat(model_rnn.ensemble_size, 1, 1, 1, 1).to(device), batch_first=True)
+    
+    rt_rnn_mean = signed_rt_rnn.mean(dim=0)
+    drift_rnn_mean = state_rnn['drift'].mean(dim=1)
+    drift_rnn_std = state_rnn['drift'].std(dim=1)
+    
     if spice_estimator.sindy_weight > 0:
         signed_rt_spice, state_spice = model_spice(dataset.xs.to(device), batch_first=True)
+        rt_spice_mean = signed_rt_spice.mean(dim=0)
+        drift_spice_mean = state_spice['drift'].mean(dim=1)
+        drift_spice_std = state_spice['drift'].std(dim=1)
     
     import matplotlib.pyplot as plt
     
@@ -356,15 +358,15 @@ if __name__=='__main__':
     
     for index in range(n_participants):
         axs[index, 1].hist(dataset.ys[index*n_trials:(index+1)*n_trials, 0, 0, 0].cpu().numpy(), bins=50, range=(-5.2, 5.2), alpha=0.4, label="Real", color='tab:blue')
-        axs[index, 1].hist(signed_rt_rnn[index*n_trials:(index+1)*n_trials, 0, 0, 0].detach().cpu().numpy(), bins=50, range=(-5.2, 5.2), alpha=0.4, label="RNN", color='tab:orange')
+        axs[index, 1].hist(rt_rnn_mean[index*n_trials:(index+1)*n_trials, 0, 0, 0].detach().cpu().numpy(), bins=50, range=(-5.2, 5.2), alpha=0.4, label="RNN", color='tab:orange')
         
         axs[index, 0].plot(dataset.xs[500+n_trials*index, 0, :, 2].detach().cpu().numpy(), label="Real", color='tab:blue')
-        axs[index, 0].plot(state_rnn['drift'][:, 500+n_trials*index, 0].detach().cpu().numpy(), label="RNN", color='tab:orange')
+        axs[index, 0].plot(drift_rnn_mean[:, 500+n_trials*index, 0].detach().cpu().numpy(), label="RNN", color='tab:orange')
         
         if spice_estimator.sindy_weight > 0:
             model_spice.print_spice_model(participant_id=index)
-            axs[index, 1].hist(signed_rt_spice[index*n_trials:(index+1)*n_trials, 0, 0, 0].detach().cpu().numpy(), bins=50, range=(-5.2, 5.2), alpha=0.4, label="SPICE", color='tab:green')
-            axs[index, 0].plot(state_spice['drift'][:, 500+n_trials*index, 0].detach().cpu().numpy(), label="SPICE", color='tab:green')
-        
+            axs[index, 1].hist(rt_spice_mean[index*n_trials:(index+1)*n_trials, 0, 0, 0].detach().cpu().numpy(), bins=50, range=(-5.2, 5.2), alpha=0.4, label="SPICE", color='tab:green')
+            axs[index, 0].plot(drift_spice_mean[:, 500+n_trials*index, 0].detach().cpu().numpy(), label="SPICE", color='tab:green')
+            
     axs[0, 1].legend()
     plt.show()
