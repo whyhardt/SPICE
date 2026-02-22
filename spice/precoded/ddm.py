@@ -314,8 +314,6 @@ if __name__=='__main__':
         n_participants=n_participants,
 
         epochs=10,#2000,
-        epochs_confidence=0,
-        sindy_epochs=1,#2000,
         warmup_steps=1000,
         learning_rate=0.00001,
         scheduler=False,
@@ -325,7 +323,7 @@ if __name__=='__main__':
         batch_size=1000,
         
         sindy_weight=0.00001,
-        sindy_l2_lambda=0.0001,
+        sindy_alpha=0.0001,
         sindy_library_polynomial_degree=2,
         
         # save_path_spice='spice_ddm.pkl',

@@ -25,21 +25,19 @@ if __name__=='__main__':
     
     # RNN training parameters
     parser.add_argument('--epochs', type=int, default=4000, help='Number of training epochs')
-    parser.add_argument('--epochs_confidence', type=int, default=0, help='Number of training epochs for stage 2 (confidence pruning)')
-    parser.add_argument('--epochs_finetuning', type=int, default=4000, help='Number of training epochs for stage 3 (SINDy-only finetuning)')
     parser.add_argument('--epochs_warmup', type=int, default=None, help='Number of training epochs for warmup (exp increase of sindy-weight; no pruning)')
     parser.add_argument('--lr', type=float, default=0.01, help='Learning rate')
     parser.add_argument('--rnn_l2_lambda', type=float, default=0., help='L2 Reg of the RNN parameters')
+    parser.add_argument('--ensemble', type=int, default=1, help='Number of independent members in the ensemble setup')
     
     # SINDy training parameters
     parser.add_argument('--sindy_weight', type=float, default=0.1, help='Weight for SINDy regularization during RNN training')
-    parser.add_argument('--sindy_l2_lambda', type=float, default=0.0001, help='L2 Reg of the SINDy coefficients')
-    parser.add_argument('--sindy_pruning_threshold', type=float, default=0.05, help='Threshold value for cutting off sindy terms (lowered for delta-form coefficients)')
-    parser.add_argument('--sindy_pruning_terms', type=int, default=1, help='Number of thresholded terms')
-    parser.add_argument('--sindy_pruning_freq', type=int, default=1, help='Number of epochs after which to prune')
-    parser.add_argument('--sindy_pruning_patience', type=int, default=100, help='Number of epochs after which to prune')
-    parser.add_argument('--sindy_confidence', type=float, default=0.05, help='Threshold used for confidence-based pruning across models (participants x experiments)')
-    
+    parser.add_argument('--sindy_alpha', type=float, default=0.0001, help='Degree-weighted coefficient penalty strength (ridge alpha)')
+    parser.add_argument('--sindy_pruning_frequency', type=int, default=50, help='Epochs between pruning events')
+    parser.add_argument('--sindy_threshold_pruning', type=float, default=None, help='Threshold value for cutting off sindy terms (lowered for delta-form coefficients)')
+    parser.add_argument('--sindy_ensemble_pruning', type=float, default=None, help='t-test threshold for ensemble-based pruning')
+    parser.add_argument('--sindy_population_pruning', type=float, default=None, help='Percentage of participants which have to have a term active in order to keep it.')
+
     # Data setup parameters
     parser.add_argument('--train_ratio_time', type=float, default=None, help='Ratio of data used for training. Split along time dimension. Not combinable with test_sessions')
     parser.add_argument('--test_sessions', type=str, default=None, help='Comma-separated list of integeres which indicate test sessions. Not combinable with train_ratio_time')
@@ -53,11 +51,16 @@ if __name__=='__main__':
     
     # args.results = False
     # args.sindy_weight = 0.1
-    # args.epochs = 1000
-    # args.epochs_warmup = 500
-    # args.epochs_confidence = 0
-    # args.epochs_finetuning = 2000
-    ensemble_size = 20
+    # args.epochs = 10
+    # args.epochs_warmup = 5
+    # args.ensemble = 10
+    # args.sindy_pruning_frequency = 1
+    # args.sindy_threshold_pruning = None
+    # args.sindy_ensemble_pruning = None
+    # args.sindy_population_pruning = None  # set to e.g. 0.05 for participant-level filtering
+    
+    # args.data = "weinhardt2025/data/synthetic/synthetic_256p_0_0.csv"
+    # args.model = args.data.replace("data", "params").replace("/synthetic_", "/spice_synthetic_test_").replace(".csv", ".pkl")
     
     # args.model = "weinhardt2025/params/eckstein2022/spice_eckstein2022.pkl"
     # args.data = "weinhardt2025/data/eckstein2022/eckstein2022.csv"
@@ -81,9 +84,6 @@ if __name__=='__main__':
     # args.model = "weinhardt2025/params/weber2024/spice_weber2024.pkl" 
     # args.additional_columns = None,
     # args.test_sessions = "4,8,12"
-    
-    # args.data = "weinhardt2025/data/synthetic/synthetic_256p_0_0.csv"
-    # args.model = args.data.replace("data", "params").replace("/synthetic_", "/spice_synthetic_test_").replace(".csv", ".pkl")
     
     example_participant = 2
     plot_coef_dist = False
@@ -119,6 +119,7 @@ if __name__=='__main__':
     n_participants = len(dataset_train.xs[..., -1].unique())
     n_experiments = len(dataset_train.xs[..., -2].unique())
     n_items = args.n_items if args.n_items else n_actions
+    n_sessions = dataset.xs.shape[0]
     
     if n_items == n_actions:
         if ((dataset.xs[..., n_actions:n_actions*2].nan_to_num(0) == 1).int() + (dataset.xs[..., n_actions:n_actions*2].nan_to_num(0) == 0).int()).sum() == dataset.xs.shape[0]*dataset.xs.shape[1]*n_actions:
@@ -149,26 +150,22 @@ if __name__=='__main__':
         
         # rnn training parameters
         epochs=args.epochs,
-        epochs_confidence=args.epochs_confidence,
         learning_rate=args.lr,
         warmup_steps=args.epochs_warmup,
-        ensemble_size=ensemble_size,
+        ensemble_size=args.ensemble,
         l2_rnn=args.rnn_l2_lambda,
         scheduler=True,
-        
+        batch_size=None,
+
         # sindy fitting parameters
-        sindy_epochs=args.epochs_finetuning,
         sindy_weight=args.sindy_weight,
-        sindy_l2_lambda=args.sindy_l2_lambda,
-        sindy_pruning_threshold=args.sindy_pruning_threshold,
-        sindy_pruning_frequency=args.sindy_pruning_freq,
-        sindy_pruning_terms=args.sindy_pruning_terms,
-        sindy_pruning_patience=args.sindy_pruning_patience,
-        sindy_confidence_threshold=None,#args.sindy_confidence,
-        sindy_ensemble_alpha=None,
+        sindy_alpha=args.sindy_alpha,
         sindy_library_polynomial_degree=2,
-        sindy_optimizer_reset=None,
-        
+        sindy_pruning_frequency=args.sindy_pruning_frequency,
+        sindy_threshold_pruning=args.sindy_threshold_pruning,
+        sindy_ensemble_pruning=args.sindy_ensemble_pruning,
+        sindy_population_pruning=args.sindy_population_pruning,
+
         # other parameters
         verbose=True,
         device=torch.device('cuda' if torch.cuda.is_available() else 'cpu'),
@@ -181,7 +178,6 @@ if __name__=='__main__':
     training_device_str = "CUDA" if estimator.device == torch.device('cuda') else "CPU"
     print("Training device:", training_device_str)
     print("="*_get_terminal_width())
-    # if estimator.sindy_epochs > 0 or estimator.epochs > 0:
     estimator.fit(*dataset_tuple)
     
     print("\nTraining complete!")

@@ -167,17 +167,23 @@ class ParameterModule(nn.Module):
 class BaseRNN(nn.Module):
     def __init__(
         self,
-        n_actions,
         spice_config: SpiceConfig,
+        
+        n_actions,
         n_participants: int = 1,
         n_experiments: int = 1,
         n_items: int = None,
         n_reward_features: int = None,
+        
+        ensemble_size: int = 1,
         embedding_size: int = 32,
+        
         use_sindy: bool = False,
         sindy_polynomial_degree: int = 1,
-        ensemble_size: int = 1,
+        sindy_alpha: float = 1e-4,
+        
         device=torch.device('cpu'),
+        
         **kwargs,
         ):
         super().__init__()
@@ -221,7 +227,8 @@ class BaseRNN(nn.Module):
         self.sindy_degree_weights = {}  # Weights for coefficient penalty based on polynomial degree
         self.sindy_pruning_patience_counters = {}  # Patience counters for thresholding
         self.sindy_specs = {}  # sindy-specific specifications for each module (e.g. include_bias, interaction_only, ...)
-
+        self.sindy_alpha = sindy_alpha
+        
         # Setup initial values of RNN
         self.sindy_loss = torch.tensor(0, requires_grad=True, device=device, dtype=torch.float32)
         self.state = None
@@ -445,14 +452,25 @@ class BaseRNN(nn.Module):
         inputs = torch.nan_to_num(inputs, nan=0.0)
 
         if key_module in self.submodules_rnn.keys():
-            if not self.use_sindy:
-                # RNN module
+            if not self.use_sindy or (self.use_sindy and self.training and self.rnn_training_finished):
+                # Get RNN module prediction
                 inputs_rnn = torch.cat((inputs, embedding), dim=-1)  # [W, E, B, I, feat+emb]
                 next_value = self.submodules_rnn[key_module](inputs_rnn, state=value).squeeze(-1)  # [W, E, B, I]
                 if activation_rnn is not None:
                     next_value = activation_rnn(next_value)
-            else:
-                # SINDy — operates per within-trial step
+                if self.use_sindy:
+                    # direct lstsq solve for sindy coefficients (usually training stage 3 - sindy finetuning with fixed rnn parameters)
+                    self.sindy_ridge_solve(
+                        key_module=key_module, 
+                        participant_ids=participant_index,
+                        experiment_ids=experiment_index,
+                        h_next=next_value,
+                        h_current=value,
+                        controls=inputs,
+                    )
+                    
+            if self.use_sindy:
+                # Get SINDy module prediction — operates per within-trial step
                 next_value = torch.zeros((inputs.shape[:-1]), device=inputs.device)  # [W, E, B, I]
                 if key_state is not None:
                     next_value_t = value[-1]  # [E, B, I]
@@ -614,8 +632,8 @@ class BaseRNN(nn.Module):
         # Compute predictions: library (W, E, B, I, C) @ coeffs (E, B, C) -> (W, E, B, I)
         h_next_sindy = h_current + torch.einsum('webic,ebc->webi', library, sindy_coeffs)
         
-        return h_next_sindy     
-
+        return h_next_sindy
+    
     def compute_sindy_loss_for_module(
         self,
         module_name: str,
@@ -673,6 +691,76 @@ class BaseRNN(nn.Module):
         sindy_loss = torch.clamp(sindy_loss, max=100.0)
 
         return sindy_loss
+    
+    def sindy_ridge_solve(self, key_module: str, participant_ids: torch.Tensor, experiment_ids: torch.Tensor, h_next: torch.Tensor, h_current: torch.Tensor, controls: torch.Tensor):
+        W, E, B, I = h_current.shape
+        P = self.n_participants
+        X = self.n_experiments
+        T = self.sindy_coefficients[key_module].shape[-1]
+
+        library = compute_polynomial_library(
+            h_current.reshape(W, B*E, I),
+            controls.reshape(W, B*E, I, -1),
+            degree=self.sindy_specs[key_module]['polynomial_degree'],
+            feature_names=self.sindy_specs[key_module]['input_names'],
+            library=self.sindy_candidate_terms[key_module],
+        )  # (W, E*B, I, T)
+
+        # Reshape to (W, E, B, I, T)
+        library = library.reshape(W, E, B, I, T)
+        target = h_next - h_current  # (W, E, B, I)
+
+        # Apply presence mask: zero out pruned library columns per (E, P, X) group
+        # mask: (E, P, X, T) -> gather per-sample mask via participant/experiment ids
+        E_idx = torch.arange(E, device=self.device).unsqueeze(1)  # (E, 1)
+        sample_mask = self.sindy_coefficients_presence[key_module][E_idx, participant_ids, experiment_ids]  # (E, B, T)
+        library = library * sample_mask.float().unsqueeze(0).unsqueeze(3)  # (1, E, B, 1, T) -> broadcasts to (W, E, B, I, T)
+
+        # Build group index for each (ensemble, batch) sample -> (participant, experiment) pair
+        # participant_ids, experiment_ids: (E, B)
+        group_ids = (participant_ids * X + experiment_ids).long()  # (E, B)
+        n_groups = P * X
+
+        # Flatten W and I into the "samples" dimension per (E, B) pair
+        # library: (W, E, B, I, T) -> (E, B, W*I, T)
+        library = library.permute(1, 2, 0, 3, 4).reshape(E, B, W * I, T)
+        # target: (W, E, B, I) -> (E, B, W*I, 1)
+        target = target.permute(1, 2, 0, 3).reshape(E, B, W * I, 1)
+
+        # Compute per-sample outer products and cross terms
+        # AtA_samples: (E, B, T, T), Atb_samples: (E, B, T, 1)
+        AtA_samples = library.transpose(-2, -1) @ library  # (E, B, T, T)
+        Atb_samples = library.transpose(-2, -1) @ target   # (E, B, T, 1)
+
+        # Scatter-accumulate into (E, n_groups, T, T) and (E, n_groups, T, 1)
+        # Expand group_ids to broadcast: (E, B) -> (E, B, 1, 1)
+        group_idx = group_ids.unsqueeze(-1).unsqueeze(-1)  # (E, B, 1, 1)
+
+        AtA_accum = torch.zeros(E, n_groups, T, T, device=library.device, dtype=library.dtype)
+        Atb_accum = torch.zeros(E, n_groups, T, 1, device=library.device, dtype=library.dtype)
+        sample_count = torch.zeros(E, n_groups, device=library.device, dtype=library.dtype)
+
+        AtA_accum.scatter_add_(1, group_idx.expand_as(AtA_samples), AtA_samples)
+        Atb_accum.scatter_add_(1, group_idx.expand_as(Atb_samples), Atb_samples)
+        sample_count.scatter_add_(1, group_ids, torch.ones_like(group_ids, dtype=library.dtype))
+
+        # Reshape to (E, P, X, T, T) and (E, P, X, T, 1)
+        AtA_accum = AtA_accum.reshape(E, P, X, T, T)
+        Atb_accum = Atb_accum.reshape(E, P, X, T, 1)
+        has_data = sample_count.reshape(E, P, X) > 0  # (E, P, X)
+
+        # Add ridge penalty: lambda * diag(degree_weights) + eps*I for numerical stability
+        penalty_diag = torch.diag(self.sindy_alpha * self.sindy_degree_weights[key_module])  # (T, T)
+        penalty_diag += 1e-2 * torch.eye(T, device=library.device, dtype=library.dtype)
+        AtA_accum = AtA_accum + penalty_diag  # broadcasts over (E, P, X)
+
+        # Only solve for groups that have data; keep existing coefficients for empty groups
+        if has_data.all():
+            coefficients = torch.linalg.solve(AtA_accum, Atb_accum).squeeze(-1)
+            self.sindy_coefficients[key_module].data.copy_(coefficients)
+        else:
+            coefficients = torch.linalg.solve(AtA_accum[has_data], Atb_accum[has_data]).squeeze(-1)
+            self.sindy_coefficients[key_module].data[has_data] = coefficients
         
     def sindy_coefficient_pruning(self, threshold, n_terms_pruning: int = None, patience: int = 1):
         """
@@ -710,7 +798,7 @@ class BaseRNN(nn.Module):
         temp_coeffs[~is_candidate] = torch.inf
 
         # Find k smallest per [participant, ensemble]
-        n_terms_pruning = is_candidate.sum().item() if n_terms_pruning is None else n_terms_pruning
+        n_terms_pruning = all_coeffs_abs.shape[-1] if n_terms_pruning is None else n_terms_pruning
         _, indices = torch.topk(temp_coeffs, min(n_terms_pruning, is_candidate.sum().item()), dim=-1, largest=False)
         # Shape: [n_participants, n_ensemble, k]
 
@@ -793,7 +881,7 @@ class BaseRNN(nn.Module):
 
         return penalty
                     
-    def get_spice_model_string(self, participant_id: int = 0, experiment_id: int = 0, ensemble_idx: int = 0) -> str:
+    def get_spice_model_string(self, participant_id: int = 0, experiment_id: int = 0, ensemble_idx: int = None) -> str:
         """
         Get the learned SPICE features and equations as a string.
 
@@ -807,7 +895,7 @@ class BaseRNN(nn.Module):
         """
         lines = []
         max_len_module = max([len(module) for module in self.get_modules()])
-
+            
         for module in self.submodules_rnn:
             sparse_coeffs = (self.sindy_coefficients[module][ensemble_idx, participant_id, experiment_id] * self.sindy_coefficients_presence[module][ensemble_idx, participant_id, experiment_id]).detach().cpu().numpy()
             space_filler = " "+" "*(max_len_module-len(module)) if max_len_module > len(module) else " "
@@ -847,18 +935,29 @@ class BaseRNN(nn.Module):
     def get_sindy_coefficients(self, key_module: Optional[str] = None):
         if key_module is None:
             key_module = self.get_modules()
-        
+
         if isinstance(key_module, str):
             key_module = [key_module]
-        
+
         sindy_coefficients = {}
         for module in key_module:
-            sindy_coefficients[module] = self.sindy_coefficients[module].detach().cpu().numpy() * self.sindy_coefficients_presence[module].detach().cpu().numpy()
-            if self.sindy_specs[module].get('include_bias', False):
-                sindy_coefficients[module][..., 1] += 1
-            else:
-                sindy_coefficients[module][..., 0] += 1
-        
+            coeffs = self.sindy_coefficients[module].detach()  # (E, P, X, T)
+            presence = self.sindy_coefficients_presence[module].float()  # (E, P, X, T)
+
+            # Masked median: only aggregate over ensemble members where term is active
+            masked_coeffs = coeffs * presence  # zero out inactive
+            masked_coeffs[presence == 0] = float('nan')  # mark inactive as NaN so median ignores them
+            aggregated = torch.nanmean(masked_coeffs, dim=0, keepdim=True)[0]  # (1, P, X, T)
+            aggregated = torch.nan_to_num(aggregated, nan=0.0)  # terms inactive in all members -> 0
+            
+            # Presence: term is active if majority of ensemble members have it
+            aggregated_presence = (presence.sum(dim=0, keepdim=True) > (self.ensemble_size / 2)).float()
+            sindy_coefficients[module] = (aggregated * aggregated_presence).cpu().numpy()
+
+            # Add implicit +1 for the identity term (h_next = h_current + library @ coeffs)
+            # identity_idx = self.sindy_candidate_terms[module].index(module)
+            # sindy_coefficients[module][..., identity_idx] += 1
+
         return sindy_coefficients
     
     def eval(self, use_sindy=True):
@@ -866,8 +965,8 @@ class BaseRNN(nn.Module):
         self.use_sindy = use_sindy
         return self
         
-    def train(self, mode=True):
+    def train(self, mode=True, use_sindy=False):
         super().train(mode)
         # if training mode activate (mode=True) -> do not use sindy for forward pass (self.use_sindy=False)
-        self.use_sindy = not mode
+        self.use_sindy = use_sindy
         return self

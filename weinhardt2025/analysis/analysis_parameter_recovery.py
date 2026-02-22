@@ -11,7 +11,7 @@ from weinhardt2025.benchmarking.benchmarking_qlearning import QLearning
 
 
 path_data = 'weinhardt2025/data/synthetic/synthetic_PARp_IT_0.csv'
-path_model = path_data.replace('data', 'params').replace('/synthetic_', '/spice_synthetic_test_ensfilter_').replace('.csv', '.pkl')
+path_model = path_data.replace('data', 'params').replace('/synthetic_', '/spice_synthetic_test_').replace('.csv', '.pkl')
 spice_model = workingmemory_rewardbinary
 rl_parameters = ['beta_reward', 'beta_choice', 'alpha_reward', 'alpha_penalty', 'alpha_choice', 'forget_rate']
 participants = [256]#[32, 64, 128, 256, 512]
@@ -86,10 +86,11 @@ for index_par, par in enumerate(participants):
         )
         fitted_model.load_spice(path_model=path_model.replace('PAR', str(par)).replace('IT', str(it)))
         fitted_model = fitted_model.rnn_model
+        fitted_coef_vals = fitted_model.get_sindy_coefficients()
 
         # put all coefs into storage
         index_coefs_all = 0
-        for module in true_model.get_modules():
+        for module in fitted_model.get_modules():
             n_terms_module = fitted_model.sindy_coefficients[module].shape[-1]
 
             # get candidate terms from true model to map into fitted model coef positions
@@ -111,10 +112,11 @@ for index_par, par in enumerate(participants):
             #     fitted_model.sindy_coefficients[module][0, :, 0, :] *
             #     fitted_model.sindy_coefficients_presence[module][0, :, 0, :]
             # ).detach().cpu().numpy()
-            fitted_coef_vals = fitted_model.sindy_coefficients[module][0, :, 0, :].detach().cpu().numpy()
-            fitted_coef_vals[:, 1] += 1
-            fitted_coefs[index_par, par*it:par*(it+1), index_coefs_all:index_coefs_all+n_terms_module] = fitted_coef_vals
-
+            # fitted_coef_vals = (fitted_model.sindy_coefficients[module][:, :, 0, :].median(dim=0)[0] * fitted_model.sindy_coefficients_presence[module][:, :, 0, :].float().median(dim=0)[0]).detach().cpu().numpy()
+            index_ident = candidate_terms_fitted_model.index(module)
+            fitted_coef_vals[module][0, :, 0, index_ident] += 1
+            fitted_coefs[index_par, par*it:par*(it+1), index_coefs_all:index_coefs_all+n_terms_module] = fitted_coef_vals[module][0, :, 0]
+            
             index_coefs_all += n_terms_module
 
         # store number of active params per participant
@@ -289,8 +291,11 @@ plt.show()
 # PLOTTING: Parameter Recovery Box Plots
 # -------------------------------------------------------------------------------
 
-# Get candidate term names from a fitted model for labeling
-# For now, use generic term indices
+# Build flat list of term names matching coefficient storage layout (module by module)
+term_names = []
+for module in sample_model.rnn_model.get_modules():
+    for term in sample_model.rnn_model.sindy_candidate_terms[module]:
+        term_names.append(f"{module}: {term}")
 n_terms = true_coefs.shape[-1]
 
 # Find which terms have any non-zero true coefficients (active terms)
@@ -300,16 +305,13 @@ active_term_indices = np.where(active_term_mask)[0]
 if len(active_term_indices) == 0:
     print("No active terms found in true coefficients.")
 else:
-    # Create one figure per participant size
     for index_par, par in enumerate(participants):
         n_samples = par * iterations
-
-        # Determine grid size for subplots
         n_active_terms = len(active_term_indices)
         n_cols = min(6, n_active_terms)
         n_rows = int(np.ceil(n_active_terms / n_cols))
 
-        fig, axs = plt.subplots(nrows=n_rows, ncols=n_cols, figsize=(3*n_cols, 3*n_rows))
+        fig, axs = plt.subplots(nrows=n_rows, ncols=n_cols, figsize=(3.5*n_cols, 3.5*n_rows))
         if n_active_terms == 1:
             axs = np.array([[axs]])
         elif n_rows == 1:
@@ -318,76 +320,77 @@ else:
             axs = axs.reshape(-1, 1)
 
         for idx, term_idx in enumerate(active_term_indices):
-            row = idx // n_cols
-            col = idx % n_cols
-            ax = axs[row, col]
+            ax = axs[idx // n_cols, idx % n_cols]
 
-            # Get true and fitted coefficients for this term
             true_vals = true_coefs[index_par, :n_samples, term_idx]
             fitted_vals = fitted_coefs[index_par, :n_samples, term_idx]
-
-            # Remove NaN values
             valid_mask = ~(np.isnan(true_vals) | np.isnan(fitted_vals))
-            true_vals_valid = true_vals[valid_mask]
-            fitted_vals_valid = fitted_vals[valid_mask]
+            true_v = true_vals[valid_mask]
+            fitted_v = fitted_vals[valid_mask]
 
-            if len(true_vals_valid) == 0:
+            if len(true_v) == 0:
                 ax.set_visible(False)
                 continue
 
-            # Bin the data for box plot
-            num_bins = 10
-            val_min, val_max = true_vals_valid.min(), true_vals_valid.max()
-            if val_max - val_min < 1e-6:
-                # All values are the same, just scatter plot
-                ax.scatter(true_vals_valid, fitted_vals_valid, alpha=0.5, s=10)
+            # Shared axis range
+            axis_min = min(true_v.min(), fitted_v.min())
+            axis_max = max(true_v.max(), fitted_v.max())
+            axis_pad = (axis_max - axis_min) * 0.05
+            axis_min -= axis_pad
+            axis_max += axis_pad
+
+            # Identity line (behind everything)
+            ax.plot([axis_min, axis_max], [axis_min, axis_max], '-', color='#cccccc', linewidth=1, zorder=1)
+
+            # Box plot binned by true values
+            num_bins = 8
+            true_range = true_v.max() - true_v.min()
+            if true_range < 1e-6:
+                ax.scatter(true_v, fitted_v, alpha=0.4, s=8, color='cadetblue', zorder=3)
             else:
-                bin_edges = np.linspace(val_min, val_max, num_bins + 1)
-                bins = np.digitize(true_vals_valid, bin_edges) - 1
-                bins = np.clip(bins, 0, num_bins - 1)
-
-                box_data = [fitted_vals_valid[bins == i] for i in range(num_bins)]
+                bin_edges = np.linspace(true_v.min(), true_v.max(), num_bins + 1)
+                bins = np.clip(np.digitize(true_v, bin_edges) - 1, 0, num_bins - 1)
+                box_data = [fitted_v[bins == i] for i in range(num_bins)]
                 bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
-                bin_width = (val_max - val_min) / num_bins * 0.8
+                bin_width = true_range / num_bins * 0.75
 
-                # Create box plot
-                bp = ax.boxplot(
+                ax.boxplot(
                     box_data,
                     positions=bin_centers,
                     widths=bin_width,
                     patch_artist=True,
                     showfliers=False,
-                    boxprops=dict(facecolor='cadetblue', alpha=0.7),
-                    medianprops=dict(color='black', linewidth=1.5),
-                    whiskerprops=dict(color='cadetblue', linestyle='--', alpha=0.5),
-                    capprops=dict(color='cadetblue', alpha=0.5),
+                    manage_ticks=False,
+                    boxprops=dict(facecolor='cadetblue', alpha=0.6, linewidth=0.5),
+                    medianprops=dict(color='black', linewidth=1.2),
+                    whiskerprops=dict(color='gray', linewidth=0.7),
+                    capprops=dict(color='gray', linewidth=0.7),
+                    zorder=2,
                 )
 
-            # Plot identity line
-            plot_min = min(val_min, fitted_vals_valid.min())
-            plot_max = max(val_max, fitted_vals_valid.max())
-            ax.plot([plot_min, plot_max], [plot_min, plot_max], ':', color='gray', linewidth=1, label='Identity')
+            # Linear regression
+            if len(true_v) > 1 and true_range > 1e-6:
+                reg = LinearRegression().fit(true_v.reshape(-1, 1), fitted_v)
+                x_fit = np.array([axis_min, axis_max])
+                ax.plot(x_fit, reg.predict(x_fit.reshape(-1, 1)), '--', color='black', linewidth=1, zorder=4)
 
-            # Linear regression fit
-            if len(true_vals_valid) > 1:
-                model = LinearRegression()
-                model.fit(true_vals_valid.reshape(-1, 1), fitted_vals_valid)
-                x_line = np.linspace(plot_min, plot_max, 100)
-                y_line = model.predict(x_line.reshape(-1, 1))
-                ax.plot(x_line, y_line, '--', color='black', linewidth=1, label='Linear fit')
-
-            ax.set_xlabel('True coefficient', fontsize=8)
-            ax.set_ylabel('Fitted coefficient', fontsize=8)
-            ax.set_title(f'Term {term_idx}', fontsize=10)
+            ax.set_xlim(axis_min, axis_max)
+            ax.set_ylim(axis_min, axis_max)
+            ax.set_aspect('equal', adjustable='box')
+            ax.set_title(term_names[term_idx], fontsize=9)
             ax.tick_params(labelsize=7)
+
+            # Only label outer axes
+            if idx // n_cols == n_rows - 1 or idx == n_active_terms - 1:
+                ax.set_xlabel('True', fontsize=8)
+            if idx % n_cols == 0:
+                ax.set_ylabel('Fitted', fontsize=8)
 
         # Hide unused subplots
         for idx in range(n_active_terms, n_rows * n_cols):
-            row = idx // n_cols
-            col = idx % n_cols
-            axs[row, col].set_visible(False)
+            axs[idx // n_cols, idx % n_cols].set_visible(False)
 
-        plt.suptitle(f'Parameter Recovery (N={par} participants)', fontsize=14)
+        plt.suptitle(f'Parameter Recovery (N={par})', fontsize=13)
         plt.tight_layout()
         plt.show()
 

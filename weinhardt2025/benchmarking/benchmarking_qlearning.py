@@ -52,7 +52,7 @@ class QLearning(BaseRNN):
         self.rnn_training_finished = True  # rnn not necessary here
         self.setup_module(key_module='value_reward_chosen', input_size=1, include_bias=True)
         self.setup_module(key_module='value_reward_not_chosen', input_size=0, include_bias=True)
-        self.setup_module(key_module='value_choice', input_size=1, include_bias=False)
+        self.setup_module(key_module='value_choice', input_size=1, include_bias=True)
         
         if not fit_full_model:
             self.update_coefficients(
