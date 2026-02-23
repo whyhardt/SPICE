@@ -50,17 +50,17 @@ if __name__=='__main__':
     args = parser.parse_args()
     
     # args.results = False
-    # args.sindy_weight = 0.1
-    # args.epochs = 10
-    # args.epochs_warmup = 5
-    # args.ensemble = 10
-    # args.sindy_pruning_frequency = 1
-    # args.sindy_threshold_pruning = None
-    # args.sindy_ensemble_pruning = None
-    # args.sindy_population_pruning = None  # set to e.g. 0.05 for participant-level filtering
+    args.sindy_weight = 0.1
+    args.epochs = 10
+    args.epochs_warmup = 5
+    args.ensemble = 10
+    args.sindy_pruning_frequency = 1
+    args.sindy_threshold_pruning = None
+    args.sindy_ensemble_pruning = 0.05
+    args.sindy_population_pruning = None  # set to e.g. 0.05 for participant-level filtering
     
-    # args.data = "weinhardt2025/data/synthetic/synthetic_256p_0_0.csv"
-    # args.model = args.data.replace("data", "params").replace("/synthetic_", "/spice_synthetic_test_").replace(".csv", ".pkl")
+    args.data = "weinhardt2025/data/synthetic/synthetic_256p_0_0.csv"
+    args.model = args.data.replace("data", "params").replace("/synthetic_", "/spice_synthetic_test_").replace(".csv", ".pkl")
     
     # args.model = "weinhardt2025/params/eckstein2022/spice_eckstein2022.pkl"
     # args.data = "weinhardt2025/data/eckstein2022/eckstein2022.csv"

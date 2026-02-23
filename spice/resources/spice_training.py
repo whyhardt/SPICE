@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, RandomSampler
 from torch.optim.lr_scheduler import ReduceLROnPlateau
-from typing import Tuple
+from typing import Tuple, Union, Optional
 import shutil
 from scipy.stats import t as t_dist
 from torch.nn.functional import mse_loss  # using standard mse loss for spice should be fine most of the time
@@ -324,6 +324,7 @@ def _vectorize_state(
     model: BaseRNN,
     xs_train: torch.Tensor,
     ys_train: torch.Tensor,
+    verbose: bool = False,
 ) -> tuple:
     """
     Run the frozen RNN forward on the full training data to collect state buffers
@@ -333,6 +334,9 @@ def _vectorize_state(
         model: RNN model (should be in eval mode with use_sindy=False)
         xs_train: 5D tensor (E, B, T, W, F)
         ys_train: 5D tensor matching xs_train
+        batch_size_fwd: Max sessions to process per forward call.
+            None = auto-detect via GPU probing (or all B on CPU).
+        verbose: Print auto-batch info
 
     Returns:
         Tuple of (input_state_buffer, target_state_buffer, xs_flat, ys_flat)
@@ -345,23 +349,43 @@ def _vectorize_state(
         xs_train = xs_train.unsqueeze(0).repeat(E, 1, 1, 1, 1)
         ys_train = ys_train.unsqueeze(0).repeat(E, 1, 1, 1, 1)
 
-    model.init_state(batch_size=B, within_ts=W)
+    # State buffers: (within_ts, E, n_trials*B, n_items) — always full size
+    state_keys = list(model.init_state(batch_size=1, within_ts=W).keys())
+    state_buffer_current = {s: torch.zeros((W, E, T*B, model.n_items), dtype=torch.float32, device=model.device) for s in state_keys}
+    state_buffer_next = {s: torch.zeros((W, E, T*B, model.n_items), dtype=torch.float32, device=model.device) for s in state_keys}
 
-    # State buffers: (within_ts, E, n_trials*B, n_items)
-    state_buffer_current = {s: torch.zeros((W, E, T*B, model.n_items), dtype=torch.float32, device=model.device) for s in model.get_state()}
-    state_buffer_next = {s: torch.zeros((W, E, T*B, model.n_items), dtype=torch.float32, device=model.device) for s in model.get_state()}
-
+    # Per-session hidden state carried across timesteps: (W, E, B, n_items)
+    session_states = {s: torch.full((W, E, B, model.n_items),
+                                    fill_value=model.spice_config.memory_state[s],
+                                    dtype=torch.float32, device=model.device) for s in state_keys}
+    batch_size_fwd = B
     with torch.no_grad():
         for t in range(T):
-            for s in model.get_state():
-                state_buffer_current[s][0, :, t*B:(t+1)*B] = model.get_state()[s][-1]
+            for b_start in range(0, B, batch_size_fwd):
+                b_end = min(b_start + batch_size_fwd, B)
 
-            # 5D input: (E, B, 1, W, F)
-            updated_state = model(xs_train[:, :, t:t+1].to(model.device), model.get_state(), batch_first=True)[1]
+                # Load this sub-batch's carried state into model
+                sub_state = {s: session_states[s][:, :, b_start:b_end].clone() for s in state_keys}
+                model.set_state(sub_state)
 
-            for s in model.get_state():
-                state_buffer_current[s][1:, :, t*B:(t+1)*B] = updated_state[s][:-1]
-                state_buffer_next[s][:, :, t*B:(t+1)*B] = updated_state[s]
+                # Record pre-forward state
+                for s in state_keys:
+                    state_buffer_current[s][0, :, t*B+b_start:t*B+b_end] = sub_state[s][-1]
+
+                # Forward one timestep for this sub-batch
+                xs_sub = xs_train[:, b_start:b_end, t:t+1].to(model.device)
+                updated_state = model(xs_sub, model.get_state(), batch_first=True)[1]
+
+                # Record post-forward state
+                for s in state_keys:
+                    state_buffer_current[s][1:, :, t*B+b_start:t*B+b_end] = updated_state[s][:-1]
+                    state_buffer_next[s][:, :, t*B+b_start:t*B+b_end] = updated_state[s]
+
+                # Save updated state for next timestep
+                for s in state_keys:
+                    session_states[s][:, :, b_start:b_end] = updated_state[s]
+
+    del session_states
 
     # Flatten to (E, flat_total, 1, 1, F)
     flat_total = W * T * B
@@ -369,7 +393,7 @@ def _vectorize_state(
     ys_flat = ys_train.permute(0, 2, 1, 3, 4).reshape(E, flat_total, 1, 1, n_features_y)[0]
 
     # Reshape state buffers: (W, E, T*B, items) -> (1, E, flat_total, items)
-    for s in model.get_state():
+    for s in state_keys:
         state_buffer_current[s] = state_buffer_current[s].permute(1, 2, 0, 3).reshape(1, E, flat_total, model.n_items)
         state_buffer_next[s] = state_buffer_next[s].permute(1, 2, 0, 3).reshape(1, E, flat_total, model.n_items)
 
@@ -483,7 +507,7 @@ def _run_sindy_training(
     model.eval(use_sindy=False)
 
     # Vectorize training data using shared helper
-    input_state_buffer_train, target_state_buffer_train, xs_flat, _ = _vectorize_state(model, xs_train, ys_train)
+    input_state_buffer_train, target_state_buffer_train, xs_flat, _ = _vectorize_state(model, xs_train, ys_train, verbose=verbose)
 
     len_last_print = 0
     
@@ -548,24 +572,24 @@ def _run_joint_training(
     dataset_test: SpiceDataset,
     optimizer: torch.optim.Optimizer,
 
-    epochs: int,
-    batch_size: int,
-    n_warmup_steps: int,
-    n_steps: int,
-    use_scheduler: bool,
-    loss_fn: callable,
+    epochs: int = 1,
+    batch_size: int = None,
+    n_warmup_steps: int = 0,
+    n_steps: int = None,
+    use_scheduler: bool = False,
+    loss_fn: callable = cross_entropy_loss,
 
-    sindy_weight: float,
-    sindy_alpha: float,
-    sindy_pruning_frequency: int,
-    sindy_threshold_pruning: float,
-    sindy_ensemble_pruning: float,
-    sindy_population_pruning: float,
+    sindy_weight: float = 0,
+    sindy_alpha: float = 0,
+    sindy_pruning_frequency: int = 1,
+    sindy_threshold_pruning: float = None,
+    sindy_ensemble_pruning: float = None,
+    sindy_population_pruning: float = None,
 
-    convergence_threshold: float,
-    verbose: bool,
-    keep_log: bool,
-    path_save_checkpoints: str,
+    convergence_threshold: float = 0,
+    verbose: bool = False,
+    keep_log: bool = False,
+    path_save_checkpoints: str = None,
 ) -> Tuple[BaseRNN, torch.optim.Optimizer, float, float, float]:
     """
     Joint RNN-SINDy optimization with fused ensemble pruning.
@@ -584,11 +608,7 @@ def _run_joint_training(
         Tuple of (model, optimizer, loss_train, loss_test_rnn, loss_test_sindy)
     """
     
-    # Setup of training components
-    # xs_train/ys_train are 5D: (E, B, T, W, F)
     B_total = xs_train.shape[1]
-    if batch_size is None:
-        batch_size = B_total
     iterations_per_epoch = max(B_total, 64) // batch_size if batch_size < max(B_total, 64) else 1
     
     dataloader_test = None
@@ -970,7 +990,7 @@ def fit_spice(
         dataset_test: Validation dataset (optional)
         optimizer: PyTorch optimizer
         epochs: Total training epochs
-        batch_size: Training batch size
+        batch_size: Training batch size (None = auto-detect max via GPU probing, int = fixed)
         scheduler: Enable learning rate scheduler
         n_steps: BPTT truncation length
         convergence_threshold: Early stopping threshold
@@ -1046,33 +1066,46 @@ def fit_spice(
             print("Stage 1: Joint training with ensemble pruning")
             print("=" * terminal_width)
 
-        model, optimizer, loss_train, loss_test_rnn, loss_test_sindy = _run_joint_training(
-            model=model,
-            optimizer=optimizer,
-            xs_train=xs_train_5d,
-            ys_train=ys_train_5d,
-            dataset_test=dataset_test,
+        if batch_size is None:
+            batch_size = xs_train_5d.shape[1]
+        
+        while True:    
+            try:
+                model, optimizer, loss_train, loss_test_rnn, loss_test_sindy = _run_joint_training(
+                    model=model,
+                    optimizer=optimizer,
+                    xs_train=xs_train_5d,
+                    ys_train=ys_train_5d,
+                    dataset_test=dataset_test,
 
-            epochs=epochs,
-            n_warmup_steps=n_warmup_steps,
-            n_steps=n_steps,
-            use_scheduler=scheduler,
-            batch_size=batch_size,
-            convergence_threshold=convergence_threshold,
-            loss_fn=loss_fn,
+                    epochs=epochs,
+                    n_warmup_steps=n_warmup_steps,
+                    n_steps=n_steps,
+                    use_scheduler=scheduler,
+                    batch_size=batch_size,
+                    convergence_threshold=convergence_threshold,
+                    loss_fn=loss_fn,
 
-            sindy_weight=sindy_weight,
-            sindy_alpha=sindy_alpha,
-            sindy_threshold_pruning=sindy_threshold_pruning,
-            sindy_pruning_frequency=sindy_pruning_frequency,
-            sindy_ensemble_pruning=sindy_ensemble_pruning,
-            sindy_population_pruning=sindy_population_pruning,
+                    sindy_weight=sindy_weight,
+                    sindy_alpha=sindy_alpha,
+                    sindy_threshold_pruning=sindy_threshold_pruning,
+                    sindy_pruning_frequency=sindy_pruning_frequency,
+                    sindy_ensemble_pruning=sindy_ensemble_pruning,
+                    sindy_population_pruning=sindy_population_pruning,
 
-            verbose=verbose,
-            keep_log=keep_log,
-            path_save_checkpoints=path_save_checkpoints,
-        )
-        model.rnn_training_finished = True
+                    verbose=verbose,
+                    keep_log=keep_log,
+                    path_save_checkpoints=path_save_checkpoints,
+                )
+                model.rnn_training_finished = True
+                break
+            except torch.cuda.OutOfMemoryError:
+                if batch_size <= 1:
+                    raise RuntimeError(f"Automatic batch size probing was unsuccessful. Current batch size is {batch_size} but could still not be started. Please try again with a smaller ensemble size (current: {model.ensemble_size}).")
+                model.zero_grad(set_to_none=True)
+                torch.cuda.empty_cache()
+                batch_size = max(1, batch_size // 2)
+                
 
     # ══════════════════════════════════════════════════════════════════════════
     # STAGE 2: Final SINDy Refit (single-pass lstsq)
@@ -1083,14 +1116,18 @@ def fit_spice(
             print("\n" + "=" * terminal_width)
             print("Stage 2: Final SINDy refit")
             print("=" * terminal_width)
-        model = _run_sindy_training(
+
+        original_device = model.device
+        model.to('cpu')
+        _run_sindy_training(
             model=model,
-            xs_train=xs_train_5d,
-            ys_train=ys_train_5d,
-            pruning_threshold=0.05,#sindy_threshold_pruning if sindy_threshold_pruning else 0.05,
+            xs_train=xs_train_5d.to(torch.device('cpu')),
+            ys_train=ys_train_5d.to(torch.device('cpu')),
+            pruning_threshold=0.05,
             verbose=verbose,
         )
-
+        model.to(original_device)
+        
     # ══════════════════════════════════════════════════════════════════════════
     # Final evaluation summary
     # ══════════════════════════════════════════════════════════════════════════
@@ -1115,7 +1152,7 @@ def fit_spice(
 
                     epochs=0,
                     n_warmup_steps=999,
-                    batch_size=None,
+                    batch_size=batch_size,
                     convergence_threshold=0,
                     n_steps=n_steps,
                     use_scheduler=False,

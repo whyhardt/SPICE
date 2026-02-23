@@ -191,8 +191,6 @@ class SpiceEstimator(BaseEstimator):
         # Fit RNN
         # ------------------------------------------------------------------------
         
-        batch_size = data.shape[0] if self.batch_size is None else self.batch_size
-        
         rnn_model, rnn_optimizer = fit_spice(
             model=self.rnn_model,
             optimizer=self.rnn_optimizer,
@@ -201,7 +199,7 @@ class SpiceEstimator(BaseEstimator):
 
             epochs=self.epochs,
             n_warmup_steps=self.warmup_steps,
-            batch_size=batch_size,
+            batch_size=self.batch_size,
             scheduler=self.scheduler,
             n_steps=self.n_steps_per_call,
             convergence_threshold=self.convergence_threshold,
