@@ -446,7 +446,7 @@ def _ridge_recalibrate_sindy(
         rnn_grad_state[name] = param.requires_grad
         param.requires_grad = 'sindy' in name
 
-    model.eval(use_sindy=False)
+    model.eval(use_sindy=False, aggregate=False)
     input_state_buffer, _, xs_flat, _ = _vectorize_state(model, xs_train, ys_train)
 
     with torch.no_grad():
@@ -497,7 +497,7 @@ def _run_sindy_training(
     for name, param in model.named_parameters():
         param.requires_grad = 'sindy' in name
 
-    model.eval(use_sindy=False)
+    model.eval(use_sindy=False, aggregate=False)
 
     # Vectorize training data using shared helper
     input_state_buffer_train, target_state_buffer_train, xs_flat, _ = _vectorize_state(model, xs_train, ys_train, verbose=verbose)

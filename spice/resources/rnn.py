@@ -983,4 +983,5 @@ class BaseRNN(nn.Module):
         super().train(mode)
         # if training mode activate (mode=True) -> do not use sindy for forward pass (self.use_sindy=False)
         self.use_sindy = use_sindy
+        self.aggregate = False
         return self
