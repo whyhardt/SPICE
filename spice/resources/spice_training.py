@@ -71,7 +71,7 @@ def _print_training_status(
     # Add SPICE model equations if SINDy is active
     if sindy_weight > 0:
         status_lines.append("-" * terminal_width)
-        status_lines.append(f"SPICE Model (Coefficients: {model.count_sindy_coefficients().mean():.0f}):")
+        status_lines.append(f"SPICE Model (Coefficients: {model.count_sindy_coefficients()[0, 0, 0]:.0f}):")
         status_lines.append(model.get_spice_model_string(participant_id=0, ensemble_idx=0))
         
         # Add patience summary
@@ -305,9 +305,8 @@ def _run_batch_training(
                 loss_step = loss_step + sindy_weight * model.sindy_loss
 
             if sindy_weight > 0 and sindy_alpha > 0:
-                coefficient_penalty = model.compute_weighted_coefficient_penalty(sindy_alpha=sindy_alpha, norm=1)
-                loss_step = loss_step + sindy_alpha * coefficient_penalty
-
+                loss_step = loss_step + model.compute_weighted_coefficient_penalty(sindy_alpha=sindy_alpha, norm=1)
+                
             # backpropagation
             optimizer.zero_grad()
             loss_step.backward()
@@ -436,7 +435,7 @@ def _ridge_recalibrate_sindy(
     for param in optimizer.param_groups[0]['params']:
         if param in optimizer.state:
             optimizer.state[param] = {}
-
+    
     # 3. Freeze RNN, run forward to collect state buffers, then ridge solve
     was_training = model.training
     prev_use_sindy = model.use_sindy
@@ -472,6 +471,8 @@ def _run_sindy_training(
     model: BaseRNN,
     xs_train: torch.Tensor,
     ys_train: torch.Tensor,
+    optimizer: torch.optim.Optimizer = None,
+    epochs: int = 1000,
     pruning_threshold: float = 0.05,
     verbose: bool = True,
     ):
@@ -489,15 +490,7 @@ def _run_sindy_training(
     Returns:
         BaseRNN: Model with refitted SINDy coefficients
     """
-
-    t_start = time.time()
     
-    if verbose:
-        terminal_width = _get_terminal_width()
-        print("\n" + "="*terminal_width)
-        print(f"Starting SINDy finetuning...")
-        print("="*terminal_width)
-
     criterion = nn.MSELoss()
 
     # Freeze all RNN parameters, only train SINDy coefficients
@@ -511,52 +504,64 @@ def _run_sindy_training(
 
     len_last_print = 0
     
+    model.train(use_sindy=True)
+    # Disable dropout in RNN submodules so the solve target is deterministic
+    for rnn_module in model.submodules_rnn.values():
+        rnn_module.eval()
+
+    prev_state_args = dict(prev_state={s: t.clone() for s, t in input_state_buffer_train.items()})
+
+    # Step 1: Solve (respects current presence mask)
+    model(inputs=xs_flat.to(model.device), **prev_state_args, batch_first=True)
+
+    # Step 2: Prune small terms
+    model.sindy_coefficient_patience(threshold=pruning_threshold)
+    model.sindy_coefficient_pruning(patience=1)
+    
+    # Step 3: Refit with surviving terms only - pure lstsq
+    sindy_alpha = 0
+    sindy_alpha += model.sindy_alpha
+    model.sindy_alpha = 0
     with torch.no_grad():
-        model.train(use_sindy=True)
-        # Disable dropout in RNN submodules so the solve target is deterministic
-        for rnn_module in model.submodules_rnn.values():
-            rnn_module.eval()
-
-        prev_state_args = dict(prev_state={s: t.clone() for s, t in input_state_buffer_train.items()})
-
-        # Step 1: Solve (respects current presence mask)
         model(inputs=xs_flat.to(model.device), **prev_state_args, batch_first=True)
-
-        # Step 2: Prune small terms
-        model.sindy_coefficient_pruning(threshold=pruning_threshold, patience=1)
-
-        # Step 3: Refit with surviving terms only - pure lstsq
-        sindy_alpha = 0
-        sindy_alpha += model.sindy_alpha
-        model.sindy_alpha = 0
-        model(inputs=xs_flat.to(model.device), **prev_state_args, batch_first=True)
-        model.sindy_alpha += sindy_alpha
-        
-        # Evaluate
-        model.eval(use_sindy=True)
-        _, state_pred = model(inputs=xs_flat.to(model.device), **prev_state_args, batch_first=True)
-        # model.train(use_sindy=True)
-        # for rnn_module in model.submodules_rnn.values():
-        #     rnn_module.eval()
-        
-        loss = 0
-        for s in model.spice_config.states_in_logit:
-            loss += criterion(state_pred[s], target_state_buffer_train[s]).item()
-
-        len_last_print = _print_training_status(
-            len_last_print=len_last_print,
-            model=model,
-            n_calls=1,
-            epochs=1,
-            loss_train=loss,
-            loss_test_rnn=None,
-            loss_test_sindy=None,
-            time_elapsed=time.time()-t_start,
-            convergence_value=None,
-            sindy_weight=1,
-            scheduler=None,
-            keep_log=DEBUG_MODE,
-        )
+    model.sindy_alpha += sindy_alpha
+     
+    # if optimizer is not None:
+    #     for e in range(epochs):
+    #         t_start = time.time()
+    #         model.zero_grad()
+    #         iter_prev_state = {s: t.clone() for s, t in input_state_buffer_train.items()}
+    #         _, pred_state = model(xs_flat.to(model.device), prev_state=iter_prev_state, batch_first=True)
+    #         loss = 0
+    #         for s in model.spice_config.states_in_logit:
+    #             loss += criterion(pred_state[s], target_state_buffer_train[s])
+    #         loss.backward()
+    #         optimizer.step()
+    #         len_last_print = _print_training_status(
+    #             len_last_print=len_last_print,
+    #             model=model,
+    #             n_calls=e+1,
+    #             epochs=epochs,
+    #             loss_train=loss,
+    #             loss_test_rnn=None,
+    #             loss_test_sindy=None,
+    #             time_elapsed=time.time()-t_start,
+    #             convergence_value=None,
+    #             sindy_weight=1,
+    #             scheduler=None,
+    #             keep_log=DEBUG_MODE,
+    #         )
+            
+    # Evaluate
+    model.eval(use_sindy=True)
+    _, state_pred = model(inputs=xs_flat.to(model.device), **prev_state_args, batch_first=True)
+    # model.train(use_sindy=True)
+    # for rnn_module in model.submodules_rnn.values():
+    #     rnn_module.eval()
+    
+    loss = 0
+    for s in model.spice_config.states_in_logit:
+        loss += criterion(state_pred[s], target_state_buffer_train[s]).item()
 
     # Restore requires_grad for all parameters
     for param in model.parameters():
@@ -592,15 +597,14 @@ def _run_joint_training(
     path_save_checkpoints: str = None,
 ) -> Tuple[BaseRNN, torch.optim.Optimizer, float, float, float]:
     """
-    Joint RNN-SINDy optimization with fused ensemble pruning.
+    Joint RNN-SINDy optimization with ensemble pruning.
 
     Trains RNN to predict behavior while SINDy regularization pushes
-    dynamics toward sparse equations. Periodic pruning events combine:
-    - Ensemble t-test filtering (primary): cross-member consistency check
-    - Optional threshold pruning: per-member hard thresholding
-    - Optional participant filtering: cross-participant consistency check
-    After each pruning event, SINDy coefficients are reset and ridge-solved
-    for instant recalibration.
+    dynamics toward sparse equations. Periodic pruning via minimum-effect
+    CI test: a term survives iff |mean| - t_crit * SE > delta, combining
+    statistical significance and practical significance in one test.
+    Optional participant filtering for cross-participant consistency.
+    After each pruning event, SINDy coefficients are ridge-recalibrated.
 
     Objective: L_total = L_CE(y, ŷ) + λ_sindy * L_SINDy + α * L_penalty
 
@@ -699,33 +703,52 @@ def _run_joint_training(
                         _, _, loss_test_sindy = _run_batch_training(model=model, xs=xs.unsqueeze(0).repeat(model.ensemble_size, 1, 1, 1, 1), ys=ys.unsqueeze(0).repeat(model.ensemble_size, 1, 1, 1, 1), loss_fn=loss_fn)
 
                 model = model.train()
-
+            
             # Unified pruning event with ridge recalibration
             if (sindy_weight > 0
                 and sindy_pruning_frequency is not None
                 and n_calls_to_train_model >= n_warmup_steps
-                and n_calls_to_train_model % sindy_pruning_frequency == 0
                 ):
-                # Optional: per-member threshold pruning
-                if sindy_threshold_pruning is not None and sindy_threshold_pruning > 0:
-                    model.sindy_coefficient_pruning(threshold=sindy_threshold_pruning, patience=1)
 
-                # Primary: ensemble t-test (+ optional participant filter)
-                if sindy_ensemble_pruning is not None:
-                    confidence_masks = _compute_pruning_masks(
-                        model,
-                        ensemble_alpha=sindy_ensemble_pruning,
-                        participant_threshold=sindy_population_pruning,
-                        verbose=verbose,
-                    )
-                    for module in model.submodules_rnn:
-                        mask = confidence_masks[module].to(model.device)
-                        mask = mask.unsqueeze(0).expand(model.ensemble_size, -1, -1, -1)
-                        model.sindy_coefficients_presence[module].data &= mask
-                        model.sindy_coefficients[module].data *= model.sindy_coefficients_presence[module].float()
+                if sindy_ensemble_pruning is None and sindy_threshold_pruning is not None:
+                    # Fallback: per-epoch patience tracking for per-member threshold pruning
+                    model.sindy_coefficient_patience(threshold=sindy_threshold_pruning)
 
-                # Reset coefficients + optimizer state, ridge solve for recalibration
-                _ridge_recalibrate_sindy(model, xs_train, ys_train, optimizer)
+                if n_calls_to_train_model % sindy_pruning_frequency == 0:
+
+                    if sindy_ensemble_pruning is not None:
+                        # Unified minimum-effect CI test: threshold serves as delta
+                        confidence_masks = _compute_pruning_masks(
+                            model,
+                            ensemble_alpha=sindy_ensemble_pruning,
+                            ensemble_delta=sindy_threshold_pruning or 0.0,
+                            participant_threshold=sindy_population_pruning,
+                            verbose=verbose,
+                        )
+                        for module in model.submodules_rnn:
+                            mask = confidence_masks[module].to(model.device)  # (P, X, terms)
+                            still_active = model.sindy_coefficients_presence[module].any(dim=0)  # (P, X, terms)
+                            failed = ~mask & still_active
+
+                            # Update patience: increment on failure, reset on success
+                            counters = model.sindy_pruning_patience_counters[module]
+                            failed_e = failed.unsqueeze(0).expand_as(counters)
+                            counters.data = torch.where(failed_e, counters + 1, torch.zeros_like(counters))
+
+                            # Prune terms that failed 2+ consecutive pruning events
+                            prune = (counters[0] >= 2)  # (P, X, terms)
+                            if prune.any():
+                                prune_e = prune.unsqueeze(0).expand(model.ensemble_size, -1, -1, -1)
+                                model.sindy_coefficients_presence[module].data &= ~prune_e
+                                model.sindy_coefficients[module].data *= model.sindy_coefficients_presence[module].float()
+                                counters.data *= (~prune_e).int()
+
+                    elif sindy_threshold_pruning is not None and sindy_threshold_pruning > 0:
+                        # Fallback: per-member threshold pruning only (no ensemble test)
+                        model.sindy_coefficient_pruning(patience=sindy_pruning_frequency)
+
+                    # Reset coefficients + optimizer state, ridge solve for recalibration
+                    # _ridge_recalibrate_sindy(model, xs_train, ys_train, optimizer)
 
             # Check convergence
             dloss = last_loss - (loss_test_rnn if dataloader_test is not None else loss_train)
@@ -772,14 +795,20 @@ def _run_joint_training(
     return model, optimizer, loss_train, loss_test_rnn, loss_test_sindy
 
 
-def _ttest_zero_exclusion(
+def _minimum_effect_ci_test(
     coefficients: torch.Tensor,
     presence: torch.Tensor,
     alpha: float = 0.05,
+    delta: float = 0.0,
 ) -> torch.Tensor:
     """
-    Per-(participant, experiment, term) t-test for whether the mean coefficient
-    across ensemble members is significantly different from zero.
+    Minimum-effect confidence interval test across ensemble members.
+
+    Tests whether the confidence interval for the ensemble mean coefficient
+    lies entirely outside the negligible zone [-delta, delta]. A term
+    survives iff: |mean| - t_crit * SE > delta.
+
+    When delta=0, equivalent to a standard two-tailed t-test for non-zero mean.
 
     Pruned coefficients are treated as zero estimates, so terms only found by
     a few ensemble members are naturally penalized.
@@ -787,10 +816,11 @@ def _ttest_zero_exclusion(
     Args:
         coefficients: [E, P, X, terms] raw coefficient values
         presence: [E, P, X, terms] boolean presence mask
-        alpha: significance level for two-tailed test (default: 0.05)
+        alpha: confidence level (default: 0.05)
+        delta: minimum effect size threshold (default: 0.0)
 
     Returns:
-        [P, X, terms] boolean mask — True where coefficient is significantly != 0
+        [P, X, terms] boolean mask — True where term passes the CI test
     """
 
     effective_coeffs = (coefficients * presence.float()).detach()
@@ -800,10 +830,11 @@ def _ttest_zero_exclusion(
     std = effective_coeffs.std(dim=0, correction=1)    # [P, X, terms]
     se = std / (E ** 0.5)
 
-    t_stat = mean.abs() / se.clamp(min=1e-10)
     t_critical = t_dist.ppf(1 - alpha / 2, df=E - 1)
 
-    significant = t_stat > t_critical
+    # CI lower bound for |mean| must exceed delta
+    ci_lower = mean.abs() - t_critical * se
+    significant = ci_lower > delta
 
     # Require at least 2 active ensemble members for a valid test
     n_active = presence.float().sum(dim=0)
@@ -814,7 +845,7 @@ def _ttest_zero_exclusion(
 
 def _compute_ensemble_masks(
     model: BaseRNN,
-    test_fn: callable = _ttest_zero_exclusion,
+    test_fn: callable = _minimum_effect_ci_test,
     verbose: bool = True,
     **test_fn_kwargs,
 ) -> dict:
@@ -903,8 +934,9 @@ def _compute_participant_masks(
 def _compute_pruning_masks(
     model: BaseRNN,
     ensemble_alpha: float = None,
+    ensemble_delta: float = 0.0,
     participant_threshold: float = None,
-    ensemble_test_fn: callable = _ttest_zero_exclusion,
+    ensemble_test_fn: callable = _minimum_effect_ci_test,
     verbose: bool = True,
 ) -> dict:
     """
@@ -912,18 +944,20 @@ def _compute_pruning_masks(
 
     Args:
         model: trained model with SINDy coefficients
-        ensemble_alpha: significance level for ensemble t-test (None to skip)
+        ensemble_alpha: confidence level for ensemble CI test (None to skip)
+        ensemble_delta: minimum effect size for ensemble CI test (default: 0.0)
         participant_threshold: required fraction of (P * X) slots (None to skip)
         ensemble_test_fn: statistical test function for ensemble filtering
         verbose: print filtering results
 
     Returns:
-        Dict mapping module names to [terms] boolean masks
+        Dict mapping module names to [P, X, terms] boolean masks
     """
     # Step 1: Ensemble filtering (per participant)
     if ensemble_alpha is not None:
         ensemble_masks = _compute_ensemble_masks(
-            model, test_fn=ensemble_test_fn, verbose=verbose, alpha=ensemble_alpha
+            model, test_fn=ensemble_test_fn, verbose=verbose,
+            alpha=ensemble_alpha, delta=ensemble_delta,
         )
     else:
         # No ensemble filtering — term is present for (P, X) if any ensemble member has it
@@ -971,14 +1005,17 @@ def fit_spice(
     path_save_checkpoints: str = None,
 ) -> Tuple[BaseRNN, torch.optim.Optimizer, float]:
     """
-    Two-stage SPICE training pipeline with fused ensemble pruning.
+    Two-stage SPICE training pipeline with ensemble pruning.
 
-    Stage 1 (Joint Training with Hierarchical Pruning):
+    Stage 1 (Joint Training with Minimum-Effect CI Pruning):
         Train RNN + SINDy jointly with L_CE + λ_sindy * L_SINDy + α * L_penalty.
-        Periodic pruning events combine ensemble t-test filtering (primary) with
-        optional threshold pruning and participant filtering. After each pruning
-        event, SINDy coefficients are reset and ridge-solved for instant
-        recalibration. The RNN continuously adapts to the pruned library.
+        Periodic pruning via minimum-effect CI test: a term survives iff
+        |mean| - t_crit * SE > delta, where delta = sindy_threshold_pruning.
+        This unifies statistical significance and practical significance in
+        a single test, avoiding the cascade where per-member threshold pruning
+        erodes ensemble consensus. Terms must fail 2 consecutive pruning events
+        before permanent removal. After each pruning event, SINDy coefficients
+        are ridge-recalibrated. The RNN continuously adapts to the pruned library.
 
     Stage 2 (Final SINDy Refit):
         Freeze RNN weights and refit SINDy coefficients via ridge solve on
@@ -997,12 +1034,14 @@ def fit_spice(
         loss_fn: Loss function for behavioral prediction
         sindy_weight: λ_sindy regularization strength
         sindy_alpha: Degree-weighted L1 penalty strength
-        sindy_pruning_threshold: Optional threshold for per-member pruning
-            (None or 0 to disable; default: None)
+        sindy_threshold_pruning: Minimum effect size (delta) for the CI test.
+            When sindy_ensemble_pruning is set, this serves as the delta threshold.
+            When sindy_ensemble_pruning is None, falls back to per-member hard
+            thresholding. (None or 0 to disable; default: None)
         sindy_pruning_frequency: Epochs between pruning events
-        sindy_ensemble_alpha: Ensemble t-test significance level (e.g. 0.05).
+        sindy_ensemble_pruning: Confidence level for ensemble CI test (e.g. 0.05).
             Primary pruning mechanism. None to disable.
-        sindy_confidence_threshold: Optional participant presence threshold (0-1).
+        sindy_population_pruning: Optional participant presence threshold (0-1).
             None to disable.
         verbose: Print progress
         keep_log: Keep full training log (vs. live update)
@@ -1030,9 +1069,11 @@ def fit_spice(
         # Pruning details
         pruning_details = []
         if sindy_ensemble_pruning is not None:
-            pruning_details.append(f"ensemble t-test alpha={sindy_ensemble_pruning}")
-        if sindy_threshold_pruning is not None and sindy_threshold_pruning > 0:
-            pruning_details.append(f"threshold={sindy_threshold_pruning}")
+            pruning_details.append(f"CI test alpha={sindy_ensemble_pruning}")
+            if sindy_threshold_pruning is not None and sindy_threshold_pruning > 0:
+                pruning_details.append(f"delta={sindy_threshold_pruning}")
+        elif sindy_threshold_pruning is not None and sindy_threshold_pruning > 0:
+            pruning_details.append(f"threshold={sindy_threshold_pruning} (per-member)")
         if sindy_population_pruning is not None and sindy_population_pruning > 0:
             pruning_details.append(f"participant threshold={sindy_population_pruning}")
         if pruning_details:
@@ -1119,8 +1160,15 @@ def fit_spice(
 
         original_device = model.device
         model.to('cpu')
+        
+        sindy_parameters = []
+        for name, p in model.named_parameters():
+            if 'sindy' in name:
+                sindy_parameters.append(p)
+        optimizer_sindy = torch.optim.AdamW(sindy_parameters, lr=0.01, weight_decay=sindy_alpha)
         _run_sindy_training(
             model=model,
+            optimizer=optimizer_sindy,
             xs_train=xs_train_5d.to(torch.device('cpu')),
             ys_train=ys_train_5d.to(torch.device('cpu')),
             pruning_threshold=0.05,

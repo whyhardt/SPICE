@@ -19,16 +19,21 @@ from weinhardt2025.benchmarking import benchmarking_dezfouli2019, benchmarking_e
 # MODEL EVALUATION CONFIGURATION
 # -------------------------------------------------------------------------------
 
-study = 'eckstein2022'
+# study = 'eckstein2022'
 # study = 'dezfouli2019'
 # study = 'eckstein2024'
+study = 'synthetic'
 
 agents = [
     # 'baseline',
     # 'benchmark',
-    'gru',
+    # 'gru',
     'spice',
 ]
+
+path_spice = 'weinhardt2025/params/synthetic/spice_e10_a0_05_p0_02.pkl'
+path_data = 'weinhardt2025/data/synthetic/synthetic_256p_0_0.csv'
+
 
 use_test = False
 
@@ -91,6 +96,14 @@ elif study == 'dezfouli2019':
     benchmark_file = f'benchmark_{study}_MODEL.pkl'
     model_config_baseline = 'PhiBeta'
     baseline_file = f'benchmark_{study}_PhiBeta.pkl'
+    
+# ------------------- CONFIGURATION SYNTHETIC --------------------
+elif study == 'synthetic':
+    train_test_ratio = None
+    spice_config = workingmemory_rewardbinary.CONFIG
+    spice_model = workingmemory_rewardbinary.SpiceModel
+    additional_inputs = None
+    ensemble_size = 10
 
 # ------------------------ CONFIGURATION GERSHMAN2018 -----------------------
 # elif study == 'gershmanB2018':
@@ -111,12 +124,11 @@ elif study == 'dezfouli2019':
 
 # ------------------------- CONFIGURATION FILE PATHS ------------------------
 
-path_data = f'weinhardt2025/data/{study}/{study}.csv'
-path_spice = f'weinhardt2025/params/{study}/spice_{study}.pkl' if 'spice' in agents else None
+# path_data = f'weinhardt2025/data/{study}/{study}.csv'
+# path_spice = f'weinhardt2025/params/{study}/spice_{study}.pkl' if 'spice' in agents else None
 path_baseline = os.path.join(f'weinhardt2025/params/{study}/', baseline_file) if 'baseline' in agents else None
 path_benchmark = os.path.join(f'weinhardt2025/params/{study}', benchmark_file) if 'benchmark' in agents else None
 path_gru = f'weinhardt2025/params/{study}/gru_{study}.pkl' if 'gru' in agents else None
-
 
 # -------------------------------------------------------------------------------
 # MODEL COMPARISON PIPELINE
@@ -185,6 +197,7 @@ if path_spice is not None:
         n_participants=n_participants,
         n_experiments=1,
         sindy_library_polynomial_degree=2,
+        ensemble_size=ensemble_size,
     )
     estimator.load_spice(path_spice)
     agent_rnn, agent_spice = estimator.rnn_agent, estimator.spice_agent
@@ -212,6 +225,11 @@ elif isinstance(train_test_ratio, list) or isinstance(train_test_ratio, tuple):
         dataset_test = dataset_train
     data_input = dataset_test.xs
     data_test = dataset_test.xs[..., :n_actions]
+
+elif train_test_ratio is None:
+    dataset_train, dataset_test = dataset, dataset
+    data_input = dataset.xs
+    data_test = dataset.xs[..., :n_actions]
     
 else:
     raise TypeError("train_test_raio must be either a float number or a list of integers containing the session/block ids which should be used as test sessions/blocks")

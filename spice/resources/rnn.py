@@ -90,7 +90,7 @@ class EnsembleGRUModule(nn.Module):
         W, E, B, I, F = inputs.shape
 
         x = inputs.reshape(W, E, B * I, F)                          # (W, E, B*I, F)
-        h = state[-1].reshape(E, B * I, 1) if state is not None else torch.zeros(E, B * I, 1, device=inputs.device)
+        h = state[-1].contiguous().reshape(E, B * I, 1) if state is not None else torch.zeros(E, B * I, 1, device=inputs.device)
 
         # Linear projection via einsum
         y = torch.einsum('eoi,webi->webo', self.weight_linear, x) + self.bias_linear.unsqueeze(1)  # (W, E, B*I, proj)
@@ -230,10 +230,11 @@ class BaseRNN(nn.Module):
         self.sindy_alpha = sindy_alpha
         
         # Setup initial values of RNN
+        self.aggregate = False
         self.sindy_loss = torch.tensor(0, requires_grad=True, device=device, dtype=torch.float32)
         self.state = None
         self.init_state()  # initial memory state
-                
+        
     def forward(self, inputs, prev_state, batch_first=False):
         raise NotImplementedError('This method is not implemented.')
     
@@ -325,6 +326,9 @@ class BaseRNN(nn.Module):
         if detach:
             state = {key: state[key].detach() for key in state}
 
+        if self.aggregate:
+            state = {key: s.mean(dim=1, keepdim=True).expand(-1, self.ensemble_size, -1, -1) for key, s in state.items()}
+            
         return state
     
     def to(self, device: torch.device):
@@ -748,10 +752,10 @@ class BaseRNN(nn.Module):
         AtA_accum = AtA_accum.reshape(E, P, X, T, T)
         Atb_accum = Atb_accum.reshape(E, P, X, T, 1)
         has_data = sample_count.reshape(E, P, X) > 0  # (E, P, X)
-
+        
         # Add ridge penalty: lambda * diag(degree_weights) + eps*I for numerical stability
         penalty_diag = torch.diag(self.sindy_alpha * self.sindy_degree_weights[key_module])  # (T, T)
-        penalty_diag += 1e-2 * torch.eye(T, device=library.device, dtype=library.dtype)
+        penalty_diag += 1e-4 * torch.eye(T, device=library.device, dtype=library.dtype)
         AtA_accum = AtA_accum + penalty_diag  # broadcasts over (E, P, X)
 
         # Only solve for groups that have data; keep existing coefficients for empty groups
@@ -762,7 +766,7 @@ class BaseRNN(nn.Module):
             coefficients = torch.linalg.solve(AtA_accum[has_data], Atb_accum[has_data]).squeeze(-1)
             self.sindy_coefficients[key_module].data[has_data] = coefficients
         
-    def sindy_coefficient_pruning(self, threshold, n_terms_pruning: int = None, patience: int = 1):
+    def sindy_coefficient_pruning(self, patience: int = 1, n_terms_pruning: int = None):
         """
         Apply hard thresholding to SINDy coefficients with patience counter.
         A coefficient is only thresholded out if it has been below threshold for 'patience' consecutive calls.
@@ -774,6 +778,7 @@ class BaseRNN(nn.Module):
             base_threshold (float): Additive base threshold (default: 0.0)
             patience (int): Number of consecutive epochs a coefficient must be below threshold before being cut (default: 1)
         """
+        
         module_list = list(self.submodules_rnn.keys())
         
         # Collect all coefficients, masks, and patience counters across modules
@@ -781,14 +786,6 @@ class BaseRNN(nn.Module):
         all_coeffs_abs = torch.cat([self.sindy_coefficients[m].abs() for m in module_list], dim=-1)
         all_masks = torch.cat([self.sindy_coefficients_presence[m] for m in module_list], dim=-1)
         all_patience = torch.cat([self.sindy_pruning_patience_counters[m] for m in module_list], dim=-1)
-
-        # Update patience counters for all coefficients (excluding protected terms)
-        below_threshold = (all_coeffs_abs < threshold) & (all_masks == 1)
-        all_patience = torch.where(
-            below_threshold,
-            all_patience + 1,  # increase patience counter by one if below threshold 
-            torch.zeros_like(all_patience)  # Reset to 0 if above threshold
-        )
 
         # Identify candidates: active coefficients that have exceeded patience (excluding protected terms)
         is_candidate = (all_patience >= patience) & (all_masks == 1)
@@ -812,10 +809,6 @@ class BaseRNN(nn.Module):
         with torch.no_grad():
             for module in module_list:
                 n_terms = self.sindy_coefficients[module].shape[-1]
-
-                # Update patience counters for this module
-                self.sindy_pruning_patience_counters[module] = all_patience[..., start_idx:start_idx + n_terms]
-
                 keep_mask = ~pruning_mask[..., start_idx:start_idx + n_terms]
                 # Update the permanent mask
                 self.sindy_coefficients_presence[module] &= keep_mask
@@ -825,16 +818,39 @@ class BaseRNN(nn.Module):
                 self.sindy_pruning_patience_counters[module] *= keep_mask.int()
 
                 start_idx += n_terms
+                
+    def sindy_coefficient_patience(self, threshold: float):
+        
+        module_list = list(self.submodules_rnn.keys())
+        
+        # Collect all coefficients, masks, and patience counters across modules
+        # Shape: [ensemble, n_participants, n_experiments, total_library_terms]
+        all_coeffs_abs = torch.cat([self.sindy_coefficients[m].abs() for m in module_list], dim=-1)
+        all_masks = torch.cat([self.sindy_coefficients_presence[m] for m in module_list], dim=-1)
+        all_patience = torch.cat([self.sindy_pruning_patience_counters[m] for m in module_list], dim=-1)
+
+        # Update patience counters for all coefficients (excluding protected terms)
+        below_threshold = (all_coeffs_abs < threshold) & (all_masks == 1)
+        all_patience = torch.where(
+            below_threshold,
+            all_patience + 1,  # increase patience counter by one if below threshold 
+            torch.zeros_like(all_patience)  # Reset to 0 if above threshold
+        )
+        
+        # Split back to modules and update patience counters for each module
+        start_idx = 0
+        for module in module_list:
+            n_terms = self.sindy_coefficients[module].shape[-1]
+            self.sindy_pruning_patience_counters[module] = all_patience[..., start_idx:start_idx + n_terms]
             
     def count_sindy_coefficients(self) -> torch.Tensor:
         """Returns count of active coefficients per (ensemble, participant, experiment)."""
         coefficients = torch.zeros(self.ensemble_size, self.n_participants, self.n_experiments, device=self.device)
         for module in self.submodules_rnn:
-            presence = self.sindy_coefficients_presence[module].clone()
-            coefficients += (presence != 0).sum(dim=-1).float()
+            coefficients += self.sindy_coefficients_presence[module].sum(dim=-1).float()
         return coefficients
 
-    def compute_weighted_coefficient_penalty(self, sindy_alpha: float = 0.0, norm: int = 1) -> torch.Tensor:
+    def compute_weighted_coefficient_penalty(self, sindy_alpha: float, norm: int = 1) -> torch.Tensor:
         """
         Compute weighted coefficient penalty on SINDy coefficients based on polynomial degree.
         Each term is penalized according to its degree: d=0 -> 1*coeff^2, d=1 -> 2*coeff^2, d=2 -> 3*coeff^2, etc.
@@ -849,15 +865,15 @@ class BaseRNN(nn.Module):
 
         assert norm == 1 or norm == 2, "Only L1-norm or L2-norm are allowed."
 
-        if sindy_alpha == 0.0:
-            return torch.tensor(0.0, device=self.device)
-
         penalty = torch.tensor(0.0, device=self.device)
+        
+        if sindy_alpha == 0:
+            return penalty
 
         for module_name in self.submodules_rnn:
             if module_name not in self.sindy_coefficients:
                 continue
-
+                
             # Get coefficients: [n_participants, n_ensemble, n_library_terms]
             coeffs = self.sindy_coefficients[module_name]
 
@@ -876,10 +892,7 @@ class BaseRNN(nn.Module):
 
             penalty += weighted_penalty
 
-        # Apply base coefficient weight
-        penalty = sindy_alpha * penalty
-
-        return penalty
+        return penalty * sindy_alpha
                     
     def get_spice_model_string(self, participant_id: int = 0, experiment_id: int = 0, ensemble_idx: int = None) -> str:
         """
@@ -960,9 +973,10 @@ class BaseRNN(nn.Module):
 
         return sindy_coefficients
     
-    def eval(self, use_sindy=True):
+    def eval(self, use_sindy=True, aggregate=True):
         super().eval()
         self.use_sindy = use_sindy
+        self.aggregate = aggregate
         return self
         
     def train(self, mode=True, use_sindy=False):

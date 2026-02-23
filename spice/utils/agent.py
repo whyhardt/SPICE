@@ -33,6 +33,8 @@ class Agent:
       self.device = device
       self.state = {}
       self.model = model_rnn.eval(use_sindy=use_sindy).to(device) if isinstance(model_rnn, BaseRNN) else model_rnn.eval().to(device)
+      if hasattr(self.model, 'aggregate'):
+        self.model.aggregate = True
       self.new_sess()
       
   def new_sess(self, participant_id: int = 0, experiment_id: int = 0, additional_embedding_inputs: np.ndarray = torch.zeros(0), **kwargs):
@@ -46,7 +48,7 @@ class Agent:
     else:
       state = None
       
-    self.logits = torch.zeros((1, self.n_actions), device=self.device, dtype=torch.float32)
+    self.logits = torch.zeros((1, 1, 1, 1, self.n_actions), device=self.device, dtype=torch.float32)  # shape: (E=1, B=1, T=1, W=1, A)
     
     self.meta_data = torch.zeros((1, 2), dtype=torch.float32)
     self.meta_data[0, -1] = participant_id
@@ -85,7 +87,11 @@ class Agent:
       state = self.model.get_state(detach=True)
     else:
       state = self.state
-      
+    
+    # for key, s in state.items():
+    #   if s.ndim == 4:
+    #     state[key] = s.mean(dim=1, keepdim=True)
+    
     if numpy:
       state_numpy = {}
       logits = self.logits.detach().cpu().numpy()
@@ -114,7 +120,7 @@ class Agent:
 
   def get_choice_probs(self) -> np.ndarray:
     """Compute the choice probabilities as softmax over q."""
-    logits = self.logits.reshape(self.n_actions)
+    logits = self.logits[0, 0, 0, 0]#.reshape(self.n_actions)
     if isinstance(logits, torch.Tensor):
       logits = logits.detach().cpu().numpy()
       
@@ -176,11 +182,11 @@ def get_update_dynamics(experiment: Union[np.ndarray, torch.Tensor], agent: Agen
   for trial in range(n_trials):
     # track all states
     current_logits, state = agent.get_state(numpy=True)      
-    logits[trial] = current_logits.reshape(agent.n_actions)
+    logits[trial] = current_logits[0, 0, 0]#.reshape(agent.n_actions)
     for signal in additional_signals:
       if isinstance(agent.state, dict):
         if signal in state:
-          value = state[signal].reshape(agent.n_actions)
+          value = state[signal][0, 0, 0]#.reshape(agent.n_actions)
         else: 
           value = np.zeros_like(agent.n_actions)
       else:

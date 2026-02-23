@@ -11,7 +11,9 @@ from weinhardt2025.benchmarking.benchmarking_qlearning import QLearning
 
 
 path_data = 'weinhardt2025/data/synthetic/synthetic_PARp_IT_0.csv'
-path_model = path_data.replace('data', 'params').replace('/synthetic_', '/spice_synthetic_test_').replace('.csv', '.pkl')
+# path_model = path_data.replace('data', 'params').replace('/synthetic_', '/spice_synthetic_test_').replace('.csv', '.pkl')
+path_model = 'weinhardt2025/params/synthetic/spice_e10_a0_05_t0_05.pkl'
+
 spice_model = workingmemory_rewardbinary
 rl_parameters = ['beta_reward', 'beta_choice', 'alpha_reward', 'alpha_penalty', 'alpha_choice', 'forget_rate']
 participants = [256]#[32, 64, 128, 256, 512]
