@@ -34,9 +34,9 @@ if __name__=='__main__':
     parser.add_argument('--sindy_weight', type=float, default=0.1, help='Weight for SINDy regularization during RNN training')
     parser.add_argument('--sindy_alpha', type=float, default=0.0001, help='Degree-weighted coefficient penalty strength (ridge alpha)')
     parser.add_argument('--pruning_frequency', type=int, default=50, help='Epochs between pruning events')
-    parser.add_argument('--threshold_pruning', type=float, default=None, help='Threshold value for cutting off sindy terms (lowered for delta-form coefficients)')
-    parser.add_argument('--ensemble_pruning', type=float, default=None, help='t-test threshold for ensemble-based pruning')
-    parser.add_argument('--population_pruning', type=float, default=None, help='Percentage of participants which have to have a term active in order to keep it.')
+    parser.add_argument('--pruning_threshold', type=float, default=0.05, help='Threshold value for cutting off sindy terms (lowered for delta-form coefficients)')
+    parser.add_argument('--pruning_ensemble', type=float, default=0.01, help='t-test threshold for ensemble-based pruning')
+    parser.add_argument('--pruning_population', type=float, default=None, help='Percentage of participants which have to have a term active in order to keep it.')
 
     # Data setup parameters
     parser.add_argument('--train_ratio_time', type=float, default=None, help='Ratio of data used for training. Split along time dimension. Not combinable with test_sessions')
@@ -49,22 +49,26 @@ if __name__=='__main__':
     
     args = parser.parse_args()
     
+    # ----------------------------------------------------------------------------------------------------------------------------------
+    # DEBUG CONFIGURATION
+    # ----------------------------------------------------------------------------------------------------------------------------------
+    
     # args.results = False
     # args.sindy_weight = 0.1
-    # args.epochs = 10
+    # args.epochs = 1 # 10
     # args.epochs_warmup = 5
     # args.ensemble = 10
     # args.pruning_frequency = 1
-    # args.threshold_pruning = None
-    # args.ensemble_pruning = 0.05
-    # args.population_pruning = None  # set to e.g. 0.05 for participant-level filtering
+    # args.pruning_threshold = 0.05
+    # args.pruning_ensemble = 0.05
+    # args.pruning_population = None  # set to e.g. 0.05 for participant-level filtering
     
     # args.data = "weinhardt2025/data/synthetic/synthetic_256p_0_0.csv"
     # args.model = args.data.replace("data", "params").replace("/synthetic_", "/spice_synthetic_test_").replace(".csv", ".pkl")
     
     # args.model = "weinhardt2025/params/eckstein2022/spice_eckstein2022.pkl"
     # args.data = "weinhardt2025/data/eckstein2022/eckstein2022.csv"
-    # # args.train_ratio_time = 0.8
+    # args.train_ratio_time = 0.8
     
     # args.model = "weinhardt2025/params/eckstein2024/spice_eckstein2024.pkl"
     # args.data = "weinhardt2025/data/eckstein2024/eckstein2024.csv"
@@ -84,6 +88,8 @@ if __name__=='__main__':
     # args.model = "weinhardt2025/params/weber2024/spice_weber2024.pkl" 
     # args.additional_columns = None,
     # args.test_sessions = "4,8,12"
+    # ----------------------------------------------------------------------------------------------------------------------------------
+    
     
     example_participant = 2
     plot_coef_dist = True
@@ -162,9 +168,9 @@ if __name__=='__main__':
         sindy_alpha=args.sindy_alpha,
         sindy_library_polynomial_degree=2,
         sindy_pruning_frequency=args.pruning_frequency,
-        sindy_threshold_pruning=args.threshold_pruning,
-        sindy_ensemble_pruning=args.ensemble_pruning,
-        sindy_population_pruning=args.population_pruning,
+        sindy_threshold_pruning=args.pruning_threshold,
+        sindy_ensemble_pruning=args.pruning_ensemble,
+        sindy_population_pruning=args.pruning_population,
 
         # other parameters
         verbose=True,

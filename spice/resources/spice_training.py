@@ -1152,29 +1152,33 @@ def fit_spice(
     # STAGE 2: Final SINDy Refit (single-pass lstsq)
     # ══════════════════════════════════════════════════════════════════════════
     if sindy_weight > 0:
-        if verbose:
-            terminal_width = _get_terminal_width()
-            print("\n" + "=" * terminal_width)
-            print("Stage 2: Final SINDy refit")
-            print("=" * terminal_width)
+        try:
+            if verbose:
+                terminal_width = _get_terminal_width()
+                print("\n" + "=" * terminal_width)
+                print("Stage 2: Final SINDy refit")
+                print("=" * terminal_width)
 
-        original_device = model.device
-        model.to('cpu')
+            original_device = model.device
+            model.to('cpu')
+            
+            sindy_parameters = []
+            for name, p in model.named_parameters():
+                if 'sindy' in name:
+                    sindy_parameters.append(p)
+            optimizer_sindy = torch.optim.AdamW(sindy_parameters, lr=0.01, weight_decay=sindy_alpha)
+            _run_sindy_training(
+                model=model,
+                optimizer=optimizer_sindy,
+                xs_train=xs_train_5d.to(torch.device('cpu')),
+                ys_train=ys_train_5d.to(torch.device('cpu')),
+                pruning_threshold=0.05,
+                verbose=verbose,
+            )
+            model.to(original_device)
+        except torch._C._LinAlgError as e:
+            print('Stage 2: Ridge solve is not possible because a singular candidate term matrix was found. SPICE will omit a ridge solve and return Stage 1 SINDy coefficients instead. No worries---the SPICE model is still great!')
         
-        sindy_parameters = []
-        for name, p in model.named_parameters():
-            if 'sindy' in name:
-                sindy_parameters.append(p)
-        optimizer_sindy = torch.optim.AdamW(sindy_parameters, lr=0.01, weight_decay=sindy_alpha)
-        _run_sindy_training(
-            model=model,
-            optimizer=optimizer_sindy,
-            xs_train=xs_train_5d.to(torch.device('cpu')),
-            ys_train=ys_train_5d.to(torch.device('cpu')),
-            pruning_threshold=0.05,
-            verbose=verbose,
-        )
-        model.to(original_device)
         
     # ══════════════════════════════════════════════════════════════════════════
     # Final evaluation summary

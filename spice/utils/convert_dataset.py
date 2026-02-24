@@ -394,16 +394,12 @@ def split_data_along_timedim(dataset: SpiceDataset, split_ratio: float, device: 
     # compute the indeces at which the data is going to be splitted into training and testing data
     split_indices = (last_nonzero_indices * split_ratio).int()
     
-    # initialize training data and testing data storages
-    train_xs = torch.zeros((xs.shape[0], max(split_indices), xs.shape[2], xs.shape[3]), device=dataset.device) - 1
-    test_xs = torch.zeros((xs.shape[0], max(last_nonzero_indices - split_indices), xs.shape[2], xs.shape[3]), device=dataset.device) - 1
-    train_ys = torch.zeros((xs.shape[0], max(split_indices), ys.shape[2], ys.shape[3]), device=dataset.device) - 1
-    test_ys = torch.zeros((xs.shape[0], max(last_nonzero_indices - split_indices), ys.shape[2], ys.shape[3]), device=dataset.device) - 1
-    
-    # get columns which had no -1 values in the first place to fill them up entirely in the training and testing data
-    # necessary for e.g. participant-IDs because otherwise -1 will be passed to embedding layer -> Error
-    example_session_id = torch.argmax((last_nonzero_indices < xs.shape[1]-1).int()).item()
-    full_columns = 1-np.isnan(xs[example_session_id, -1, 0]).int()
+    # initialize training data and testing data storages with NaN padding
+    # (model loss masking uses torch.isnan() to detect padding)
+    train_xs = torch.full((xs.shape[0], max(split_indices), xs.shape[2], xs.shape[3]), float('nan'), device=dataset.device)
+    test_xs = torch.full((xs.shape[0], max(last_nonzero_indices - split_indices), xs.shape[2], xs.shape[3]), float('nan'), device=dataset.device)
+    train_ys = torch.full((xs.shape[0], max(split_indices), ys.shape[2], ys.shape[3]), float('nan'), device=dataset.device)
+    test_ys = torch.full((xs.shape[0], max(last_nonzero_indices - split_indices), ys.shape[2], ys.shape[3]), float('nan'), device=dataset.device)
     
     # fill up training and testing data
     for index_session in range(xs.shape[0]):
@@ -412,9 +408,9 @@ def split_data_along_timedim(dataset: SpiceDataset, split_ratio: float, device: 
         train_ys[index_session, :split_indices[index_session]] = ys[index_session, :split_indices[index_session]]
         test_ys[index_session, :last_nonzero_indices[index_session]-split_indices[index_session]] = ys[index_session, split_indices[index_session]:last_nonzero_indices[index_session]]
 
-        # fill up non-"-1"-columns (only applicable for xs)
-        train_xs[index_session, :, :, full_columns] = xs[index_session, :train_xs.shape[1], :, full_columns]
-        test_xs[index_session, :, :, full_columns] = xs[index_session, :test_xs.shape[1], :, full_columns]
+        # these columns (Timesteps_in_trial, Trials, Blocks, Experiments, Participants) are getting filled up along the trial dimension
+        train_xs[index_session, :, :, -5:] = xs[index_session, :train_xs.shape[1], :, -5:]
+        test_xs[index_session, :, :, -5:] = xs[index_session, :test_xs.shape[1], :, -5:]
     
     return SpiceDataset(train_xs, train_ys, device=device), SpiceDataset(test_xs, test_ys, device=device)
 
