@@ -9,6 +9,38 @@ import sys, os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 from weinhardt2025.benchmarking.benchmarking_qlearning import QLearning
 
+# Description:
+# X = W * H
+# X: (participants, terms)      -> carries all single terms per participant ; to accomodate NMF: terms*2 (negative + positive values)
+# W: (participants, concepts)   -> carries all concepts per participant
+# H: (concepts, terms)          -> carries all terms per concept ; in DL: no sparse regression on H (might be problematic)
+
+# checking for coefficient directly:
+# coefs = [1, 2, 0, -3, -1] -> to accomodate NMF:  coefs_double = [1, 2, 0, 0, 0, 0, 0, 0, 3, 1]
+#                                                                 [---- pos ----  ---- neg ----]
+# checking for only presence:
+# coefs = [1, 1, 0, -1, -1] -> to accomodate NMF:  coefs_double = [1, 1, 0, 0, 0, 0, 0, 0, 1, 1]
+#                                                                 [---- pos ----  ---- neg ----]
+
+# Perks and limitations:
+# NMF:
+# + sparsifitcation on W AND H
+# + guarantees identifiability due to non-negativity
+# + limits W to non-negative entries -> more interpretable in a cognitive meaning
+# - would have to double the terms to accomodate pos and neg coefficients -> effect of bigger library is unclear
+# DL:
+# + can handle negative coefficients naturally
+# - no sparsification on H  -> perhaps H could then carry ALL coefficients for one participant -> one concept per participant
+#       how to prohibit that: concepts << participants; s.t. overcomplete concept dictionary (concepts >> terms)
+#       example: eckstein2022.csv has 292 participnats; model has ~60 terms -> in a concept window of 61 << concepts << 292
+
+# Analysis goals:
+# - compare both methods on same data
+# - compare both methods on groundtruth and fitted coefs
+# Smoke tests:
+# - which influence number of concepts has on stability (especially for DL)
+# - ...
+
 
 n_concepts = 6  # Start with fewer concepts (≈ n_features / 2)
 method = 'nmf'  # 'nmf' or 'dict' (DictionaryLearning)
@@ -17,6 +49,7 @@ use_real = False  # if True: load trained sindy coefs; else: load groundtruth RL
 path_data = 'weinhardt2025/data/synthetic/synthetic_256p_0_0.csv'
 path_model = 'weinhardt2025/params/synthetic/spice_synthetic_256p_0_0.pkl'
 rl_parameters = ['beta_reward', 'beta_choice', 'alpha_reward', 'alpha_penalty', 'alpha_choice', 'forget_rate']
+
 dataset = csv_to_dataset(
     file=path_data,
     additional_inputs=rl_parameters,
@@ -59,13 +92,13 @@ presence_neg = []        # list of binary arrays: term present AND negative
 
 for module in model.get_modules():
     # most important handlers for SPICE
-    term_presence = model.sindy_coefficients_presence[module]  # (n_participants, n_experiments, 1, n_terms)
-    coefficients = model.sindy_coefficients[module]            # (n_participants, n_experiments, 1, n_terms)
+    term_presence = model.sindy_coefficients_presence[module]  # (n_ensemble, n_participants, n_experiments, n_terms)
+    coefficients = model.sindy_coefficients[module]            # (n_ensemble, n_participants, n_experiments, n_terms)
     terms = model.sindy_candidate_terms[module]
 
-    # Check which terms are present in at least one participant (first experiment, first ensemble)
-    presence = term_presence[:, 0, 0, :]  # (n_participants, n_terms)
-    coefs = coefficients[:, 0, 0, :]      # (n_participants, n_terms)
+    # Check which terms are present in at least one participant (first ensemble, first experiment)
+    presence = term_presence[0, :, 0, :]  # (n_participants, n_terms)
+    coefs = coefficients[0, :, 0, :]      # (n_participants, n_terms)
     presence_any = presence.any(dim=0)    # (n_terms,)
 
     for term_idx, term_name in enumerate(terms):

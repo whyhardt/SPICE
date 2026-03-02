@@ -80,16 +80,28 @@ class SpiceModel(BaseRNN):
         
     def forward(self, inputs, prev_state=None, batch_first=False):
         spice_signals = self.init_forward_pass(inputs, prev_state, batch_first)
-        
+
         # perform time-invariant computations
         participant_embedding = self.participant_embedding(spice_signals.participant_ids)
-        # rewards_chosen = spice_signals.rewards.nan_to_num(0).sum(dim=-1, keepdim=True).repeat(1, 1, self.n_actions)
-        
-        # perform time-variant computations
-        for timestep in spice_signals.trials:
-            
-            actions_t = spice_signals.actions[timestep, 0]   # [B, n_actions]
-            rewards_t = spice_signals.rewards[timestep, 0]   # [B, n_actions]
+
+        # perform time-variant computations (compiled)
+        spice_signals.logits = self._trial_loop(
+            spice_signals.actions, spice_signals.rewards, spice_signals.logits,
+            spice_signals.participant_ids, participant_embedding,
+        )
+
+        spice_signals = self.post_forward_pass(spice_signals, batch_first)
+
+        return spice_signals.logits, self.get_state()
+
+    @torch.compile(dynamic=True)
+    def _trial_loop(self, actions, rewards, logits, participant_ids, participant_embedding):
+        T = actions.shape[0]
+
+        for timestep in range(T):
+
+            actions_t = actions[timestep, 0]   # [E, B, n_actions]
+            rewards_t = rewards[timestep, 0]   # [E, B, n_actions]
 
             # REWARD VALUE UPDATES
             self.call_module(
@@ -98,11 +110,11 @@ class SpiceModel(BaseRNN):
                 action_mask=actions_t,
                 inputs=(
                     rewards_t,
-                    self.state['buffer_reward_1'],  # Recent reward history
+                    self.state['buffer_reward_1'],
                     self.state['buffer_reward_2'],
                     self.state['buffer_reward_3'],
                 ),
-                participant_index=spice_signals.participant_ids,
+                participant_index=participant_ids,
                 participant_embedding=participant_embedding,
             )
 
@@ -111,12 +123,11 @@ class SpiceModel(BaseRNN):
                 key_state='value_reward',
                 action_mask=1-actions_t,
                 inputs=(
-                    # rewards_chosen[timestep],
-                    self.state['buffer_reward_1'],  # Recent reward history
+                    self.state['buffer_reward_1'],
                     self.state['buffer_reward_2'],
                     self.state['buffer_reward_3'],
                     ),
-                participant_index=spice_signals.participant_ids,
+                participant_index=participant_ids,
                 participant_embedding=participant_embedding,
             )
 
@@ -127,38 +138,25 @@ class SpiceModel(BaseRNN):
                 action_mask=None,
                 inputs=(
                     actions_t,
-                    self.state['buffer_choice_1'],  # Recent choice history
+                    self.state['buffer_choice_1'],
                     self.state['buffer_choice_2'],
                     self.state['buffer_choice_3'],
                 ),
-                participant_index=spice_signals.participant_ids,
+                participant_index=participant_ids,
                 participant_embedding=participant_embedding,
             )
 
             # BUFFER UPDATES:
-            # REWARD BUFFER UPDATES: Shift reward buffer for chosen action, keep for not chosen action (NOTE: deterministic; not learned by SPICE -> Could be made learnable: e.g. decay-rate for not chosen action)
+            # REWARD BUFFER UPDATES: Shift reward buffer for chosen action, keep for not chosen action
             # CHOICE BUFFER UPDATES: Shift all buffer entries according to action
             self.state['buffer_reward_3'] = self.state['buffer_reward_2'] * actions_t + self.state['buffer_reward_3'] * (1-actions_t)
             self.state['buffer_reward_2'] = self.state['buffer_reward_1'] * actions_t + self.state['buffer_reward_2'] * (1-actions_t)
-            self.state['buffer_reward_1'] = torch.where(actions_t==1, rewards_t, 0) + torch.where(actions_t==0, self.state['buffer_reward_1'], 0)  # updating buffer_reward[t-1] with reward for chosen action and keeping values for not-chosen actions
+            self.state['buffer_reward_1'] = torch.where(actions_t==1, rewards_t, 0) + torch.where(actions_t==0, self.state['buffer_reward_1'], 0)
             self.state['buffer_choice_3'] = self.state['buffer_choice_2']
             self.state['buffer_choice_2'] = self.state['buffer_choice_1']
             self.state['buffer_choice_1'] = actions_t
-            
+
             # compute logits for current timestep
-            spice_signals.logits[timestep] = self.state['value_reward'] + self.state['value_choice']
-            # spice_signals.logits[timestep] = self.call_module(
-            #     key_module='logits',
-            #     key_state='logits',
-            #     inputs=(
-            #         self.state['value_reward'],
-            #         self.state['value_choice'],
-            #     ),
-            #     participant_index=spice_signals.participant_ids,
-            #     participant_embedding=participant_embedding,
-            # )
-            
-            
-        spice_signals = self.post_forward_pass(spice_signals, batch_first)
-        
-        return spice_signals.logits, self.get_state()
+            logits[timestep] = self.state['value_reward'] + self.state['value_choice']
+
+        return logits

@@ -25,21 +25,19 @@ if __name__=='__main__':
     
     # RNN training parameters
     parser.add_argument('--epochs', type=int, default=4000, help='Number of training epochs')
-    parser.add_argument('--epochs_confidence', type=int, default=0, help='Number of training epochs for stage 2 (confidence pruning)')
-    parser.add_argument('--epochs_finetuning', type=int, default=0, help='Number of training epochs for stage 3 (SINDy-only finetuning)')
     parser.add_argument('--epochs_warmup', type=int, default=None, help='Number of training epochs for warmup (exp increase of sindy-weight; no pruning)')
     parser.add_argument('--lr', type=float, default=0.01, help='Learning rate')
     parser.add_argument('--rnn_l2_lambda', type=float, default=0., help='L2 Reg of the RNN parameters')
+    parser.add_argument('--ensemble', type=int, default=1, help='Number of independent members in the ensemble setup')
     
     # SINDy training parameters
     parser.add_argument('--sindy_weight', type=float, default=0.1, help='Weight for SINDy regularization during RNN training')
-    parser.add_argument('--sindy_l2_lambda', type=float, default=0.0001, help='L2 Reg of the SINDy coefficients')
-    parser.add_argument('--sindy_pruning_threshold', type=float, default=0.05, help='Threshold value for cutting off sindy terms (lowered for delta-form coefficients)')
-    parser.add_argument('--sindy_pruning_terms', type=int, default=1, help='Number of thresholded terms')
-    parser.add_argument('--sindy_pruning_freq', type=int, default=1, help='Number of epochs after which to prune')
-    parser.add_argument('--sindy_pruning_patience', type=int, default=100, help='Number of epochs after which to prune')
-    parser.add_argument('--sindy_confidence', type=float, default=0.05, help='Threshold used for confidence-based pruning across models (participants x experiments)')
-    
+    parser.add_argument('--sindy_alpha', type=float, default=0.0001, help='Degree-weighted coefficient penalty strength (ridge alpha)')
+    parser.add_argument('--pruning_frequency', type=int, default=50, help='Epochs between pruning events')
+    parser.add_argument('--pruning_threshold', type=float, default=0.05, help='Threshold value for cutting off sindy terms (lowered for delta-form coefficients)')
+    parser.add_argument('--pruning_ensemble', type=float, default=0.01, help='t-test threshold for ensemble-based pruning')
+    parser.add_argument('--pruning_population', type=float, default=None, help='Percentage of participants which have to have a term active in order to keep it.')
+
     # Data setup parameters
     parser.add_argument('--train_ratio_time', type=float, default=None, help='Ratio of data used for training. Split along time dimension. Not combinable with test_sessions')
     parser.add_argument('--test_sessions', type=str, default=None, help='Comma-separated list of integeres which indicate test sessions. Not combinable with train_ratio_time')
@@ -51,15 +49,25 @@ if __name__=='__main__':
     
     args = parser.parse_args()
     
-    args.results = True
-    args.sindy_weight = 0.1
-    args.epochs = 1000
-    args.epochs_warmup = 250
-    args.epochs_confidence = 0
-    args.epochs_finetuning = 4000
+    # ----------------------------------------------------------------------------------------------------------------------------------
+    # DEBUG CONFIGURATION
+    # ----------------------------------------------------------------------------------------------------------------------------------
     
-    args.model = "weinhardt2025/params/eckstein2022/spice_eckstein2022.pkl"
-    args.data = "weinhardt2025/data/eckstein2022/eckstein2022.csv"
+    # args.results = False
+    # args.sindy_weight = 0.1
+    # args.epochs = 1 # 10
+    # args.epochs_warmup = 5
+    # args.ensemble = 10
+    # args.pruning_frequency = 1
+    # args.pruning_threshold = 0.05
+    # args.pruning_ensemble = 0.05
+    # args.pruning_population = None  # set to e.g. 0.05 for participant-level filtering
+    
+    # args.data = "weinhardt2025/data/synthetic/synthetic_256p_0_0.csv"
+    # args.model = args.data.replace("data", "params").replace("/synthetic_", "/spice_synthetic_test_").replace(".csv", ".pkl")
+    
+    # args.model = "weinhardt2025/params/eckstein2022/spice_eckstein2022.pkl"
+    # args.data = "weinhardt2025/data/eckstein2022/eckstein2022.csv"
     # args.train_ratio_time = 0.8
     
     # args.model = "weinhardt2025/params/eckstein2024/spice_eckstein2024.pkl"
@@ -80,15 +88,11 @@ if __name__=='__main__':
     # args.model = "weinhardt2025/params/weber2024/spice_weber2024.pkl" 
     # args.additional_columns = None,
     # args.test_sessions = "4,8,12"
+    # ----------------------------------------------------------------------------------------------------------------------------------
     
-    # args.epochs = 1
-    # args.results = True
-    # args.sindy_weight = 0
-    # args.data = "weinhardt2025/data/synthetic/synthetic_256p_0_0.csv"
-    # args.model = args.data.replace("data", "params").replace("/synthetic_", "/spice_synthetic_test_").replace(".csv", ".pkl")
     
     example_participant = 2
-    plot_coef_dist = False
+    plot_coef_dist = True
     
     if args.train_ratio_time and args.test_sessions:
         raise ValueError("kwargs train_ratio_time and test_sessions cannot be assigned at the same time.")
@@ -121,6 +125,7 @@ if __name__=='__main__':
     n_participants = len(dataset_train.xs[..., -1].unique())
     n_experiments = len(dataset_train.xs[..., -2].unique())
     n_items = args.n_items if args.n_items else n_actions
+    n_sessions = dataset.xs.shape[0]
     
     if n_items == n_actions:
         if ((dataset.xs[..., n_actions:n_actions*2].nan_to_num(0) == 1).int() + (dataset.xs[..., n_actions:n_actions*2].nan_to_num(0) == 0).int()).sum() == dataset.xs.shape[0]*dataset.xs.shape[1]*n_actions:
@@ -151,27 +156,22 @@ if __name__=='__main__':
         
         # rnn training parameters
         epochs=args.epochs,
-        epochs_confidence=args.epochs_confidence,
         learning_rate=args.lr,
         warmup_steps=args.epochs_warmup,
+        ensemble_size=args.ensemble,
         l2_rnn=args.rnn_l2_lambda,
-        batch_size=min(1024, n_participants*4),
-        bagging=True,
-        scheduler=True,
-        
+        scheduler=False,
+        batch_size=None,
+
         # sindy fitting parameters
-        sindy_epochs=args.epochs_finetuning,
         sindy_weight=args.sindy_weight,
-        sindy_l2_lambda=args.sindy_l2_lambda,
-        sindy_pruning_threshold=args.sindy_pruning_threshold,
-        sindy_pruning_frequency=args.sindy_pruning_freq,
-        sindy_pruning_terms=args.sindy_pruning_terms,
-        sindy_pruning_patience=args.sindy_pruning_patience,
-        sindy_confidence_threshold=args.sindy_confidence,
+        sindy_alpha=args.sindy_alpha,
         sindy_library_polynomial_degree=2,
-        sindy_optimizer_reset=None,
-        sindy_ensemble_size=1,
-        
+        sindy_pruning_frequency=args.pruning_frequency,
+        sindy_threshold_pruning=args.pruning_threshold,
+        sindy_ensemble_pruning=args.pruning_ensemble,
+        sindy_population_pruning=args.pruning_population,
+
         # other parameters
         verbose=True,
         device=torch.device('cuda' if torch.cuda.is_available() else 'cpu'),
@@ -184,7 +184,7 @@ if __name__=='__main__':
     training_device_str = "CUDA" if estimator.device == torch.device('cuda') else "CPU"
     print("Training device:", training_device_str)
     print("="*_get_terminal_width())
-    # if estimator.sindy_epochs > 0 or estimator.epochs > 0:
+    # if args.epochs > 0:
     estimator.fit(*dataset_tuple)
     
     print("\nTraining complete!")
@@ -267,9 +267,9 @@ if __name__=='__main__':
                 qlearning = None
             
             for module_name in estimator.rnn_model.submodules_rnn:
-                # Get coefficients: [n_participants, n_ensemble, n_library_terms]
-                coeffs = estimator.rnn_model.sindy_coefficients[module_name][:, ensemble_idx, :].detach().cpu().numpy()
-                mask = estimator.rnn_model.sindy_coefficients_presence[module_name][:, ensemble_idx, :].cpu().numpy()
+                # Get coefficients: [n_participants, n_experiments, n_library_terms]
+                coeffs = estimator.rnn_model.sindy_coefficients[module_name][ensemble_idx].detach().cpu().numpy()
+                mask = estimator.rnn_model.sindy_coefficients_presence[module_name][ensemble_idx].cpu().numpy()
 
                 # Apply mask and adjust identity terms
                 sparse_coeffs = coeffs * mask
@@ -294,7 +294,7 @@ if __name__=='__main__':
                             raise ValueError(f"Candidate term {term} of the ground truth model was not found among the candidate terms of the fitted model ({term_names}).")
                         idx_spice = term_names.index(term)
                         idx_qlearning = candidate_terms_qlearning.index(term)
-                        gt_coeffs[:, idx_spice] = qlearning.sindy_coefficients[module_name][:, 0, 0, idx_qlearning].detach().cpu().numpy()
+                        gt_coeffs[:, idx_spice] = qlearning.sindy_coefficients[module_name][0, :, 0, idx_qlearning].detach().cpu().numpy()
 
                     # Add 1 to identity terms (same transformation as SPICE)
                     for idx, term in enumerate(term_names):

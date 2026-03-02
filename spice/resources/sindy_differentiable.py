@@ -127,25 +127,22 @@ def compute_polynomial_library(
     Compute polynomial library features in PyTorch (fully differentiable).
 
     Args:
-        x: State tensor [batch, n_actions] or [batch, time, n_actions]
-        controls: Control tensor [batch, n_actions, n_controls] or [batch, time, n_actions, n_controls]
+        x: State tensor [W, B*E, I]
+        controls: Control tensor [W, B*E, I, n_controls]
         degree: Maximum polynomial degree
         include_bias: Whether to include constant term
         interaction_only: Whether to inlude only interaction terms (with '*') of polynomial degree > 1
 
     Returns:
-        Library tensor [batch, n_actions, n_library_terms] or [batch, time, n_actions, n_library_terms]
+        Library tensor [W, B*E, I, n_library_terms]
     """
 
-    # x: [batch, time, n_actions]
-    # controls: [batch, time, n_actions, n_controls]
-
-    x_expanded = x.unsqueeze(-1)  # [batch, time, n_actions, 1]
+    x_expanded = x.unsqueeze(-1)
     if len(feature_names) == controls.shape[-1]:
         features = controls
     elif len(feature_names) > controls.shape[-1]:
         if len(feature_names) == controls.shape[-1]+1:
-            features = torch.cat([x_expanded, controls], dim=-1)  # [batch, time, n_actions, 1+n_controls]
+            features = torch.cat([x_expanded, controls], dim=-1)
         else:
             raise ValueError(f"Size of feature names ({len(feature_names)}) must be size of control features ({controls.shape[-1]}) + 1")
     else:

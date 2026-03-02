@@ -218,8 +218,8 @@ for internal_idx in tqdm(range(n_participants), desc="Extracting SINDy/RNN param
 
     # Fill in each submodule’s coefficients
     for module in list_rnn_modules:
-        if internal_idx in range(agent_spice.model.sindy_coefficients[module].shape[0]):
-            coefs = agent_spice.model.sindy_coefficients[module][internal_idx].flatten().detach().cpu().numpy()
+        if internal_idx in range(agent_spice.model.sindy_coefficients[module].shape[1]):
+            coefs = agent_spice.model.sindy_coefficients[module][0, internal_idx].flatten().detach().cpu().numpy()
             for i, name in enumerate(agent_spice.model.sindy_candidate_terms[module]):
                 param_dict[f"{module}_{name}"] = coefs[i]
             param_dict[f"params_{module}"] = np.sum(np.abs(coefs) > 1e-10)

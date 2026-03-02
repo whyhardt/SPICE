@@ -39,7 +39,6 @@ class SpiceEstimator(BaseEstimator):
         
         # RNN training parameters
         epochs: Optional[int] = 1,
-        epochs_confidence: Optional[int] = None,
         warmup_steps: Optional[int] = 0,
         bagging: Optional[bool] = False,
         n_steps_per_call: Optional[int] = None,  # number of timesteps in one backward-call; -1 for full sequence
@@ -47,24 +46,21 @@ class SpiceEstimator(BaseEstimator):
         learning_rate: Optional[float] = 1e-2,
         convergence_threshold: Optional[float] = 0,
         device: Optional[torch.device] = torch.device('cpu'),
-        scheduler: Optional[bool] = False, 
+        scheduler: Optional[bool] = False,
+        ensemble_size: Optional[int] = 1,
         l2_rnn: Optional[float] = 0,
         dropout: Optional[float] = 0.,
         loss_fn: Optional[callable] = cross_entropy_loss,
-        
+
         # SPICE training parameters
-        sindy_weight: Optional[float] = 0.1,  # Weight for SINDy regularization loss
-        sindy_epochs: Optional[int] = 1000,
-        sindy_pruning_threshold: Optional[float] = 0.05,
-        sindy_pruning_frequency: Optional[int] = 1,
-        sindy_pruning_terms: Optional[int] = 1,
-        sindy_pruning_patience: Optional[int] = 100,
-        sindy_library_polynomial_degree: Optional[int] = 1,
-        sindy_ensemble_size: Optional[int] = 1,
-        sindy_l2_lambda: Optional[float] = 1e-4,
-        sindy_optimizer_reset: Optional[float] = None,
-        sindy_confidence_threshold: Optional[float] = None,  # Filter terms by cross-participant confidence (0-1)
         use_sindy: Optional[bool] = False,
+        sindy_weight: Optional[float] = 0.1,  # Weight for SINDy regularization loss
+        sindy_alpha: Optional[float] = 1e-4,  # Degree-weighted coefficient penalty strength (ridge alpha)
+        sindy_library_polynomial_degree: Optional[int] = 1,
+        sindy_pruning_frequency: Optional[int] = 1,  # Epochs between pruning events
+        sindy_threshold_pruning: Optional[float] = None,  # Optional per-member threshold pruning (None to disable)
+        sindy_ensemble_pruning: Optional[float] = None,  # Ensemble t-test significance level (primary pruning mechanism)
+        sindy_population_pruning: Optional[float] = None,  # Optional cross-participant filter (0-1)
         
         verbose: Optional[bool] = False,
         keep_log: Optional[bool] = False,
@@ -102,9 +98,7 @@ class SpiceEstimator(BaseEstimator):
         
         # Training parameters
         self.epochs = epochs
-        self.epochs_confidence = epochs_confidence
         self.warmup_steps = warmup_steps
-        self.bagging = bagging
         self.n_steps_per_call = n_steps_per_call
         self.batch_size = batch_size
         self.learning_rate = learning_rate
@@ -114,24 +108,21 @@ class SpiceEstimator(BaseEstimator):
         self.verbose = verbose
         self.keep_log = keep_log
         self.deterministic = False
+        self.ensemble_size = ensemble_size
         self.l2_rnn = l2_rnn
         self.loss_fn = loss_fn
-        
+
         # Save parameters
         self.save_path_model = save_path_spice
 
         # SINDy training parameters
         self.sindy_weight = sindy_weight
-        self.sindy_alpha = sindy_l2_lambda
-        self.sindy_pruning_frequency = sindy_pruning_frequency
-        self.sindy_pruning_threshold = sindy_pruning_threshold
-        self.sindy_pruning_patience = sindy_pruning_patience
-        self.sindy_pruning_terms = sindy_pruning_terms
+        self.sindy_alpha = sindy_alpha
         self.sindy_library_polynomial_degree = sindy_library_polynomial_degree
-        self.sindy_epochs = sindy_epochs
-        self.sindy_ensemble_size = sindy_ensemble_size
-        self.sindy_optimizer_reset = sindy_optimizer_reset
-        self.sindy_confidence_threshold = sindy_confidence_threshold
+        self.sindy_pruning_frequency = sindy_pruning_frequency
+        self.sindy_threshold_pruning = sindy_threshold_pruning
+        self.sindy_population_pruning = sindy_population_pruning
+        self.sindy_ensemble_pruning = sindy_ensemble_pruning
         
         # Data parameters
         self.n_actions = n_actions
@@ -153,15 +144,15 @@ class SpiceEstimator(BaseEstimator):
             n_participants=n_participants,
             n_experiments=n_experiments,
             dropout=dropout,
-            enable_sindy_reg=(sindy_weight > 0),
             spice_config=spice_config,
             sindy_polynomial_degree=sindy_library_polynomial_degree,
-            sindy_ensemble_size = sindy_ensemble_size,
+            sindy_alpha=sindy_alpha,
+            ensemble_size=ensemble_size,
             use_sindy=use_sindy,
             n_items=n_items,
             **kwargs_rnn_class,
         ).to(device)
-        
+
         sindy_params = []
         rnn_params = []
         for name, param in self.rnn_model.named_parameters():
@@ -200,33 +191,26 @@ class SpiceEstimator(BaseEstimator):
         # Fit RNN
         # ------------------------------------------------------------------------
         
-        batch_size = data.shape[0] if self.batch_size is None else self.batch_size
-        
         rnn_model, rnn_optimizer = fit_spice(
             model=self.rnn_model,
             optimizer=self.rnn_optimizer,
             dataset_train=dataset,
             dataset_test=dataset_test,
-            
+
             epochs=self.epochs,
-            epochs_confidence=self.epochs_confidence,
             n_warmup_steps=self.warmup_steps,
-            batch_size=batch_size,
-            bagging=self.bagging,
+            batch_size=self.batch_size,
             scheduler=self.scheduler,
             n_steps=self.n_steps_per_call,
             convergence_threshold=self.convergence_threshold,
             loss_fn=self.loss_fn,
-            
+
             sindy_weight=self.sindy_weight,
-            sindy_l2_lambda=self.sindy_alpha,
-            sindy_pruning_threshold=self.sindy_pruning_threshold,
+            sindy_alpha=self.sindy_alpha,
             sindy_pruning_frequency=self.sindy_pruning_frequency,
-            sindy_pruning_terms=self.sindy_pruning_terms,
-            sindy_pruning_patience=self.sindy_pruning_patience,
-            sindy_optimizer_reset=self.sindy_optimizer_reset,
-            sindy_epochs=self.sindy_epochs,
-            sindy_confidence_threshold=self.sindy_confidence_threshold,
+            sindy_threshold_pruning=self.sindy_threshold_pruning,
+            sindy_ensemble_pruning=self.sindy_ensemble_pruning,
+            sindy_population_pruning=self.sindy_population_pruning,
             
             verbose=self.verbose,
             keep_log=self.keep_log,
@@ -248,9 +232,10 @@ class SpiceEstimator(BaseEstimator):
                 dropout=0,
                 spice_config=rnn_model.spice_config,
                 sindy_polynomial_degree=rnn_model.sindy_polynomial_degree,
+                ensemble_size=rnn_model.ensemble_size,
                 n_items=rnn_model.n_items,
+                n_reward_features=rnn_model.n_reward_features,
             )
-        rnn_agent_model.sindy_ensemble_size = rnn_model.sindy_ensemble_size  # Match trained ensemble size
         for key_module in rnn_agent_model.submodules_rnn:
             rnn_agent_model.setup_sindy_coefficients(key_module=key_module, polynomial_degree=rnn_agent_model.sindy_specs[key_module]['polynomial_degree'])
         rnn_agent_model.load_state_dict(state_dict)
@@ -264,9 +249,10 @@ class SpiceEstimator(BaseEstimator):
                 dropout=0,
                 spice_config=rnn_model.spice_config,
                 sindy_polynomial_degree=rnn_model.sindy_polynomial_degree,
+                ensemble_size=rnn_model.ensemble_size,
                 n_items=rnn_model.n_items,
+                n_reward_features=rnn_model.n_reward_features,
             )
-        spice_agent_model.sindy_ensemble_size = rnn_model.sindy_ensemble_size  # Match trained ensemble size
         for key_module in spice_agent_model.submodules_rnn:
             spice_agent_model.setup_sindy_coefficients(key_module=key_module, polynomial_degree=rnn_agent_model.sindy_specs[key_module]['polynomial_degree'])
         spice_agent_model.load_state_dict(state_dict)
@@ -306,14 +292,14 @@ class SpiceEstimator(BaseEstimator):
         prediction_spice = np.full((*conditions.shape[:-1], self.n_actions), np.nan).reshape(-1, self.n_actions)
         mask = torch.sum(conditions[..., :self.n_actions].reshape(-1, self.n_actions), dim=-1, keepdim=False) != -2
         
-        # rnn predictions
-        prediction = self.rnn_agent.model(conditions, batch_first=True)[0].reshape(-1, self.n_actions)
+        # rnn predictions — average across ensemble dim (E, B, T, W, A) -> (B, T, W, A)
+        prediction = self.rnn_agent.model(conditions, batch_first=True)[0].mean(dim=0).reshape(-1, self.n_actions)
         prediction = torch.nn.functional.softmax(prediction, dim=-1).detach().cpu().numpy()
         prediction_rnn[mask.detach().cpu().numpy()] = prediction[mask]
         prediction_rnn = prediction_rnn.reshape(*conditions.shape[:-1], self.n_actions)
-        
-        # SPICE predictions
-        prediction = self.spice_agent.model(conditions, batch_first=True)[0].reshape(-1, self.n_actions)
+
+        # SPICE predictions — average across ensemble dim
+        prediction = self.spice_agent.model(conditions, batch_first=True)[0].mean(dim=0).reshape(-1, self.n_actions)
         prediction = torch.nn.functional.softmax(prediction, dim=-1).detach().cpu().numpy()
         prediction_spice[mask.detach().cpu().numpy()] = prediction[mask]
         prediction_spice = prediction_spice.reshape(*conditions.shape[:-1], self.n_actions)
@@ -337,7 +323,7 @@ class SpiceEstimator(BaseEstimator):
             return None
 
     def get_sindy_coefficients(self, key_module: Optional[str] = None) -> Dict[str, np.ndarray]:
-        """Returns a dict of modules holding a numpy array with the sindy coefficients of shape (participant, experiment, ensemble, coefficient)."""
+        """Returns a dict of modules holding a numpy array with the sindy coefficients of shape (ensemble, participant, experiment, coefficient)."""
         
         return self.rnn_model.get_sindy_coefficients(key_module=key_module)
     
@@ -354,30 +340,30 @@ class SpiceEstimator(BaseEstimator):
         # load trained parameters
         loaded_parameters = torch.load(path_model, map_location=torch.device('cpu'))
         
-        self.rnn_model.sindy_ensemble_size = loaded_parameters['model']['sindy_coefficients.'+next(iter(self.rnn_model.submodules_rnn))].shape[1]
+        # Infer ensemble_size from saved coefficient shape: (E, P, X, terms)
+        self.rnn_model.ensemble_size = loaded_parameters['model']['sindy_coefficients.'+next(iter(self.rnn_model.submodules_rnn))].shape[0]
         for module in self.get_modules():
             self.rnn_model.setup_sindy_coefficients(key_module=module, polynomial_degree=self.rnn_model.sindy_specs[module]['polynomial_degree'])
         self.rnn_model.sindy_coefficients_presence = loaded_parameters['sindy_coefficients_presence']
-        
+
         self.rnn_model.load_state_dict(loaded_parameters['model'])
         self.rnn_model.init_state(batch_size=self.rnn_model.n_participants)
-        # optimizer.load_state_dict(state_dict['optimizer'])
 
         self.rnn_model = self.rnn_model.to(self.rnn_model.device)
         self.rnn_optimizer = self.rnn_optimizer
-        
+
         # SETUP RNN AND SYMBOLIC AGENT
-        state_dict = self.rnn_model.state_dict() 
+        state_dict = self.rnn_model.state_dict()
         for agent_type in [('rnn_agent', False), ('spice_agent', True)]:
             model = self.rnn_class(
                     spice_config=self.spice_config,
                     n_actions=self.rnn_model.n_actions,
                     n_items=self.rnn_model.n_items,
+                    n_reward_features=self.rnn_model.n_reward_features,
                     n_participants=self.rnn_model.n_participants,
                     n_experiments=self.rnn_model.n_experiments,
-                    sindy_config=self.rnn_model.spice_config,
                     sindy_polynomial_degree=self.rnn_model.sindy_polynomial_degree,
-                    sindy_ensemble_size=self.rnn_model.sindy_ensemble_size,
+                    ensemble_size=self.rnn_model.ensemble_size,
                     use_sindy=agent_type[1],
                 )
             model.load_state_dict(state_dict)

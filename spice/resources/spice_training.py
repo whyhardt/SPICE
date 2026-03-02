@@ -6,9 +6,9 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, RandomSampler
 from torch.optim.lr_scheduler import ReduceLROnPlateau
-from typing import Tuple
+from typing import Tuple, Union, Optional
 import shutil
-
+from scipy.stats import t as t_dist
 from torch.nn.functional import mse_loss  # using standard mse loss for spice should be fine most of the time
 
 from .rnn import BaseRNN
@@ -71,7 +71,7 @@ def _print_training_status(
     # Add SPICE model equations if SINDy is active
     if sindy_weight > 0:
         status_lines.append("-" * terminal_width)
-        status_lines.append(f"SPICE Model (Coefficients: {model.count_sindy_coefficients().mean():.0f}):")
+        status_lines.append(f"SPICE Model (Coefficients: {model.count_sindy_coefficients()[0, 0, 0]:.0f}):")
         status_lines.append(model.get_spice_model_string(participant_id=0, ensemble_idx=0))
         
         # Add patience summary
@@ -95,23 +95,24 @@ def _print_training_status(
                         skip_state[idx] = True
 
             patience_list = ""
-            for ip, p in enumerate(model.sindy_pruning_patience_counters[m][0,0,0]):
+            for ip, p in enumerate(model.sindy_pruning_patience_counters[m][0, 0, 0]):
                 if skip_state[ip]:
-                    continue  # Skip state-containing terms entirely (not printed in equations)
+                    continue
                 elif fixed_linear[ip]:
-                    patience_list += "-"  # Show "-" for fixed linear terms (fit_linear=False)
-                elif model.sindy_coefficients_presence[m][0,0,0, ip]:
+                    patience_list += "-"
+                elif model.sindy_coefficients_presence[m][0, 0, 0, ip]:
                     patience_list += str(p.item())
                 else:
-                    patience_list += "-"  # Thresholded-out terms
+                    patience_list += "-"
                 patience_list += ", "
             space_filler = " "+" "*(max_len_module-len(m)) if max_len_module > len(m) else " "
             status_lines.append(m + ":" + space_filler + patience_list[:-2])
-            
+
         status_lines.append("-" * terminal_width)
         status_lines.append(f"Term presence across SPICE models (number of models={model.n_participants*model.n_experiments}):")
         for m in model.get_modules():
-            presence = model.sindy_coefficients_presence[m].float().mean(dim=2).sum(dim=0).sum(dim=0).int().detach().cpu().numpy()
+            # (E, P, X, terms) -> mean across E, sum across P and X
+            presence = model.sindy_coefficients_presence[m].float().mean(dim=0).sum(dim=0).sum(dim=0).int().detach().cpu().numpy()
             presence_list = ""
             for p in presence:
                 presence_list += str(p)+", "
@@ -236,43 +237,6 @@ def cross_entropy_loss(prediction: torch.Tensor, target: torch.Tensor) -> torch.
     return torch.nn.functional.cross_entropy(prediction, target)
 
 
-def _setup_dataloaders(
-    dataset_train: SpiceDataset,
-    dataset_test: SpiceDataset,
-    batch_size: int,
-    bagging: bool,
-) -> Tuple[DataLoader, DataLoader, int]:
-    """
-    Set up training and test dataloaders.
-
-    Returns:
-        Tuple of (train_dataloader, test_dataloader, iterations_per_epoch)
-    """
-    if batch_size is None:
-        batch_size = len(dataset_train)
-
-    if bagging:
-        batch_size = max(batch_size, 64)
-        sampler = RandomSampler(dataset_train, replacement=True, num_samples=batch_size)
-    else:
-        sampler = None
-
-    dataloader_train = DataLoader(
-        dataset_train,
-        batch_size=batch_size,
-        sampler=sampler,
-        shuffle=(sampler is None)
-    )
-
-    dataloader_test = None
-    if dataset_test is not None:
-        dataloader_test = DataLoader(dataset_test, batch_size=len(dataset_test))
-
-    iterations_per_epoch = max(len(dataset_train), 64) // batch_size if batch_size < max(len(dataset_train), 64) else 1
-
-    return dataloader_train, dataloader_test, iterations_per_epoch
-
-
 def _setup_warmup_scaler(n_warmup_steps: int, exp_max: float = 1) -> torch.Tensor:
     """Create exponential warmup scaler for SINDy weight."""
     if n_warmup_steps <= 0:
@@ -301,314 +265,360 @@ def _run_batch_training(
     sindy_weight: float = 0.,
     sindy_alpha: float = 0.,
     n_steps: int = None,
-    # loss_fn: nn.modules.loss._Loss = nn.CrossEntropyLoss(label_smoothing=0.),
     loss_fn: callable = cross_entropy_loss,
     ):
 
     """
     Trains a model with the given batch.
+    xs/ys are 5D (E, B, T, W, F) — already bootstrapped.
     """
 
-    if n_steps is None:
-        n_steps = xs.shape[1]
+    E, B = xs.shape[0], xs.shape[1]
 
-    model.init_state(batch_size=xs.shape[0], within_ts=xs.shape[2])
+    if n_steps is None:
+        n_steps = xs.shape[2]
+
+    model.init_state(batch_size=B, within_ts=xs.shape[3])
     state = model.get_state(detach=True)
-    
+
     loss_batch = 0
     iterations = 0
-    for t in range(0, xs.shape[1], n_steps):
-        n_steps = min(xs.shape[1]-t, n_steps)
-        xs_step = xs[:, t:t+n_steps]
-        ys_step = ys[:, t:t+n_steps]
-        
-        # state = model.get_state(detach=True)
-        # ys_pred, _ = model(xs_step, state, batch_first=True)
-        
-        # # Mask out padding (NaN values) - valid trials have non-NaN actions
-        # mask = ~torch.isnan(xs_step[..., 0])
-        # mask = mask.reshape(-1)
-        
-        # loss_step = loss_fn(
-        #     ys_pred.reshape(-1, model.n_actions)[mask],
-        #     torch.argmax(ys_step.reshape(-1, model.n_actions), dim=1)[mask],
-        #     )
-        
+    for t in range(0, xs.shape[2], n_steps):
+        n_steps = min(xs.shape[2]-t, n_steps)
+        xs_step = xs[:, :, t:t+n_steps]
+        ys_step = ys[:, :, t:t+n_steps]
+
         state = model.get_state(detach=True)
         ys_pred, _ = model(xs_step, state, batch_first=True)
-        
-        # Mask out padding (NaN values) - valid trials have non-NaN actions
-        # xs_step is 4D: [B, T_out, T_in, F] — aggregate over T_in and n_actions
+
+        # Mask out padding (NaN values)
+        # xs_step is 5D: (E, B, T_out, T_in, F)
         mask = ~torch.isnan(xs_step[..., :model.n_actions].sum(dim=(-1)))
         ys_pred = ys_pred[mask]
         ys_step = ys_step[mask]
-        
-        # loss_step = loss_fn(
-        #     ys_pred.reshape(-1, model.n_actions),
-        #     torch.argmax(ys_step.reshape(-1, model.n_actions), dim=1),
-        #     )
-        
+
         loss_step = loss_fn(ys_pred, ys_step)
-        
+
         if torch.is_grad_enabled():
             # Add SINDy regularization loss
             if sindy_weight > 0 and model.sindy_loss != 0:
                 loss_step = loss_step + sindy_weight * model.sindy_loss
-                
-            # # Polynomial degree weighted coefficient penalty for SINDy coefficients
-            if sindy_weight > 0 and sindy_alpha > 0:
-                coefficient_penalty = model.compute_weighted_coefficient_penalty(sindy_alpha=sindy_alpha, norm=1)
-                # coefficient_penalty = 0
-                # for module in model.submodules_rnn:
-                #     coefficient_penalty += (model.sindy_coefficients[module] * model.sindy_coefficients_presence[module]).abs().sum(dim=-1).mean()
-                loss_step = loss_step + sindy_alpha * coefficient_penalty
 
+            if sindy_weight > 0 and sindy_alpha > 0:
+                loss_step = loss_step + model.compute_weighted_coefficient_penalty(sindy_alpha=sindy_alpha, norm=1)
+                
             # backpropagation
             optimizer.zero_grad()
             loss_step.backward()
-
-            # Apply gradient masks to prevent updating zeroed coefficients
-            # model.apply_gradient_masks()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
-            
+
         loss_batch += loss_step.item()
         iterations += 1
-            
+
     return model, optimizer, loss_batch/iterations
+
+
+def _vectorize_state(
+    model: BaseRNN,
+    xs_train: torch.Tensor,
+    ys_train: torch.Tensor,
+    verbose: bool = False,
+) -> tuple:
+    """
+    Run the frozen RNN forward on the full training data to collect state buffers
+    for SINDy ridge solving.
+
+    Args:
+        model: RNN model (should be in eval mode with use_sindy=False)
+        xs_train: 5D tensor (E, B, T, W, F)
+        ys_train: 5D tensor matching xs_train
+        batch_size_fwd: Max sessions to process per forward call.
+            None = auto-detect via GPU probing (or all B on CPU).
+        verbose: Print auto-batch info
+
+    Returns:
+        Tuple of (input_state_buffer, target_state_buffer, xs_flat, ys_flat)
+    """
+    _E, B, T, W, F = xs_train.shape
+    n_features_y = ys_train.shape[-1]
+    E = model.ensemble_size
+
+    if xs_train.dim() == 4:
+        xs_train = xs_train.unsqueeze(0).repeat(E, 1, 1, 1, 1)
+        ys_train = ys_train.unsqueeze(0).repeat(E, 1, 1, 1, 1)
+
+    # State buffers: (within_ts, E, n_trials*B, n_items) — always full size
+    state_keys = list(model.init_state(batch_size=1, within_ts=W).keys())
+    state_buffer_current = {s: torch.zeros((W, E, T*B, model.n_items), dtype=torch.float32, device=model.device) for s in state_keys}
+    state_buffer_next = {s: torch.zeros((W, E, T*B, model.n_items), dtype=torch.float32, device=model.device) for s in state_keys}
+
+    # Per-session hidden state carried across timesteps: (W, E, B, n_items)
+    session_states = {s: torch.full((W, E, B, model.n_items),
+                                    fill_value=model.spice_config.memory_state[s],
+                                    dtype=torch.float32, device=model.device) for s in state_keys}
+    batch_size_fwd = B
+    with torch.no_grad():
+        for t in range(T):
+            for b_start in range(0, B, batch_size_fwd):
+                b_end = min(b_start + batch_size_fwd, B)
+
+                # Load this sub-batch's carried state into model
+                sub_state = {s: session_states[s][:, :, b_start:b_end].clone() for s in state_keys}
+                model.set_state(sub_state)
+
+                # Record pre-forward state
+                for s in state_keys:
+                    state_buffer_current[s][0, :, t*B+b_start:t*B+b_end] = sub_state[s][-1]
+
+                # Forward one timestep for this sub-batch
+                xs_sub = xs_train[:, b_start:b_end, t:t+1].to(model.device)
+                updated_state = model(xs_sub, model.get_state(), batch_first=True)[1]
+
+                # Record post-forward state
+                for s in state_keys:
+                    state_buffer_current[s][1:, :, t*B+b_start:t*B+b_end] = updated_state[s][:-1]
+                    state_buffer_next[s][:, :, t*B+b_start:t*B+b_end] = updated_state[s]
+
+                # Save updated state for next timestep
+                for s in state_keys:
+                    session_states[s][:, :, b_start:b_end] = updated_state[s]
+
+    del session_states
+
+    # Flatten to (E, flat_total, 1, 1, F)
+    flat_total = W * T * B
+    xs_flat = xs_train.permute(0, 2, 1, 3, 4).reshape(E, flat_total, 1, 1, F)
+    ys_flat = ys_train.permute(0, 2, 1, 3, 4).reshape(E, flat_total, 1, 1, n_features_y)[0]
+
+    # Reshape state buffers: (W, E, T*B, items) -> (1, E, flat_total, items)
+    for s in state_keys:
+        state_buffer_current[s] = state_buffer_current[s].permute(1, 2, 0, 3).reshape(1, E, flat_total, model.n_items)
+        state_buffer_next[s] = state_buffer_next[s].permute(1, 2, 0, 3).reshape(1, E, flat_total, model.n_items)
+
+    # Remove NaN-padded samples
+    nan_mask = ~torch.isnan(xs_flat[0, :, 0, 0, :model.n_actions].sum(dim=(-1)))
+    xs_flat = xs_flat[:, nan_mask]
+    state_buffer_current = {s: state_buffer_current[s][:, :, nan_mask] for s in state_buffer_current}
+    state_buffer_next = {s: state_buffer_next[s][:, :, nan_mask] for s in state_buffer_next}
+
+    return state_buffer_current, state_buffer_next, xs_flat, ys_flat
+
+
+def _ridge_recalibrate_sindy(
+    model: BaseRNN,
+    xs_train: torch.Tensor,
+    ys_train: torch.Tensor,
+    optimizer: torch.optim.Optimizer,
+):
+    """
+    Reset SINDy coefficients and optimizer state, then ridge-solve to recalibrate
+    surviving terms after a pruning event.
+
+    Called during joint training after ensemble t-test / threshold pruning to
+    instantly set coefficients to optimal values for the current library structure.
+
+    Args:
+        model: RNN model with updated sindy_coefficients_presence masks
+        xs_train: 5D training data (E, B, T, W, F)
+        ys_train: 5D training targets
+        optimizer: optimizer (SINDy param group state will be cleared)
+    """
+    # 1. Reinitialize SINDy coefficient values (respecting current presence mask)
+    for module in model.submodules_rnn:
+        presence = model.sindy_coefficients_presence[module]
+        model.sindy_coefficients[module].data = (
+            torch.randn_like(model.sindy_coefficients[module].data) * 0.001 * presence.float()
+        )
+
+    # 2. Clear SINDy optimizer state (Adam momentum/variance)
+    for param in optimizer.param_groups[0]['params']:
+        if param in optimizer.state:
+            optimizer.state[param] = {}
     
+    # 3. Freeze RNN, run forward to collect state buffers, then ridge solve
+    was_training = model.training
+    prev_use_sindy = model.use_sindy
+
+    # Freeze RNN parameters
+    rnn_grad_state = {}
+    for name, param in model.named_parameters():
+        rnn_grad_state[name] = param.requires_grad
+        param.requires_grad = 'sindy' in name
+
+    model.eval(use_sindy=False, aggregate=False)
+    input_state_buffer, _, xs_flat, _ = _vectorize_state(model, xs_train, ys_train)
+
+    with torch.no_grad():
+        model.train(use_sindy=True)
+        for rnn_module in model.submodules_rnn.values():
+            rnn_module.eval()
+
+        prev_state_args = dict(prev_state={s: t.clone() for s, t in input_state_buffer.items()})
+        model(inputs=xs_flat.to(model.device), **prev_state_args, batch_first=True)
+
+    # 4. Restore model state
+    for name, param in model.named_parameters():
+        param.requires_grad = rnn_grad_state[name]
+
+    if was_training:
+        model.train(use_sindy=prev_use_sindy)
+    else:
+        model.eval(use_sindy=prev_use_sindy)
+
 
 def _run_sindy_training(
     model: BaseRNN,
-    dataset_train: SpiceDataset,
-    optimizer: torch.optim.Optimizer,
-    dataset_test: SpiceDataset = None,
-    epochs: int = 1,
+    xs_train: torch.Tensor,
+    ys_train: torch.Tensor,
+    optimizer: torch.optim.Optimizer = None,
+    epochs: int = 1000,
     pruning_threshold: float = 0.05,
-    pruning_frequency: int = 1,
-    pruning_n_terms: int = None,
-    pruning_patience: int = 1,
-    pruning_warmup: int = 0,
-    l2_lambda: float = 0.,
-    batch_size: int = None,
     verbose: bool = True,
     ):
     """
-    Second stage SINDy fitting: freeze RNN weights and refit SINDy coefficients
-    on the trained RNN hidden states with no thresholding (threshold=0).
-
-    This follows the approach from sindy-shred where SINDy coefficients are
-    discarded after initial training and refitted on the learned hidden states.
-
-    IMPORTANT: Collapses ensemble to a single SINDy model (ensemble_size=1).
+    Final SINDy refit: freeze RNN weights and refit SINDy coefficients
+    on the trained RNN hidden states via ridge solve → prune → refit.
 
     Args:
         model (BaseRNN): Trained RNN model with SINDy coefficients
-        dataset_train (DatasetRNN): Training dataset
-        dataset_test (DatasetRNN, optional): Validation dataset. Defaults to None.
-        learning_rate (float): Learning rate for SINDy coefficient optimization
-        epochs (int): Number of epochs for second stage training
+        dataset_train: Training dataset (4D)
+        epochs (int): Number of epochs
         batch_size (int): Batch size for training
         verbose (bool): Print progress
 
     Returns:
-        BaseRNN: Model with refitted SINDy coefficients (single model, no ensemble)
+        BaseRNN: Model with refitted SINDy coefficients
     """
-
-    # Always print header for second stage (important step)
-    if verbose:
-        terminal_width = _get_terminal_width()
-        print("\n" + "="*terminal_width)
-        print(f"Starting SINDy finetuning...")
-        print("="*terminal_width)
-
-    criterion = nn.MSELoss()
     
+    criterion = nn.MSELoss()
+
     # Freeze all RNN parameters, only train SINDy coefficients
     for name, param in model.named_parameters():
         param.requires_grad = 'sindy' in name
-    
-    model.eval(use_sindy=False)
-    
-    # --------------------------------------------------------
-    # VECTORIZATION OF SINDY TRAINING
-    # --------------------------------------------------------
-    # rnn-weights are frozen -> we can vectorize the whole SINDy training by computing all rnn states for each timestep ad-hoc
-    
-    def vectorize_training_data(dataset):
-        # Initialize model state for correct batch size based on actual dataset
-        # dataset.xs.shape[0] gives the number of sessions/participants in first dimension
-        len_dataset = dataset.xs.shape[0]
-        n_trials = dataset.xs.shape[1]
-        n_timesteps = dataset.xs.shape[2]
-        
-        model.init_state(batch_size=len_dataset, within_ts=n_timesteps)
 
-        # initialize state buffer with time-flattened batch-dim
-        state_buffer_current = {state: torch.zeros((n_timesteps, n_trials*len_dataset, model.n_items), dtype=torch.float32, device=model.device) for state in model.get_state()}
-        state_buffer_next = {state: torch.zeros((n_timesteps, n_trials*len_dataset, model.n_items), dtype=torch.float32, device=model.device) for state in model.get_state()}
-        
-        with torch.no_grad():
-            for t in range(n_trials):
-                # save current state (input to forward-pass) in state buffer
-                for state in model.get_state():
-                    state_buffer_current[state][0, t*len_dataset:(t+1)*len_dataset] = model.get_state()[state][-1]
-                
-                # compute updated state
-                updated_state = model(dataset.xs[:, t][:, None].to(model.device), model.get_state(), batch_first=True)[1]
-                
-                # save updated state (training target) in state buffer
-                for state in model.get_state():
-                    state_buffer_current[state][1:, t*len_dataset:(t+1)*len_dataset] = updated_state[state][:-1]
-                    state_buffer_next[state][:, t*len_dataset:(t+1)*len_dataset] = updated_state[state]
-        
-        # reshape the dataset to be aligned with state buffer
-        # dataset.xs: [sessions, outer_ts, within_ts, features] (4D)
-        within_ts = dataset.xs.shape[2]
-        n_features_x = dataset.xs.shape[-1]
-        n_features_y = dataset.ys.shape[-1]
-        xs = dataset.xs.transpose(0, 1).reshape(within_ts*n_trials*len_dataset, 1, 1, n_features_x)
-        ys = dataset.ys.transpose(0, 1).reshape(within_ts*n_trials*len_dataset, 1, 1, n_features_y)
-        dataset = SpiceDataset(xs, ys)
-        for state in model.get_state():
-            state_buffer_current[state] = state_buffer_current[state].permute(1, 0, 2).reshape(1, within_ts*n_trials*len_dataset, model.n_items)
-            state_buffer_next[state] = state_buffer_next[state].permute(1, 0, 2).reshape(1, within_ts*n_trials*len_dataset, model.n_items)
-        
-        return state_buffer_current, state_buffer_next, dataset
-    
-    input_state_buffer_train, target_state_buffer_train, dataset_train = vectorize_training_data(dataset_train)
-    if dataset_test:
-        input_state_buffer_test, target_state_buffer_test, dataset_test = vectorize_training_data(dataset_test)
-    
-    
-    # --------------------------------------------------------
-    # SINDY TRAINING LOOP
-    # --------------------------------------------------------
-    
-    model.use_sindy = True
-    xs = dataset_train.xs
-    nan_mask = ~torch.isnan(xs[:, 0, :, :model.n_actions].sum(dim=(-1, -2)))
-    batch_size = dataset_train.xs.shape[0] if batch_size is None else batch_size
-    len_dataset = dataset_train.xs.shape[0]
+    model.eval(use_sindy=False, aggregate=False)
+
+    # Vectorize training data using shared helper
+    input_state_buffer_train, target_state_buffer_train, xs_flat, _ = _vectorize_state(model, xs_train, ys_train, verbose=verbose)
+
     len_last_print = 0
     
-    for epoch in range(epochs+1):
-        t_start = time.time()
-        loss_train = 0
-        iterations = 0
-        
-        if epoch+1 == epochs:
-            final_run = True
-        
-        for idx in range(0, len_dataset, batch_size):
-            
-            optimizer.zero_grad()
-            
-            batched_nan_mask = nan_mask[idx:idx+batch_size].to(model.device)
-            batched_input_state_buffer, batched_target_state_buffer = {}, {}
-            for state in input_state_buffer_train:
-                batched_input_state_buffer[state] = input_state_buffer_train[state][0, idx:idx+batch_size][batched_nan_mask].unsqueeze(0)
-                batched_target_state_buffer[state] = target_state_buffer_train[state][0, idx:idx+batch_size][batched_nan_mask].unsqueeze(0)
-            
-            # get sindy-based state updates from original rnn states
-            _, state_pred = model(xs[idx:idx+batch_size, :1].to(model.device)[batched_nan_mask], batched_input_state_buffer, batch_first=True)
-            
-            loss_batch = 0
-            for state in model.spice_config.states_in_logit:
-                loss_batch += criterion(batched_target_state_buffer[state], state_pred[state])
+    model.train(use_sindy=True)
+    # Disable dropout in RNN submodules so the solve target is deterministic
+    for rnn_module in model.submodules_rnn.values():
+        rnn_module.eval()
 
-            # l1 regularization (unweighted)
-            # for module in model.submodules_rnn:
-            #     loss_batch += model.sindy_coefficients[module].abs().sum() * sindy_alpha
+    prev_state_args = dict(prev_state={s: t.clone() for s, t in input_state_buffer_train.items()})
 
-            # Polynomial degree weighted coefficient penalty for SINDy coefficients
-            if l2_lambda > 0:
-                coefficient_penalty = model.compute_weighted_coefficient_penalty(l2_lambda)
-                loss_batch += coefficient_penalty
+    # Step 1: Solve (respects current presence mask)
+    model(inputs=xs_flat.to(model.device), **prev_state_args, batch_first=True)
 
-            # Backward pass - only update SINDy coefficients
-            loss_batch.backward()
-            # Apply gradient masks to prevent updating zeroed coefficients
-            # model.apply_gradient_masks()
-            optimizer.step()
+    # Step 2: Prune small terms
+    model.sindy_coefficient_patience(threshold=pruning_threshold)
+    model.sindy_coefficient_pruning(patience=1)
+    
+    # Step 3: Refit with surviving terms only - pure lstsq
+    sindy_alpha = 0
+    sindy_alpha += model.sindy_alpha
+    model.sindy_alpha = 0
+    with torch.no_grad():
+        model(inputs=xs_flat.to(model.device), **prev_state_args, batch_first=True)
+    model.sindy_alpha += sindy_alpha
+     
+    # if optimizer is not None:
+    #     for e in range(epochs):
+    #         t_start = time.time()
+    #         model.zero_grad()
+    #         iter_prev_state = {s: t.clone() for s, t in input_state_buffer_train.items()}
+    #         _, pred_state = model(xs_flat.to(model.device), prev_state=iter_prev_state, batch_first=True)
+    #         loss = 0
+    #         for s in model.spice_config.states_in_logit:
+    #             loss += criterion(pred_state[s], target_state_buffer_train[s])
+    #         loss.backward()
+    #         optimizer.step()
+    #         len_last_print = _print_training_status(
+    #             len_last_print=len_last_print,
+    #             model=model,
+    #             n_calls=e+1,
+    #             epochs=epochs,
+    #             loss_train=loss,
+    #             loss_test_rnn=None,
+    #             loss_test_sindy=None,
+    #             time_elapsed=time.time()-t_start,
+    #             convergence_value=None,
+    #             sindy_weight=1,
+    #             scheduler=None,
+    #             keep_log=DEBUG_MODE,
+    #         )
             
-            loss_train += loss_batch.item()
-            iterations += 1
-            
-        loss_train /= iterations
+    # Evaluate
+    model.eval(use_sindy=True)
+    _, state_pred = model(inputs=xs_flat.to(model.device), **prev_state_args, batch_first=True)
+    # model.train(use_sindy=True)
+    # for rnn_module in model.submodules_rnn.values():
+    #     rnn_module.eval()
+    
+    loss = 0
+    for s in model.spice_config.states_in_logit:
+        loss += criterion(state_pred[s], target_state_buffer_train[s]).item()
 
-        loss_test = 0
-        
-        # THRESHOLDING STEP
-        if epoch >= pruning_warmup and epoch % pruning_frequency == 0 and epoch != 0:
-            model.sindy_coefficient_pruning(threshold=0, base_threshold=pruning_threshold, n_terms_pruning=pruning_n_terms, patience=pruning_patience)
-        
-        # Print training progress
-        len_last_print = _print_training_status(
-            len_last_print=len_last_print,
-            model=model,
-            n_calls=epoch+1,
-            epochs=epochs,
-            loss_train=loss_train,
-            loss_test_rnn=None,
-            loss_test_sindy=loss_test,
-            time_elapsed=time.time()-t_start,
-            convergence_value=None,
-            sindy_weight=1,
-            scheduler=None,
-            warmup_steps=pruning_warmup,
-            keep_log=DEBUG_MODE,
-        )    
-        
     # Restore requires_grad for all parameters
     for param in model.parameters():
         param.requires_grad = True
-    
-    return model.train()
+
+    return model
 
 
 def _run_joint_training(
     model: BaseRNN,
-    dataset_train: SpiceDataset,
+    xs_train: torch.Tensor,
+    ys_train: torch.Tensor,
     dataset_test: SpiceDataset,
     optimizer: torch.optim.Optimizer,
-    
-    epochs: int,
-    batch_size: int,
-    bagging: bool,
-    n_warmup_steps: int,
-    n_steps: int,
-    use_scheduler: bool,
-    loss_fn: callable,
-    
-    sindy_weight: float,
-    sindy_l2_lambda: float,
-    sindy_pruning_threshold: float,
-    sindy_pruning_frequency: int,
-    sindy_pruning_terms: int,
-    sindy_pruning_patience: int,
-    sindy_optimizer_reset: int,
-    
-    convergence_threshold: float,
-    verbose: bool,
-    keep_log: bool,
-    path_save_checkpoints: str,
+
+    epochs: int = 1,
+    batch_size: int = None,
+    n_warmup_steps: int = 0,
+    n_steps: int = None,
+    use_scheduler: bool = False,
+    loss_fn: callable = cross_entropy_loss,
+
+    sindy_weight: float = 0,
+    sindy_alpha: float = 0,
+    sindy_pruning_frequency: int = 1,
+    sindy_threshold_pruning: float = None,
+    sindy_ensemble_pruning: float = None,
+    sindy_population_pruning: float = None,
+
+    convergence_threshold: float = 0,
+    verbose: bool = False,
+    keep_log: bool = False,
+    path_save_checkpoints: str = None,
 ) -> Tuple[BaseRNN, torch.optim.Optimizer, float, float, float]:
     """
-    Stage 1: Joint RNN-SINDy optimization.
+    Joint RNN-SINDy optimization with ensemble pruning.
 
     Trains RNN to predict behavior while SINDy regularization pushes
-    dynamics toward sparse equations. Uses patience-based sequential
-    thresholding (STLSQ variant) to prune coefficients.
+    dynamics toward sparse equations. Periodic pruning via minimum-effect
+    CI test: a term survives iff |mean| - t_crit * SE > delta, combining
+    statistical significance and practical significance in one test.
+    Optional participant filtering for cross-participant consistency.
+    After each pruning event, SINDy coefficients are ridge-recalibrated.
 
-    Objective: L_total = L_CE(y, ŷ) + λ_sindy * L_SINDy
+    Objective: L_total = L_CE(y, ŷ) + λ_sindy * L_SINDy + α * L_penalty
 
     Returns:
-        Tuple of (model, optimizer, loss_train, loss_test_rnn)
+        Tuple of (model, optimizer, loss_train, loss_test_rnn, loss_test_sindy)
     """
     
-    # Setup of training components
-    dataloader_train, dataloader_test, iterations_per_epoch = _setup_dataloaders(dataset_train, dataset_test, batch_size, bagging)
+    B_total = xs_train.shape[1]
+    iterations_per_epoch = max(B_total, 64) // batch_size if batch_size < max(B_total, 64) else 1
+    
+    dataloader_test = None
+    if dataset_test is not None:
+        dataloader_test = DataLoader(dataset_test, batch_size=len(dataset_test))
+
     warmup_scaler_sindy_weight = _setup_warmup_scaler(n_warmup_steps=n_warmup_steps, exp_max=5)
     lr_scheduler = _setup_lr_scheduler(optimizer=optimizer) if use_scheduler else None
     
@@ -645,7 +655,15 @@ def _run_joint_training(
 
                 # Training iterations for this epoch
                 for _ in range(iterations_per_epoch):
-                    xs, ys = next(iter(dataloader_train))
+                    # Manual batching along session dim (dim 1) of 5D data
+                    if batch_size < B_total:
+                        batch_idx = torch.randperm(B_total, device=xs_train.device)[:batch_size]
+                        xs = xs_train[:, batch_idx]
+                        ys = ys_train[:, batch_idx]
+                    else:
+                        xs = xs_train
+                        ys = ys_train
+
                     if xs.device != model.device:
                         xs = xs.to(model.device)
                         ys = ys.to(model.device)
@@ -657,7 +675,7 @@ def _run_joint_training(
                         optimizer=optimizer,
                         n_steps=n_steps,
                         sindy_weight=sindy_weight_epoch,
-                        sindy_alpha=sindy_l2_lambda,
+                        sindy_alpha=sindy_alpha,
                         loss_fn=loss_fn,
                     )
                     loss_train += loss_i
@@ -665,20 +683,7 @@ def _run_joint_training(
                 n_calls_to_train_model += 1
                 loss_train /= iterations_per_epoch
 
-                # Reset SINDy optimizer state periodically after warmup
-                if (sindy_optimizer_reset is not None
-                    and n_calls_to_train_model % sindy_optimizer_reset == 0
-                    and n_calls_to_train_model >= n_warmup_steps
-                    and sindy_weight > 0):
-                    num_reset = 0
-                    for param in optimizer.param_groups[0]['params']:
-                        if param in optimizer.state:
-                            optimizer.state[param] = {}
-                            num_reset += 1
-                    if verbose and num_reset > 0:
-                        print(f"\n>>> Epoch {n_calls_to_train_model}: Reset optimizer state for {num_reset} SINDy parameters.\n")
-
-            # Validation
+            # Validation (test data is 4D, unsqueeze to 5D for _run_batch_training)
             if dataloader_test is not None:
                 model = model.eval(use_sindy=False)
                 with torch.no_grad():
@@ -686,7 +691,7 @@ def _run_joint_training(
                     if xs.device != model.device:
                         xs = xs.to(model.device)
                         ys = ys.to(model.device)
-                    _, _, loss_test_rnn = _run_batch_training(model=model, xs=xs, ys=ys, loss_fn=loss_fn)
+                    _, _, loss_test_rnn = _run_batch_training(model=model, xs=xs.unsqueeze(0).repeat(model.ensemble_size, 1, 1, 1, 1), ys=ys.unsqueeze(0).repeat(model.ensemble_size, 1, 1, 1, 1), loss_fn=loss_fn)
 
                 if sindy_weight > 0:
                     model = model.eval(use_sindy=True)
@@ -695,20 +700,55 @@ def _run_joint_training(
                         if xs.device != model.device:
                             xs = xs.to(model.device)
                             ys = ys.to(model.device)
-                        _, _, loss_test_sindy = _run_batch_training(model=model, xs=xs, ys=ys, loss_fn=loss_fn)
-                
-                model = model.train()
+                        _, _, loss_test_sindy = _run_batch_training(model=model, xs=xs.unsqueeze(0).repeat(model.ensemble_size, 1, 1, 1, 1), ys=ys.unsqueeze(0).repeat(model.ensemble_size, 1, 1, 1, 1), loss_fn=loss_fn)
 
-            # Periodic coefficient pruning
+                model = model.train()
+            
+            # Unified pruning event with ridge recalibration
             if (sindy_weight > 0
+                and sindy_pruning_frequency is not None
                 and n_calls_to_train_model >= n_warmup_steps
-                and n_calls_to_train_model % sindy_pruning_frequency == 0):
-                model.sindy_coefficient_pruning(
-                    threshold=sindy_pruning_threshold,
-                    base_threshold=0.,
-                    n_terms_pruning=sindy_pruning_terms,
-                    patience=sindy_pruning_patience
-                )
+                ):
+
+                if sindy_ensemble_pruning is None and sindy_threshold_pruning is not None:
+                    # Fallback: per-epoch patience tracking for per-member threshold pruning
+                    model.sindy_coefficient_patience(threshold=sindy_threshold_pruning)
+
+                if n_calls_to_train_model % sindy_pruning_frequency == 0:
+
+                    if sindy_ensemble_pruning is not None:
+                        # Unified minimum-effect CI test: threshold serves as delta
+                        confidence_masks = _compute_pruning_masks(
+                            model,
+                            ensemble_alpha=sindy_ensemble_pruning,
+                            ensemble_delta=sindy_threshold_pruning or 0.0,
+                            participant_threshold=sindy_population_pruning,
+                            verbose=verbose,
+                        )
+                        for module in model.submodules_rnn:
+                            mask = confidence_masks[module].to(model.device)  # (P, X, terms)
+                            still_active = model.sindy_coefficients_presence[module].any(dim=0)  # (P, X, terms)
+                            failed = ~mask & still_active
+
+                            # Update patience: increment on failure, reset on success
+                            counters = model.sindy_pruning_patience_counters[module]
+                            failed_e = failed.unsqueeze(0).expand_as(counters)
+                            counters.data = torch.where(failed_e, counters + 1, torch.zeros_like(counters))
+
+                            # Prune terms that failed 2+ consecutive pruning events
+                            prune = (counters[0] >= 2)  # (P, X, terms)
+                            if prune.any():
+                                prune_e = prune.unsqueeze(0).expand(model.ensemble_size, -1, -1, -1)
+                                model.sindy_coefficients_presence[module].data &= ~prune_e
+                                model.sindy_coefficients[module].data *= model.sindy_coefficients_presence[module].float()
+                                counters.data *= (~prune_e).int()
+
+                    elif sindy_threshold_pruning is not None and sindy_threshold_pruning > 0:
+                        # Fallback: per-member threshold pruning only (no ensemble test)
+                        model.sindy_coefficient_pruning(patience=sindy_pruning_frequency)
+
+                    # Reset coefficients + optimizer state, ridge solve for recalibration
+                    # _ridge_recalibrate_sindy(model, xs_train, ys_train, optimizer)
 
             # Check convergence
             dloss = last_loss - (loss_test_rnn if dataloader_test is not None else loss_train)
@@ -755,136 +795,188 @@ def _run_joint_training(
     return model, optimizer, loss_train, loss_test_rnn, loss_test_sindy
 
 
-def _compute_confidence_masks(
+def _minimum_effect_ci_test(
+    coefficients: torch.Tensor,
+    presence: torch.Tensor,
+    alpha: float = 0.05,
+    delta: float = 0.0,
+) -> torch.Tensor:
+    """
+    Minimum-effect confidence interval test across ensemble members.
+
+    Tests whether the confidence interval for the ensemble mean coefficient
+    lies entirely outside the negligible zone [-delta, delta]. A term
+    survives iff: |mean| - t_crit * SE > delta.
+
+    When delta=0, equivalent to a standard two-tailed t-test for non-zero mean.
+
+    Pruned coefficients are treated as zero estimates, so terms only found by
+    a few ensemble members are naturally penalized.
+
+    Args:
+        coefficients: [E, P, X, terms] raw coefficient values
+        presence: [E, P, X, terms] boolean presence mask
+        alpha: confidence level (default: 0.05)
+        delta: minimum effect size threshold (default: 0.0)
+
+    Returns:
+        [P, X, terms] boolean mask — True where term passes the CI test
+    """
+
+    effective_coeffs = (coefficients * presence.float()).detach()
+    E = effective_coeffs.shape[0]
+
+    mean = effective_coeffs.mean(dim=0)                # [P, X, terms]
+    std = effective_coeffs.std(dim=0, correction=1)    # [P, X, terms]
+    se = std / (E ** 0.5)
+
+    t_critical = t_dist.ppf(1 - alpha / 2, df=E - 1)
+
+    # CI lower bound for |mean| must exceed delta
+    ci_lower = mean.abs() - t_critical * se
+    significant = ci_lower > delta
+
+    # Require at least 2 active ensemble members for a valid test
+    n_active = presence.float().sum(dim=0)
+    significant = significant & (n_active >= 2)
+
+    return significant
+
+
+def _compute_ensemble_masks(
     model: BaseRNN,
+    test_fn: callable = _minimum_effect_ci_test,
+    verbose: bool = True,
+    **test_fn_kwargs,
+) -> dict:
+    """
+    Per-participant ensemble confidence filtering.
+
+    For each (participant, experiment, term), applies a statistical test
+    across ensemble members to determine if the term is robustly identified.
+
+    Args:
+        model: trained model with SINDy coefficients
+        test_fn: statistical test function with signature
+                 (coefficients [E,P,X,T], presence [E,P,X,T], **kwargs) -> [P,X,T] bool
+        verbose: print filtering results
+        **test_fn_kwargs: keyword arguments passed to test_fn
+
+    Returns:
+        Dict mapping module names to [P, X, terms] boolean masks
+    """
+    ensemble_masks = {}
+
+    if verbose:
+        print("Ensemble confidence filtering:")
+
+    for module in model.submodules_rnn:
+        coeffs = model.sindy_coefficients[module].detach()
+        presence = model.sindy_coefficients_presence[module]
+
+        mask = test_fn(coeffs, presence, **test_fn_kwargs)
+        ensemble_masks[module] = mask
+
+        if verbose:
+            n_before = presence.any(dim=0).sum().item()
+            n_after = mask.sum().item()
+            total = mask.numel()
+            print(f"\t{module}: {n_before} -> {n_after} / {total} (participant, experiment, term) slots")
+
+    return ensemble_masks
+
+
+def _compute_participant_masks(
+    ensemble_masks: dict,
     confidence_threshold: float,
+    n_participants: int,
+    n_experiments: int,
     verbose: bool = True,
 ) -> dict:
     """
-    Compute confidence masks based on term presence across participants.
+    Cross-participant confidence filtering on (optionally ensemble-filtered) masks.
+    
+    A term passes if it is present in at least
+    (confidence_threshold * n_participants * n_experiments) participant-experiment slots.
 
-    A term passes the confidence check if it is present in at least
-    (confidence_threshold × n_participants) participants.
+    Args:
+        ensemble_masks: {module: [P, X, terms] bool} per-participant masks
+        confidence_threshold: required fraction of (P * X) slots (0-1)
+        n_participants: number of participants
+        n_experiments: number of experiments
+        verbose: print filtering results
 
     Returns:
-        Dict mapping submodule names to boolean confidence masks
+        Dict mapping module names to [terms] boolean masks
     """
     confidence_masks = {}
-    n_participants = model.n_participants
-    n_experiments = model.n_experiments
-    min_occurences = int(confidence_threshold * n_participants * n_experiments)
+    min_occurrences = int(confidence_threshold * n_participants * n_experiments)
 
-    print(f"Confidence-based pruning results:")
-    for module in model.submodules_rnn:
-        # Shape: [n_participants, n_experiments, n_ensemble, n_library_terms]
-        presence = model.sindy_coefficients_presence[module].float()
-        # Average across ensemble, sum across participants and experiments -> [n_library_terms]
-        participant_presence = presence.mean(dim=2).sum(dim=0).sum(dim=0)
-        # Term passes if present in >= threshold * min_occurences
-        confidence_mask = participant_presence >= min_occurences
-        confidence_masks[module] = confidence_mask
+    if verbose:
+        print(f"Participant confidence filtering (threshold={confidence_threshold}, min_occurrences={min_occurrences}):")
+
+    for module, mask in ensemble_masks.items():
+        # mask: [P, X, terms] -> sum across P and X -> [terms]
+        participant_presence = mask.float().sum(dim=0).sum(dim=0)  # (terms,)
+        global_mask = participant_presence >= min_occurrences  # (terms,)
+        # Intersect: term must be significant for this participant AND common enough globally
+        confidence_masks[module] = mask & global_mask.unsqueeze(0).unsqueeze(0)  # (P, X, terms)
 
         if verbose:
-            n_terms_before = model.sindy_coefficients_presence[module].any(dim=(0,1,2)).sum().item()
-            n_terms_after = confidence_mask.sum().item()
-            print(f" \t{module}: {n_terms_before} terms -> {n_terms_after} terms")
+            n_before = mask.sum().item()
+            n_after = confidence_masks[module].sum().item()
+            n_global = global_mask.sum().item()
+            print(f"\t{module}: {n_before} -> {n_after} (participant, experiment, term) slots ({n_global} global terms)")
 
     return confidence_masks
 
 
-def _reset_model_with_masks(
+def _compute_pruning_masks(
     model: BaseRNN,
-    confidence_masks: dict,
-    optimizer: torch.optim.Optimizer,
+    ensemble_alpha: float = None,
+    ensemble_delta: float = 0.0,
+    participant_threshold: float = None,
+    ensemble_test_fn: callable = _minimum_effect_ci_test,
     verbose: bool = True,
-) -> Tuple[BaseRNN, torch.optim.Optimizer]:
+) -> dict:
     """
-    Reset RNN weights and SINDy coefficients, applying confidence masks.
+    Two-level confidence filtering: ensemble filtering -> participant filtering.
 
-    This prepares the model for retraining with a filtered candidate library.
+    Args:
+        model: trained model with SINDy coefficients
+        ensemble_alpha: confidence level for ensemble CI test (None to skip)
+        ensemble_delta: minimum effect size for ensemble CI test (default: 0.0)
+        participant_threshold: required fraction of (P * X) slots (None to skip)
+        ensemble_test_fn: statistical test function for ensemble filtering
+        verbose: print filtering results
+
+    Returns:
+        Dict mapping module names to [P, X, terms] boolean masks
     """
-    if verbose:
-        print("Model reset with confidence-filtered mask.")
+    # Step 1: Ensemble filtering (per participant)
+    if ensemble_alpha is not None:
+        ensemble_masks = _compute_ensemble_masks(
+            model, test_fn=ensemble_test_fn, verbose=verbose,
+            alpha=ensemble_alpha, delta=ensemble_delta,
+        )
+    else:
+        # No ensemble filtering — term is present for (P, X) if any ensemble member has it
+        ensemble_masks = {
+            module: model.sindy_coefficients_presence[module].any(dim=0)
+            for module in model.submodules_rnn
+        }
 
-    # Reset RNN submodule weights
-    for module_name, module in model.submodules_rnn.items():
-        for submodule in module.modules():
-            if hasattr(submodule, 'reset_parameters'):
-                submodule.reset_parameters()
-
-    # Reset participant embedding if exists
-    if hasattr(model, 'participant_embedding'):
-        for submodule in model.participant_embedding.modules():
-            if hasattr(submodule, 'reset_parameters'):
-                submodule.reset_parameters()
-
-    # Reinitialize SINDy coefficients with confidence masks applied
-    for module in model.submodules_rnn:
-        model.setup_sindy_coefficients(key_module=module)
-        confidence_mask = confidence_masks[module].to(model.device)
-        confidence_mask = confidence_mask.reshape(1, 1, 1, -1).repeat(model.n_participants, model.n_experiments, model.sindy_ensemble_size, 1)
-        model.sindy_coefficients_presence[module] = confidence_mask.clone().to(model.device)
-        model.sindy_coefficients[module].data *= confidence_mask.float().to(torch.device('cpu'))
-
-    model.rnn_training_finished = False
-    model.to(model.device)
-
-    # Recreate optimizer with new parameters
-    sindy_params = []
-    rnn_params = []
-    for name, param in model.named_parameters():
-        if 'sindy' in name:
-            sindy_params.append(param)
-        else:
-            rnn_params.append(param)
-
-    lr_sindy = optimizer.param_groups[0]['lr']
-    lr_rnn = optimizer.param_groups[1]['lr'] if len(optimizer.param_groups) > 1 else optimizer.param_groups[0]['lr']
-    weight_decay_rnn = optimizer.param_groups[1].get('weight_decay', 0) if len(optimizer.param_groups) > 1 else 0
-
-    optimizer = torch.optim.AdamW([
-        {'params': sindy_params, 'weight_decay': 0, 'lr': lr_sindy},
-        {'params': rnn_params, 'weight_decay': weight_decay_rnn, 'lr': lr_rnn},
-    ])
-
-    return model, optimizer
-
-
-def _reset_sindy_with_masks(
-    model: BaseRNN,
-    confidence_masks: dict,
-    lr: float,
-    verbose: bool = True,
-) -> Tuple[BaseRNN, torch.optim.Optimizer]:
-    """
-    Reset RNN weights and SINDy coefficients, applying confidence masks.
-
-    This prepares the model for retraining with a filtered candidate library.
-    """
-    if verbose:
-        print("SINDy reset with confidence-filtered mask.")
-
-    # Reinitialize SINDy coefficients with confidence masks applied
-    for module in model.submodules_rnn:
-        model.setup_sindy_coefficients(key_module=module, polynomial_degree=model.sindy_specs[module]['polynomial_degree'])
-        if confidence_masks is not None:
-            confidence_mask = confidence_masks[module].to(model.device)
-            confidence_mask = confidence_mask.reshape(1, 1, 1, -1).repeat(model.n_participants, model.n_experiments, model.sindy_ensemble_size, 1)
-            model.sindy_coefficients_presence[module] = confidence_mask.clone().to(model.device)
-            model.sindy_coefficients[module].data *= confidence_mask.float().to(torch.device('cpu'))
-            
-    model.rnn_training_finished = True
-    model.to(model.device)
-
-    # Recreate optimizer with new parameters
-    sindy_params = []
-    for name, param in model.named_parameters():
-        if 'sindy' in name:
-            sindy_params.append(param)
-
-    optimizer = torch.optim.AdamW(sindy_params, lr=lr)
-    
-    return model, optimizer
+    # Step 2: Participant filtering (global)
+    if participant_threshold is not None and participant_threshold > 0:
+        confidence_masks = _compute_participant_masks(
+            ensemble_masks, participant_threshold, model.n_participants, model.n_experiments, verbose=verbose
+        )
+    else:
+        # No participant filtering — keep terms that pass ensemble filter for any (P, X)
+        # confidence_masks = {module: mask.any(dim=1).any(dim=1).unsqueeze(1).unsqueeze(1) for module, mask in ensemble_masks.items()}
+        confidence_masks = ensemble_masks
+        
+    return confidence_masks
 
 
 def fit_spice(
@@ -892,317 +984,249 @@ def fit_spice(
     dataset_train: SpiceDataset,
     dataset_test: SpiceDataset = None,
     optimizer: torch.optim.Optimizer = None,
-    
+
     epochs: int = 1,
-    epochs_confidence: int = None,
     batch_size: int = None,
-    bagging: bool = False,
     scheduler: bool = False,
     n_steps: int = None,
     convergence_threshold: float = 1e-7,
     loss_fn: callable = cross_entropy_loss,
-    
+
     sindy_weight: float = 0.,
-    sindy_l2_lambda: float = 0.,
-    sindy_epochs: int = 1000,
-    sindy_pruning_threshold: float = 0.01,
+    sindy_alpha: float = 0.,
     sindy_pruning_frequency: int = 1,
-    sindy_pruning_terms: int = None,
-    sindy_pruning_patience: int = 0,
-    sindy_optimizer_reset: int = None,
-    sindy_confidence_threshold: float = None,
-    
+    sindy_threshold_pruning: float = None,
+    sindy_ensemble_pruning: float = None,
+    sindy_population_pruning: float = None,
+
     verbose: bool = True,
     keep_log: bool = False,
     n_warmup_steps: int = 0,
     path_save_checkpoints: str = None,
 ) -> Tuple[BaseRNN, torch.optim.Optimizer, float]:
     """
-    Three-stage SPICE training pipeline.
+    Two-stage SPICE training pipeline with ensemble pruning.
 
-    Stage 1 (Joint Training):
-        Train RNN + SINDy jointly with L_CE + λ_sindy * L_SINDy.
-        Patience-based coefficient thresholding allows diverse per-participant
-        equations (high recall).
+    Stage 1 (Joint Training with Minimum-Effect CI Pruning):
+        Train RNN + SINDy jointly with L_CE + λ_sindy * L_SINDy + α * L_penalty.
+        Periodic pruning via minimum-effect CI test: a term survives iff
+        |mean| - t_crit * SE > delta, where delta = sindy_threshold_pruning.
+        This unifies statistical significance and practical significance in
+        a single test, avoiding the cascade where per-member threshold pruning
+        erodes ensemble consensus. Terms must fail 2 consecutive pruning events
+        before permanent removal. After each pruning event, SINDy coefficients
+        are ridge-recalibrated. The RNN continuously adapts to the pruned library.
 
-    Stage 2 (Confidence Filtering, optional):
-        Mask terms present in < sindy_confidence_threshold of participants.
-        Reset all parameters and retrain with filtered library.
-        Removes statistical outlier terms.
-
-    Stage 3 (SINDy Refinement):
-        Freeze RNN weights and refit SINDy coefficients on stable hidden states.
-        Improves coefficient precision.
+    Stage 2 (Final SINDy Refit):
+        Freeze RNN weights and refit SINDy coefficients via ridge solve on
+        stable hidden states. Single-pass: solve → prune → refit.
 
     Args:
         model: RNN model with SINDy integration
         dataset_train: Training dataset
         dataset_test: Validation dataset (optional)
         optimizer: PyTorch optimizer
-        convergence_threshold: Early stopping threshold
-        sindy_weight: λ_sindy regularization strength
-        sindy_l2_lambda: Degree-weighted penalty strength
-        sindy_epochs: Number of epochs for Stage 3
-        sindy_pruning_threshold: Coefficient pruning threshold (η)
-        sindy_pruning_frequency: Epochs between pruning
-        sindy_pruning_terms: Max terms to prune per step
-        sindy_pruning_patience: Patience before coefficient pruning
-        sindy_optimizer_reset: Epochs between optimizer state resets
-        sindy_confidence_threshold: Stage 2 participant presence threshold
-        epochs: Total training epochs for Stage 1
-        batch_size: Training batch size
-        bagging: Enable bootstrap aggregation
+        epochs: Total training epochs
+        batch_size: Training batch size (None = auto-detect max via GPU probing, int = fixed)
         scheduler: Enable learning rate scheduler
         n_steps: BPTT truncation length
+        convergence_threshold: Early stopping threshold
+        loss_fn: Loss function for behavioral prediction
+        sindy_weight: λ_sindy regularization strength
+        sindy_alpha: Degree-weighted L1 penalty strength
+        sindy_threshold_pruning: Minimum effect size (delta) for the CI test.
+            When sindy_ensemble_pruning is set, this serves as the delta threshold.
+            When sindy_ensemble_pruning is None, falls back to per-member hard
+            thresholding. (None or 0 to disable; default: None)
+        sindy_pruning_frequency: Epochs between pruning events
+        sindy_ensemble_pruning: Confidence level for ensemble CI test (e.g. 0.05).
+            Primary pruning mechanism. None to disable.
+        sindy_population_pruning: Optional participant presence threshold (0-1).
+            None to disable.
         verbose: Print progress
         keep_log: Keep full training log (vs. live update)
-        n_warmup_steps: Warmup epochs for SINDy weight
+        n_warmup_steps: Warmup epochs for SINDy weight (no pruning during warmup)
         path_save_checkpoints: Path for saving checkpoints
 
     Returns:
-        Tuple of (trained_model, optimizer, final_loss)
+        Tuple of (trained_model, optimizer)
     """
-    
-    if verbose:
-        status_lines = "=" * _get_terminal_width()
-        print("\n"+status_lines)
-        print("SPICE Training Configuration:")
-        if epochs > 0:
-            print("\tSPICE joint training: active")
-        else:
-            print("\tSPICE joint training: deactived")
-        if sindy_confidence_threshold is not None and sindy_confidence_threshold > 0 and epochs_confidence > 0:
-            print("\tConfidence-based SINDy coefficient filtering: active")
-        else:
-            print("\tConfidence-based SINDy coefficient filtering: deactived")
-        if sindy_epochs > 0:
-            print("\tSINDy-only finetuning: active")
-        else:
-            print("\tSINDy-only finetuning: deactived")
-        print(status_lines)
-    
-    # Store original learning rate for Stage 3
-    original_lr = optimizer.param_groups[0]['lr']
-    sindy_finetuned = False
-    if epochs_confidence is None:
-        epochs_confidence = epochs
-    if sindy_epochs is None:
-        sindy_epochs = epochs
+
     if n_warmup_steps is None:
         if epochs is not None:
-            n_warmup_steps = epochs//4
-        elif epochs_confidence is not None:
-            n_warmup_steps = epochs_confidence//4
+            n_warmup_steps = epochs // 4
         else:
             n_warmup_steps = 0
 
+    if verbose:
+        status_lines = "=" * _get_terminal_width()
+        print("\n" + status_lines)
+        print("SPICE Training Configuration:")
+        if epochs > 0:
+            print("\tJoint training: [x]")
+        else:
+            print("\tJoint training: [ ]")
+        # Pruning details
+        pruning_details = []
+        if sindy_ensemble_pruning is not None:
+            pruning_details.append(f"CI test alpha={sindy_ensemble_pruning}")
+            if sindy_threshold_pruning is not None and sindy_threshold_pruning > 0:
+                pruning_details.append(f"delta={sindy_threshold_pruning}")
+        elif sindy_threshold_pruning is not None and sindy_threshold_pruning > 0:
+            pruning_details.append(f"threshold={sindy_threshold_pruning} (per-member)")
+        if sindy_population_pruning is not None and sindy_population_pruning > 0:
+            pruning_details.append(f"participant threshold={sindy_population_pruning}")
+        if pruning_details:
+            print(f"\tPruning (every {sindy_pruning_frequency} epochs): {', '.join(pruning_details)}")
+        else:
+            print("\tPruning: [ ] (no pruning configured)")
+        if sindy_weight > 0:
+            print("\tFinal SINDy refit: [x]")
+        else:
+            print("\tFinal SINDy refit: [ ]")
+        print(status_lines)
+
+    # Bootstrap training data once: 4D (B, T, W, F) -> 5D (E, B, T, W, F)
+    E = model.ensemble_size
+    B = dataset_train.xs.shape[0]
+    if E > 1:
+        bootstrap_indices = torch.randint(0, B, (E, B))
+        xs_train_5d = dataset_train.xs[bootstrap_indices]
+        ys_train_5d = dataset_train.ys[bootstrap_indices]
+    else:
+        xs_train_5d = dataset_train.xs.unsqueeze(0)
+        ys_train_5d = dataset_train.ys.unsqueeze(0)
+
     # ══════════════════════════════════════════════════════════════════════════
-    # STAGE 1: Joint RNN-SINDy Training
+    # STAGE 1: Joint RNN-SINDy Training with Fused Pruning
     # ══════════════════════════════════════════════════════════════════════════
     if epochs > 0:
         if verbose:
             terminal_width = _get_terminal_width()
-            print("\n" + "="*terminal_width)
-            print(f"Stage 1: SPICE joint training")
-            print("="*terminal_width)
-            
-        model, optimizer, loss_train, loss_test_rnn, loss_test_sindy = _run_joint_training(
-            model=model,
-            optimizer=optimizer,
-            dataset_train=dataset_train,
-            dataset_test=dataset_test,
-            
-            epochs=epochs,
-            n_warmup_steps=n_warmup_steps,
-            n_steps=n_steps,
-            use_scheduler=scheduler,
-            bagging=bagging,
-            batch_size=batch_size,
-            convergence_threshold=convergence_threshold,
-            loss_fn=loss_fn,
-            
-            sindy_weight=sindy_weight,
-            sindy_l2_lambda=sindy_l2_lambda,
-            sindy_pruning_threshold=sindy_pruning_threshold,
-            sindy_pruning_frequency=sindy_pruning_frequency,
-            sindy_pruning_terms=sindy_pruning_terms,
-            sindy_pruning_patience=sindy_pruning_patience,
-            sindy_optimizer_reset=sindy_optimizer_reset,
-            
-            verbose=verbose,
-            keep_log=keep_log,
-            path_save_checkpoints=path_save_checkpoints,
-        )
-        model.rnn_training_finished = True
+            print("\n" + "=" * terminal_width)
+            print("Stage 1: Joint training with ensemble pruning")
+            print("=" * terminal_width)
 
-        # SINDy finetuning (freeze RNN weights -> steady optimization target)
-        if sindy_weight > 0 and sindy_epochs > 0:
-            model, optimizer_sindy = _reset_sindy_with_masks(model=model, confidence_masks=None, lr=original_lr, verbose=verbose)
-            model = _run_sindy_training(
+        if batch_size is None:
+            batch_size = xs_train_5d.shape[1]
+        
+        while True:    
+            try:
+                model, optimizer, loss_train, loss_test_rnn, loss_test_sindy = _run_joint_training(
+                    model=model,
+                    optimizer=optimizer,
+                    xs_train=xs_train_5d,
+                    ys_train=ys_train_5d,
+                    dataset_test=dataset_test,
+
+                    epochs=epochs,
+                    n_warmup_steps=n_warmup_steps,
+                    n_steps=n_steps,
+                    use_scheduler=scheduler,
+                    batch_size=batch_size,
+                    convergence_threshold=convergence_threshold,
+                    loss_fn=loss_fn,
+
+                    sindy_weight=sindy_weight,
+                    sindy_alpha=sindy_alpha,
+                    sindy_threshold_pruning=sindy_threshold_pruning,
+                    sindy_pruning_frequency=sindy_pruning_frequency,
+                    sindy_ensemble_pruning=sindy_ensemble_pruning,
+                    sindy_population_pruning=sindy_population_pruning,
+
+                    verbose=verbose,
+                    keep_log=keep_log,
+                    path_save_checkpoints=path_save_checkpoints,
+                )
+                model.rnn_training_finished = True
+                break
+            except torch.cuda.OutOfMemoryError:
+                if batch_size <= 1:
+                    raise RuntimeError(f"Automatic batch size probing was unsuccessful. Current batch size is {batch_size} but could still not be started. Please try again with a smaller ensemble size (current: {model.ensemble_size}).")
+                model.zero_grad(set_to_none=True)
+                torch.cuda.empty_cache()
+                batch_size = max(1, batch_size // 2)
+                
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # STAGE 2: Final SINDy Refit (single-pass lstsq)
+    # ══════════════════════════════════════════════════════════════════════════
+    if sindy_weight > 0:
+        try:
+            if verbose:
+                terminal_width = _get_terminal_width()
+                print("\n" + "=" * terminal_width)
+                print("Stage 2: Final SINDy refit")
+                print("=" * terminal_width)
+
+            original_device = model.device
+            model.to('cpu')
+            
+            sindy_parameters = []
+            for name, p in model.named_parameters():
+                if 'sindy' in name:
+                    sindy_parameters.append(p)
+            optimizer_sindy = torch.optim.AdamW(sindy_parameters, lr=0.01, weight_decay=sindy_alpha)
+            _run_sindy_training(
                 model=model,
                 optimizer=optimizer_sindy,
-                dataset_train=dataset_train,
-                dataset_test=dataset_test,
-                
-                epochs=sindy_epochs,
-                batch_size=None,
-
-                l2_lambda=sindy_l2_lambda,
-                pruning_threshold=sindy_pruning_threshold,
-                pruning_n_terms=sindy_pruning_terms,
-                pruning_patience=sindy_pruning_patience,
-                pruning_warmup=sindy_epochs // 4,
-
+                xs_train=xs_train_5d.to(torch.device('cpu')),
+                ys_train=ys_train_5d.to(torch.device('cpu')),
+                pruning_threshold=0.05,
                 verbose=verbose,
             )
-            sindy_finetuned = True
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # STAGE 2: Confidence Filtering (optional)
-    # ══════════════════════════════════════════════════════════════════════════
-    confidence_masks = None
-    if epochs_confidence > 0 and sindy_weight > 0 and sindy_confidence_threshold is not None and sindy_confidence_threshold > 0:
-        if verbose:
-            terminal_width = _get_terminal_width()
-            print("\n" + "="*terminal_width)
-            print(f"Stage 2: Confidence filtering (threshold={sindy_confidence_threshold})")
-            print("="*terminal_width)
-
-        sindy_finetuned = False
+            model.to(original_device)
+        except torch._C._LinAlgError as e:
+            print('Stage 2: Ridge solve is not possible because a singular candidate term matrix was found. SPICE will omit a ridge solve and return Stage 1 SINDy coefficients instead. No worries---the SPICE model is still great!')
         
-        # Compute confidence masks
-        confidence_masks = _compute_confidence_masks(model, sindy_confidence_threshold, verbose)
-
-        # Reset model with filtered masks
-        model, optimizer = _reset_model_with_masks(model, confidence_masks, optimizer, verbose)
         
-        if verbose:
-            print("Starting second training pass with confidence-filtered terms...")
-
-        model, optimizer, loss_train, loss_test_rnn, loss_test_sindy = _run_joint_training(
-            model=model,
-            optimizer=optimizer,
-            dataset_train=dataset_train,
-            dataset_test=dataset_test,
-            
-            epochs=epochs_confidence,
-            n_warmup_steps=n_warmup_steps,
-            n_steps=n_steps,
-            use_scheduler=scheduler,
-            bagging=bagging,
-            batch_size=batch_size,
-            convergence_threshold=convergence_threshold,
-            loss_fn=loss_fn,
-            
-            sindy_weight=sindy_weight,
-            sindy_l2_lambda=sindy_l2_lambda,
-            sindy_pruning_threshold=sindy_pruning_threshold,
-            sindy_pruning_frequency=sindy_pruning_frequency,
-            sindy_pruning_terms=sindy_pruning_terms,
-            sindy_pruning_patience=sindy_pruning_patience,
-            sindy_optimizer_reset=sindy_optimizer_reset,
-            
-            verbose=verbose,
-            keep_log=keep_log,
-            path_save_checkpoints=path_save_checkpoints,
-        )
-        model.rnn_training_finished = True
-        
-        # SINDy finetuning
-        if sindy_weight > 0 and sindy_epochs > 0:
-            model, optimizer_sindy = _reset_sindy_with_masks(model=model, confidence_masks=confidence_masks, lr=original_lr)
-            model = _run_sindy_training(
-                model=model,
-                optimizer=optimizer_sindy,
-                dataset_train=dataset_train,
-                dataset_test=dataset_test,
-                
-                epochs=sindy_epochs,
-                batch_size=None,
-                
-                l2_lambda=sindy_l2_lambda,
-                pruning_threshold=sindy_pruning_threshold,
-                pruning_n_terms=sindy_pruning_terms,
-                pruning_patience=sindy_pruning_patience,
-                pruning_warmup=sindy_epochs//4,
-                
-                verbose=verbose,
-            )
-            sindy_finetuned=True
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # STAGE 3: SINDy finetuning (if not already happened in previous stages)
-    # ══════════════════════════════════════════════════════════════════════════
-    if not sindy_finetuned and sindy_weight > 0 and sindy_epochs > 0:
-        # confidence_masks = _compute_confidence_masks(model, sindy_confidence_threshold, verbose)
-        model, optimizer_sindy = _reset_sindy_with_masks(model=model, confidence_masks=confidence_masks, lr=original_lr)
-        model = _run_sindy_training(
-            model=model,
-            optimizer=optimizer_sindy,
-            dataset_train=dataset_train,
-            dataset_test=dataset_test,
-            
-            epochs=sindy_epochs,
-            batch_size=None,
-            
-            l2_lambda=sindy_l2_lambda,
-            pruning_threshold=sindy_pruning_threshold,
-            pruning_n_terms=sindy_pruning_terms,
-            pruning_patience=sindy_pruning_patience,
-            pruning_warmup=sindy_epochs//4,
-            
-            verbose=verbose,
-        )
-        sindy_finetuned=True
-    
     # ══════════════════════════════════════════════════════════════════════════
     # Final evaluation summary
     # ══════════════════════════════════════════════════════════════════════════
     if verbose:
         status_lines = "=" * _get_terminal_width()
-        print("\n"+status_lines)
+        print("\n" + status_lines)
         print("Training results:")
         msg = "\t"
 
         if epochs > 0:
             msg += f"L(Train, RNN): {loss_train:.7f}"
             msg += "\n\t"
-            
+
         if dataset_test is not None:
             with torch.no_grad():
                 _, _, _, loss_test_rnn, loss_test_sindy = _run_joint_training(
                     model=model,
                     optimizer=optimizer,
-                    dataset_train=dataset_train,
+                    xs_train=xs_train_5d,
+                    ys_train=ys_train_5d,
                     dataset_test=dataset_test,
-                    
+
                     epochs=0,
                     n_warmup_steps=999,
-                    batch_size=None,
+                    batch_size=batch_size,
                     convergence_threshold=0,
                     n_steps=n_steps,
-                    bagging=False,
                     use_scheduler=False,
                     loss_fn=loss_fn,
-                    
+
                     sindy_weight=sindy_weight,
-                    sindy_l2_lambda=0,
-                    sindy_pruning_threshold=0,
+                    sindy_alpha=0,
+                    sindy_threshold_pruning=0,
                     sindy_pruning_frequency=999,
-                    sindy_pruning_terms=0,
-                    sindy_pruning_patience=999,
-                    sindy_optimizer_reset=None,
-                    
+                    sindy_ensemble_pruning=None,
+                    sindy_population_pruning=None,
+
                     verbose=False,
                     keep_log=False,
                     path_save_checkpoints=None,
                 )
-                
+
             msg += f"L(Val, RNN):   {loss_test_rnn:.7f}"
             if sindy_weight > 0:
                 msg += "\n\t"
                 msg += f"L(Val, SINDy): {loss_test_sindy:.7f}"
-            
+
         print(msg)
         print(status_lines)
 

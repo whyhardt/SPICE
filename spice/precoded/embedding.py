@@ -31,7 +31,7 @@ class SpiceModel(BaseRNN):
         n_actions: int,
         n_participants: int,
         sindy_polynomial_degree: int = 2,
-        sindy_ensemble_size: int = 10,
+        ensemble_size: int = 10,
         use_sindy: bool = False,
         **kwargs,
     ):
@@ -41,7 +41,7 @@ class SpiceModel(BaseRNN):
             n_participants=n_participants,
             use_sindy=use_sindy,
             sindy_polynomial_degree=sindy_polynomial_degree,
-            sindy_ensemble_size=sindy_ensemble_size,
+            ensemble_size=ensemble_size,
         )
         
         # specify here the participant embedding
