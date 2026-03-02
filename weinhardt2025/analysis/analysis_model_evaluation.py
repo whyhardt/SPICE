@@ -19,8 +19,8 @@ from weinhardt2025.benchmarking import benchmarking_dezfouli2019, benchmarking_e
 # MODEL EVALUATION CONFIGURATION
 # -------------------------------------------------------------------------------
 
-study = 'eckstein2022'
-# study = 'dezfouli2019'
+# study = 'eckstein2022'
+study = 'dezfouli2019'
 # study = 'eckstein2024'
 # study = 'synthetic'
 
@@ -31,11 +31,11 @@ agents = [
     'spice',
 ]
 
-# path_spice = 'weinhardt2025/params/synthetic/spice_e10_a0_05_p0_02.pkl'
+path_spice = 'weinhardt2025/params/dezfouli2019/spice_dezfouli2019_a0_05.pkl'
 # path_data = 'weinhardt2025/data/synthetic/synthetic_256p_0_0.csv'
 
 
-use_test = False
+use_test = True
 
 
 
@@ -89,14 +89,15 @@ elif study == 'eckstein2024':
 elif study == 'dezfouli2019':
     train_test_ratio = [3, 6, 9]
     models_benchmark = ['PhiChiBetaKappaC']
-    spice_config = workingmemory_rewardtransform.CONFIG
-    spice_model = workingmemory_rewardtransform.SpiceModel
+    spice_config = workingmemory_rewardbinary.CONFIG
+    spice_model = workingmemory_rewardbinary.SpiceModel
     additional_inputs = []
     setup_agent_benchmark = benchmarking_dezfouli2019.setup_agent_gql
     gql_model = benchmarking_dezfouli2019.Dezfouli2019GQL
     benchmark_file = f'benchmark_{study}_MODEL.pkl'
     model_config_baseline = 'PhiBeta'
     baseline_file = f'benchmark_{study}_PhiBeta.pkl'
+    ensemble_size = 10
     
 # ------------------- CONFIGURATION SYNTHETIC --------------------
 elif study == 'synthetic':
@@ -126,7 +127,7 @@ elif study == 'synthetic':
 # ------------------------- CONFIGURATION FILE PATHS ------------------------
 
 path_data = f'weinhardt2025/data/{study}/{study}.csv'
-path_spice = f'weinhardt2025/params/{study}/spice_{study}.pkl' if 'spice' in agents else None
+# path_spice = f'weinhardt2025/params/{study}/spice_{study}.pkl' if 'spice' in agents else None
 path_baseline = os.path.join(f'weinhardt2025/params/{study}/', baseline_file) if 'baseline' in agents else None
 path_benchmark = os.path.join(f'weinhardt2025/params/{study}', benchmark_file) if 'benchmark' in agents else None
 path_gru = f'weinhardt2025/params/{study}/gru_{study}.pkl' if 'gru' in agents else None

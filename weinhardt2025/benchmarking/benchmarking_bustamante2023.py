@@ -18,7 +18,7 @@ class MarginalValueTheoremModel(torch.nn.Module):
 
     The MVT predicts that a forager should leave a patch when the instantaneous
     gain rate in the current patch drops to the average gain rate in the environment.
-
+ 
     Key components:
     - Within-patch gain rate tracking (with depletion)
     - Environmental average gain rate estimation

@@ -88,26 +88,30 @@ class Castro2025Model(torch.nn.Module):
         'x_cumchoice': 0.0,
     }
 
-    def __init__(self, n_actions: int = 4):
+    def __init__(
+        self, 
+        n_participants: int,
+        n_actions: int = 4,
+        ):
         super().__init__()
 
         self.n_actions = n_actions
-        self.n_actions = n_actions  # For compatibility
+        self.n_participants = n_participants
 
         # Initialize 13 parameters (raw, will be transformed)
-        self.beta_r_raw = torch.nn.Parameter(torch.zeros(1))
-        self.lapse_raw = torch.nn.Parameter(torch.zeros(1))
-        self.prior_raw = torch.nn.Parameter(torch.zeros(1))
-        self.alpha_exploration_rate_raw = torch.nn.Parameter(torch.zeros(1))
-        self.decay_rate_raw = torch.nn.Parameter(torch.zeros(1))
-        self.attention_bias1 = torch.nn.Parameter(torch.zeros(1))
-        self.attention_bias2 = torch.nn.Parameter(torch.zeros(1))
-        self.perseveration_strength_raw = torch.nn.Parameter(torch.zeros(1))
-        self.switch_strength = torch.nn.Parameter(torch.zeros(1))
-        self.lambda_param_raw = torch.nn.Parameter(torch.zeros(1))
-        self.gamma_raw = torch.nn.Parameter(torch.zeros(1))
-        self.temperature_raw = torch.nn.Parameter(torch.zeros(1))
-        self.beta_p_raw = torch.nn.Parameter(torch.zeros(1))
+        self.beta_r_raw = torch.nn.Parameter(torch.zeros(n_participants))
+        self.lapse_raw = torch.nn.Parameter(torch.zeros(n_participants))
+        self.prior_raw = torch.nn.Parameter(torch.zeros(n_participants))
+        self.alpha_exploration_rate_raw = torch.nn.Parameter(torch.zeros(n_participants))
+        self.decay_rate_raw = torch.nn.Parameter(torch.zeros(n_participants))
+        self.attention_bias1 = torch.nn.Parameter(torch.zeros(n_participants))
+        self.attention_bias2 = torch.nn.Parameter(torch.zeros(n_participants))
+        self.perseveration_strength_raw = torch.nn.Parameter(torch.zeros(n_participants))
+        self.switch_strength = torch.nn.Parameter(torch.zeros(n_participants))
+        self.lambda_param_raw = torch.nn.Parameter(torch.zeros(n_participants))
+        self.gamma_raw = torch.nn.Parameter(torch.zeros(n_participants))
+        self.temperature_raw = torch.nn.Parameter(torch.zeros(n_participants))
+        self.beta_p_raw = torch.nn.Parameter(torch.zeros(n_participants))
 
         self.device = torch.device('cpu')
 
