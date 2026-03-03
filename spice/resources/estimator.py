@@ -322,10 +322,10 @@ class SpiceEstimator(BaseEstimator):
             print(f'RNN model has no participant_embedding module.')
             return None
 
-    def get_sindy_coefficients(self, key_module: Optional[str] = None) -> Dict[str, np.ndarray]:
+    def get_sindy_coefficients(self, key_module: Optional[str] = None, aggregate: bool = False) -> Dict[str, np.ndarray]:
         """Returns a dict of modules holding a numpy array with the sindy coefficients of shape (ensemble, participant, experiment, coefficient)."""
         
-        return self.rnn_model.get_sindy_coefficients(key_module=key_module)
+        return self.rnn_model.get_sindy_coefficients(key_module=key_module, aggregate=aggregate)
     
     def get_modules(self):
         return self.rnn_model.get_modules()

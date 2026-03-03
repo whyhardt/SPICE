@@ -894,7 +894,7 @@ class BaseRNN(nn.Module):
 
         return penalty * sindy_alpha
                     
-    def get_spice_model_string(self, participant_id: int = 0, experiment_id: int = 0, ensemble_idx: int = None) -> str:
+    def get_spice_model_string(self, participant_id: int = 0, experiment_id: int = 0) -> str:
         """
         Get the learned SPICE features and equations as a string.
 
@@ -908,9 +908,9 @@ class BaseRNN(nn.Module):
         """
         lines = []
         max_len_module = max([len(module) for module in self.get_modules()])
-            
+        
         for module in self.submodules_rnn:
-            sparse_coeffs = (self.sindy_coefficients[module][ensemble_idx, participant_id, experiment_id] * self.sindy_coefficients_presence[module][ensemble_idx, participant_id, experiment_id]).detach().cpu().numpy()
+            sparse_coeffs = self.get_sindy_coefficients(key_module=module, aggregate=True)[module].detach().cpu().numpy()
             space_filler = " "+" "*(max_len_module-len(module)) if max_len_module > len(module) else " "
             equation_str = module + "[t+1]" + space_filler + "= "
             for index_term, term in enumerate(self.sindy_candidate_terms[module]):
@@ -924,6 +924,7 @@ class BaseRNN(nn.Module):
             if equation_str[-3:] == " = ":
                 equation_str += "0"
             lines.append(equation_str)
+            
         return "\n".join(lines)
 
     def print_spice_model(self, participant_id: int = 0, experiment_id: int = 0, ensemble_idx: int = 0) -> None:
@@ -944,12 +945,11 @@ class BaseRNN(nn.Module):
             return self.sindy_candidate_terms
         else:
             return self.sindy_candidate_terms[key_module]
-            
-    def get_sindy_coefficients(self, key_module: Optional[str] = None):
+    
+    def get_sindy_coefficients(self, key_module: Optional[str] = None, aggregate: bool = False):
         if key_module is None:
-            key_module = self.get_modules()
-
-        if isinstance(key_module, str):
+            key_module = self.get_modules()  
+        elif isinstance(key_module, str):
             key_module = [key_module]
 
         sindy_coefficients = {}
@@ -959,18 +959,23 @@ class BaseRNN(nn.Module):
 
             # Masked median: only aggregate over ensemble members where term is active
             masked_coeffs = coeffs * presence  # zero out inactive
-            masked_coeffs[presence == 0] = float('nan')  # mark inactive as NaN so median ignores them
-            aggregated = torch.nanmean(masked_coeffs, dim=0, keepdim=True)[0]  # (1, P, X, T)
-            aggregated = torch.nan_to_num(aggregated, nan=0.0)  # terms inactive in all members -> 0
+            
+            # Average across ensemble members without respecting 0
+            if aggregate:
+                masked_coeffs[presence == 0] = float('nan')  # mark inactive as NaN so median ignores them
+                aggregated = torch.nanmean(masked_coeffs, dim=0)  # (E, P, X, C) -> (P, X, C)
+                sindy_coefficients[module] = torch.nan_to_num(aggregated, nan=0.0)  # terms inactive in all members -> 0
+            else:
+                sindy_coefficients[module] = masked_coeffs
             
             # Presence: term is active if majority of ensemble members have it
-            aggregated_presence = (presence.sum(dim=0, keepdim=True) > (self.ensemble_size / 2)).float()
-            sindy_coefficients[module] = (aggregated * aggregated_presence).cpu().numpy()
+            # aggregated_presence = (presence.sum(dim=0) > (self.ensemble_size / 2)).float()
+            # sindy_coefficients[module] = (aggregated * aggregated_presence).cpu().numpy()
 
             # Add implicit +1 for the identity term (h_next = h_current + library @ coeffs)
             # identity_idx = self.sindy_candidate_terms[module].index(module)
             # sindy_coefficients[module][..., identity_idx] += 1
-
+            
         return sindy_coefficients
     
     def eval(self, use_sindy=True, aggregate=True):
