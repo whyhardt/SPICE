@@ -5,14 +5,15 @@ from spice import SpiceDataset, csv_to_dataset, split_data_along_sessiondim, spl
 
 class GRU(torch.nn.Module):
     
-    def __init__(self, n_actions, additional_inputs: int = 0, hidden_size: int = 16, **kwargs):
+    def __init__(self, n_actions, additional_inputs: int = 0, hidden_size: int = 16, n_reward_features: int = None, **kwargs):
         super().__init__()
         
         self.gru_features = hidden_size
         self.n_actions = n_actions
         self.additional_inputs = additional_inputs
+        self.n_reward_features = n_actions if n_reward_features is None else n_reward_features
         
-        self.linear_in = torch.nn.Linear(in_features=n_actions+1+additional_inputs, out_features=hidden_size)
+        self.linear_in = torch.nn.Linear(in_features=self.n_actions+self.n_reward_features+self.additional_inputs, out_features=hidden_size)
         self.dropout = torch.nn.Dropout(0.1)
         self.gru = torch.nn.GRU(input_size=hidden_size, hidden_size=hidden_size, batch_first=True)
         self.linear_out = torch.nn.Linear(in_features=hidden_size, out_features=n_actions)
@@ -20,18 +21,18 @@ class GRU(torch.nn.Module):
     def forward(self, inputs, state=None):
         
         actions = inputs[..., :self.n_actions]
-        rewards = inputs[..., self.n_actions:2*self.n_actions].nan_to_num(0).sum(dim=-1, keepdims=True)
-        additional_inputs = inputs[..., self.n_actions*2:self.n_actions*2+self.additional_inputs]
+        rewards = inputs[..., self.n_actions:self.n_actions+self.n_reward_features].nan_to_num(0)#.sum(dim=-1, keepdims=True)
+        additional_inputs = inputs[..., self.n_actions+self.n_reward_features:self.n_actions+self.n_reward_features+self.additional_inputs]
         inputs = torch.concat((actions, rewards, additional_inputs), dim=-1)
         
         if state is not None and len(inputs.shape) == 3:
             state = state.reshape(1, 1, self.gru_features)
         
-        y = self.linear_in(inputs[:, 0].nan_to_num(0))
+        y = self.linear_in(inputs[:, :, 0].nan_to_num(0))
         y = self.dropout(y)
         y, state = self.gru(y, state)
         y = self.dropout(y)
-        y = self.linear_out(y)
+        y = self.linear_out(y).unsqueeze(2)
         return y, state
 
   
@@ -62,6 +63,7 @@ def training(
     n_actions = dataset_train.ys.shape[-1]
     batch_size = min(dataset_train.xs.shape[0], batch_size) if batch_size is not None else dataset_train.xs.shape[0]
     dataloader = torch.utils.data.DataLoader(dataset_train, batch_size=batch_size, shuffle=True)
+    gru.to(device)
     
     for epoch in range(epochs):
         gru.train()

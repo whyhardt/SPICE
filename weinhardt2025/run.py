@@ -18,7 +18,7 @@ from benchmarking.benchmarking_qlearning import QLearning
 if __name__=='__main__':
 
     parser = argparse.ArgumentParser(description='Trains a SPICE-RNN with end-to-end differentiable SINDy on behavioral data.')
-
+    
     # necessary parameters
     parser.add_argument('--model', type=str, default=None, help='Model name to load from and/or save to parameters of RNN')
     parser.add_argument('--data', type=str, default=None, help='Path to dataset')

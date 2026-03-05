@@ -60,8 +60,11 @@ class EnsembleGRUModule(nn.Module):
     Input:  (within_ts, ensemble, batch, n_items, features)
     Output: (within_ts, ensemble, batch, n_items, 1)
     """
-    def __init__(self, ensemble_size, input_size, dropout=0., **kwargs):
+    def __init__(self, ensemble_size, input_size, dropout=0., compiled_forward=True, **kwargs):
         super().__init__()
+        
+        self._compile = compiled_forward
+        
         proj_size = 8 + input_size
         hidden_size = 1
         input_size = input_size if input_size > 0 else 1
@@ -83,8 +86,7 @@ class EnsembleGRUModule(nn.Module):
         self.hidden_size = hidden_size
         self.ensemble_size = ensemble_size
 
-    @torch.compile
-    def forward(self, inputs, state):
+    def _uncompiled_forward(self, inputs, state):
         # inputs: (W, E, B, I, F)
         # state:  (W, E, B, I) — last row is current hidden state
         W, E, B, I, F = inputs.shape
@@ -114,46 +116,17 @@ class EnsembleGRUModule(nn.Module):
 
         output = torch.stack(outputs)              # (W, E, B*I, H)
         return output.reshape(W, E, B, I, 1)
-
-
-class EnsembleGRUModule2(torch.nn.Module):
-    def __init__(self, ensemble_size, input_size, dropout=0, **kwargs):
-        super().__init__()
-
-        proj_size = 8 + input_size
-        hidden_size = 1
-        
-        self.ensemble_size = ensemble_size
-        
-        # Linear projection: (E, proj_size, input_size)
-        self.weight_linear = nn.Parameter(torch.empty(ensemble_size, proj_size, input_size))
-        self.bias_linear = nn.Parameter(torch.zeros(ensemble_size, proj_size))
-        nn.init.xavier_uniform_(self.weight_linear.view(ensemble_size, proj_size, input_size))
-        
-        self.ensemble_gru = torch.nn.ParameterList()
-        
-        self.dropout = torch.nn.Dropout(dropout)
-        
-        for _ in range(ensemble_size):
-            self.ensemble_gru.append(torch.nn.GRU(proj_size, hidden_size))
+    
+    @torch.compile
+    def _compiled_forward(self, inputs, state):
+        return self._uncompiled_forward(inputs, state)
     
     def forward(self, inputs, state):
-        # inputs: (W, E, B, I, F)
-        # state:  (W, E, B, I) — last row is current hidden state
-        W, E, B, I, F = inputs.shape
-        
-        x = inputs.reshape(W, E, B * I, F)
-        h = state[-1].reshape(1, E, B * I, 1) if state is not None else torch.zeros(E, B * I, 1, device=inputs.device)
-        outputs = torch.zeros((W, E, B * I, 1), device=inputs.device)
-        
-        # Linear projection via einsum
-        y = torch.einsum('eoi,webi->webo', self.weight_linear, x) + self.bias_linear.unsqueeze(1)  # (W, E, B*I, proj)
-        y = self.dropout(y)
-        
-        for e in range(self.ensemble_size):
-            outputs[:, e] = self.ensemble_gru[e](y[:, e], h[:, e])[0]
-
-        return outputs.reshape(W, E, B, I, 1)
+        if self._compile:
+            return self._compiled_forward(inputs, state)
+        else:
+            return self._uncompiled_forward(inputs, state)
+    
             
 class ParameterModule(nn.Module):
     def __init__(self, ensemble_size=1):
@@ -183,6 +156,7 @@ class BaseRNN(nn.Module):
         sindy_alpha: float = 1e-4,
         
         device=torch.device('cpu'),
+        compiled_forward=True,
         
         **kwargs,
         ):
@@ -213,6 +187,7 @@ class BaseRNN(nn.Module):
         self.rnn_training_finished = False
         self.n_items = n_items if n_items is not None else n_actions
         self.ensemble_size = ensemble_size
+        self.compiled_forward = compiled_forward
 
         # session recording; used for sindy training; training variables start with 'x' and control parameters with 'c'
         self.recording = {}
@@ -273,7 +248,7 @@ class BaseRNN(nn.Module):
         # static identifiers — (E, B) shaped
         spice_signals.time_trial = inputs[0, :, :, :, -5].int()       # [within_ts, ensemble, batch]
         spice_signals.trials = inputs[:, 0, :, :, -4].int()           # [outer_ts, ensemble, batch]
-        spice_signals.blocks = inputs[:, 0, :, :, -3].int()           # [outer_ts, ensemble, batch]
+        spice_signals.blocks = inputs[0, 0, :, :, -3].int()           # [outer_ts, ensemble, batch]
         spice_signals.experiment_ids = inputs[0, 0, :, :, -2].int()   # [ensemble, batch]
         spice_signals.participant_ids = inputs[0, 0, :, :, -1].int()  # [ensemble, batch]
 
@@ -375,8 +350,8 @@ class BaseRNN(nn.Module):
         # GRU network
         if polynomial_degree is None:
             polynomial_degree = self.sindy_polynomial_degree
-            
-        self.submodules_rnn[key_module] = EnsembleGRUModule(ensemble_size=self.ensemble_size, input_size=input_size, dropout=dropout)
+        
+        self.submodules_rnn[key_module] = EnsembleGRUModule(ensemble_size=self.ensemble_size, input_size=input_size, dropout=dropout, compiled_forward=self.compiled_forward)
         self.sindy_specs[key_module] = {}
         self.sindy_specs[key_module]['include_bias'] = include_bias
         self.sindy_specs[key_module]['interaction_only'] = interaction_only
@@ -908,18 +883,18 @@ class BaseRNN(nn.Module):
         """
         lines = []
         max_len_module = max([len(module) for module in self.get_modules()])
-        
+        coefs_dict = self.get_sindy_coefficients(aggregate=True)
         for module in self.submodules_rnn:
-            sparse_coeffs = self.get_sindy_coefficients(key_module=module, aggregate=True)[module].detach().cpu().numpy()
+            sparse_coefs = coefs_dict[module][participant_id, experiment_id].detach().cpu().numpy()
             space_filler = " "+" "*(max_len_module-len(module)) if max_len_module > len(module) else " "
             equation_str = module + "[t+1]" + space_filler + "= "
             for index_term, term in enumerate(self.sindy_candidate_terms[module]):
                 if term == module:
-                    sparse_coeffs[index_term] += 1
-                if np.abs(sparse_coeffs[index_term]) != 0:
+                    sparse_coefs[index_term] += 1
+                if np.abs(sparse_coefs[index_term]) != 0:
                     if equation_str[-3:] != " = ":
                         equation_str += "+ "
-                    equation_str += str(np.round(sparse_coeffs[index_term], 3)) + " " + term
+                    equation_str += str(np.round(sparse_coefs[index_term], 3)) + " " + term
                     equation_str += "[t] " if term == module else " "
             if equation_str[-3:] == " = ":
                 equation_str += "0"

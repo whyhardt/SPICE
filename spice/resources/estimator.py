@@ -36,6 +36,7 @@ class SpiceEstimator(BaseEstimator):
         n_participants: int = 1,
         n_experiments: int = 1,
         n_items: int = None,
+        n_reward_features: int = None,
         
         # RNN training parameters
         epochs: Optional[int] = 1,
@@ -65,6 +66,7 @@ class SpiceEstimator(BaseEstimator):
         verbose: Optional[bool] = False,
         keep_log: Optional[bool] = False,
         save_path_spice: Optional[str] = None,
+        compiled_forward: Optional[bool] = True,
         
         kwargs_rnn_class: Optional[dict] = {},
     ):
@@ -77,6 +79,7 @@ class SpiceEstimator(BaseEstimator):
             n_items: Number of total action items (including the ones not selectable at the current trial)
             n_participants: Number of participants
             n_experiments: Number of experiments
+            n_reward_features: Number of reward features (columns) in the dataset 
             epochs: Number of epochs to train the RNN
             bagging: Whether to use bagging for the RNN
             sequence_length: Sequence length for the RNN
@@ -111,6 +114,7 @@ class SpiceEstimator(BaseEstimator):
         self.ensemble_size = ensemble_size
         self.l2_rnn = l2_rnn
         self.loss_fn = loss_fn
+        self.compiled_forward = compiled_forward
 
         # Save parameters
         self.save_path_model = save_path_spice
@@ -127,6 +131,7 @@ class SpiceEstimator(BaseEstimator):
         # Data parameters
         self.n_actions = n_actions
         self.n_items = n_items
+        self.n_reward_features = n_reward_features
         self.n_participants = n_participants
         self.n_experiments = n_experiments
         
@@ -150,6 +155,9 @@ class SpiceEstimator(BaseEstimator):
             ensemble_size=ensemble_size,
             use_sindy=use_sindy,
             n_items=n_items,
+            n_reward_features=n_reward_features,
+            device=device,
+            compiled_forward=compiled_forward,
             **kwargs_rnn_class,
         ).to(device)
 

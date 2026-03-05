@@ -72,7 +72,7 @@ def _print_training_status(
     if sindy_weight > 0:
         status_lines.append("-" * terminal_width)
         status_lines.append(f"SPICE Model (Coefficients: {model.count_sindy_coefficients()[0, 0, 0]:.0f}):")
-        status_lines.append(model.get_spice_model_string(participant_id=0, ensemble_idx=0))
+        status_lines.append(model.get_spice_model_string(participant_id=0))
         
         # Add patience summary
         status_lines.append("-" * terminal_width)
@@ -491,6 +491,8 @@ def _run_sindy_training(
         BaseRNN: Model with refitted SINDy coefficients
     """
     
+    t_start = time.time()
+    
     criterion = nn.MSELoss()
 
     # Freeze all RNN parameters, only train SINDy coefficients
@@ -525,7 +527,7 @@ def _run_sindy_training(
     with torch.no_grad():
         model(inputs=xs_flat.to(model.device), **prev_state_args, batch_first=True)
     model.sindy_alpha += sindy_alpha
-     
+    
     # if optimizer is not None:
     #     for e in range(epochs):
     #         t_start = time.time()
@@ -563,6 +565,21 @@ def _run_sindy_training(
     for s in model.spice_config.states_in_logit:
         loss += criterion(state_pred[s], target_state_buffer_train[s]).item()
 
+    len_last_print = _print_training_status(
+        len_last_print=len_last_print,
+        model=model,
+        n_calls=1,
+        epochs=1,
+        loss_train=loss,
+        loss_test_rnn=None,
+        loss_test_sindy=None,
+        time_elapsed=time.time()-t_start,
+        convergence_value=None,
+        sindy_weight=1,
+        scheduler=None,
+        keep_log=DEBUG_MODE,
+    )
+    
     # Restore requires_grad for all parameters
     for param in model.parameters():
         param.requires_grad = True
@@ -1140,7 +1157,9 @@ def fit_spice(
                 )
                 model.rnn_training_finished = True
                 break
-            except torch.cuda.OutOfMemoryError:
+            except (torch.cuda.OutOfMemoryError, RuntimeError) as e:
+                if isinstance(e, RuntimeError) and "out of memory" not in str(e):
+                    raise
                 if batch_size <= 1:
                     raise RuntimeError(f"Automatic batch size probing was unsuccessful. Current batch size is {batch_size} but could still not be started. Please try again with a smaller ensemble size (current: {model.ensemble_size}).")
                 model.zero_grad(set_to_none=True)
