@@ -8,20 +8,23 @@ merges them with participant-level data, and runs either:
 
 Usage examples:
 
-  # Discrete (diagnosis-based, odds ratios):
+  # Discrete nominal (diagnosis-based, odds ratios):
   python analysis_coefficients.py \
       --model weinhardt2025/params/dezfouli2019/spice_dezfouli2019_a0_05.pkl \
       --data  weinhardt2025/data/dezfouli2019/dezfouli2019.csv \
-      --analysis discrete \
+      --analysis disc \
+      --criterion-type nominal \
       --criterion diag \
-      --reference Healthy
+      --reference Healthy \
+      --participant-col session
 
   # Continuous (age-based, effect sizes):
   python analysis_coefficients.py \
       --model weinhardt2025/params/eckstein2022/spice_eckstein2022.pkl \
       --data  weinhardt2025/data/eckstein2022/eckstein2022.csv \
-      --analysis continuous \
-      --criterion age 
+      --analysis cont \
+      --criterion-type continuous \
+      --criterion age_years
 """
 
 import argparse
@@ -41,7 +44,27 @@ from scipy import stats
 from scipy.stats import spearmanr, kruskal, norm, chi2, f_oneway
 from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import StandardScaler
-from statsmodels.stats.multitest import multipletests
+try:
+    from statsmodels.stats.multitest import multipletests
+except ModuleNotFoundError:
+    def multipletests(pvals, method="fdr_bh"):
+        if method != "fdr_bh":
+            raise ValueError("Fallback multipletests only supports method='fdr_bh'.")
+        pvals = np.asarray(pvals, dtype=float)
+        n = len(pvals)
+        if n == 0:
+            return np.array([], dtype=bool), np.array([]), np.array([]), np.array([])
+
+        order = np.argsort(pvals)
+        ranked = pvals[order]
+        adjusted_ranked = ranked * n / np.arange(1, n + 1)
+        adjusted_ranked = np.minimum.accumulate(adjusted_ranked[::-1])[::-1]
+        adjusted_ranked = np.clip(adjusted_ranked, 0, 1)
+
+        adjusted = np.empty_like(adjusted_ranked)
+        adjusted[order] = adjusted_ranked
+        rejected = adjusted <= 0.05
+        return rejected, adjusted, np.full(n, np.nan), np.full(n, np.nan)
 
 warnings.filterwarnings("ignore")
 
@@ -78,7 +101,16 @@ SIG_COLORS = {"***": "#FF0000", "**": "#FFA500", "*": "#FFD700", "ns": "#999999"
 # 1. Preparation – extract coefficients
 # ---------------------------------------------------------------------------
 
-def prepare(model_path: str, data_path: str, model_module: str, criterion_col, dataset_kwargs: dict = {}):
+def prepare(
+    model_path: str,
+    data_path: str,
+    model_module: str,
+    criterion_col,
+    participant_col: str = "participant",
+    block_col: str = "block",
+    experiment_col: str = "experiment",
+    dataset_kwargs: dict = {},
+):
     """Load a trained SPICE model, extract ensemble-averaged SINDy coefficients 
     per participant and merge with the data file.
 
@@ -91,11 +123,17 @@ def prepare(model_path: str, data_path: str, model_module: str, criterion_col, d
         Names of the SINDy coefficient columns.
     """
     # --- load data to infer dimensions ---
-    dataset = csv_to_dataset(file=data_path, **dataset_kwargs)
+    dataset = csv_to_dataset(
+        file=data_path,
+        df_participant_id=participant_col,
+        df_block=block_col,
+        df_experiment_id=experiment_col,
+        **dataset_kwargs,
+    )
     raw_df = pd.read_csv(data_path)
     n_actions = dataset.ys.shape[-1]
     n_participants = len(dataset.xs[..., -1].unique())
-    unique_sessions = raw_df["participant"].unique().tolist()
+    unique_sessions = raw_df[participant_col].unique().tolist()
 
     # --- load SPICE model via precoded module ---
     mod = importlib.import_module(model_module)
@@ -153,8 +191,8 @@ def prepare(model_path: str, data_path: str, model_module: str, criterion_col, d
     print(f"Extracted {len(sindy_cols)} SINDy coefficient columns for {len(sindy_df)} participants.")
     
     # --- build criterion column per participant from raw data ---
-    crit_df = raw_df.groupby("participant").first().reset_index()
-    crit_df = crit_df.rename(columns={"participant": "participant_id"})
+    crit_df = raw_df.groupby(participant_col).first().reset_index()
+    crit_df = crit_df.rename(columns={participant_col: "participant_id"})
     crit_df = crit_df[["participant_id", criterion_col]]
     
     # Merge
@@ -383,6 +421,8 @@ def run_continuous(df, sindy_cols, criterion_col, output_dir):
 
     scaler = StandardScaler()
     crit_std = scaler.fit_transform(df_clean[[criterion_col]]).flatten()
+    crit_mean = float(scaler.mean_[0])
+    crit_scale = float(scaler.scale_[0]) if float(scaler.scale_[0]) != 0 else 1.0
 
     results = []
     skipped = []
@@ -483,7 +523,15 @@ def run_continuous(df, sindy_cols, criterion_col, output_dir):
     # ---- plots ----
     if not reg_df.empty:
         _plot_beta_bars(reg_df, criterion_col, output_dir)
-        _plot_logistic_curves(reg_df, criterion_col, crit_min, crit_max, output_dir)
+        _plot_logistic_curves(
+            reg_df,
+            criterion_col,
+            crit_min,
+            crit_max,
+            crit_mean,
+            crit_scale,
+            output_dir,
+        )
     return res_df
 
 
@@ -506,13 +554,13 @@ def _plot_beta_bars(df, criterion_col, output_dir):
     print(f"  β bar-plot saved.")
 
 
-def _plot_logistic_curves(df, criterion_col, crit_min, crit_max, output_dir):
+def _plot_logistic_curves(df, criterion_col, crit_min, crit_max, crit_mean, crit_scale, output_dir):
     n = min(len(df), 12)
     top = df.head(n)
     ncols = min(4, n)
     nrows = math.ceil(n / ncols)
     xs = np.linspace(crit_min, crit_max, 200)
-    xs_std = (xs - xs.mean()) / xs.std()
+    xs_std = (xs - crit_mean) / crit_scale
 
     fig, axes = plt.subplots(nrows, ncols, figsize=(4 * ncols, 3 * nrows))
     axes_flat = np.array(axes).flatten() if n > 1 else [axes]
@@ -555,7 +603,7 @@ def jonckheere_terpstra(groups):
     return z, 2 * (1 - norm.cdf(abs(z)))
 
 
-def run_magnitude_analysis(df, sindy_cols, criterion_col, analysis_type,
+def run_magnitude_analysis(df, sindy_cols, criterion_col, analysis_type, criterion_type,
                            output_dir, group_labels=None):
     """Non-parametric magnitude analysis (Spearman, Kruskal-Wallis,
     Jonckheere-Terpstra) of SINDy coefficients vs the criterion.
@@ -566,25 +614,35 @@ def run_magnitude_analysis(df, sindy_cols, criterion_col, analysis_type,
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
 
-    if analysis_type == "disc":
+    if criterion_type == "nominal":
         unique_vals = sorted(df[criterion_col].unique())
         group_col = "__group__"
         df[group_col] = df[criterion_col].map({v: i for i, v in enumerate(unique_vals)})
         if group_labels is None:
             group_labels = [str(v) for v in unique_vals]
         n_groups = len(unique_vals)
-    else:
+    elif criterion_type in {"ordinal", "continuous"}:
+        if analysis_type == "disc":
+            unique_vals = sorted(df[criterion_col].unique())
+            group_col = "__group__"
+            df[group_col] = df[criterion_col].map({v: i for i, v in enumerate(unique_vals)})
+            if group_labels is None:
+                group_labels = [str(v) for v in unique_vals]
+            n_groups = len(unique_vals)
+        else:
         # Bin continuous criterion into quantile-based groups
-        n_groups = min(6, len(df) // 10)
-        if n_groups < 3:
-            print("Not enough data for magnitude analysis grouping. Skipping.")
-            return None
-        group_col = "__group__"
-        df[group_col] = pd.qcut(df[criterion_col], q=n_groups, labels=False, duplicates="drop")
-        n_groups = df[group_col].nunique()
-        if group_labels is None:
-            bounds = pd.qcut(df[criterion_col], q=n_groups, duplicates="drop").cat.categories
-            group_labels = [f"{iv.left:.0f}-{iv.right:.0f}" for iv in bounds]
+            n_groups = min(6, len(df) // 10)
+            if n_groups < 3:
+                print("Not enough data for magnitude analysis grouping. Skipping.")
+                return None
+            group_col = "__group__"
+            df[group_col] = pd.qcut(df[criterion_col], q=n_groups, labels=False, duplicates="drop")
+            n_groups = df[group_col].nunique()
+            if group_labels is None:
+                bounds = pd.qcut(df[criterion_col], q=n_groups, duplicates="drop").cat.categories
+                group_labels = [f"{iv.left:.0f}-{iv.right:.0f}" for iv in bounds]
+    else:
+        raise ValueError(f"Unsupported criterion_type '{criterion_type}'.")
 
     keep = [c for c in sindy_cols
             if (nz := df.loc[df[c] != 0, c]).size > 10 and nz.std() > 1e-10]
@@ -601,12 +659,16 @@ def run_magnitude_analysis(df, sindy_cols, criterion_col, analysis_type,
         groups_vals = df.loc[nz_mask, group_col]
         raw = [vals[groups_vals == g].values for g in range(n_groups)]
 
-        rho, p_s = spearmanr(groups_vals, vals) if vals.size > 10 else (np.nan, np.nan)
         valid = [x for x in raw if x.size and x.std() > 1e-10]
         kw, p_kw = kruskal(*valid) if len(valid) >= 3 else (np.nan, np.nan)
-        z, p_jt = jonckheere_terpstra(raw)
-
-        trend = ("Increasing" if rho > 0 else "Decreasing") if not np.isnan(rho) else "Undetermined"
+        if criterion_type == "nominal":
+            rho, p_s = np.nan, np.nan
+            z, p_jt = np.nan, np.nan
+            trend = "Not applicable"
+        else:
+            rho, p_s = spearmanr(groups_vals, vals) if vals.size > 10 else (np.nan, np.nan)
+            z, p_jt = jonckheere_terpstra(raw)
+            trend = ("Increasing" if rho > 0 else "Decreasing") if not np.isnan(rho) else "Undetermined"
 
         grp_stats = []
         for g_idx in range(n_groups):
@@ -632,10 +694,12 @@ def run_magnitude_analysis(df, sindy_cols, criterion_col, analysis_type,
             "group_stats": grp_stats,
         })
 
-    res = pd.DataFrame(results).sort_values("jt_p")
+    sort_col = "kruskal_p" if criterion_type == "nominal" else "jt_p"
+    res = pd.DataFrame(results).sort_values(sort_col)
 
     # FDR correction
-    for col in ["spearman_p", "kruskal_p", "jt_p"]:
+    pvalue_cols = ["kruskal_p"] if criterion_type == "nominal" else ["spearman_p", "kruskal_p", "jt_p"]
+    for col in pvalue_cols:
         m = res[col].notna()
         if m.sum() > 0:
             res.loc[m, f"{col}_fdr"] = multipletests(res.loc[m, col], method="fdr_bh")[1]
@@ -662,18 +726,23 @@ def run_magnitude_analysis(df, sindy_cols, criterion_col, analysis_type,
     plt.figure(figsize=(12, max(8, len(top15) * 0.5)))
     sns.heatmap(heat, annot=True, cmap="RdBu_r", center=0, fmt=".3f",
                 cbar_kws={"label": "Mean Coefficient"})
-    plt.title(f"SINDy coefficient means by {criterion_col} group (top-{len(top15)} JT)")
+    title_suffix = "KW" if criterion_type == "nominal" else "JT"
+    plt.title(f"SINDy coefficient means by {criterion_col} group (top-{len(top15)} {title_suffix})")
     plt.tight_layout()
     plt.savefig(out / "magnitude_heatmap.png", dpi=300, bbox_inches="tight")
     plt.close()
 
     # Summary
-    print(f"Significant Spearman (p<0.05):       {(res.spearman_p < 0.05).sum()}")
     print(f"Significant Kruskal-Wallis (p<0.05): {(res.kruskal_p < 0.05).sum()}")
-    print(f"Significant Jonckheere-Terpstra:     {(res.jt_p < 0.05).sum()}")
-    print("\nTop 10 by JT p-value:")
-    print(res[["coefficient", "spearman_rho", "spearman_p", "jt_p", "trend"]]
-          .head(10).to_string(index=False))
+    if criterion_type == "nominal":
+        print("\nTop 10 by Kruskal-Wallis p-value:")
+        print(res[["coefficient", "kruskal_p"]].head(10).to_string(index=False))
+    else:
+        print(f"Significant Spearman (p<0.05):       {(res.spearman_p < 0.05).sum()}")
+        print(f"Significant Jonckheere-Terpstra:     {(res.jt_p < 0.05).sum()}")
+        print("\nTop 10 by JT p-value:")
+        print(res[["coefficient", "spearman_rho", "spearman_p", "jt_p", "trend"]]
+              .head(10).to_string(index=False))
 
     # Clean up temp column
     if group_col in df.columns:
@@ -700,8 +769,11 @@ def parse_args():
                    help="Column name for the regression criterion "
                         "(e.g. 'Diagnosis', 'Age', 'diag')")
     p.add_argument("--analysis", required=True, choices=["disc", "cont"],
-                   help="'discrete' for odds-ratio analysis, "
-                        "'continuous' for effect-size analysis")
+                   help="'disc' for odds-ratio analysis, "
+                        "'cont' for effect-size analysis")
+    p.add_argument("--criterion-type", required=True,
+                   choices=["nominal", "ordinal", "continuous"],
+                   help="Statistical type of the criterion")
     p.add_argument("--model-name", default="spice.precoded.workingmemory_rewardbinary",
                    help="Name of the SPICE model module "
                         "(default: spice.precoded.workingmemory_rewardbinary)")
@@ -710,6 +782,12 @@ def parse_args():
                         "(e.g. 'Healthy'). Required for --analysis discrete.")
     p.add_argument("--output", default=None,
                    help="Output directory (default: auto-generated next to data)")
+    p.add_argument("--participant-col", default="participant",
+                   help="Participant/session ID column in the input CSV")
+    p.add_argument("--block-col", default="block",
+                   help="Block column in the input CSV")
+    p.add_argument("--experiment-col", default="experiment",
+                   help="Experiment column in the input CSV")
     return p.parse_args()
 
 
@@ -717,7 +795,11 @@ def main():
     args = parse_args()
 
     if args.analysis == "disc" and args.reference is None:
-        raise ValueError("--reference-group is required for discrete analysis.")
+        raise ValueError("--reference is required for discrete analysis.")
+    if args.analysis == "disc" and args.criterion_type == "continuous":
+        raise ValueError("--criterion-type continuous is incompatible with --analysis disc.")
+    if args.analysis == "cont" and args.criterion_type != "continuous":
+        raise ValueError("--analysis cont requires --criterion-type continuous.")
 
     output_dir = args.output or os.path.join(
         os.path.dirname(args.data),
@@ -733,6 +815,9 @@ def main():
         data_path=args.data,
         model_module=args.model_name,
         criterion_col=args.criterion,
+        participant_col=args.participant_col,
+        block_col=args.block_col,
+        experiment_col=args.experiment_col,
     )
 
     # 2. Regression analysis
@@ -749,7 +834,14 @@ def main():
     print("\n" + "=" * 70)
     print("STEP 3: Magnitude analysis")
     print("=" * 70)
-    run_magnitude_analysis(df, sindy_cols, args.criterion, args.analysis, output_dir)
+    run_magnitude_analysis(
+        df,
+        sindy_cols,
+        args.criterion,
+        args.analysis,
+        args.criterion_type,
+        output_dir,
+    )
 
     print(f"\nAll results saved to: {output_dir}")
 
