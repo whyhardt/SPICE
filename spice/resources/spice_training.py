@@ -71,7 +71,7 @@ def _print_training_status(
     # Add SPICE model equations if SINDy is active
     if sindy_weight > 0:
         status_lines.append("-" * terminal_width)
-        status_lines.append(f"SPICE Model (Coefficients: {model.count_sindy_coefficients()[0, 0, 0]:.0f}):")
+        status_lines.append(f"SPICE Model (Coefficients: {model.count_sindy_coefficients()[0, 0]:.0f}):")
         status_lines.append(model.get_spice_model_string(participant_id=0))
         
         # Add patience summary
