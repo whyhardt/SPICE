@@ -3,9 +3,9 @@ import torch
 from spice import SpiceDataset, csv_to_dataset, split_data_along_sessiondim, split_data_along_timedim, Agent, cross_entropy_loss
 
 
-class GRU(torch.nn.Module):
+class Model(torch.nn.Module):
     
-    def __init__(self, n_actions, additional_inputs: int = 0, hidden_size: int = 16, n_reward_features: int = None, **kwargs):
+    def __init__(self, n_actions, additional_inputs: int = 0, hidden_size: int = 16, n_reward_features: int = None, dropout: float = 0.1, **kwargs):
         super().__init__()
         
         self.gru_features = hidden_size
@@ -14,14 +14,14 @@ class GRU(torch.nn.Module):
         self.n_reward_features = n_actions if n_reward_features is None else n_reward_features
         
         self.linear_in = torch.nn.Linear(in_features=self.n_actions+self.n_reward_features+self.additional_inputs, out_features=hidden_size)
-        self.dropout = torch.nn.Dropout(0.1)
+        self.dropout = torch.nn.Dropout(dropout)
         self.gru = torch.nn.GRU(input_size=hidden_size, hidden_size=hidden_size, batch_first=True)
         self.linear_out = torch.nn.Linear(in_features=hidden_size, out_features=n_actions)
         
     def forward(self, inputs, state=None):
         
         actions = inputs[..., :self.n_actions]
-        rewards = inputs[..., self.n_actions:self.n_actions+self.n_reward_features].nan_to_num(0)#.sum(dim=-1, keepdims=True)
+        rewards = inputs[..., self.n_actions:self.n_actions+self.n_reward_features].nan_to_num(0)
         additional_inputs = inputs[..., self.n_actions+self.n_reward_features:self.n_actions+self.n_reward_features+self.additional_inputs]
         inputs = torch.concat((actions, rewards, additional_inputs), dim=-1)
         
@@ -44,13 +44,13 @@ def setup_agent_gru(path_model: str, gru: torch.nn.Module = None) -> Agent:
     additional_inputs = state_dict['linear_in.weight'].shape[1] - 1 - n_actions
     
     if gru is None:
-        gru = GRU(n_actions=n_actions, hidden_size=hidden_size, additional_inputs=additional_inputs)
+        gru = Model(n_actions=n_actions, hidden_size=hidden_size, additional_inputs=additional_inputs)
     gru.load_state_dict(state_dict=state_dict)
     agent = Agent(model_rnn=gru, n_actions=gru.n_actions)
     return agent
 
 def training(
-    gru: GRU, 
+    gru: Model, 
     optimizer: torch.optim.Optimizer, 
     dataset_train: SpiceDataset, 
     dataset_test: SpiceDataset = None, 
@@ -125,7 +125,7 @@ def main(path_save_model:str, path_data: str, epochs: int, lr: float, split_rati
     n_actions = dataset_training.ys.shape[-1]
     n_participants = len(dataset_training.xs[..., -1].unique())
     
-    gru = GRU(input_size=n_actions+1, n_actions=n_actions, n_participants=n_participants).to(device)
+    gru = Model(input_size=n_actions+1, n_actions=n_actions, n_participants=n_participants).to(device)
     optimizer = torch.optim.Adam(gru.parameters(), lr=lr)
     
     print('Training GRU...')

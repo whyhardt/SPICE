@@ -120,9 +120,11 @@ class SpiceConfig():
             self.memory_state = memory_state_dict
         else:
             self.memory_state = memory_state
-        
-        if states_in_logit:
+            
+        if states_in_logit is not None:
             # check that all states_in_logit actually appear in the memory state
+            if isinstance(states_in_logit, str):
+                states_in_logit = states_in_logit,
             invalid_states = []
             for state in states_in_logit:
                 if not state in memory_state:

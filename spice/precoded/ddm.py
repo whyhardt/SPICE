@@ -362,7 +362,7 @@ if __name__=='__main__':
         axs[index, 0].plot(drift_rnn_mean[:, 500+n_trials*index, 0].detach().cpu().numpy(), label="RNN", color='tab:orange')
         
         if spice_estimator.sindy_weight > 0:
-            model_spice.print_spice_model(participant_id=index)
+            model_spice.print(participant_id=index)
             axs[index, 1].hist(rt_spice_mean[index*n_trials:(index+1)*n_trials, 0, 0, 0].detach().cpu().numpy(), bins=50, range=(-5.2, 5.2), alpha=0.4, label="SPICE", color='tab:green')
             axs[index, 0].plot(drift_spice_mean[:, 500+n_trials*index, 0].detach().cpu().numpy(), label="SPICE", color='tab:green')
             

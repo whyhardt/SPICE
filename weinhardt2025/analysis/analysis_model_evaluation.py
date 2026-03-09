@@ -1,396 +1,377 @@
 import os
 import sys
 
+import argparse
+import importlib
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
-from copy import copy
+import torch
+from typing import Iterable, Optional, Tuple
 
 # standard methods and classes used for every model evaluation
-from spice import SpiceEstimator, Agent, get_update_dynamics, csv_to_dataset, split_data_along_sessiondim, split_data_along_timedim
-from spice.precoded import choice, workingmemory, workingmemory_multiitem, workingmemory_rewardbinary, workingmemory_rewardflags, workingmemory_rewardtransform
+from spice import SpiceEstimator, csv_to_dataset, split_data_along_sessiondim, BaseRNN, SpiceConfig, SpiceDataset
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
-from weinhardt2025.utils.model_evaluation import get_scores
-from weinhardt2025.benchmarking import benchmarking_dezfouli2019, benchmarking_eckstein2022, benchmarking_gru, benchmarking_eckstein2024, benchmarking_castro2025, benchmarking_qlearning
+from weinhardt2025.benchmarking import benchmarking_qlearning
 
 
-# -------------------------------------------------------------------------------
-# MODEL EVALUATION CONFIGURATION
-# -------------------------------------------------------------------------------
-
-# study = 'eckstein2022'
-study = 'dezfouli2019'
-# study = 'eckstein2024'
-# study = 'synthetic'
-
-agents = [
-    # 'baseline',
-    # 'benchmark',
-    # 'gru',
-    'spice',
-]
-
-path_spice = 'weinhardt2025/params/dezfouli2019/spice_dezfouli2019_a0_05.pkl'
-# path_data = 'weinhardt2025/data/synthetic/synthetic_256p_0_0.csv'
-
-
-use_test = True
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# -------------------------------------------------------------------------------
-# STUDY CONFIGURATIONS
-# -------------------------------------------------------------------------------
-
-# ------------------- CONFIGURATION ECKSTEIN2022 --------------------
-if study == 'eckstein2022':
-    models_benchmark = ['ApAnBrBcfBch']
-    train_test_ratio = 0.8
-    spice_config = workingmemory_rewardbinary.CONFIG
-    spice_model = workingmemory_rewardbinary.SpiceModel
-    additional_inputs = None
-    setup_agent_benchmark = benchmarking_eckstein2022.setup_agent_benchmark
-    rl_model = benchmarking_eckstein2022.rl_model
-    benchmark_file = f'mcmc_{study}_MODEL.nc'
-    model_config_baseline = 'ApBr'
-    baseline_file = f'mcmc_{study}_ApBr.nc'
-    ensemble_size = 10
-
-# ------------------- CONFIGURATION ECKSTEIN2024 --------------------
-elif study == 'eckstein2024':
-    models_benchmark = ['CogFunSearch']
-    train_test_ratio = [1,3]
-    spice_config = workingmemory_rewardbinary.CONFIG
-    spice_model = workingmemory_rewardbinary.SpiceModel
-    additional_inputs = None
-    setup_agent_benchmark = benchmarking_eckstein2024.setup_agent_benchmark
-    # setup_agent_benchmark = benchmarking_castro2025.setup_agent_benchmark
-    Eckstein2024Model = benchmarking_eckstein2024.Eckstein2024Model
-    Castro2025Model = benchmarking_castro2025.Castro2025Model
-    benchmark_file = f'cogfunsearch_{study}.pkl'
-    model_config_baseline = None
-    baseline_file = f'benchmark_{study}.pkl'
-
-# ------------------------ CONFIGURATION DEZFOULI2019 -----------------------
-elif study == 'dezfouli2019':
-    train_test_ratio = [3, 6, 9]
-    models_benchmark = ['PhiChiBetaKappaC']
-    spice_config = workingmemory_rewardbinary.CONFIG
-    spice_model = workingmemory_rewardbinary.SpiceModel
-    additional_inputs = []
-    setup_agent_benchmark = benchmarking_dezfouli2019.setup_agent_gql
-    gql_model = benchmarking_dezfouli2019.Dezfouli2019GQL
-    benchmark_file = f'benchmark_{study}_MODEL.pkl'
-    model_config_baseline = 'PhiBeta'
-    baseline_file = f'benchmark_{study}_PhiBeta.pkl'
-    ensemble_size = 10
+def prepare_benchmark(path_model: str, dataset: SpiceDataset, model_module: str = None, model_class: BaseRNN = None, n_reward_features: int = None) -> torch.nn.Module:
+    # --- load benchmark or GRU model ---
+    n_actions = dataset.ys.shape[-1]
+    n_participants = dataset.xs[..., -1].unique().shape[0]
     
-# ------------------- CONFIGURATION SYNTHETIC --------------------
-elif study == 'synthetic':
-    train_test_ratio = None
-    spice_config = workingmemory_rewardbinary.CONFIG
-    spice_model = workingmemory_rewardbinary.SpiceModel
-    additional_inputs = None
-    ensemble_size = 10
-
-# ------------------------ CONFIGURATION GERSHMAN2018 -----------------------
-# elif study == 'gershmanB2018':
-#     train_test_ratio = [4, 8, 12, 16]
-#     models_benchmark = ['PhiBeta']
-#     spice_config = 
-#     spice_model = rnn.RLRNN_eckstein2022
-#     additional_inputs = []
-#     # setup_agent_benchmark = benchmarking_dezfouli2019.setup_agent_benchmark
-#     # gql_model = benchmarking_dezfouli2019.gql_model
-#     setup_agent_benchmark = benchmarking_dezfouli2019.setup_agent_gql
-#     gql_model = benchmarking_dezfouli2019.Dezfouli2019GQL
-#     benchmark_file = f'ql_{study}_MODEL.pkl'
-#     model_config_baseline = 'PhiBeta'
-#     baseline_file = f'ql_{study}_PhiBeta.pkl'
-
-
-
-# ------------------------- CONFIGURATION FILE PATHS ------------------------
-
-path_data = f'weinhardt2025/data/{study}/{study}.csv'
-# path_spice = f'weinhardt2025/params/{study}/spice_{study}.pkl' if 'spice' in agents else None
-path_baseline = os.path.join(f'weinhardt2025/params/{study}/', baseline_file) if 'baseline' in agents else None
-path_benchmark = os.path.join(f'weinhardt2025/params/{study}', benchmark_file) if 'benchmark' in agents else None
-path_gru = f'weinhardt2025/params/{study}/gru_{study}.pkl' if 'gru' in agents else None
-
-# -------------------------------------------------------------------------------
-# MODEL COMPARISON PIPELINE
-# -------------------------------------------------------------------------------
-
-dataset = csv_to_dataset(
-    file=path_data, 
-    additional_inputs=additional_inputs,
-    df_participant_id='participant',
-    df_block='block',
-    df_choice='choice',
-    df_feedback='reward',
-    )
-# use these participant_ids if not defined later
-participant_ids = dataset.xs[:, 0, -1].unique().cpu().numpy()
-n_participants = int(max(participant_ids)+1)
-n_actions = dataset.ys.shape[-1]
-# dataset.xs = dataset.xs.nan_to_num(0.)
-# dataset.ys = dataset.ys.nan_to_num(0.)
-
-# ------------------------------------------------------------
-# Setup of agents
-# ------------------------------------------------------------
-
-print("Computing metrics on", 'test' if use_test else 'training', "data...")
-
-# setup baseline model
-# old: win-stay-lose-shift -> very bad fit; does not bring the point that SPICE models are by far better than original ones
-# new: Fitted ApBr model -> Tells the "true" story of how much better SPICE models can actually be by setting a good relative baseline
-print("Setting up baseline agent from file", path_baseline)
-if path_baseline:
-    agent_baseline = setup_agent_benchmark(path_model=path_baseline, model_config=model_config_baseline)
-else:
-    agent_baseline = Agent(benchmarking_qlearning.QLearning(
+    if model_module is not None and model_class is None:
+        mod = importlib.import_module(model_module)
+        model_class = mod.Model
+    elif model_module is None and model_class is not None:
+        pass
+    else:
+        raise ValueError("You have to give either (model_module) OR (model_class AND model_config).")
+    
+    model = model_class(
         n_actions=n_actions,
         n_participants=n_participants,
-        n_experiments=1,
-        ), use_sindy=True)
-
-n_parameters_baseline = 2
-
-# setup benchmark models
-if path_benchmark:
-    print("Setting up benchmark agent from file", path_benchmark)
-    agent_benchmark = {}
-    for model in models_benchmark:
-        agent_benchmark[model] = setup_agent_benchmark(path_model=path_benchmark.replace('MODEL', model), model_config=model)
-else:
-    models_benchmark = []
-n_parameters_benchmark = 0
-
-if path_gru:
-    print("Setting up GRU agent from file", path_gru)
-    agent_gru = benchmarking_gru.setup_agent_gru(path_model=path_gru)
-    n_parameters_gru = sum(p.numel() for p in agent_gru.model.parameters() if p.requires_grad)
-else:
-    n_parameters_gru = 0
+        n_reward_features=n_reward_features,
+        )
     
-# setup rnn agent
-if path_spice is not None:
-    print("Setting up RNN and SPICE agent from file", path_spice)
-    estimator = SpiceEstimator(
-        rnn_class=spice_model,
+    state_dict = torch.load(path_model, map_location='cpu')
+    model.load_state_dict(state_dict)
+    return model.eval()
+
+
+def prepare_spice(path_model: str, dataset: SpiceDataset, model_module: str = None, model_class: BaseRNN = None, model_config: SpiceConfig = None, n_reward_features: int = None) -> SpiceEstimator:
+    # --- load SPICE model via precoded module ---
+    if model_module is not None and model_class is None and model_config is None:
+        mod = importlib.import_module(model_module)
+        rnn_class = mod.SpiceModel
+        spice_config = mod.CONFIG
+    elif model_module is None and model_class is not None and model_config is not None:
+        rnn_class = model_class
+        spice_config = model_config
+    else:
+        raise ValueError("You have to give either (model_module) OR (model_class AND model_config).")
+    
+    n_actions = dataset.ys.shape[-1]
+    n_participants = dataset.xs[..., -1].unique().shape[0]
+    
+    spice_estimator = SpiceEstimator(
+        rnn_class=rnn_class,
         spice_config=spice_config,
         n_actions=n_actions,
         n_participants=n_participants,
-        n_experiments=1,
+        n_reward_features=n_reward_features,
         sindy_library_polynomial_degree=2,
-        ensemble_size=ensemble_size,
     )
-    estimator.load_spice(path_spice)
-    agent_rnn, agent_spice = estimator.rnn_agent, estimator.spice_agent
-    n_parameters_rnn = sum(p.numel() for p in agent_rnn.model.parameters() if p.requires_grad)
-    n_parameters_spice = agent_spice.count_parameters().astype(int).reshape(-1)
-else:
-    n_parameters_rnn = 0
-    n_parameters_spice = 0
-    
-# ------------------------------------------------------------
-# Dataset splitting
-# ------------------------------------------------------------
+    spice_estimator.load_spice(path_model=path_model)
+    spice_estimator.rnn_model.eval()
+    return spice_estimator
 
-# split data into according to train_test_ratio
-if isinstance(train_test_ratio, float):
-    dataset_train, dataset_test = split_data_along_timedim(dataset, split_ratio=train_test_ratio)
-    data_input = dataset.xs
-    data_test = dataset.xs[..., :n_actions]
-    # n_trials_test = dataset_test.xs.shape[1]
-    
-elif isinstance(train_test_ratio, list) or isinstance(train_test_ratio, tuple):
-    dataset_train, dataset_test = split_data_along_sessiondim(dataset, list_test_sessions=train_test_ratio)
-    
-    if not use_test:
-        dataset_test = dataset_train
-    data_input = dataset_test.xs
-    data_test = dataset_test.xs[..., :n_actions]
 
-elif train_test_ratio is None:
-    dataset_train, dataset_test = dataset, dataset
-    data_input = dataset.xs
-    data_test = dataset.xs[..., :n_actions]
+def get_choice_probs(logits: torch.Tensor) -> torch.Tensor:
+    # softmax normalization
+    return torch.softmax(logits, dim=-1)
+
+
+def log_likelihood(data: torch.tensor, probs: torch.tensor, **kwargs):
+    # data: array of binary observations (0 or 1)
+    # probs: array of predicted probabilities for outcome 1 
     
-else:
-    raise TypeError("train_test_raio must be either a float number or a list of integers containing the session/block ids which should be used as test sessions/blocks")
-
-# ------------------------------------------------------------
-# Computation of metrics
-# ------------------------------------------------------------
-
-print('Running model evaluation...')
-scores = np.zeros((5+len(models_benchmark), 3))
-
-failed_attempts = 0
-failed_participants = []
-considered_trials = 0
-
-metric_participant = np.zeros((len(scores), len(dataset_test)))
-parameters_participant = np.zeros((1, len(dataset_test)))
-best_benchmarks_participant, considered_trials_participant = np.array(['' for _ in range(len(dataset_test))]), np.zeros(len(dataset_test))
-
-# from resources.spice_utils import DatasetRNN
-# mask_dataset_test = dataset_test.xs[:, 0, -1] == 45
-# dataset_test = DatasetRNN(dataset_test.xs[mask_dataset_test], dataset_test.ys[mask_dataset_test])
-
-for index_data in tqdm(range(len(dataset_test))):
-    # try:
-    # use whole session to include warm-up phase; make sure to exclude warm-up phase when computing metrics
-    pid = dataset_test.xs[index_data, 0, 0, -1].int().item()
+    # Sum over all data points
+    # return torch.sum(torch.sum(data * torch.log(probs), axis=-1), axis=axis) / normalization
+    # Ensure probabilities are within a valid range to prevent log(0)
+    epsilon = 1e-9
+    probs = torch.clip(probs, epsilon, 1 - epsilon)
     
-    if not pid in participant_ids:
-        print(f"Skipping participant {index_data} because they could not be found in the SPICE participants. Probably due to prior filtering of badly fitted participants.")
-        continue
+    # Calculate log-likelihood for each observation
+    log_likelihoods = data * torch.log(probs)# + (1 - data) * torch.log(1 - probs)
+    # log_likelihoods = data * torch.log(probs)
+    # log_likelihoods = torch.sum(data * torch.log(probs), axis=-1)
     
-    # Baseline model
-    probs_baseline = get_update_dynamics(experiment=data_input[index_data], agent=agent_baseline)[1]
+    # Sum log-likelihoods over all observations
+    return torch.sum(log_likelihoods)
+
+
+def bayesian_information_criterion(data: torch.Tensor, probs: torch.Tensor, n_parameters: int, nll: torch.Tensor = None, **kwargs):
+    # data: array of binary observations (0 or 1)
+    # probs: array of predicted probabilities for outcome 1
+    # n_parameters: integer number of trainable model parameters
     
-    # get number of actual trials
-    n_trials = len(probs_baseline)
-    data_ys = data_test[index_data, :n_trials, 0].cpu().numpy()
+    if nll is None:
+        nll = log_likelihood(data=data, probs=probs)
     
-    if isinstance(train_test_ratio, float):
-        n_trials_test = int(n_trials*(1-train_test_ratio))
-        if use_test:
-            index_start = n_trials - n_trials_test
-            index_end = n_trials
-        else:
-            index_start = 0
-            index_end = n_trials - n_trials_test
+    n_samples = (data[:, 0] != -1).sum()
+    return 2 * nll + n_parameters * torch.log(n_samples)
+
+
+def akaike_information_criterion(data: torch.Tensor, probs: torch.Tensor, n_parameters: int, nll: torch.Tensor = None, **kwargs):
+    # data: array of binary observations (0 or 1)
+    # probs: array of predicted probabilities for outcome 1
+    # n_parameters: integer number of trainable model parameters
+    
+    if nll is None:
+        nll = log_likelihood(data=data, probs=probs)
+    
+    return 2 * nll + 2 * n_parameters
+
+
+def get_scores(probs: torch.Tensor, targets: torch.Tensor, n_parameters: int) -> Tuple[float, float, float]:
+    nll = -log_likelihood(data=targets, probs=probs)
+    bic = bayesian_information_criterion(data=targets, probs=probs, n_parameters=n_parameters, nll=nll)
+    aic = akaike_information_criterion(data=targets, probs=probs, n_parameters=n_parameters, nll=nll)
+    return nll, aic, bic
+
+
+def analysis_model_evaluation(
+    dataset: SpiceDataset,
+    list_test_sessions: Optional[Iterable[int]] = None,
+    
+    spice_path: str = None,    
+    spice_module: str = None,
+    spice_class: BaseRNN = None,
+    spice_config: SpiceConfig = None,
+    spice_model: BaseRNN = None,
+    
+    benchmark_path: str = None,
+    benchmark_module: str = None,
+    benchmark_class: torch.nn.Module = None,
+    benchmark_model: torch.nn.Module = None,
+    
+    gru_path: str = None,
+    gru_module: str = None,
+    gru_class: torch.nn.Module = None,
+    gru_model: torch.nn.Module = None,
+    
+    verbose: bool = False,
+    ):
+    
+    # ------------------------------------------------------------
+    # General setup
+    # ------------------------------------------------------------
+    
+    participant_ids = dataset.xs[:, 0, -1].unique().cpu().numpy()
+    n_participants = int(max(participant_ids)+1)
+    n_actions = dataset.ys.shape[-1]
+    
+    # ------------------------------------------------------------
+    # Dataset splitting
+    # ------------------------------------------------------------
+
+    if list_test_sessions is not None:
+        _, dataset_test = split_data_along_sessiondim(dataset, list_test_sessions=list_test_sessions)
     else:
-        index_start = 0
-        index_end = n_trials
+        _, dataset_test = dataset, dataset
         
+    # NaN data mask
+    nan_mask = ~torch.isnan(dataset_test.xs[..., :n_actions].sum(dim=-1))
+
+    # ------------------------------------------------------------
+    # Model setup
+    # ------------------------------------------------------------
+    with torch.no_grad():
+        # setup benchmark model
+        if benchmark_model is None and benchmark_path is not None and (benchmark_module is not None or benchmark_class is not None):
+            benchmark_model = prepare_benchmark(path_model=benchmark_path, dataset=dataset, model_module=benchmark_module, model_class=benchmark_class, n_reward_features=n_reward_features)
+        if benchmark_model is not None:
+            print("Computing choice probabilities with benchmark model...")
+            benchmark_parameters = len([p for p in benchmark_model.parameters()]) / n_participants
+            benchmark_predictions, _ = benchmark_model(dataset_test.xs)
+            benchmark_choice_probs = get_choice_probs(benchmark_predictions)
+        else:
+            benchmark_parameters = torch.nan
             
-    # SPICE
-    if path_spice is not None:
-        probs_spice = get_update_dynamics(experiment=data_input[index_data], agent=agent_spice)[1]
-        if np.isnan(probs_spice).any():
-            raise ValueError(f"Participant {pid}: computed probabilities contained NaN")
-        scores_spice = np.array(get_scores(data=data_ys[index_start:index_end], probs=probs_spice[index_start:index_end], n_parameters=n_parameters_spice[pid]))
-        metric_participant[4, index_data] = scores_spice[0]        
-        parameters_participant[0, index_data] = n_parameters_spice[pid]
+        # setup GRU model
+        if gru_model is None and gru_path is not None and (gru_module is not None or gru_class is not None):
+            gru_model = prepare_benchmark(path_model=gru_path, dataset=dataset, model_module=gru_module, model_class=gru_class, n_reward_features=1)
+        if gru_model is not None:
+            print("Computing choice probabilities with GRU model...")
+            gru_parameters = sum(p.numel() for p in gru_model.parameters())
+            gru_predictions, _ = gru_model(dataset_test.xs)
+            gru_choice_probs = get_choice_probs(gru_predictions)
+        else:
+            gru_parameters = torch.nan
+            
+        # setup rnn agent
+        if spice_model is None and spice_path is not None and (spice_module is not None or (spice_class is not None and spice_config is not None)):
+            spice_model = prepare_spice(path_model=spice_path, dataset=dataset, model_module=spice_module, model_class=spice_class, model_config=spice_config)
+        if spice_model is not None:
+            spice_parameters = spice_model.count_sindy_coefficients()
+            
+            spice_rnn_parameters = 0
+            for module in spice_model.get_modules():
+                spice_rnn_parameters += sum(p.numel() for p in spice_model.rnn_model.submodules_rnn[module].parameters())
+            spice_rnn_parameters += spice_model.rnn_model.embedding_size
+            
+            # use spice
+            print("Computing choice probabilities with SPICE model...")
+            spice_rnn_predictions, spice_predictions = spice_model.predict(dataset_test.xs)           
+            spice_rnn_predictions, spice_predictions = torch.tensor(spice_rnn_predictions), torch.tensor(spice_predictions)
+            spice_rnn_choice_probs = get_choice_probs(spice_rnn_predictions)
+            spice_choice_probs = get_choice_probs(spice_predictions)
+        else:
+            spice_parameters = torch.nan
+            spice_rnn_parameters = torch.nan
+            
+    # ------------------------------------------------------------
+    # Evaluation pipeline
+    # ------------------------------------------------------------
+
+    scores = torch.zeros((4, 3))
+    metric_participant = torch.zeros((len(scores), len(dataset_test)))
+    parameters_participant = torch.zeros((1, len(dataset_test)))
+    considered_trials_participant = torch.zeros(len(dataset_test))
+    considered_trials = 0
     
-    scores_baseline = np.array(get_scores(data=data_ys[index_start:index_end], probs=probs_baseline[index_start:index_end], n_parameters=n_parameters_baseline))
-    metric_participant[0, index_data] += scores_baseline[0]
-    
-    # get scores of all mcmc benchmark models but keep only the best one for each session
-    if path_benchmark:
-        scores_benchmark = np.zeros((len(models_benchmark), 3))
-        for index_model, model in enumerate(models_benchmark):
-            n_parameters_model = agent_benchmark[model][1]
-            probs_benchmark = get_update_dynamics(experiment=data_input[index_data], agent=agent_benchmark[model][0][pid])[1]
-            scores_benchmark[index_model] += np.array(get_scores(data=data_ys[index_start:index_end], probs=probs_benchmark[index_start:index_end], n_parameters=n_parameters_model))
-        index_best_benchmark = np.argmin(scores_benchmark, axis=0)[1] # index 0 -> NLL is indicating metric
-        n_parameters_benchmark += agent_benchmark[models_benchmark[index_best_benchmark]][1]
-        best_benchmarks_participant[index_data] += models_benchmark[index_best_benchmark]
-        metric_participant[1, index_data] += scores_benchmark[index_best_benchmark, 0]
-        metric_participant[5:, index_data] += scores_benchmark[:, 0]
-    
-    # Benchmark GRU
-    if path_gru:
-        probs_gru = get_update_dynamics(experiment=data_input[index_data], agent=agent_gru)[1]
-        scores_gru = np.array(get_scores(data=data_ys[index_start:index_end], probs=probs_gru[index_start:index_end], n_parameters=n_parameters_gru))
-        metric_participant[2, index_data] += scores_gru[0]
+    for index_data in range(len(dataset_test)):
+        # use whole session to include warm-up phase; make sure to exclude warm-up phase when computing metrics
+        pid = dataset_test.xs[index_data, 0, 0, -1].int().item()
         
-    # SPICE-RNN
-    if path_spice is not None:
-        probs_rnn = get_update_dynamics(experiment=data_input[index_data], agent=agent_rnn)[1]
-        scores_rnn = np.array(get_scores(data=data_ys[index_start:index_end], probs=probs_rnn[index_start:index_end], n_parameters=n_parameters_rnn))
-        metric_participant[3, index_data] = scores_rnn[0]
+        # get number of actual trials
+        n_trials = nan_mask[index_data].sum()
+        considered_trials_participant[index_data] += n_trials
+        considered_trials += n_trials
         
-    considered_trials_participant[index_data] += index_end - index_start
-    considered_trials += index_end - index_start
+        # SPICE model
+        if spice_model is not None:
+            scores_spice = torch.tensor(
+                get_scores(targets=dataset_test.ys[index_data, nan_mask[index_data]], 
+                           probs=spice_choice_probs[index_data, nan_mask[index_data]], 
+                           n_parameters=spice_parameters[pid],
+                           ))
+            scores[3] += scores_spice
+            
+            scores_spice_rnn = torch.tensor(
+                get_scores(targets=dataset_test.ys[index_data, nan_mask[index_data]], 
+                           probs=spice_rnn_choice_probs[index_data, nan_mask[index_data]], 
+                           n_parameters=spice_rnn_parameters,
+                           ))
+            scores[2] += scores_spice_rnn
+            
+            metric_participant[2, index_data] = scores_spice_rnn[0]      
+            metric_participant[3, index_data] = scores_spice[0]      
+            parameters_participant[0, index_data] = spice_parameters[pid]
+        
+        # Benchmark model
+        if benchmark_model is not None:
+            scores_benchmark = torch.tensor(
+                get_scores(targets=dataset_test.ys[index_data, nan_mask[index_data]], 
+                           probs=benchmark_choice_probs[index_data, nan_mask[index_data]], 
+                           n_parameters=benchmark_parameters,
+                           ))
+            scores[0] += scores_benchmark
+            metric_participant[0, index_data] = scores_benchmark[0]
+                  
+        # GRU model
+        if gru_model is not None:
+            scores_gru = torch.tensor(
+                get_scores(targets=dataset_test.ys[index_data, nan_mask[index_data]], 
+                           probs=gru_choice_probs[index_data, nan_mask[index_data]], 
+                           n_parameters=gru_parameters,
+                           ))
+            scores[1] += scores_gru
+            metric_participant[1, index_data] = scores_gru[0]
+        
+    # ------------------------------------------------------------
+    # Post processing
+    # ------------------------------------------------------------
+
+    # compute trial-level metrics (and NLL -> Likelihood)
+    scores = scores / considered_trials
+    avg_trial_likelihood = torch.exp(-scores[:, 0])
+
+    metric_participant_std = (metric_participant/considered_trials_participant).std(dim=1)
+    avg_trial_likelihood_participant = np.exp(- metric_participant / considered_trials_participant)
+    avg_trial_likelihood_participant_std = avg_trial_likelihood_participant.std(dim=1)
+    parameter_participant_std = parameters_participant.std(dim=1)[0]
+
+    # compute average number of parameters
+    n_parameters = torch.tensor([
+        benchmark_parameters, 
+        gru_parameters,
+        spice_rnn_parameters, 
+        torch.mean(spice_parameters),
+        ])
+    n_parameters_std = torch.tensor([
+        0,
+        0,
+        0,
+        parameter_participant_std,
+    ])
+
+    scores = torch.concatenate((
+        avg_trial_likelihood.reshape(-1, 1), 
+        avg_trial_likelihood_participant_std.reshape(-1, 1), 
+        scores[:, :1], 
+        metric_participant_std.reshape(-1, 1), 
+        scores[:, 1:], 
+        n_parameters.reshape(-1, 1), 
+        n_parameters_std.reshape(-1, 1),
+        ), dim=1)
     
-    # track scores
-    scores[0] += scores_baseline
-    if path_benchmark:
-        scores[1] += scores_benchmark[index_best_benchmark]
-        scores[5:] += scores_benchmark
-    if path_gru:
-        scores[2] += scores_gru
-    if path_spice is not None:
-        scores[3] += scores_rnn
-        scores[4] += scores_spice
-        
-    # except ValueError as e:  
-    #     # print(e)
-    #     # raise e
-    #     failed_attempts += 1
-    #     failed_participants.append(pid)
+    # ------------------------------------------------------------
+    # Printing model performance table
+    # ------------------------------------------------------------
 
-# ------------------------------------------------------------
-# Post processing
-# ------------------------------------------------------------
-
-if path_benchmark:
-    # print how often each benchmark model was the best one
-    from collections import Counter
-    occurrences = Counter(best_benchmarks_participant)
-    print("Counter for each benchmark model being the best one:")
-    print(occurrences)
-
-# compute trial-level metrics (and NLL -> Likelihood)
-scores = scores / (considered_trials)
-avg_trial_likelihood = np.exp(- scores[:, 0])
-
-metric_participant_std = (metric_participant/considered_trials_participant).std(axis=1)
-avg_trial_likelihood_participant = np.exp(- metric_participant / considered_trials_participant)
-avg_trial_likelihood_participant_std = avg_trial_likelihood_participant.std(axis=1)
-parameter_participant_std = parameters_participant.std(axis=1)[0]
-
-# compute average number of parameters
-n_parameters_benchmark_single_models = [agent_benchmark[model][1] for model in models_benchmark] if path_benchmark else []
-n_parameters = np.array([
-    n_parameters_baseline,
-    n_parameters_benchmark, 
-    n_parameters_gru,
-    n_parameters_rnn, 
-    np.mean(n_parameters_spice),
-    ]+n_parameters_benchmark_single_models)
-n_parameters_std = np.array([
-    0,
-    0,
-    0,
-    0,
-    parameter_participant_std,
-])
-
-scores = np.concatenate((avg_trial_likelihood.reshape(-1, 1), avg_trial_likelihood_participant_std.reshape(-1, 1), scores[:, :1], metric_participant_std.reshape(-1, 1), scores[:, 1:], n_parameters.reshape(-1, 1), n_parameters_std.reshape(-1, 1)), axis=1)
+    df = pd.DataFrame(
+        data=scores,
+        index=['Benchmark', 'GRU', 'RNN', 'SPICE'],
+        columns = ('Trial Lik.', '(std)', 'NLL', '(std)', 'AIC', 'BIC', 'n_parameters', '(std)'),
+        )
+    
+    if verbose:
+        print(df)
+    
+    return df
 
 
-# ------------------------------------------------------------
-# Printing model performance table
-# ------------------------------------------------------------
-
-print(f'Failed attempts: {failed_attempts}')
-print(f'Failed participants: {failed_participants}')
-
-df = pd.DataFrame(
-    data=scores,
-    index=['Baseline', 'Benchmark', 'GRU', 'RNN', 'SPICE']+models_benchmark,
-    columns = ('Trial Lik.', '(std)', 'NLL', '(std)', 'AIC', 'BIC', 'n_parameters', '(std)'),
+if __name__=='__main__':
+    p = argparse.ArgumentParser(
+        description="Model evaluation pipeline",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__,
     )
-print(df)
+    p.add_argument("--data", default=None,
+                   help="Path to the experiment data CSV")
+    p.add_argument("--test_sessions", default=None,
+                   help="Sessions to test the models against (comma-separated list)")
+    p.add_argument("--spice_model", default=None,
+                   help="Path to the trained SPICE model (.pkl)")
+    p.add_argument("--spice-module", default="spice.precoded.workingmemory_rewardbinary",
+                   help="Name of the SPICE model module (default: spice.precoded.workingmemory_rewardbinary)")
+    p.add_argument("--benchmark_model", default=None,
+                   help="Path to the trained benchmark model (.pkl)")
+    p.add_argument("--benchmark-module", default="weinhardt2025.benchmarking.benchmarking_qlearning",
+                   help="Name of the benchmark model module (default: weinhardt2025.benchmarking.benchmarking_qlearning)")
+    p.add_argument("--gru_model", default=None,
+                   help="Path to the trained SPICE model (.pkl)")
+    p.add_argument("--gru-module", default="weinhardt2025.benchmarking.benchmarking_gru",
+                   help="Name of the SPICE model module (default: weinhardt2025.benchmarking.benchmarking_gru)")
+    args  = p.parse_args()
+    
+    
+    args.data = 'weinhardt2025/data/dezfouli2019/dezfouli2019.csv'
+    args.test_sessions = (3,6,9)
+    args.spice_model = 'weinhardt2025/params/dezfouli2019/spice_dezfouli2019.pkl'
+    args.gru_model = 'weinhardt2025/params/dezfouli2019/gru_dezfouli2019.pkl'
+    args.verbose = True    
+    
+    dataset = csv_to_dataset(
+        file=args.data,
+    )
+    
+    analysis_model_evaluation(
+        dataset=dataset,
+        list_test_sessions=args.test_sessions,
+        
+        spice_path=args.spice_model,
+        spice_module=args.spice_module,
+        
+        benchmark_path=args.benchmark_model,
+        benchmark_module=args.benchmark_module,
+        
+        gru_path=args.gru_model,
+        gru_module=args.gru_module,
+        
+        verbose=True,
+    )
+    

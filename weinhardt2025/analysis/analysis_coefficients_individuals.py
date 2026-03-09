@@ -48,7 +48,7 @@ warnings.filterwarnings("ignore")
 # Ensure project root is importable
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
-from spice import SpiceEstimator, csv_to_dataset
+from spice import SpiceEstimator, csv_to_dataset, BaseRNN, SpiceConfig
 
 
 # ---------------------------------------------------------------------------
@@ -78,7 +78,7 @@ SIG_COLORS = {"***": "#FF0000", "**": "#FFA500", "*": "#FFD700", "ns": "#999999"
 # 1. Preparation – extract coefficients
 # ---------------------------------------------------------------------------
 
-def prepare(model_path: str, data_path: str, model_module: str, criterion_col, dataset_kwargs: dict = {}):
+def prepare(model_path: str, data_path: str, criterion_col, dataset_kwargs: dict = {}, model_module: str = None, model_class: BaseRNN = None, model_config: SpiceConfig = None):
     """Load a trained SPICE model, extract ensemble-averaged SINDy coefficients 
     per participant and merge with the data file.
 
@@ -98,10 +98,16 @@ def prepare(model_path: str, data_path: str, model_module: str, criterion_col, d
     unique_sessions = raw_df["participant"].unique().tolist()
 
     # --- load SPICE model via precoded module ---
-    mod = importlib.import_module(model_module)
-    rnn_class = mod.SpiceModel
-    spice_config = mod.CONFIG
-
+    if model_module is not None and model_class is None and model_config is None:
+        mod = importlib.import_module(model_module)
+        rnn_class = mod.SpiceModel
+        spice_config = mod.CONFIG
+    elif model_module is None and model_class is not None and model_config is not None:
+        rnn_class = model_class
+        spice_config = model_config
+    else:
+        raise ValueError("You have to give either (model_module) OR (model_class AND model_config).")
+    
     # Peek at saved checkpoint to infer ensemble_size
     _ckpt = torch.load(model_path, map_location="cpu")
     _first_module = next(iter(spice_config.library_setup))
@@ -682,11 +688,54 @@ def run_magnitude_analysis(df, sindy_cols, criterion_col, analysis_type,
     return res
 
 
+def analysis_coefficients_individuals(path_model: str, path_data: str, criterion: str, analysis: str, reference: str, dir_output: str, model_module: str = None, model_class: BaseRNN = None, model_config: SpiceConfig = None):
+
+    if analysis == "disc" and reference is None:
+        raise ValueError("--reference-group is required for discrete analysis.")
+
+    output_dir = dir_output or os.path.join(
+        os.path.dirname(path_data),
+        f"analysis_{criterion}_{args.analysis}",
+    )
+
+    # 1. Preparation
+    print("=" * 70)
+    print("STEP 1: Preparing data")
+    print("=" * 70)
+    df, sindy_cols = prepare(
+        model_path=path_model,
+        data_path=path_data,
+        criterion_col=criterion,
+        model_module=model_module,
+        model_class=model_class,
+        model_config=model_config,
+    )
+
+    # 2. Regression analysis
+    print("\n" + "=" * 70)
+    print("STEP 2: Regression analysis")
+    print("=" * 70)
+    if args.analysis == "disc":
+        res = run_discrete(df, sindy_cols, criterion,
+                           args.reference, output_dir)
+    else:
+        res = run_continuous(df, sindy_cols, criterion, output_dir)
+
+    # 3. Magnitude analysis (Spearman / KW / JT)
+    print("\n" + "=" * 70)
+    print("STEP 3: Magnitude analysis")
+    print("=" * 70)
+    run_magnitude_analysis(df, sindy_cols, criterion, args.analysis, output_dir)
+
+    print(f"\nAll results saved to: {output_dir}")
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
-def parse_args():
+if __name__ == "__main__":
+    
     p = argparse.ArgumentParser(
         description="Unified SINDy coefficient analysis pipeline",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -702,7 +751,7 @@ def parse_args():
     p.add_argument("--analysis", required=True, choices=["disc", "cont"],
                    help="'discrete' for odds-ratio analysis, "
                         "'continuous' for effect-size analysis")
-    p.add_argument("--model-name", default="spice.precoded.workingmemory_rewardbinary",
+    p.add_argument("--model-module", default="spice.precoded.workingmemory_rewardbinary",
                    help="Name of the SPICE model module "
                         "(default: spice.precoded.workingmemory_rewardbinary)")
     p.add_argument("--reference", default=None,
@@ -710,49 +759,14 @@ def parse_args():
                         "(e.g. 'Healthy'). Required for --analysis discrete.")
     p.add_argument("--output", default=None,
                    help="Output directory (default: auto-generated next to data)")
-    return p.parse_args()
-
-
-def main():
-    args = parse_args()
-
-    if args.analysis == "disc" and args.reference is None:
-        raise ValueError("--reference-group is required for discrete analysis.")
-
-    output_dir = args.output or os.path.join(
-        os.path.dirname(args.data),
-        f"analysis_{args.criterion}_{args.analysis}",
+    args  = p.parse_args()
+    
+    analysis_coefficients_individuals(
+        path_model=args.model,
+        path_data=args.data,
+        criterion=args.criterion,
+        analysis=args.analysis,
+        model_module=args.model_module,
+        reference=args.reference,
+        dir_output=args.output,
     )
-
-    # 1. Preparation
-    print("=" * 70)
-    print("STEP 1: Preparing data")
-    print("=" * 70)
-    df, sindy_cols = prepare(
-        model_path=args.model,
-        data_path=args.data,
-        model_module=args.model_name,
-        criterion_col=args.criterion,
-    )
-
-    # 2. Regression analysis
-    print("\n" + "=" * 70)
-    print("STEP 2: Regression analysis")
-    print("=" * 70)
-    if args.analysis == "disc":
-        res = run_discrete(df, sindy_cols, args.criterion,
-                           args.reference, output_dir)
-    else:
-        res = run_continuous(df, sindy_cols, args.criterion, output_dir)
-
-    # 3. Magnitude analysis (Spearman / KW / JT)
-    print("\n" + "=" * 70)
-    print("STEP 3: Magnitude analysis")
-    print("=" * 70)
-    run_magnitude_analysis(df, sindy_cols, args.criterion, args.analysis, output_dir)
-
-    print(f"\nAll results saved to: {output_dir}")
-
-
-if __name__ == "__main__":
-    main()

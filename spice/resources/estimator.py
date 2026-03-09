@@ -295,22 +295,14 @@ class SpiceEstimator(BaseEstimator):
         else:
             raise TypeError(f"conditions must be either of type numpy.ndarray or torch.Tensor.")
         
-        # get predictions about action probability by RNN and SPICE separately
-        prediction_rnn = np.full((*conditions.shape[:-1], self.n_actions), np.nan).reshape(-1, self.n_actions)
-        prediction_spice = np.full((*conditions.shape[:-1], self.n_actions), np.nan).reshape(-1, self.n_actions)
-        mask = torch.sum(conditions[..., :self.n_actions].reshape(-1, self.n_actions), dim=-1, keepdim=False) != -2
-        
         # rnn predictions — average across ensemble dim (E, B, T, W, A) -> (B, T, W, A)
-        prediction = self.rnn_agent.model(conditions, batch_first=True)[0].mean(dim=0).reshape(-1, self.n_actions)
-        prediction = torch.nn.functional.softmax(prediction, dim=-1).detach().cpu().numpy()
-        prediction_rnn[mask.detach().cpu().numpy()] = prediction[mask]
-        prediction_rnn = prediction_rnn.reshape(*conditions.shape[:-1], self.n_actions)
-
+        self.rnn_model.use_sindy = False
+        self.rnn_model.aggregate = True
+        prediction_rnn = self.rnn_model(conditions, batch_first=True)[0].mean(dim=0)
+        
         # SPICE predictions — average across ensemble dim
-        prediction = self.spice_agent.model(conditions, batch_first=True)[0].mean(dim=0).reshape(-1, self.n_actions)
-        prediction = torch.nn.functional.softmax(prediction, dim=-1).detach().cpu().numpy()
-        prediction_spice[mask.detach().cpu().numpy()] = prediction[mask]
-        prediction_spice = prediction_spice.reshape(*conditions.shape[:-1], self.n_actions)
+        self.rnn_model.use_sindy = True
+        prediction_spice = self.rnn_model(conditions, batch_first=True)[0].mean(dim=0)
         
         return prediction_rnn, prediction_spice
 
@@ -319,7 +311,7 @@ class SpiceEstimator(BaseEstimator):
         Get the learned SPICE features and equations.
         """
         
-        self.rnn_model.print_spice_model(participant_id, experiment_id)
+        self.rnn_model.print(participant_id=participant_id, experiment_id=experiment_id)
 
     def get_participant_embeddings(self) -> Dict:
         if hasattr(self.rnn_model, 'participant_embedding'):
@@ -335,6 +327,9 @@ class SpiceEstimator(BaseEstimator):
         
         return self.rnn_model.get_sindy_coefficients(key_module=key_module, aggregate=aggregate)
     
+    def count_sindy_coefficients(self):
+        return self.rnn_model.count_sindy_coefficients()
+       
     def get_modules(self):
         return self.rnn_model.get_modules()
     
@@ -350,6 +345,19 @@ class SpiceEstimator(BaseEstimator):
         
         # Infer ensemble_size from saved coefficient shape: (E, P, X, terms)
         self.rnn_model.ensemble_size = loaded_parameters['model']['sindy_coefficients.'+next(iter(self.rnn_model.submodules_rnn))].shape[0]
+        
+        self.rnn_model = self.rnn_class(
+                    spice_config=self.spice_config,
+                    n_actions=self.rnn_model.n_actions,
+                    n_items=self.rnn_model.n_items,
+                    n_reward_features=self.rnn_model.n_reward_features,
+                    n_participants=self.rnn_model.n_participants,
+                    n_experiments=self.rnn_model.n_experiments,
+                    sindy_polynomial_degree=self.rnn_model.sindy_polynomial_degree,
+                    ensemble_size=self.rnn_model.ensemble_size,
+                    use_sindy=True,
+                )
+        
         for module in self.get_modules():
             self.rnn_model.setup_sindy_coefficients(key_module=module, polynomial_degree=self.rnn_model.sindy_specs[module]['polynomial_degree'])
         self.rnn_model.sindy_coefficients_presence = loaded_parameters['sindy_coefficients_presence']

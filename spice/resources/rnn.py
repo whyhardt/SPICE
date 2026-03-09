@@ -672,11 +672,14 @@ class BaseRNN(nn.Module):
         return sindy_loss
     
     def sindy_ridge_solve(self, key_module: str, participant_ids: torch.Tensor, experiment_ids: torch.Tensor, h_next: torch.Tensor, h_current: torch.Tensor, controls: torch.Tensor):
-        W, E, B, I = h_current.shape
+        W, E, B, I = h_next.shape
         P = self.n_participants
         X = self.n_experiments
         T = self.sindy_coefficients[key_module].shape[-1]
 
+        if h_current is None:
+            h_current = torch.zeros_like(h_next)
+        
         library = compute_polynomial_library(
             h_current.reshape(W, B*E, I),
             controls.reshape(W, B*E, I, -1),
@@ -820,9 +823,14 @@ class BaseRNN(nn.Module):
             
     def count_sindy_coefficients(self) -> torch.Tensor:
         """Returns count of active coefficients per (ensemble, participant, experiment)."""
-        coefficients = torch.zeros(self.ensemble_size, self.n_participants, self.n_experiments, device=self.device)
+        coefficients = torch.zeros(self.n_participants, self.n_experiments, device=self.device)
+        sindy_coefs = self.get_sindy_coefficients(aggregate=True)
         for module in self.submodules_rnn:
-            coefficients += self.sindy_coefficients_presence[module].sum(dim=-1).float()
+            coefficients += (sindy_coefs[module] != 0).sum(dim=-1)
+            if self.sindy_specs[module]['include_state']:
+                index_state = 1 if self.sindy_specs[module]['include_bias'] else 0
+                index_state_not_in_model = torch.where(torch.logical_and(sindy_coefs[module][..., index_state] < -0.95, sindy_coefs[module][..., index_state] > -1.05))[0]
+                coefficients[index_state_not_in_model] -= 1
         return coefficients
 
     def compute_weighted_coefficient_penalty(self, sindy_alpha: float, norm: int = 1) -> torch.Tensor:
@@ -902,16 +910,9 @@ class BaseRNN(nn.Module):
             
         return "\n".join(lines)
 
-    def print_spice_model(self, participant_id: int = 0, experiment_id: int = 0, ensemble_idx: int = 0) -> None:
-        """
-        Print the learned SPICE features and equations for each trained module.
-
-        Args:
-            participant_id: Participant index to print
-            ensemble_idx: Ensemble member index to print (default: 0, the first member)
-        """
-        print(self.get_spice_model_string(participant_id, experiment_id, ensemble_idx))
-
+    def print(self, participant_id: int = 0, experiment_id: int = 0) -> None:
+        print(self.get_spice_model_string(participant_id=participant_id, experiment_id=experiment_id))
+    
     def get_modules(self):
         return [module for module in self.submodules_rnn]
     
