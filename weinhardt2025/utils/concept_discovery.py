@@ -60,7 +60,7 @@ n_actions = dataset.ys.shape[-1]
 
 if use_real:
     estimator = SpiceEstimator(
-        rnn_class=workingmemory_rewardbinary.SpiceModel,
+        spice_class=workingmemory_rewardbinary.SpiceModel,
         spice_config=workingmemory_rewardbinary.CONFIG,
         n_actions=n_actions,
         n_participants=n_participants,
@@ -68,7 +68,7 @@ if use_real:
         sindy_library_polynomial_degree=2,
     )
     estimator.load_spice(path_model=path_model)
-    model = estimator.rnn_model
+    model = estimator.model
 else:
     # Use a synthetic Q-Learning model
     parameters = dataset.xs[:, 0, n_actions*2:-3]

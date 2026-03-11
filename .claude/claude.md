@@ -244,7 +244,7 @@ from spice.estimator import SpiceEstimator
 from spice.precoded import RescorlaWagnerRNN, RESCOLA_WAGNER_CONFIG
 
 estimator = SpiceEstimator(
-    rnn_class=RescorlaWagnerRNN,
+    spice_class=RescorlaWagnerRNN,
     spice_config=RESCOLA_WAGNER_CONFIG,
     verbose=True,
 )

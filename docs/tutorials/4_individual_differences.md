@@ -161,7 +161,7 @@ from spice.estimator import SpiceEstimator
 from spice.precoded import ForgettingRNN, FORGETTING_RNN_CONFIG
 
 spice_estimator = SpiceEstimator(
-    rnn_class=ForgettingRNN,
+    spice_class=ForgettingRNN,
     spice_config=FORGETTING_RNN_CONFIG,
     learning_rate=1e-2,
     epochs=1024,
@@ -227,7 +227,7 @@ participant_ids = dataset.xs[..., -1].unique()
 n_participants = len(participant_ids)
 
 spice_estimator_participant_embedding = SpiceEstimator(
-    rnn_class=ParticipantEmbeddingRNN,
+    spice_class=ParticipantEmbeddingRNN,
     spice_config=PARTICIPANT_EMBEDDING_RNN_CONFIG,  # Same config as before
     learning_rate=1e-2,
     epochs=2048,
@@ -395,7 +395,7 @@ For training the custom RNN, we can use the same `SpiceEstimator` as before. We 
 from spice.estimator import SpiceEstimator
 
 spice_estimator_custom = SpiceEstimator(
-    rnn_class=CustomRNN,
+    spice_class=CustomRNN,
     spice_config=CUSTOM_RNN_CONFIG,
     learning_rate=1e-2,
     epochs=1024,

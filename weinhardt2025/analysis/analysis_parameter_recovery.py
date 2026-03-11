@@ -27,15 +27,15 @@ sample_dataset = csv_to_dataset(
     additional_inputs=rl_parameters
 )
 sample_model = SpiceEstimator(
-    rnn_class=spice_model.SpiceModel,
+    spice_class=spice_model.SpiceModel,
     spice_config=spice_model.CONFIG,
     n_actions=sample_dataset.ys.shape[-1],
     n_participants=1,
     sindy_library_polynomial_degree=2,
 )
 n_coefficients_fitted_model = sum(
-    sample_model.rnn_model.sindy_coefficients[m].shape[-1]
-    for m in sample_model.rnn_model.get_modules()
+    sample_model.model.sindy_coefficients[m].shape[-1]
+    for m in sample_model.model.get_modules()
 )
 print(f"Detected n_coefficients_fitted_model = {n_coefficients_fitted_model}")
 
@@ -79,7 +79,7 @@ for index_par, par in enumerate(participants):
         
         # load fitted model
         fitted_model = SpiceEstimator(
-            rnn_class=spice_model.SpiceModel,
+            spice_class=spice_model.SpiceModel,
             spice_config=spice_model.CONFIG,
             n_actions=n_actions,
             n_participants=par,
@@ -87,7 +87,7 @@ for index_par, par in enumerate(participants):
             ensemble_size=ensemble_size,
         )
         fitted_model.load_spice(path_model=path_model.replace('PAR', str(par)).replace('IT', str(it)))
-        fitted_model = fitted_model.rnn_model
+        fitted_model = fitted_model.model
         fitted_coef_vals = fitted_model.get_sindy_coefficients()
 
         # put all coefs into storage
@@ -295,8 +295,8 @@ plt.show()
 
 # Build flat list of term names matching coefficient storage layout (module by module)
 term_names = []
-for module in sample_model.rnn_model.get_modules():
-    for term in sample_model.rnn_model.sindy_candidate_terms[module]:
+for module in sample_model.model.get_modules():
+    for term in sample_model.model.sindy_candidate_terms[module]:
         term_names.append(f"{module}: {term}")
 n_terms = true_coefs.shape[-1]
 

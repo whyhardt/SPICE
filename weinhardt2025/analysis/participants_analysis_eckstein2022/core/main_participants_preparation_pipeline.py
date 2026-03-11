@@ -169,7 +169,7 @@ class_rnn = workingmemory_rewardbinary.SpiceModel
 sindy_config = workingmemory_rewardbinary.CONFIG
 
 estimator = SpiceEstimator(
-    rnn_class=class_rnn,
+    spice_class=class_rnn,
     spice_config=sindy_config,
     n_actions=n_actions,
     n_participants=n_participants,

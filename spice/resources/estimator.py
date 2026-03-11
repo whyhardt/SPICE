@@ -28,7 +28,7 @@ class SpiceEstimator(BaseEstimator):
         self,
         
         # RNN class and SPICE configuration. Can be one of the precoded models in rnn.py or a custom implementation.
-        rnn_class: BaseRNN,
+        spice_class: BaseRNN,
         spice_config: SpiceConfig,
         
         # Data/Environment parameters
@@ -139,12 +139,12 @@ class SpiceEstimator(BaseEstimator):
         self.dropout = dropout
         
         self.spice_config = spice_config
-        self.rnn_class = rnn_class
+        self.rnn_class = spice_class
         self.rnn_agent = None
         self.spice_agent = None
         self.spice_features = None
         
-        self.rnn_model = rnn_class(
+        self.model = spice_class(
             n_actions=n_actions,
             n_participants=n_participants,
             n_experiments=n_experiments,
@@ -163,7 +163,7 @@ class SpiceEstimator(BaseEstimator):
 
         sindy_params = []
         rnn_params = []
-        for name, param in self.rnn_model.named_parameters():
+        for name, param in self.model.named_parameters():
             if 'sindy' in name:
                 sindy_params.append(param)
             else:
@@ -176,7 +176,7 @@ class SpiceEstimator(BaseEstimator):
         #   rescaling brings the gradient back to normal size -> desired updates;
         self.rnn_optimizer = torch.optim.AdamW(
             [
-            {'params': sindy_params, 'weight_decay': 0, 'lr': 0.01},#/sindy_weight * len(self.rnn_model.submodules_rnn) if sindy_weight > 0 else learning_rate},
+            {'params': sindy_params, 'weight_decay': 0, 'lr': 0.01},#/sindy_weight * len(self.model.submodules_rnn) if sindy_weight > 0 else learning_rate},
             {'params': rnn_params, 'weight_decay': l2_rnn, 'lr': learning_rate},
             ], 
             )
@@ -200,7 +200,7 @@ class SpiceEstimator(BaseEstimator):
         # ------------------------------------------------------------------------
         
         rnn_model, rnn_optimizer = fit_spice(
-            model=self.rnn_model,
+            model=self.model,
             optimizer=self.rnn_optimizer,
             dataset_train=dataset,
             dataset_test=dataset_test,
@@ -225,7 +225,7 @@ class SpiceEstimator(BaseEstimator):
             path_save_checkpoints=None,
         )
 
-        self.rnn_model = rnn_model
+        self.model = rnn_model
         self.rnn_optimizer = rnn_optimizer
 
         # Get trained state dict
@@ -296,13 +296,13 @@ class SpiceEstimator(BaseEstimator):
             raise TypeError(f"conditions must be either of type numpy.ndarray or torch.Tensor.")
         
         # rnn predictions — average across ensemble dim (E, B, T, W, A) -> (B, T, W, A)
-        self.rnn_model.use_sindy = False
-        self.rnn_model.aggregate = True
-        prediction_rnn = self.rnn_model(conditions, batch_first=True)[0].mean(dim=0)
+        self.model.use_sindy = False
+        self.model.aggregate = True
+        prediction_rnn = self.model(conditions, batch_first=True)[0].mean(dim=0)
         
         # SPICE predictions — average across ensemble dim
-        self.rnn_model.use_sindy = True
-        prediction_spice = self.rnn_model(conditions, batch_first=True)[0].mean(dim=0)
+        self.model.use_sindy = True
+        prediction_spice = self.model(conditions, batch_first=True)[0].mean(dim=0)
         
         return prediction_rnn, prediction_spice
 
@@ -311,12 +311,12 @@ class SpiceEstimator(BaseEstimator):
         Get the learned SPICE features and equations.
         """
         
-        self.rnn_model.print(participant_id=participant_id, experiment_id=experiment_id)
+        self.model.print(participant_id=participant_id, experiment_id=experiment_id)
 
     def get_participant_embeddings(self) -> Dict:
-        if hasattr(self.rnn_model, 'participant_embedding'):
+        if hasattr(self.model, 'participant_embedding'):
             participant_ids = torch.arange(self.n_participants, device=self.device, dtype=torch.int32).view(-1, 1)
-            embeddings = self.rnn_model.participant_embedding(participant_ids)
+            embeddings = self.model.participant_embedding(participant_ids)
             return {participant_id.item(): embeddings[participant_id, 0] for participant_id in participant_ids}
         else:
             print(f'RNN model has no participant_embedding module.')
@@ -325,16 +325,16 @@ class SpiceEstimator(BaseEstimator):
     def get_sindy_coefficients(self, key_module: Optional[str] = None, aggregate: bool = False) -> Dict[str, np.ndarray]:
         """Returns a dict of modules holding a numpy array with the sindy coefficients of shape (ensemble, participant, experiment, coefficient)."""
         
-        return self.rnn_model.get_sindy_coefficients(key_module=key_module, aggregate=aggregate)
+        return self.model.get_sindy_coefficients(key_module=key_module, aggregate=aggregate)
     
     def count_sindy_coefficients(self):
-        return self.rnn_model.count_sindy_coefficients()
+        return self.model.count_sindy_coefficients()
        
     def get_modules(self):
-        return self.rnn_model.get_modules()
+        return self.model.get_modules()
     
     def get_candidate_terms(self, key_module: Optional[str] = None) -> Union[Dict[str, List[str]], List[str]]:
-        return self.rnn_model.get_candidate_terms(key_module=key_module)
+        return self.model.get_candidate_terms(key_module=key_module)
         
     def load_spice(self, path_model: str, deterministic: bool = True):
         
@@ -344,42 +344,43 @@ class SpiceEstimator(BaseEstimator):
         loaded_parameters = torch.load(path_model, map_location=torch.device('cpu'))
         
         # Infer ensemble_size from saved coefficient shape: (E, P, X, terms)
-        self.rnn_model.ensemble_size = loaded_parameters['model']['sindy_coefficients.'+next(iter(self.rnn_model.submodules_rnn))].shape[0]
+        self.model.ensemble_size = loaded_parameters['model']['sindy_coefficients.'+next(iter(self.model.submodules_rnn))].shape[0]
         
-        self.rnn_model = self.rnn_class(
-                    spice_config=self.spice_config,
-                    n_actions=self.rnn_model.n_actions,
-                    n_items=self.rnn_model.n_items,
-                    n_reward_features=self.rnn_model.n_reward_features,
-                    n_participants=self.rnn_model.n_participants,
-                    n_experiments=self.rnn_model.n_experiments,
-                    sindy_polynomial_degree=self.rnn_model.sindy_polynomial_degree,
-                    ensemble_size=self.rnn_model.ensemble_size,
-                    use_sindy=True,
-                )
+        self.model = self.rnn_class(
+            spice_config=self.spice_config,
+            n_actions=self.model.n_actions,
+            n_items=self.model.n_items,
+            n_reward_features=self.model.n_reward_features,
+            n_participants=self.model.n_participants,
+            n_experiments=self.model.n_experiments,
+            sindy_polynomial_degree=self.model.sindy_polynomial_degree,
+            ensemble_size=self.model.ensemble_size,
+            use_sindy=True,
+            device=self.model.device,
+            )
         
         for module in self.get_modules():
-            self.rnn_model.setup_sindy_coefficients(key_module=module, polynomial_degree=self.rnn_model.sindy_specs[module]['polynomial_degree'])
-        self.rnn_model.sindy_coefficients_presence = loaded_parameters['sindy_coefficients_presence']
+            self.model.setup_sindy_coefficients(key_module=module, polynomial_degree=self.model.sindy_specs[module]['polynomial_degree'])
+        self.model.sindy_coefficients_presence = loaded_parameters['sindy_coefficients_presence']
 
-        self.rnn_model.load_state_dict(loaded_parameters['model'])
-        self.rnn_model.init_state(batch_size=self.rnn_model.n_participants)
+        self.model.load_state_dict(loaded_parameters['model'])
+        self.model.init_state(batch_size=self.model.n_participants)
 
-        self.rnn_model = self.rnn_model.to(self.rnn_model.device)
+        self.model = self.model.to(self.model.device)
         self.rnn_optimizer = self.rnn_optimizer
 
         # SETUP RNN AND SYMBOLIC AGENT
-        state_dict = self.rnn_model.state_dict()
+        state_dict = self.model.state_dict()
         for agent_type in [('rnn_agent', False), ('spice_agent', True)]:
             model = self.rnn_class(
                     spice_config=self.spice_config,
-                    n_actions=self.rnn_model.n_actions,
-                    n_items=self.rnn_model.n_items,
-                    n_reward_features=self.rnn_model.n_reward_features,
-                    n_participants=self.rnn_model.n_participants,
-                    n_experiments=self.rnn_model.n_experiments,
-                    sindy_polynomial_degree=self.rnn_model.sindy_polynomial_degree,
-                    ensemble_size=self.rnn_model.ensemble_size,
+                    n_actions=self.model.n_actions,
+                    n_items=self.model.n_items,
+                    n_reward_features=self.model.n_reward_features,
+                    n_participants=self.model.n_participants,
+                    n_experiments=self.model.n_experiments,
+                    sindy_polynomial_degree=self.model.sindy_polynomial_degree,
+                    ensemble_size=self.model.ensemble_size,
                     use_sindy=agent_type[1],
                 )
             model.load_state_dict(state_dict)
@@ -400,9 +401,9 @@ class SpiceEstimator(BaseEstimator):
         
         # Save RNN model
         state_dict = {
-            'model': self.rnn_model.state_dict(), 
+            'model': self.model.state_dict(), 
             'optimizer': self.rnn_optimizer.state_dict(), 
-            'sindy_coefficients_presence': self.rnn_model.sindy_coefficients_presence,
+            'sindy_coefficients_presence': self.model.sindy_coefficients_presence,
             }
         torch.save(state_dict, path_rnn)
         

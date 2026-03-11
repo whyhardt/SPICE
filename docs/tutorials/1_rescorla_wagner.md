@@ -175,7 +175,7 @@ from spice.estimator import SpiceEstimator
 from spice.precoded import RescorlaWagnerRNN, RESCOLA_WAGNER_CONFIG
 
 spice_estimator = SpiceEstimator(
-    rnn_class=RescorlaWagnerRNN,
+    spice_class=RescorlaWagnerRNN,
     spice_config=RESCOLA_WAGNER_CONFIG,
     learning_rate=1e-2,
     epochs=1024,
@@ -352,7 +352,7 @@ from spice.estimator import SpiceEstimator
 
 
 custom_spice_estimator = SpiceEstimator(
-    rnn_class=CustomRNN,
+    spice_class=CustomRNN,
     spice_config=custom_config,
     learning_rate=1e-2,
     epochs=1024,
@@ -373,7 +373,7 @@ spice_estimator.save_spice(path_rnn='rnn_model.pkl', path_spice='spice_model.pkl
 
 # Load saved model
 loaded_spice = SpiceEstimator(
-    rnn_class=CustomRNN,
+    spice_class=CustomRNN,
     spice_config=custom_config,
 )
 

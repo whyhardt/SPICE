@@ -302,8 +302,8 @@ if __name__=='__main__':
     
     spice_estimator = SpiceEstimator(
         spice_config=SPICE_CONFIG,
-        rnn_class=DDMRNN,
-        kwargs_rnn_class={
+        spice_class=DDMRNN,
+        kwargs_spice_class={
             'max_steps': dataset.xs.shape[2],
             't_max': t_max,
             'n_reward_features': 0,

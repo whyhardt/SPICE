@@ -38,11 +38,11 @@ class SimpleRNN(BaseRNN):
 def test_theorist_initialization(model_config):
     """Test that the theorist can be properly initialized."""
     model = rnn_sindy_theorist(
-        rnn_class=SimpleRNN,
+        spice_class=SimpleRNN,
         **model_config
     )
     assert model is not None
-    assert isinstance(model.rnn_model, SimpleRNN)
+    assert isinstance(model.model, SimpleRNN)
     assert model.hidden_size == model_config['hidden_size']
     assert model.n_actions == model_config['n_actions']
 
@@ -50,7 +50,7 @@ def test_theorist_initialization(model_config):
 def test_theorist_fit(model_config, sample_data):
     """Test the fit method of the theorist."""
     model = rnn_sindy_theorist(
-        rnn_class=SimpleRNN,
+        spice_class=SimpleRNN,
         **model_config
     )
     
@@ -65,7 +65,7 @@ def test_theorist_fit(model_config, sample_data):
 def test_theorist_predict(model_config, sample_data):
     """Test the predict method of the theorist."""
     model = rnn_sindy_theorist(
-        rnn_class=SimpleRNN,
+        spice_class=SimpleRNN,
         **model_config
     )
     
@@ -91,7 +91,7 @@ def test_theorist_predict(model_config, sample_data):
 def test_get_sindy_features(model_config, sample_data):
     """Test retrieving SINDy features."""
     model = rnn_sindy_theorist(
-        rnn_class=SimpleRNN,
+        spice_class=SimpleRNN,
         **model_config
     )
     
@@ -110,7 +110,7 @@ def test_get_sindy_features(model_config, sample_data):
 def test_get_participant_embeddings(model_config, sample_data):
     """Test retrieving participant embeddings."""
     model = rnn_sindy_theorist(
-        rnn_class=SimpleRNN,
+        spice_class=SimpleRNN,
         **model_config
     )
     
@@ -125,7 +125,7 @@ def test_get_participant_embeddings(model_config, sample_data):
 def test_get_experiment_embeddings(model_config, sample_data):
     """Test retrieving experiment embeddings."""
     model = rnn_sindy_theorist(
-        rnn_class=SimpleRNN,
+        spice_class=SimpleRNN,
         **model_config
     )
     

@@ -48,7 +48,7 @@ warnings.filterwarnings("ignore")
 # Ensure project root is importable
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
-from spice import SpiceEstimator, csv_to_dataset, BaseRNN, SpiceConfig
+from spice import SpiceEstimator, csv_to_dataset, BaseRNN, SpiceConfig, SpiceDataset
 
 
 # ---------------------------------------------------------------------------
@@ -78,9 +78,28 @@ SIG_COLORS = {"***": "#FF0000", "**": "#FFA500", "*": "#FFD700", "ns": "#999999"
 # 1. Preparation – extract coefficients
 # ---------------------------------------------------------------------------
 
-def prepare(model_path: str, data_path: str, criterion_col, dataset_kwargs: dict = {}, model_module: str = None, model_class: BaseRNN = None, model_config: SpiceConfig = None):
-    """Load a trained SPICE model, extract ensemble-averaged SINDy coefficients 
+def prepare(criterion_col, data_path: str, dataset_kwargs: dict = {}, spice_model: SpiceEstimator = None, model_path: str = None, model_module: str = None, model_class: BaseRNN = None, model_config: SpiceConfig = None):
+    """Load a trained SPICE model, extract ensemble-averaged SINDy coefficients
     per participant and merge with the data file.
+
+    Parameters
+    ----------
+    data_path : str
+        Path to the experiment data CSV.
+    criterion_col : str
+        Column name for the regression criterion.
+    dataset_kwargs : dict
+        Extra keyword arguments passed to ``csv_to_dataset``.
+    spice_model : SpiceEstimator, optional
+        Pre-loaded estimator.  If None, loads from *model_path*.
+    model_path : str, optional
+        Path to the SPICE checkpoint (.pkl).  Required when *spice_model* is None.
+    model_module : str, optional
+        Dotted module path (e.g. ``spice.precoded.workingmemory_rewardbinary``).
+    model_class : BaseRNN, optional
+        RNN class (alternative to *model_module*).
+    model_config : SpiceConfig, optional
+        SPICE config (required when *model_class* is given).
 
     Returns
     -------
@@ -93,37 +112,43 @@ def prepare(model_path: str, data_path: str, criterion_col, dataset_kwargs: dict
     # --- load data to infer dimensions ---
     dataset = csv_to_dataset(file=data_path, **dataset_kwargs)
     raw_df = pd.read_csv(data_path)
-    n_actions = dataset.ys.shape[-1]
-    n_participants = len(dataset.xs[..., -1].unique())
-    unique_sessions = raw_df["participant"].unique().tolist()
-
-    # --- load SPICE model via precoded module ---
-    if model_module is not None and model_class is None and model_config is None:
-        mod = importlib.import_module(model_module)
-        rnn_class = mod.SpiceModel
-        spice_config = mod.CONFIG
-    elif model_module is None and model_class is not None and model_config is not None:
-        rnn_class = model_class
-        spice_config = model_config
-    else:
-        raise ValueError("You have to give either (model_module) OR (model_class AND model_config).")
     
-    # Peek at saved checkpoint to infer ensemble_size
-    _ckpt = torch.load(model_path, map_location="cpu")
-    _first_module = next(iter(spice_config.library_setup))
-    ensemble_size = _ckpt["model"][f"sindy_coefficients.{_first_module}"].shape[0]
-    del _ckpt
+    n_actions = dataset.ys.shape[-1]
+    unique_sessions = dataset.xs[..., -1].unique().tolist()
+    n_participants = len(unique_sessions)
+    
+    # --- load or reuse SPICE model ---
+    if spice_model is None:
+        if model_path is None:
+            raise ValueError("Provide either spice_model or model_path.")
+        if model_module is not None and model_class is None and model_config is None:
+            mod = importlib.import_module(model_module)
+            rnn_class = mod.SpiceModel
+            spice_config = mod.CONFIG
+        elif model_module is None and model_class is not None and model_config is not None:
+            rnn_class = model_class
+            spice_config = model_config
+        else:
+            raise ValueError("You have to give either (model_module) OR (model_class AND model_config).")
 
-    estimator = SpiceEstimator(
-        rnn_class=rnn_class,
-        spice_config=spice_config,
-        n_actions=n_actions,
-        n_participants=n_participants,
-        sindy_library_polynomial_degree=2,
-        ensemble_size=ensemble_size,
-        use_sindy=True,
-    )
-    estimator.load_spice(model_path)
+        # Peek at saved checkpoint to infer ensemble_size
+        _ckpt = torch.load(model_path, map_location="cpu")
+        _first_module = next(iter(spice_config.library_setup))
+        ensemble_size = _ckpt["model"][f"sindy_coefficients.{_first_module}"].shape[0]
+        del _ckpt
+
+        estimator = SpiceEstimator(
+            spice_class=rnn_class,
+            spice_config=spice_config,
+            n_actions=n_actions,
+            n_participants=n_participants,
+            sindy_library_polynomial_degree=2,
+            ensemble_size=ensemble_size,
+            use_sindy=True,
+        )
+        estimator.load_spice(model_path)
+    else:
+        estimator = spice_model
 
     # --- extract ensemble-averaged coefficients ---
     # Returns Dict[module_name, np.ndarray] with shape (P, X, T)
@@ -688,14 +713,51 @@ def run_magnitude_analysis(df, sindy_cols, criterion_col, analysis_type,
     return res
 
 
-def analysis_coefficients_individuals(path_model: str, path_data: str, criterion: str, analysis: str, reference: str, dir_output: str, model_module: str = None, model_class: BaseRNN = None, model_config: SpiceConfig = None):
+def analysis_coefficients_individuals(
+    criterion: str,
+    analysis: str,
+    path_data: str,
+    spice_model: SpiceEstimator = None,
+    path_model: str = None,
+    model_module: str = None,
+    model_class: BaseRNN = None,
+    model_config: SpiceConfig = None,
+    reference: str = None,
+    dataset_kwargs: dict = {},
+    dir_output: str = None,
+    ):
+    """Run the full individual-level SINDy coefficient analysis pipeline.
+
+    Parameters
+    ----------
+    path_data : str
+        Path to the experiment data CSV.
+    criterion : str
+        Column name for the regression criterion.
+    analysis : str
+        ``"disc"`` for discrete (odds-ratio) or ``"cont"`` for continuous.
+    spice_model : SpiceEstimator, optional
+        Pre-loaded estimator.  If None, loads from *path_model*.
+    path_model : str, optional
+        Path to the SPICE checkpoint (.pkl).  Required when *spice_model* is None.
+    model_module : str, optional
+        Dotted module path (e.g. ``spice.precoded.workingmemory_rewardbinary``).
+    model_class : BaseRNN, optional
+        RNN class (alternative to *model_module*).
+    model_config : SpiceConfig, optional
+        SPICE config (required when *model_class* is given).
+    reference : str, optional
+        Reference group for discrete analysis.  Required when *analysis* is ``"disc"``.
+    dir_output : str, optional
+        Output directory (default: auto-generated next to data).
+    """
 
     if analysis == "disc" and reference is None:
         raise ValueError("--reference-group is required for discrete analysis.")
 
     output_dir = dir_output or os.path.join(
         os.path.dirname(path_data),
-        f"analysis_{criterion}_{args.analysis}",
+        f"analysis_{criterion}_{analysis}",
     )
 
     # 1. Preparation
@@ -703,21 +765,23 @@ def analysis_coefficients_individuals(path_model: str, path_data: str, criterion
     print("STEP 1: Preparing data")
     print("=" * 70)
     df, sindy_cols = prepare(
-        model_path=path_model,
         data_path=path_data,
         criterion_col=criterion,
+        spice_model=spice_model,
+        model_path=path_model,
         model_module=model_module,
         model_class=model_class,
         model_config=model_config,
+        dataset_kwargs=dataset_kwargs,
     )
 
     # 2. Regression analysis
     print("\n" + "=" * 70)
     print("STEP 2: Regression analysis")
     print("=" * 70)
-    if args.analysis == "disc":
+    if analysis == "disc":
         res = run_discrete(df, sindy_cols, criterion,
-                           args.reference, output_dir)
+                           reference, output_dir)
     else:
         res = run_continuous(df, sindy_cols, criterion, output_dir)
 
@@ -725,7 +789,7 @@ def analysis_coefficients_individuals(path_model: str, path_data: str, criterion
     print("\n" + "=" * 70)
     print("STEP 3: Magnitude analysis")
     print("=" * 70)
-    run_magnitude_analysis(df, sindy_cols, criterion, args.analysis, output_dir)
+    run_magnitude_analysis(df, sindy_cols, criterion, analysis, output_dir)
 
     print(f"\nAll results saved to: {output_dir}")
 
@@ -762,10 +826,10 @@ if __name__ == "__main__":
     args  = p.parse_args()
     
     analysis_coefficients_individuals(
-        path_model=args.model,
         path_data=args.data,
         criterion=args.criterion,
         analysis=args.analysis,
+        path_model=args.model,
         model_module=args.model_module,
         reference=args.reference,
         dir_output=args.output,

@@ -131,7 +131,7 @@ from spice.estimator import SpiceEstimator
 from spice.precoded import LearningRateRNN, LEARNING_RATE_RNN_CONFIG
 
 spice_estimator = SpiceEstimator(
-    rnn_class=LearningRateRNN,
+    spice_class=LearningRateRNN,
     spice_config=LEARNING_RATE_RNN_CONFIG,
     learning_rate=1e-2,
     epochs=1024,

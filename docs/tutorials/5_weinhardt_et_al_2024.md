@@ -105,7 +105,7 @@ from spice.estimator import SpiceEstimator
 from spice.precoded import Weinhardt2024RNN, WEINHARDT_2024_CONFIG
 
 spice_estimator = SpiceEstimator(
-    rnn_class=Weinhardt2024RNN,
+    spice_class=Weinhardt2024RNN,
     spice_config=WEINHARDT_2024_CONFIG,
     learning_rate=1e-2,
     epochs=1024,

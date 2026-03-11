@@ -94,7 +94,7 @@ from spice.estimator import SpiceEstimator
 from spice.precoded import ForgettingRNN, FORGETTING_RNN_CONFIG
 
 spice_estimator = SpiceEstimator(
-    rnn_class=ForgettingRNN,
+    spice_class=ForgettingRNN,
     spice_config=FORGETTING_RNN_CONFIG,
     learning_rate=1e-2,
     epochs=1024,

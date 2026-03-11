@@ -56,7 +56,7 @@ def prepare_spice(path_model: str, dataset: SpiceDataset, model_module: str = No
     n_participants = dataset.xs[..., -1].unique().shape[0]
     
     spice_estimator = SpiceEstimator(
-        rnn_class=rnn_class,
+        spice_class=rnn_class,
         spice_config=spice_config,
         n_actions=n_actions,
         n_participants=n_participants,
@@ -64,7 +64,7 @@ def prepare_spice(path_model: str, dataset: SpiceDataset, model_module: str = No
         sindy_library_polynomial_degree=2,
     )
     spice_estimator.load_spice(path_model=path_model)
-    spice_estimator.rnn_model.eval()
+    spice_estimator.model.eval()
     return spice_estimator
 
 
@@ -176,7 +176,7 @@ def analysis_model_evaluation(
             print("Computing choice probabilities with benchmark model...")
             benchmark_parameters = len([p for p in benchmark_model.parameters()]) / n_participants
             benchmark_predictions, _ = benchmark_model(dataset_test.xs)
-            benchmark_choice_probs = get_choice_probs(benchmark_predictions)
+            benchmark_choice_probs = get_choice_probs(benchmark_predictions).detach().cpu()
         else:
             benchmark_parameters = torch.nan
             
@@ -187,7 +187,7 @@ def analysis_model_evaluation(
             print("Computing choice probabilities with GRU model...")
             gru_parameters = sum(p.numel() for p in gru_model.parameters())
             gru_predictions, _ = gru_model(dataset_test.xs)
-            gru_choice_probs = get_choice_probs(gru_predictions)
+            gru_choice_probs = get_choice_probs(gru_predictions).detach().cpu()
         else:
             gru_parameters = torch.nan
             
@@ -199,15 +199,15 @@ def analysis_model_evaluation(
             
             spice_rnn_parameters = 0
             for module in spice_model.get_modules():
-                spice_rnn_parameters += sum(p.numel() for p in spice_model.rnn_model.submodules_rnn[module].parameters())
-            spice_rnn_parameters += spice_model.rnn_model.embedding_size
+                spice_rnn_parameters += sum(p.numel() for p in spice_model.model.submodules_rnn[module].parameters())
+            spice_rnn_parameters += spice_model.model.embedding_size
             
             # use spice
             print("Computing choice probabilities with SPICE model...")
-            spice_rnn_predictions, spice_predictions = spice_model.predict(dataset_test.xs)           
+            spice_rnn_predictions, spice_predictions = spice_model.predict(dataset_test.xs.to(spice_model.device))           
             spice_rnn_predictions, spice_predictions = torch.tensor(spice_rnn_predictions), torch.tensor(spice_predictions)
-            spice_rnn_choice_probs = get_choice_probs(spice_rnn_predictions)
-            spice_choice_probs = get_choice_probs(spice_predictions)
+            spice_rnn_choice_probs = get_choice_probs(spice_rnn_predictions).detach().cpu()
+            spice_choice_probs = get_choice_probs(spice_predictions).detach().cpu()
         else:
             spice_parameters = torch.nan
             spice_rnn_parameters = torch.nan

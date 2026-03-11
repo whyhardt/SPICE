@@ -63,7 +63,7 @@ dataset, _, _ = create_dataset(
 
 # Create and fit SPICE model
 spice_estimator = SpiceEstimator(
-    rnn_class=RescorlaWagnerRNN,
+    spice_class=RescorlaWagnerRNN,
     spice_config=RESCOLA_WAGNER_CONFIG,
     save_path_rnn='rnn_model.pkl',   # (Optional) File path (.pkl) to save RNN model after training
     save_path_spice='spice_model.pkl', # (Optional) File path (.pkl) to save SPICE model after training

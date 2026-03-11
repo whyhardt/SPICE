@@ -277,7 +277,7 @@ if __name__ == '__main__':
     # Initialize estimator and load trained model
     print("\nInitializing SPICE estimator...")
     estimator = SpiceEstimator(
-        rnn_class=BufferWorkingMemoryRNN,
+        spice_class=BufferWorkingMemoryRNN,
         spice_config=BUFFER_WORKING_MEMORY_CONFIG,
         n_actions=n_actions,
         n_participants=n_participants,
@@ -294,7 +294,7 @@ if __name__ == '__main__':
 
     # 2D landscape
     fig_2d, loss_data_2d = visualize_loss_landscape_2d(
-        estimator.rnn_model,
+        estimator.model,
         dataset_train,
         sindy_weight=sindy_weight,
         distance=0.5,
@@ -304,7 +304,7 @@ if __name__ == '__main__':
 
     # 1D landscape
     fig_1d, loss_data_1d = visualize_loss_landscape_1d(
-        estimator.rnn_model,
+        estimator.model,
         dataset_train,
         sindy_weight=sindy_weight,
         distance=1.0,

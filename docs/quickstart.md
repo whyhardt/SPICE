@@ -41,7 +41,7 @@ dataset, _, _ = create_dataset(
 
 # Step 4: Create and configure SPICE estimator
 spice_estimator = SpiceEstimator(
-    rnn_class=RescorlaWagnerRNN,           # Type of RNN to use
+    spice_class=RescorlaWagnerRNN,           # Type of RNN to use
     spice_config=RESCOLA_WAGNER_CONFIG,     # Configuration for SPICE
     learning_rate=5e-3,                     # Learning rate for training
     epochs=16,                              # Number of training epochs
@@ -115,7 +115,7 @@ from spice.estimator import SpiceEstimator
 from your_module import CustomRNN, CUSTOM_CONFIG
 
 estimator = SpiceEstimator(
-    rnn_class=CustomRNN,
+    spice_class=CustomRNN,
     spice_config=CUSTOM_CONFIG,
     # ... other parameters
 )

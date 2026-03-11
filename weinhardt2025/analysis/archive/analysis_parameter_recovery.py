@@ -228,7 +228,7 @@ for index_sess, sess in enumerate(n_sessions):
         # load trained spice model
         path_spice = base_name_params.replace('SESS', str(sess)).replace('IT', str(it)).replace('RUN', str(run))
         spice_esimator = SpiceEstimator(
-            rnn_class=spice_class.SpiceModel, 
+            spice_class=spice_class.SpiceModel, 
             spice_config=spice_class.CONFIG, 
             n_actions=n_actions,
             n_participants=len(participant_ids),

@@ -147,7 +147,7 @@ if __name__=='__main__':
     estimator = SpiceEstimator(
         
         # model paramaeters
-        rnn_class=class_rnn,
+        spice_class=class_rnn,
         spice_config=spice_config,
         n_participants=n_participants,
         n_experiments=n_experiments,
@@ -266,16 +266,16 @@ if __name__=='__main__':
             else:
                 qlearning = None
             
-            for module_name in estimator.rnn_model.submodules_rnn:
+            for module_name in estimator.model.submodules_rnn:
                 # Get coefficients: [n_participants, n_experiments, n_library_terms]
-                coeffs = estimator.rnn_model.sindy_coefficients[module_name][ensemble_idx].detach().cpu().numpy()
-                mask = estimator.rnn_model.sindy_coefficients_presence[module_name][ensemble_idx].cpu().numpy()
+                coeffs = estimator.model.sindy_coefficients[module_name][ensemble_idx].detach().cpu().numpy()
+                mask = estimator.model.sindy_coefficients_presence[module_name][ensemble_idx].cpu().numpy()
 
                 # Apply mask and adjust identity terms
                 sparse_coeffs = coeffs * mask
 
                 # Add 1 to the identity term (where term == module_name)
-                term_names = estimator.rnn_model.sindy_candidate_terms[module_name]
+                term_names = estimator.model.sindy_candidate_terms[module_name]
                 for idx, term in enumerate(term_names):
                     if term == module_name:
                         sparse_coeffs[..., idx] += 1

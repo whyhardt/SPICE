@@ -101,7 +101,7 @@ from spice.estimator import SpiceEstimator
 from spice.precoded import ChoiceRNN, CHOICE_CONFIG
 
 spice_estimator = SpiceEstimator(
-    rnn_class=ChoiceRNN,
+    spice_class=ChoiceRNN,
     spice_config=CHOICE_CONFIG,
     learning_rate=1e-2,
     epochs=1024,
