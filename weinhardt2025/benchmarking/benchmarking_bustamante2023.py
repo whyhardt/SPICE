@@ -159,9 +159,10 @@ class MarginalValueTheoremModel(torch.nn.Module):
                 self.baseline_gain[participant_ids].detach(),
             )
 
+        logits = logits.unsqueeze(1)
         if self.batch_first:
-            logits = logits.swapaxes(0, 1)
-
+            logits = logits.permute(2, 0, 1, 3)
+            
         return logits, self.get_state()
 
     @property
@@ -196,7 +197,8 @@ class MarginalValueTheoremModel(torch.nn.Module):
     def init_forward_pass(self, inputs, prev_state, batch_first):
         """Initialize forward pass."""
         if batch_first:
-            inputs = inputs.permute(1, 0, 2)
+            inputs = inputs.permute(1, 2, 0, 3)
+        inputs = inputs[:, 0]
         
         inputs = inputs.nan_to_num(0.)
         

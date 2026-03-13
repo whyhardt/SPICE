@@ -154,6 +154,7 @@ class BaseRNN(nn.Module):
         use_sindy: bool = False,
         sindy_polynomial_degree: int = 1,
         sindy_alpha: float = 1e-4,
+        fit_sindy: bool = True,
         
         device=torch.device('cpu'),
         compiled_forward=True,
@@ -188,6 +189,7 @@ class BaseRNN(nn.Module):
         self.n_items = n_items if n_items is not None else n_actions
         self.ensemble_size = ensemble_size
         self.compiled_forward = compiled_forward
+        self.fit_sindy = fit_sindy
 
         # session recording; used for sindy training; training variables start with 'x' and control parameters with 'c'
         self.recording = {}
@@ -474,7 +476,7 @@ class BaseRNN(nn.Module):
             raise ValueError(f'Invalid module key {key_module}.')
 
         # SINDy loss (uses unclipped values, last within-trial step)
-        if self.training and not self.rnn_training_finished and participant_index is not None:
+        if self.fit_sindy and self.training and not self.rnn_training_finished and participant_index is not None:
             action_mask_2d = action_mask[-1] if action_mask is not None and action_mask.dim() >= 4 else action_mask
             value_0 = self.state[key_state][-1].unsqueeze(0) if key_state is not None else torch.zeros(W, E, B, I, device=self.device)
             self.sindy_loss = self.sindy_loss + self.compute_sindy_loss_for_module(
@@ -490,7 +492,7 @@ class BaseRNN(nn.Module):
 
         # clip next_value to a specific range
         next_value = torch.clip(input=next_value, min=-1e1, max=1e1)
-
+        
         if action_mask is not None:
             mask = action_mask[-1] if action_mask.dim() >= 4 else action_mask
             next_value = torch.where(mask == 1, next_value, self.state[key_state])

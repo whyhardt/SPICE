@@ -733,7 +733,7 @@ def _run_joint_training(
 
                 if n_calls_to_train_model % sindy_pruning_frequency == 0:
 
-                    if sindy_ensemble_pruning is not None:
+                    if sindy_ensemble_pruning is not None and model.ensemble_size > 1:
                         # Unified minimum-effect CI test: threshold serves as delta
                         confidence_masks = _compute_pruning_masks(
                             model,
@@ -763,7 +763,7 @@ def _run_joint_training(
                     elif sindy_threshold_pruning is not None and sindy_threshold_pruning > 0:
                         # Fallback: per-member threshold pruning only (no ensemble test)
                         model.sindy_coefficient_pruning(patience=sindy_pruning_frequency)
-
+                        
                     # Reset coefficients + optimizer state, ridge solve for recalibration
                     # _ridge_recalibrate_sindy(model, xs_train, ys_train, optimizer)
 

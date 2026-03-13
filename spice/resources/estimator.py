@@ -158,6 +158,7 @@ class SpiceEstimator(BaseEstimator):
             n_reward_features=n_reward_features,
             device=device,
             compiled_forward=compiled_forward,
+            fit_sindy=sindy_weight > 0,
             **kwargs_rnn_class,
         ).to(device)
 

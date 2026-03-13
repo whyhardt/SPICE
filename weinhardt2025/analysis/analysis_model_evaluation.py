@@ -289,7 +289,7 @@ def analysis_model_evaluation(
         benchmark_parameters, 
         gru_parameters,
         spice_rnn_parameters, 
-        torch.mean(spice_parameters),
+        torch.mean(spice_parameters) if isinstance(spice_parameters, torch.Tensor) else spice_parameters,
         ])
     n_parameters_std = torch.tensor([
         0,
@@ -314,7 +314,7 @@ def analysis_model_evaluation(
 
     df = pd.DataFrame(
         data=scores,
-        index=['Benchmark', 'GRU', 'RNN', 'SPICE'],
+        index=['Benchmark', 'GRU', 'SPICE-RNN', 'SPICE'],
         columns = ('Trial Lik.', '(std)', 'NLL', '(std)', 'AIC', 'BIC', 'n_parameters', '(std)'),
         )
     
