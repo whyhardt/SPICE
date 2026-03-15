@@ -365,7 +365,13 @@ class BaseRNN(nn.Module):
         input_names = []
         if polynomial_degree > 0:
             start_index = 0
-            end_index = np.argmax(np.array([('*' in term) or ('^' in term) for term in self.sindy_candidate_terms[key_module]]))
+            end_index = np.argmax(
+                np.array(
+                    [('*' in term) or ('^' in term) for term in self.sindy_candidate_terms[key_module]]
+                    )
+                )
+            if end_index == 0:
+                end_index = len(self.sindy_candidate_terms[key_module])
             if self.sindy_specs[key_module]['include_bias']:
                 start_index += 1
             if self.sindy_specs[key_module]['include_state']:

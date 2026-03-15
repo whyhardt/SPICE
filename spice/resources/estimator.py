@@ -408,3 +408,5 @@ class SpiceEstimator(BaseEstimator):
             }
         torch.save(state_dict, path_rnn)
         
+    def set_device(self, device: torch.device):
+        self.model.to(device)

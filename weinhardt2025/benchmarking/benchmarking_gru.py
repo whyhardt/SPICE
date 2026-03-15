@@ -50,7 +50,7 @@ def setup_agent_gru(path_model: str, gru: torch.nn.Module = None) -> Agent:
     return agent
 
 def training(
-    gru: Model, 
+    model: Model, 
     optimizer: torch.optim.Optimizer, 
     dataset_train: SpiceDataset, 
     dataset_test: SpiceDataset = None, 
@@ -63,10 +63,10 @@ def training(
     n_actions = dataset_train.ys.shape[-1]
     batch_size = min(dataset_train.xs.shape[0], batch_size) if batch_size is not None else dataset_train.xs.shape[0]
     dataloader = torch.utils.data.DataLoader(dataset_train, batch_size=batch_size, shuffle=True)
-    gru.to(device)
+    model.to(device)
     
     for epoch in range(epochs):
-        gru.train()
+        model.train()
         optimizer.zero_grad()
         
         # random_indexes = torch.randint(dataset_train.xs.shape[0], (1, dataset_train.xs.shape[0]))[0]
@@ -81,10 +81,10 @@ def training(
             xs, ys = batch[0].to(device), batch[1].to(device)
             
             # Forward pass
-            logits, _ = gru(xs)
+            logits, _ = model(xs)
             
             # Reshape for loss computation
-            nan_mask = ~torch.isnan(xs[..., :gru.n_actions].sum(dim=-1))
+            nan_mask = ~torch.isnan(xs[..., :model.n_actions].sum(dim=-1))
             logits = logits[nan_mask]
             labels = ys[nan_mask]
             
@@ -99,21 +99,21 @@ def training(
         
         # test data
         if dataset_test is not None:
-            gru.eval()
+            model.eval()
             with torch.no_grad():
-                logits_test, _ = gru(dataset_test.xs.to(device))
-                nan_mask = ~torch.isnan(dataset_test.xs[..., :gru.n_actions].sum(dim=-1))
+                logits_test, _ = model(dataset_test.xs.to(device))
+                nan_mask = ~torch.isnan(dataset_test.xs[..., :model.n_actions].sum(dim=-1))
                 logits_test = logits_test[nan_mask].to(device)
                 # labels_test = torch.argmax(dataset_test.ys[..., :n_actions].to(device).reshape(-1, n_actions)[nan_mask], dim=-1).reshape(-1).long()
                 labels_test = dataset_test.ys[nan_mask].to(device)
                 loss_test = criterion(logits_test, labels_test)
-            gru.train()
+            model.train()
             
             msg += f"; L(Test): {loss_test.item()}"
         
         print(msg)
         
-    return gru
+    return model
 
 def main(path_save_model:str, path_data: str, epochs: int, lr: float, split_ratio: float, device=torch.device('cpu')):
     
@@ -129,7 +129,7 @@ def main(path_save_model:str, path_data: str, epochs: int, lr: float, split_rati
     optimizer = torch.optim.Adam(gru.parameters(), lr=lr)
     
     print('Training GRU...')
-    gru = training(dataset_train=dataset_training, dataset_test=dataset_test, gru=gru, optimizer=optimizer, epochs=epochs, device=device)
+    gru = training(dataset_train=dataset_training, dataset_test=dataset_test, model=gru, optimizer=optimizer, epochs=epochs, device=device)
     print('Training GRU done!')
     
     # save GRU model
