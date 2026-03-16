@@ -72,27 +72,39 @@ class SpiceEstimator(BaseEstimator):
     ):
         """
         Args:
-            rnn_class: RNN class. Can be one of the precoded models in rnn.py or a custom implementation.
-            spice_config: SPICE config
-            dropout: Dropout rate of the RNN
-            n_actions: Number of actions
-            n_items: Number of total action items (including the ones not selectable at the current trial)
-            n_participants: Number of participants
-            n_experiments: Number of experiments
-            n_reward_features: Number of reward features (columns) in the dataset 
-            epochs: Number of epochs to train the RNN
-            bagging: Whether to use bagging for the RNN
-            sequence_length: Sequence length for the RNN
-            n_steps_per_call: Number of steps per call for the RNN
-            batch_size: Batch size for the RNN
-            learning_rate: Learning rate for the RNN
-            convergence_threshold: Convergence threshold for the RNN
-            device: Device to use for the RNN (default: 'cpu')
-            scheduler: Whether to use a scheduler for the RNN (default: False)
-            train_test_ratio: Ratio of training to test data (default: 1.)
-            l2_weight_decay: L2 weight decay for the RNN
-            verbose: Whether to print verbose output (default: False)
-            save_path_spice: File path (.pkl) to save SPICE model after training (default: None)
+            spice_class: RNN class. Can be one of the precoded models or a custom BaseRNN subclass.
+            spice_config: SpiceConfig defining submodules, memory states, and logit mapping.
+            n_actions: Number of observable actions.
+            n_items: Number of internal item representations (defaults to n_actions if None).
+            n_participants: Number of participants in the dataset.
+            n_experiments: Number of experiments.
+            n_reward_features: Number of reward feature columns in the dataset.
+            epochs: Number of training epochs.
+            warmup_steps: Epochs of exponential SINDy weight warmup (no pruning during warmup).
+            bagging: Whether to use bagging.
+            n_steps_per_call: BPTT truncation length (None = full sequence).
+            batch_size: Training batch size (None = auto-detect max via GPU probing).
+            learning_rate: Learning rate for RNN parameters.
+            convergence_threshold: Early stopping threshold (0 = disabled).
+            device: Compute device (default: 'cpu').
+            scheduler: Enable ReduceOnPlateauWithRestarts LR scheduler.
+            ensemble_size: Number of independent RNN ensemble members.
+            l2_rnn: L2 weight decay for RNN parameters.
+            dropout: Dropout rate in GRU modules.
+            loss_fn: Behavioral loss function (prediction, target) -> scalar.
+            use_sindy: Enable SINDy integration.
+            sindy_weight: Lambda for SINDy regularization loss.
+            sindy_alpha: Degree-weighted L1 penalty strength.
+            sindy_library_polynomial_degree: Max polynomial degree for SINDy candidate library.
+            sindy_pruning_frequency: Epochs between pruning events.
+            sindy_threshold_pruning: Minimum effect size delta for CI test (None = disabled).
+            sindy_ensemble_pruning: Confidence level for ensemble CI test (primary pruning mechanism).
+            sindy_population_pruning: Cross-participant presence threshold 0-1 (None = disabled).
+            verbose: Print training progress.
+            keep_log: Keep full training log (vs. live terminal update).
+            save_path_spice: File path (.pkl) to auto-save SPICE model after training.
+            compiled_forward: Use @torch.compile for forward loops.
+            kwargs_rnn_class: Extra keyword arguments forwarded to spice_class.__init__().
         """
         
         super(BaseEstimator, self).__init__()
@@ -169,17 +181,12 @@ class SpiceEstimator(BaseEstimator):
                 sindy_params.append(param)
             else:
                 rnn_params.append(param)
-        # setting up different optimizer parameters for rnn parameters and sindy coefficients
-        # rnn parameters: use default learning rate
-        # sindy coefficients: 
-        #   learning rate needs rescaling based on sindy weight; 
-        #   sindy weight diminishes the sindy coefficient gradient in the loss computation -> small updates; 
-        #   rescaling brings the gradient back to normal size -> desired updates;
+        # Separate optimizer param groups: SINDy coefficients get fixed lr, RNN params get configurable lr + weight decay
         self.rnn_optimizer = torch.optim.AdamW(
             [
-            {'params': sindy_params, 'weight_decay': 0, 'lr': 0.01},#/sindy_weight * len(self.model.submodules_rnn) if sindy_weight > 0 else learning_rate},
+            {'params': sindy_params, 'weight_decay': 0, 'lr': 0.01},
             {'params': rnn_params, 'weight_decay': l2_rnn, 'lr': learning_rate},
-            ], 
+            ],
             )
         
     def fit(self, data: np.ndarray, targets: np.ndarray, data_test: np.ndarray = None, target_test: np.ndarray = None):
@@ -368,7 +375,6 @@ class SpiceEstimator(BaseEstimator):
         self.model.init_state(batch_size=self.model.n_participants)
 
         self.model = self.model.to(self.model.device)
-        self.rnn_optimizer = self.rnn_optimizer
 
         # SETUP RNN AND SYMBOLIC AGENT
         state_dict = self.model.state_dict()
@@ -391,13 +397,10 @@ class SpiceEstimator(BaseEstimator):
             
     def save_spice(self, path_rnn: str):
         """
-        Save the RNN and SPICE models to the given paths.
-        If path_rnn is None, only the SPICE model will be saved (requires a fitted SPICE model including the RNN).
-        If path_spice is None, only the RNN model will be saved (requires a fitted RNN model).
-        
+        Save the SPICE model (RNN weights, optimizer state, and SINDy coefficient masks) to a .pkl file.
+
         Args:
-            path_rnn: Path to the RNN model
-            path_spice: Path to the SPICE model
+            path_rnn: File path to save the model.
         """
         
         # Save RNN model
