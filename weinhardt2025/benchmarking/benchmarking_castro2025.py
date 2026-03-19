@@ -28,7 +28,9 @@ class Castro2025Model(torch.nn.Module):
     Original JAX code:
     def agent(params, choice, reward, agent_state = None):
         num_params = 13
+
         params = jnp.clip(params, -5, 5)
+
         beta_r = jnp.clip(jax.nn.softplus(params[0]), 0.01, 20)
         lapse = jnp.clip(jax.nn.sigmoid(params[1]), 0.01, 0.99)
         prior = jnp.clip(jax.nn.softplus(params[2]), 0.01, 0.99)
@@ -42,6 +44,7 @@ class Castro2025Model(torch.nn.Module):
         gamma = jax.nn.softplus(params[10]) # Loss aversion parameter
         temperature = jnp.clip(jax.nn.softplus(params[11]) + 1e-6, 1e-6, 100) #Softmax temperature
         beta_p = jax.nn.softplus(params[12])
+
         if agent_state is None:
             q_values = jnp.ones((4,)) * prior
             old_choice = -1
@@ -54,29 +57,35 @@ class Castro2025Model(torch.nn.Module):
             trial_since_last_switch = agent_state[5]
             exploration_rate = agent_state[6]
             cumchoice = agent_state[7:11]
+
         if choice is not None and reward is not None:
             delta = reward - gamma*(1-reward) - q_values[choice]
             q_values = q_values.at[choice].set(q_values[choice] + delta)
+            
             trial_since_last_switch = jnp.where(choice == old_choice, trial_since_last_switch + 1, 0)
             exploration_rate = exploration_rate * (1 - 1e-3) # decay exploration rate slowly
             cumchoice = cumchoice.at[choice].set(cumchoice[choice] + 1)
-            q_values = (1 - exploration_rate) * q_values + exploration_rate * jnp.mean(q_values)
-            q_values = q_values * decay_rate
-        choice_probs = (1 - lapse) * jax.nn.softmax(beta_r * q_values / temperature + beta_p * jnp.log(
-            1 + cumchoice)) + lapse / 4
+            
+        q_values = (1 - exploration_rate) * q_values + exploration_rate * jnp.mean(q_values)
+        q_values = q_values * decay_rate
+
+        choice_probs = (1 - lapse) * jax.nn.softmax(beta_r * q_values / temperature + beta_p * jnp.log(1 + cumchoice)) + lapse / 4
         choice_logits = jnp.log(choice_probs)
+
         if choice is not None:
-            perseveration_bonus = (choice == old_choice) * perseveration_strength * jax.nn.one_hot(
-                choice, num_classes=4)
+            perseveration_bonus = (choice == old_choice) * perseveration_strength * jax.nn.one_hot(choice, num_classes=4)
             switch_bonus = (choice != old_choice) * switch_strength * jax.nn.one_hot(choice, num_classes=4)
             attention_bonus1 = attention_bias1 * jax.nn.one_hot(old_choice, num_classes=4)
             attention_bonus2 = attention_bias2 * jax.nn.one_hot((choice + 2) % 4, num_classes=4)
+            
             choice_logits = (
                 choice_logits + perseveration_bonus + switch_bonus + attention_bonus1 + attention_bonus2 +
                 jax.nn.one_hot(choice, 4) * jnp.log(trial_since_last_switch + 1))
+        
         agent_state = jnp.concatenate(
             [q_values, jnp.array([choice, trial_since_last_switch, exploration_rate]),
             cumchoice])
+            
         return choice_logits, agent_state
     """
 
