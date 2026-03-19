@@ -62,7 +62,8 @@ class SpiceEstimator(BaseEstimator):
         sindy_threshold_pruning: Optional[float] = None,  # Optional per-member threshold pruning (None to disable)
         sindy_ensemble_pruning: Optional[float] = None,  # Ensemble t-test significance level (primary pruning mechanism)
         sindy_population_pruning: Optional[float] = None,  # Optional cross-participant filter (0-1)
-        
+        sindy_reconditioning_epochs: Optional[int] = 3,  # Pure SINDy SGD epochs after ridge recalibration
+
         verbose: Optional[bool] = False,
         keep_log: Optional[bool] = False,
         save_path_spice: Optional[str] = None,
@@ -100,6 +101,7 @@ class SpiceEstimator(BaseEstimator):
             sindy_threshold_pruning: Minimum effect size delta for CI test (None = disabled).
             sindy_ensemble_pruning: Confidence level for ensemble CI test (primary pruning mechanism).
             sindy_population_pruning: Cross-participant presence threshold 0-1 (None = disabled).
+            sindy_reconditioning_epochs: Pure SINDy SGD epochs after ridge recalibration to warm-start the optimizer (0 = disable).
             verbose: Print training progress.
             keep_log: Keep full training log (vs. live terminal update).
             save_path_spice: File path (.pkl) to auto-save SPICE model after training.
@@ -139,6 +141,7 @@ class SpiceEstimator(BaseEstimator):
         self.sindy_threshold_pruning = sindy_threshold_pruning
         self.sindy_population_pruning = sindy_population_pruning
         self.sindy_ensemble_pruning = sindy_ensemble_pruning
+        self.sindy_reconditioning_epochs = sindy_reconditioning_epochs
         
         # Data parameters
         self.n_actions = n_actions
@@ -150,12 +153,10 @@ class SpiceEstimator(BaseEstimator):
         # RNN parameters
         self.dropout = dropout
         
+        # SPICE attributes
         self.spice_config = spice_config
         self.rnn_class = spice_class
-        self.rnn_agent = None
-        self.spice_agent = None
         self.spice_features = None
-        
         self.model = spice_class(
             n_actions=n_actions,
             n_participants=n_participants,
@@ -227,7 +228,8 @@ class SpiceEstimator(BaseEstimator):
             sindy_threshold_pruning=self.sindy_threshold_pruning,
             sindy_ensemble_pruning=self.sindy_ensemble_pruning,
             sindy_population_pruning=self.sindy_population_pruning,
-            
+            sindy_reconditioning_epochs=self.sindy_reconditioning_epochs,
+
             verbose=self.verbose,
             keep_log=self.keep_log,
             path_save_checkpoints=None,
@@ -235,45 +237,6 @@ class SpiceEstimator(BaseEstimator):
 
         self.model = rnn_model
         self.rnn_optimizer = rnn_optimizer
-
-        # Get trained state dict
-        state_dict = rnn_model.state_dict()
-
-        # Create RNN agent and load trained weights
-        # IMPORTANT: Match ensemble_size from trained model (may be 1 after stage 2)
-        rnn_agent_model = self.rnn_class(
-                n_actions=rnn_model.n_actions,
-                n_participants=rnn_model.n_participants,
-                n_experiments=rnn_model.n_experiments,
-                dropout=0,
-                spice_config=rnn_model.spice_config,
-                sindy_polynomial_degree=rnn_model.sindy_polynomial_degree,
-                ensemble_size=rnn_model.ensemble_size,
-                n_items=rnn_model.n_items,
-                n_reward_features=rnn_model.n_reward_features,
-            )
-        for key_module in rnn_agent_model.submodules_rnn:
-            rnn_agent_model.setup_sindy_coefficients(key_module=key_module, polynomial_degree=rnn_agent_model.sindy_specs[key_module]['polynomial_degree'])
-        rnn_agent_model.load_state_dict(state_dict)
-        self.rnn_agent = Agent(rnn_agent_model, self.n_actions, device=self.device, use_sindy=False)
-
-        # Create SPICE agent and load trained weights
-        spice_agent_model = self.rnn_class(
-                n_actions=rnn_model.n_actions,
-                n_participants=rnn_model.n_participants,
-                n_experiments=rnn_model.n_experiments,
-                dropout=0,
-                spice_config=rnn_model.spice_config,
-                sindy_polynomial_degree=rnn_model.sindy_polynomial_degree,
-                ensemble_size=rnn_model.ensemble_size,
-                n_items=rnn_model.n_items,
-                n_reward_features=rnn_model.n_reward_features,
-            )
-        for key_module in spice_agent_model.submodules_rnn:
-            spice_agent_model.setup_sindy_coefficients(key_module=key_module, polynomial_degree=rnn_agent_model.sindy_specs[key_module]['polynomial_degree'])
-        spice_agent_model.load_state_dict(state_dict)
-        spice_agent_model.sindy_coefficients_presence = rnn_model.sindy_coefficients_presence
-        self.spice_agent = Agent(spice_agent_model, self.n_actions, device=self.device, use_sindy=True)
         
         if self.verbose:
             print('\nRNN training finished.')
@@ -375,25 +338,6 @@ class SpiceEstimator(BaseEstimator):
         self.model.init_state(batch_size=self.model.n_participants)
 
         self.model = self.model.to(self.model.device)
-
-        # SETUP RNN AND SYMBOLIC AGENT
-        state_dict = self.model.state_dict()
-        for agent_type in [('rnn_agent', False), ('spice_agent', True)]:
-            model = self.rnn_class(
-                    spice_config=self.spice_config,
-                    n_actions=self.model.n_actions,
-                    n_items=self.model.n_items,
-                    n_reward_features=self.model.n_reward_features,
-                    n_participants=self.model.n_participants,
-                    n_experiments=self.model.n_experiments,
-                    sindy_polynomial_degree=self.model.sindy_polynomial_degree,
-                    ensemble_size=self.model.ensemble_size,
-                    use_sindy=agent_type[1],
-                )
-            model.load_state_dict(state_dict)
-            model.sindy_coefficients_presence = loaded_parameters['sindy_coefficients_presence']
-            agent = Agent(model, self.n_actions, device=self.device, use_sindy=agent_type[1], deterministic=deterministic)
-            setattr(self, agent_type[0], agent)
             
     def save_spice(self, path_rnn: str):
         """

@@ -26,9 +26,15 @@ CONFIG = SpiceConfig(
             'reward[t-2]',
             'reward[t-3]',
             ],
-        'value_choice': [
-            'choice[t]',
+        'value_choice_chosen': [
+            # 'choice[t]',
             'choice[t-1]', 
+            'choice[t-2]',
+            'choice[t-3]',
+            ],
+        'value_choice_not_chosen': [
+            # 'choice[t]',
+            'choice[t-1]',
             'choice[t-2]',
             'choice[t-3]',
             ],
@@ -76,7 +82,8 @@ class SpiceModel(BaseRNN):
         # Can use recent reward history to modulate learning
         self.setup_module(key_module='value_reward_chosen', input_size=4+self.embedding_size, dropout=dropout)  # -> 21 terms
         self.setup_module(key_module='value_reward_not_chosen', input_size=4+self.embedding_size, dropout=dropout)  # -> 21 terms
-        self.setup_module(key_module='value_choice', input_size=4+self.embedding_size, dropout=dropout) # -> 21 terms; bias not necessary when module is applied equally to all options
+        self.setup_module(key_module='value_choice_chosen', input_size=3+self.embedding_size, dropout=dropout) # -> 21 terms; bias not necessary when module is applied equally to all options
+        self.setup_module(key_module='value_choice_not_chosen', input_size=3+self.embedding_size, dropout=dropout) # -> 21 terms; bias not necessary when module is applied equally to all options
         # self.setup_module(key_module='logits', input_size=2+self.embedding_size, dropout=dropout, include_bias=False, fit_linear=False, include_state=False) # -> 8 terms
 
     def forward(self, inputs, prev_state=None, batch_first=False):
@@ -126,11 +133,25 @@ class SpiceModel(BaseRNN):
 
             # CHOICE VALUE UPDATES
             self.call_module(
-                key_module='value_choice',
+                key_module='value_choice_chosen',
                 key_state='value_choice',
-                action_mask=None,
+                action_mask=spice_signals.actions[timestep],
                 inputs=(
-                    actions_t,
+                    # actions_t,
+                    self.state['buffer_choice_1'],  # Recent choice history
+                    self.state['buffer_choice_2'],
+                    self.state['buffer_choice_3'],
+                ),
+                participant_index=spice_signals.participant_ids,
+                participant_embedding=participant_embedding,
+            )
+            
+            self.call_module(
+                key_module='value_choice_not_chosen',
+                key_state='value_choice',
+                action_mask=1-spice_signals.actions[timestep],
+                inputs=(
+                    # actions_t,
                     self.state['buffer_choice_1'],  # Recent choice history
                     self.state['buffer_choice_2'],
                     self.state['buffer_choice_3'],

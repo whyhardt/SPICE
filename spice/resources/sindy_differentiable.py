@@ -116,6 +116,71 @@ def get_library_term_degrees(library_names: List[str]) -> List[int]:
     return [get_polynomial_degree_from_term(term) for term in library_names]
 
 
+def precompute_library_structure(
+    feature_names: List[str],
+    library: List[str],
+) -> dict:
+    """
+    Parse library term strings once and cache the numeric structure.
+
+    Groups terms by type for vectorized computation:
+        - bias: constant '1' terms
+        - linear: single feature with exponent 1 (just indexing, no pow)
+        - power: single feature with exponent != 1
+        - interaction: product of two or more features (each with exp 1)
+        - general: anything else (mixed exponents in products)
+    """
+    bias_indices = []
+
+    # Vectorizable groups: (library_index, feature_index) pairs
+    linear_lib_idx = []
+    linear_feat_idx = []
+
+    power_terms = []       # (lib_idx, feat_idx, exponent)
+    interaction_terms = [] # (lib_idx, [feat_idx1, feat_idx2, ...])
+    general_terms = []     # (lib_idx, [(feat_idx, exp), ...])
+
+    for index_term, term in enumerate(library):
+        if term == '1':
+            bias_indices.append(index_term)
+            continue
+
+        factors = []
+        for tp in term.split('*'):
+            tp_pow = tp.split('^')
+            feat_idx = feature_names.index(tp_pow[0])
+            exp = float(tp_pow[-1]) if len(tp_pow) > 1 else 1.0
+            factors.append((feat_idx, exp))
+
+        if len(factors) == 1:
+            fi, exp = factors[0]
+            if exp == 1.0:
+                linear_lib_idx.append(index_term)
+                linear_feat_idx.append(fi)
+            else:
+                power_terms.append((index_term, fi, exp))
+        else:
+            # Check if all exponents are 1 (pure interaction)
+            if all(exp == 1.0 for _, exp in factors):
+                interaction_terms.append((index_term, [fi for fi, _ in factors]))
+            else:
+                general_terms.append((index_term, factors))
+
+    return {
+        'n_terms': len(library),
+        'bias_indices': bias_indices,
+        'linear_lib_idx': linear_lib_idx,
+        'linear_feat_idx': linear_feat_idx,
+        'power_terms': power_terms,
+        'interaction_terms': interaction_terms,
+        'general_terms': general_terms,
+    }
+
+
+# Module-level cache: (tuple(feature_names), tuple(library)) -> precomputed structure
+_library_structure_cache: dict = {}
+
+
 def compute_polynomial_library(
     x: torch.Tensor,
     controls: torch.Tensor,
@@ -130,8 +195,8 @@ def compute_polynomial_library(
         x: State tensor [W, B*E, I]
         controls: Control tensor [W, B*E, I, n_controls]
         degree: Maximum polynomial degree
-        include_bias: Whether to include constant term
-        interaction_only: Whether to inlude only interaction terms (with '*') of polynomial degree > 1
+        feature_names: Names of input features
+        library: Library term strings
 
     Returns:
         Library tensor [W, B*E, I, n_library_terms]
@@ -147,51 +212,55 @@ def compute_polynomial_library(
             raise ValueError(f"Size of feature names ({len(feature_names)}) must be size of control features ({controls.shape[-1]}) + 1")
     else:
         raise ValueError(f"Size of feature names ({len(feature_names)}) must be at least of size of control features ({controls.shape[-1]})")
-    library_values = torch.zeros((*features.shape[:-1], len(library)), device=x.device)
-    
-    # compute library values from x and controls
+
+    # Look up or build the cached term structure (avoids per-call string parsing)
+    cache_key = (tuple(feature_names), tuple(library))
+    if cache_key not in _library_structure_cache:
+        _library_structure_cache[cache_key] = precompute_library_structure(
+            list(feature_names), list(library),
+        )
+    structure = _library_structure_cache[cache_key]
+
+    library_values = torch.zeros((*features.shape[:-1], structure['n_terms']), device=x.device)
+
     if degree > 0:
-        # loop through the whole library to compute each term value
-        for index_term, term in enumerate(library):
-            if term == '1':
-                value = 1
-            else:
-                # first split into single product terms
-                terms_products = term.split('*')
-                value = 1
-                # loop through each product term and aggregate values
-                for index_tp, tp in enumerate(terms_products):
-                    # find correct feature to aggregate
-                    tp_pow = tp.split('^')
-                    index_feature = feature_names.index(tp_pow[0])
-                    exp = float(tp_pow[-1]) if len(tp_pow) > 1 else 1
-                    value *= torch.pow(features[..., index_feature], exp)
-            library_values[..., index_term] += value
+        # Bias terms: single write
+        for idx in structure['bias_indices']:
+            library_values[..., idx] = 1.0
 
-    # # Generate all polynomial terms
-    # for d in range(degree + 1):
-    #     for combo in combinations_with_replacement(range(n_features), d):
-    #         if len(combo) == 0 and include_bias:
-    #             # Constant term
-    #             term = torch.ones_like(features[..., :1])
-    #             library_terms.append(term)
-    #         elif len(combo) > 0:
-    #             # Check if we should skip this term based on interaction_only
-    #             if interaction_only and d > 1:
-    #                 # For degree > 1: only include if it's an interaction term
-    #                 # An interaction has at least 2 different feature indices
-    #                 unique_indices = len(set(combo))
-    #                 if unique_indices == 1:
-    #                     # Pure power term (e.g., x^2, x^3), skip it
-    #                     continue
+        # Linear terms: one batched gather (e.g. x, c1, c2, c3 → 1 kernel)
+        if structure['linear_lib_idx']:
+            library_values[..., structure['linear_lib_idx']] = features[..., structure['linear_feat_idx']]
 
-    #             # Polynomial term
-    #             term = torch.ones_like(features[..., :1])
-    #             for idx in combo:
-    #                 term = term * features[..., idx:idx+1]
-    #             library_terms.append(term)
+        # Power terms: individual pow calls (rare — only x^2, c^3, etc.)
+        for lib_idx, feat_idx, exp in structure['power_terms']:
+            library_values[..., lib_idx] = torch.pow(features[..., feat_idx], exp)
 
-    # library = torch.cat(library_terms, dim=-1)  # [batch, time, n_actions, n_library_terms]
+        # Interaction terms (exp=1 products): vectorized where possible
+        # Group by number of factors for batched computation
+        if structure['interaction_terms']:
+            # Degree-2 interactions: one gather-multiply (e.g. x*c1, x*c2, c1*c2 → 2 kernels)
+            deg2_lib = [t[0] for t in structure['interaction_terms'] if len(t[1]) == 2]
+            deg2_left = [t[1][0] for t in structure['interaction_terms'] if len(t[1]) == 2]
+            deg2_right = [t[1][1] for t in structure['interaction_terms'] if len(t[1]) == 2]
+            if deg2_lib:
+                library_values[..., deg2_lib] = features[..., deg2_left] * features[..., deg2_right]
+
+            # Higher-degree interactions: loop (rare with degree≤2)
+            for lib_idx, feat_indices in structure['interaction_terms']:
+                if len(feat_indices) != 2:
+                    val = features[..., feat_indices[0]]
+                    for fi in feat_indices[1:]:
+                        val = val * features[..., fi]
+                    library_values[..., lib_idx] = val
+
+        # General terms (mixed exponents in products): loop
+        for lib_idx, factors in structure['general_terms']:
+            fi0, exp0 = factors[0]
+            val = torch.pow(features[..., fi0], exp0) if exp0 != 1.0 else features[..., fi0]
+            for fi, exp in factors[1:]:
+                val = val * (torch.pow(features[..., fi], exp) if exp != 1.0 else features[..., fi])
+            library_values[..., lib_idx] = val
 
     return library_values
 

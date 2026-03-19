@@ -174,7 +174,7 @@ def analysis_model_evaluation(
             benchmark_model = prepare_benchmark(path_model=benchmark_path, dataset=dataset, model_module=benchmark_module, model_class=benchmark_class, n_reward_features=n_reward_features)
         if benchmark_model is not None:
             print("Computing choice probabilities with benchmark model...")
-            benchmark_parameters = len([p for p in benchmark_model.parameters()]) / n_participants
+            benchmark_parameters = len([p for p in benchmark_model.parameters()])
             benchmark_predictions, _ = benchmark_model(dataset_test.xs)
             benchmark_choice_probs = get_choice_probs(benchmark_predictions).detach().cpu()
         else:
@@ -191,7 +191,7 @@ def analysis_model_evaluation(
         else:
             gru_parameters = torch.nan
             
-        # setup rnn agent
+        # setup SPICE model
         if spice_model is None and spice_path is not None and (spice_module is not None or (spice_class is not None and spice_config is not None)):
             spice_model = prepare_spice(path_model=spice_path, dataset=dataset, model_module=spice_module, model_class=spice_class, model_config=spice_config)
         if spice_model is not None:
@@ -301,11 +301,11 @@ def analysis_model_evaluation(
     scores = torch.concatenate((
         avg_trial_likelihood.reshape(-1, 1), 
         avg_trial_likelihood_participant_std.reshape(-1, 1), 
+        n_parameters.reshape(-1, 1), 
+        n_parameters_std.reshape(-1, 1),
         scores[:, :1], 
         metric_participant_std.reshape(-1, 1), 
         scores[:, 1:], 
-        n_parameters.reshape(-1, 1), 
-        n_parameters_std.reshape(-1, 1),
         ), dim=1)
     
     # ------------------------------------------------------------
@@ -315,7 +315,7 @@ def analysis_model_evaluation(
     df = pd.DataFrame(
         data=scores,
         index=['Benchmark', 'GRU', 'SPICE-RNN', 'SPICE'],
-        columns = ('Trial Lik.', '(std)', 'NLL', '(std)', 'AIC', 'BIC', 'n_parameters', '(std)'),
+        columns = ('Trial Lik.', '(std)', 'n_parameters', '(std)', 'NLL', '(std)', 'AIC', 'BIC'),
         )
     
     if verbose:
@@ -336,24 +336,24 @@ if __name__=='__main__':
                    help="Sessions to test the models against (comma-separated list)")
     p.add_argument("--spice_model", default=None,
                    help="Path to the trained SPICE model (.pkl)")
-    p.add_argument("--spice-module", default="spice.precoded.workingmemory_rewardbinary",
+    p.add_argument("--spice_module", default="spice.precoded.workingmemory_rewardbinary",
                    help="Name of the SPICE model module (default: spice.precoded.workingmemory_rewardbinary)")
     p.add_argument("--benchmark_model", default=None,
                    help="Path to the trained benchmark model (.pkl)")
-    p.add_argument("--benchmark-module", default="weinhardt2025.benchmarking.benchmarking_qlearning",
+    p.add_argument("--benchmark_module", default="weinhardt2025.benchmarking.benchmarking_qlearning",
                    help="Name of the benchmark model module (default: weinhardt2025.benchmarking.benchmarking_qlearning)")
     p.add_argument("--gru_model", default=None,
-                   help="Path to the trained SPICE model (.pkl)")
-    p.add_argument("--gru-module", default="weinhardt2025.benchmarking.benchmarking_gru",
-                   help="Name of the SPICE model module (default: weinhardt2025.benchmarking.benchmarking_gru)")
+                   help="Path to the trained GRU model (.pkl)")
+    p.add_argument("--gru_module", default="weinhardt2025.benchmarking.benchmarking_gru",
+                   help="Name of the GRU model module (default: weinhardt2025.benchmarking.benchmarking_gru)")
     args  = p.parse_args()
     
     
-    args.data = 'weinhardt2025/data/dezfouli2019/dezfouli2019.csv'
-    args.test_sessions = (3,6,9)
-    args.spice_model = 'weinhardt2025/params/dezfouli2019/spice_dezfouli2019.pkl'
-    args.gru_model = 'weinhardt2025/params/dezfouli2019/gru_dezfouli2019.pkl'
-    args.verbose = True    
+    # args.data = 'weinhardt2025/data/dezfouli2019/dezfouli2019.csv'
+    # args.test_sessions = (3,6,9)
+    # args.spice_model = 'weinhardt2025/params/dezfouli2019/spice_dezfouli2019.pkl'
+    # args.gru_model = 'weinhardt2025/params/dezfouli2019/gru_dezfouli2019.pkl'
+    # args.verbose = True    
     
     dataset = csv_to_dataset(
         file=args.data,

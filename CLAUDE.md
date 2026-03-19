@@ -225,6 +225,7 @@ Main user-facing class implementing sklearn's estimator interface.
 | `sindy_threshold_pruning` | `float` | `None` | Minimum effect size delta for CI test (`None` = disabled) |
 | `sindy_ensemble_pruning` | `float` | `None` | Confidence level for ensemble CI test (e.g. `0.05`; primary pruning mechanism) |
 | `sindy_population_pruning` | `float` | `None` | Cross-participant presence threshold 0-1 (`None` = disabled) |
+| `sindy_reconditioning_epochs` | `int` | `3` | Pure SINDy SGD epochs after ridge recalibration to warm-start the optimizer (`0` = disable) |
 | **Output / misc** ||||
 | `verbose` | `bool` | `False` | Print training progress |
 | `keep_log` | `bool` | `False` | Keep full training log (vs. live terminal update) |
@@ -313,14 +314,12 @@ loss = loss + model.compute_weighted_coefficient_penalty(sindy_alpha, norm=1)  #
    - **Fallback** (no ensemble test): Per-member hard thresholding with patience accumulation.
    - **Population filter** (`sindy_population_pruning`): Optional cross-participant consistency check.
    - Terms must fail **2 consecutive pruning events** before permanent removal (patience counter resets on success).
-   - Currently not implemented: ridge recalibration after pruning.
 5. **LR scheduler**: `ReduceOnPlateauWithRestarts` — reduces RNN lr by 0.1× on plateau, restarts when hitting min_lr.
 6. **Convergence check**: Exponentially smoothed loss change vs. threshold.
 
 ### Stage 2: Final SINDy Refit
 - Freeze RNN weights
-- Refit SINDy coefficients via ridge solve on stable hidden states
-- Single pass: solve → prune → refit
+- Refit SINDy coefficients via SGD on vectorized hidden states
 
 ### Custom Loss Functions
 
@@ -427,6 +426,21 @@ class MyModel(BaseRNN):
 - Research/paper code → `weinhardt2025/`
 - New utility functions → `spice/utils/`
 - New model architectures → `spice/precoded/`
+
+### Designing Polynomial-Amenable Architectures
+
+Full guidelines: [`docs/guidelines_polynomial_amenable_architectures.md`](docs/guidelines_polynomial_amenable_architectures.md)
+
+When designing `BaseRNN` subclasses for SPICE, the architecture determines how well SINDy polynomials can approximate the learned GRU dynamics. The GRU's sigmoid gates, tanh activations, and data-dependent convex combinations are fundamentally non-polynomial — the goal is to make these capabilities *unnecessary* through architecture design:
+
+1. **Externalize gating via action masks** — If a module receives a binary selector (action flag, exit flag), split it into separate modules with explicit `action_mask` arguments instead of relying on the GRU to learn internal gating.
+2. **1–3 control signals per module** — More inputs give the GRU more dimensions for complex nonlinear interactions that polynomials can't match. Keep modules focused.
+3. **Precompute non-polynomial transforms in `forward()`** — Differencing, running averages, counting, clipping — anything expressible in closed form belongs in `forward()`, not inside a GRU module.
+4. **Separate memory states per cognitive function** — One state tracking multiple functions forces multiplexed encoding that requires GRU gating. Use separate `key_state` entries (e.g., `value_reward`, `value_depletion`, `value_tenure`).
+5. **Match polynomial degree to mechanism** — Use `polynomial_degree=1` for additive updates (e.g., Rescorla-Wagner), `polynomial_degree=2` for multiplicative interactions (e.g., prediction error scaling).
+6. **Keep inputs in [-1, 1]** — Small inputs keep sigmoid ≈ linear and tanh ≈ identity, making GRU dynamics approximately polynomial.
+7. **Remove redundant inputs** — Irrelevant inputs force the GRU to learn sigmoid-based ignoring, which polynomials can't replicate. Validate with input gradient analysis after fitting with `sindy_weight=0`.
+8. **Additive logit composition** — Combine simple module outputs (`logits = state['a'] + state['b'] + state['c']`) rather than packing complexity into one module.
 
 ---
 

@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 from spice import SpiceEstimator, csv_to_dataset, split_data_along_sessiondim, split_data_along_timedim, plot_session, Agent
-from spice.precoded import workingmemory, workingmemory_multiitem, workingmemory_rewardbinary, workingmemory_rewardflags, choice, workingmemory_rewardtransform
+from spice.precoded import workingmemory, workingmemory_multiitem, workingmemory_rewardbinary
 from spice.resources.spice_training import _get_terminal_width
 
 from benchmarking.benchmarking_qlearning import QLearning
@@ -74,7 +74,7 @@ if __name__=='__main__':
     # args.data = "weinhardt2025/data/eckstein2024/eckstein2024.csv"
     # args.test_sessions = "1,3"
     
-    # args.model = "weinhardt2025/params/dezfouli2019/spice_dezfouli2019.pkl"
+    # args.model = "weinhardt2025/params/dezfouli2019/spice_dezfouli2019_test.pkl"
     # args.data = "weinhardt2025/data/dezfouli2019/dezfouli2019.csv"
     # args.test_sessions = "3,6,9"
     
@@ -89,7 +89,6 @@ if __name__=='__main__':
     # args.additional_columns = None,
     # args.test_sessions = "4,8,12"
     # ----------------------------------------------------------------------------------------------------------------------------------
-    
     
     example_participant = 2
     plot_coef_dist = True
@@ -136,9 +135,6 @@ if __name__=='__main__':
     else:
         spice_model = workingmemory_multiitem
     
-    # spice_model = workingmemory_rewardtransform
-    # spice_model = choice
-    
     class_rnn = spice_model.SpiceModel
     spice_config = spice_model.CONFIG 
 
@@ -180,7 +176,7 @@ if __name__=='__main__':
     
     if args.epochs == 0:
         estimator.load_spice(args.model)
-
+        
     training_device_str = "CUDA" if estimator.device == torch.device('cuda') else "CPU"
     print("Training device:", training_device_str)
     print("="*_get_terminal_width())

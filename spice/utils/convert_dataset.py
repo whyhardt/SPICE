@@ -51,9 +51,6 @@ def csv_to_dataset(
     
     df = pd.read_csv(file, index_col=None)
     
-    # replace all nan values with -1
-    df = df.replace(np.nan, -1)
-    
     # --------------------------------------------------------------------------------
     # GROUPING BY PARTICIPANT, EXPERIMENT, BLOCK
     # --------------------------------------------------------------------------------
@@ -98,15 +95,17 @@ def csv_to_dataset(
     
     # map str values to numeric values
     if isinstance(df[df_choice].iloc[0], str):
-        choices = df[df_choice].astype('category').cat.codes.values.copy()
-        print(f"ValueWarning: Values from choice column ({df_choice}) had to be converted from str to int. The mapping is sorted alphabetically: {tuple([(index, key) for index, key in enumerate(np.sort(df[df_choice].unique()))])}")
+        choices = df[df_choice].astype('category').cat.codes.values.copy().astype(float)
+        choices[choices == -1] = np.nan  # cat.codes returns -1 for NaN
+        print(f"ValueWarning: Values from choice column ({df_choice}) had to be converted from str to int. The mapping is sorted alphabetically: {tuple([(index, key) for index, key in enumerate(np.sort(df[df_choice].dropna().unique()))])}")
     else:
-        choices = df[df_choice].values
+        choices = df[df_choice].values.astype(float)
     # let actions begin from 0
-    choice_min = np.nanmin(choices[choices != -1])
-    choices[choices != -1] = choices[choices != -1] - choice_min
+    valid_mask = ~np.isnan(choices)
+    choice_min = np.nanmin(choices)
+    choices[valid_mask] = choices[valid_mask] - choice_min
     # number of possible actions
-    n_actions = int(df[df_choice].max() + 1)
+    n_actions = int(np.nanmax(choices) + 1)
     # map transformed values into dfs
     df[df_choice] = choices
     original_df[df_choice] = choices

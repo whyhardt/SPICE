@@ -6,6 +6,11 @@ import numpy as np
 from .sindy_differentiable import compute_library_size, compute_polynomial_library, get_library_feature_names, get_library_term_degrees
 from .spice_utils import SpiceConfig, SpiceSignals
 
+# EnsembleGRUModule instances with different input_size share one dynamo cache.
+# Allow dynamic parameter and input shapes so all instances reuse a single
+# shape-generic compiled graph per train/eval mode (~2 cache entries total).
+torch._dynamo.config.force_parameter_static_shapes = False
+
 
 class EnsembleLinear(nn.Module):
     """Linear layer with independent parameters per ensemble member.
@@ -86,6 +91,9 @@ class EnsembleGRUModule(nn.Module):
         self.hidden_size = hidden_size
         self.ensemble_size = ensemble_size
 
+        if compiled_forward:
+            self._compiled_forward = torch.compile(self._uncompiled_forward, dynamic=True)
+
     def _uncompiled_forward(self, inputs, state):
         # inputs: (W, E, B, I, F)
         # state:  (W, E, B, I) — last row is current hidden state
@@ -116,11 +124,7 @@ class EnsembleGRUModule(nn.Module):
 
         output = torch.stack(outputs)              # (W, E, B*I, H)
         return output.reshape(W, E, B, I, 1)
-    
-    @torch.compile
-    def _compiled_forward(self, inputs, state):
-        return self._uncompiled_forward(inputs, state)
-    
+
     def forward(self, inputs, state):
         if self._compile:
             return self._compiled_forward(inputs, state)
@@ -437,25 +441,27 @@ class BaseRNN(nn.Module):
 
         # Replace NaN in inputs
         inputs = torch.nan_to_num(inputs, nan=0.0)
-
+        
         if key_module in self.submodules_rnn.keys():
-            if not self.use_sindy or (self.use_sindy and self.training and self.rnn_training_finished):
+            if (not self.use_sindy  # RNN mode 
+                # or (self.use_sindy and self.training and self.rnn_training_finished)  # SINDy LSTSQ-solve
+                ):
                 # Get RNN module prediction
                 inputs_rnn = torch.cat((inputs, embedding), dim=-1)  # [W, E, B, I, feat+emb]
                 next_value = self.submodules_rnn[key_module](inputs_rnn, state=value).squeeze(-1)  # [W, E, B, I]
                 if activation_rnn is not None:
                     next_value = activation_rnn(next_value)
-                if self.use_sindy:
-                    # direct lstsq solve for sindy coefficients (usually training stage 3 - sindy finetuning with fixed rnn parameters)
-                    self.sindy_ridge_solve(
-                        key_module=key_module, 
-                        participant_ids=participant_index,
-                        experiment_ids=experiment_index,
-                        h_next=next_value,
-                        h_current=value,
-                        controls=inputs,
-                    )
-                    
+                # if self.use_sindy:
+                #     # direct lstsq solve for sindy coefficients
+                #     self.sindy_ridge_solve(
+                #         key_module=key_module, 
+                #         participant_ids=participant_index,
+                #         experiment_ids=experiment_index,
+                #         h_next=next_value,
+                #         h_current=value,
+                #         controls=inputs,
+                #     )
+            
             if self.use_sindy:
                 # Get SINDy module prediction — operates per within-trial step
                 next_value = torch.zeros((inputs.shape[:-1]), device=inputs.device)  # [W, E, B, I]
@@ -482,7 +488,11 @@ class BaseRNN(nn.Module):
             raise ValueError(f'Invalid module key {key_module}.')
 
         # SINDy loss (uses unclipped values, last within-trial step)
-        if self.fit_sindy and self.training and not self.rnn_training_finished and participant_index is not None:
+        if (self.fit_sindy 
+            and self.training 
+            and not self.rnn_training_finished 
+            and participant_index is not None
+            ):
             action_mask_2d = action_mask[-1] if action_mask is not None and action_mask.dim() >= 4 else action_mask
             value_0 = self.state[key_state][-1].unsqueeze(0) if key_state is not None else torch.zeros(W, E, B, I, device=self.device)
             self.sindy_loss = self.sindy_loss + self.compute_sindy_loss_for_module(
