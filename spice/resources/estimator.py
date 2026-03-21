@@ -63,6 +63,7 @@ class SpiceEstimator(BaseEstimator):
         sindy_ensemble_pruning: Optional[float] = None,  # Ensemble t-test significance level (primary pruning mechanism)
         sindy_population_pruning: Optional[float] = None,  # Optional cross-participant filter (0-1)
         sindy_reconditioning_epochs: Optional[int] = 3,  # Pure SINDy SGD epochs after ridge recalibration
+        sindy_refit: Optional[bool] = True,  # Enable Stage 2 Training (SINDy refit on frozen RNN parameters) 
 
         verbose: Optional[bool] = False,
         keep_log: Optional[bool] = False,
@@ -142,6 +143,7 @@ class SpiceEstimator(BaseEstimator):
         self.sindy_population_pruning = sindy_population_pruning
         self.sindy_ensemble_pruning = sindy_ensemble_pruning
         self.sindy_reconditioning_epochs = sindy_reconditioning_epochs
+        self.sindy_refit = sindy_refit
         
         # Data parameters
         self.n_actions = n_actions
@@ -229,7 +231,8 @@ class SpiceEstimator(BaseEstimator):
             sindy_ensemble_pruning=self.sindy_ensemble_pruning,
             sindy_population_pruning=self.sindy_population_pruning,
             sindy_reconditioning_epochs=self.sindy_reconditioning_epochs,
-
+            sindy_refit=self.sindy_refit,
+            
             verbose=self.verbose,
             keep_log=self.keep_log,
             path_save_checkpoints=None,

@@ -215,7 +215,7 @@ def analysis_model_evaluation(
     # ------------------------------------------------------------
     # Evaluation pipeline
     # ------------------------------------------------------------
-
+    
     scores = torch.zeros((4, 3))
     metric_participant = torch.zeros((len(scores), len(dataset_test)))
     parameters_participant = torch.zeros((1, len(dataset_test)))

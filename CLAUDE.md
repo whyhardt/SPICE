@@ -37,6 +37,7 @@ SPICE/
 │   │   └── workingmemory_*.py          # Working memory variants
 │   └── utils/
 │       ├── convert_dataset.py          # CSV ↔ SpiceDataset conversion pipeline
+│       ├── diagnostics.py              # SpiceDiagnostics — architectural bottleneck analysis
 │       └── plotting.py                 # Visualization utilities
 │
 ├── weinhardt2025/                      # Paper-specific code (fitting, benchmarking, analyses)
@@ -91,7 +92,7 @@ Core neural network architecture. All task-specific models subclass this.
 ```python
 setup_module(
     key_module: str,          # Module name (must match a key in SpiceConfig.library_setup)
-    input_size: int,          # Number of input features (control signals, excluding own state)
+    input_size: int,          # Number of GRU input features (control signals + embeddings; excludes own state)
     dropout: float = 0.,      # Dropout rate in the GRU module
     polynomial_degree: int = None,  # SINDy library degree (None → use model default)
     include_bias: bool = True,      # Include constant term '1' in SINDy library
@@ -100,7 +101,7 @@ setup_module(
 )
 ```
 
-Creates an `EnsembleGRUModule` and initializes SINDy coefficients + candidate library for this module. The `input_size` should account for the control signals plus any embeddings that will be concatenated at call time. The SINDy library is constructed from all inputs + the module's own state (if `include_state=True`), up to `polynomial_degree`.
+Creates an `EnsembleGRUModule` and initializes SINDy coefficients + candidate library for this module. The `input_size` should account for the control signals plus any embeddings that will be concatenated at call time. **Important:** `input_size` defines the GRU's input dimension, NOT the SINDy library features. The SINDy library is constructed only from the control signals (defined in `SpiceConfig.library_setup`) + the module's own state (if `include_state=True`), up to `polynomial_degree`. Embeddings are NOT included in the SINDy library — they feed the GRU only, while participant variation in SINDy is handled via per-participant coefficients.
 
 #### `call_module()` — Forward pass through a submodule (RNN or SINDy path)
 
@@ -441,6 +442,45 @@ When designing `BaseRNN` subclasses for SPICE, the architecture determines how w
 6. **Keep inputs in [-1, 1]** — Small inputs keep sigmoid ≈ linear and tanh ≈ identity, making GRU dynamics approximately polynomial.
 7. **Remove redundant inputs** — Irrelevant inputs force the GRU to learn sigmoid-based ignoring, which polynomials can't replicate. Validate with input gradient analysis after fitting with `sindy_weight=0`.
 8. **Additive logit composition** — Combine simple module outputs (`logits = state['a'] + state['b'] + state['c']`) rather than packing complexity into one module.
+
+### Diagnosing Architectural Bottlenecks (`spice/utils/diagnostics.py`)
+
+`SpiceDiagnostics` identifies which modules prevent polynomial-amenable dynamics discovery. It works entirely by external probing via forward hooks — no backend modifications.
+
+```python
+from spice.utils.diagnostics import SpiceDiagnostics
+
+diag = SpiceDiagnostics(estimator, dataset)
+r2_report = diag.polynomial_adequacy()     # per-module R²
+gate_report = diag.gate_saturation()       # per-module gate distributions
+```
+
+#### `polynomial_adequacy(degree=None)` — Per-module polynomial R² test
+
+Hooks each `EnsembleGRUModule` during a forward pass (`use_sindy=False`), collects `(h_in, controls, h_out)` per timestep, builds the polynomial library via `compute_polynomial_library`, fits OLS (`lstsq`), and reports R² per module. Automatically filters out items whose state never varies (never updated by action masks).
+
+| R² value | Interpretation |
+|----------|----------------|
+| > 0.95 | SINDy-friendly |
+| 0.90–0.95 | Marginal — consider minor restructuring |
+| < 0.90 | Needs restructuring |
+| < 0.80 | Fundamental expressiveness mismatch |
+
+Returns a `DataFrame` with columns: `module`, `r2`, `n_samples`, `n_terms`, `n_active_items`, `delta_h_std`.
+
+#### `gate_saturation()` — Per-module GRU gate distribution analysis
+
+Recomputes gate activations externally from module weights (linear projection → `W_ih`/`W_hh` → sigmoid for update/reset gates). Returns raw `z` (update) and `r` (reset) gate tensors plus summary statistics per module.
+
+| Gate distribution | Interpretation |
+|-------------------|----------------|
+| Unimodal, peak near 0.5 | GRU in linear regime (SINDy-friendly) |
+| Bimodal, peaks near 0 and 1 | Hard mode-switching (split this module) |
+| Unimodal, peak near 0 or 1 | Gate effectively constant (module may be simplified) |
+
+Returns `Dict[module_name, {'z': Tensor, 'r': Tensor, 'z_mean', 'z_std', 'r_mean', 'r_std'}]`.
+
+**Typical workflow:** Fit with `sindy_weight=0` → run both diagnostics → restructure modules with low R² or bimodal gates → repeat until all modules R² > 0.95 → fit with `sindy_weight > 0`.
 
 ---
 

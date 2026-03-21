@@ -892,7 +892,7 @@ def _run_joint_training(
                         xs = xs.to(model.device)
                         ys = ys.to(model.device)
                     _, _, loss_test_rnn = _run_batch_training(model=model, xs=xs.unsqueeze(0).repeat(model.ensemble_size, 1, 1, 1, 1), ys=ys.unsqueeze(0).repeat(model.ensemble_size, 1, 1, 1, 1), loss_fn=loss_fn)
-
+                    
                 if sindy_weight > 0:
                     model = model.eval(use_sindy=True)
                     with torch.no_grad():
@@ -1200,7 +1200,8 @@ def fit_spice(
     sindy_ensemble_pruning: float = None,
     sindy_population_pruning: float = None,
     sindy_reconditioning_epochs: int = 3,
-
+    sindy_refit: bool = True,
+    
     verbose: bool = True,
     keep_log: bool = False,
     n_warmup_steps: int = 0,
@@ -1289,7 +1290,7 @@ def fit_spice(
             print(f"\tPruning (every {sindy_pruning_frequency} epochs): {', '.join(pruning_details)}")
         else:
             print("\tPruning: [ ]")
-        if sindy_weight > 0:
+        if sindy_refit:
             print("\tSINDy refit: [x]")
         else:
             print("\tSINDy refit: [ ]")
@@ -1316,7 +1317,7 @@ def fit_spice(
             if sindy_weight > 0:
                 print("Stage 1: SPICE joint training (RNN+SINDy)")
             else:
-                print("Stage 1: SPICE-RNN training")
+                print("Stage 1: SPICE-RNN training (without SINDy-regularization)")
             print("=" * terminal_width)
             
         if batch_size is None:
@@ -1367,7 +1368,7 @@ def fit_spice(
     # ══════════════════════════════════════════════════════════════════════════
     # STAGE 2: Final SINDy Refit
     # ══════════════════════════════════════════════════════════════════════════
-    if sindy_weight > 0:
+    if sindy_refit:
         # try:
         if verbose:
             terminal_width = _get_terminal_width()
