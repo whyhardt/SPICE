@@ -1,22 +1,26 @@
-import sys, os
 import argparse
+import pickle
 import torch
 from tqdm import tqdm
-import pickle
-from typing import List
-from joblib import Parallel, delayed
-from adabelief_pytorch import AdaBelief
+from typing import List, Optional
+
+try:
+    from adabelief_pytorch import AdaBelief
+    _ADABELIEF_AVAILABLE = True
+except ImportError:
+    _ADABELIEF_AVAILABLE = False
 
 from spice.resources.spice_utils import SpiceDataset
-from spice.utils.convert_dataset import csv_to_dataset, split_data_along_sessiondim, reshape_data_along_participantdim
+from spice.utils.convert_dataset import csv_to_dataset, split_data_along_sessiondim
 from spice.utils.agent import Agent
-from spice.resources.spice_training import _run_batch_training
 
 
 class Castro2025Model(torch.nn.Module):
     """
     Cognitive model from Castro et al. 2025 (discovered program) for multi-armed bandit task.
-
+    
+    -------------------------------------------------------------------------------------------------
+    -------------------------------------------------------------------------------------------------
     Model features:
     - Loss aversion learning (gamma parameter)
     - Exploration rate with decay
@@ -87,546 +91,486 @@ class Castro2025Model(torch.nn.Module):
             cumchoice])
             
         return choice_logits, agent_state
+    -------------------------------------------------------------------------------------------------
+    -------------------------------------------------------------------------------------------------
+
+    Translated from the original JAX implementation. One parameter set per participant,
+    matching the SPICE convention of per-participant SINDy coefficients.
+
+    Model parameters (per participant):
+    - beta_r:                   Value scaling in softmax
+    - lapse:                    Lapse rate (uniform exploration probability)
+    - prior:                    Initial Q-value
+    - alpha_exploration_rate:   Initial exploration rate
+    - decay_rate:               Q-value decay per trial
+    - attention_bias1:          Bonus toward previously chosen action
+    - attention_bias2:          Bonus toward action opposite to previous choice
+    - perseveration_strength:   Bonus for repeating the same action
+    - switch_strength:          Bonus for switching to a different action
+    - lambda_param:             Unused mixing parameter (kept for parameter recovery)
+    - gamma:                    Loss aversion (asymmetric reward weighting)
+    - temperature:              Softmax temperature
+    - beta_p:                   Cumulative-choice bonus scaling
+
+    State variables (per trial):
+    - q_values:                 (B, n_actions) — action values
+    - old_choice:               (B,)           — index of the previously chosen action (-1 initially)
+    - trial_since_last_switch:  (B,)           — consecutive trials on the same action
+    - exploration_rate:         (B,)           — current exploration rate (decays each trial)
+    - cumchoice:                (B, n_actions) — cumulative choice counts per action
     """
 
-    init_values = {
-        'x_value_reward': None,  # Will be set based on prior parameter
-        'x_old_choice': -1,
-        'x_trial_since_last_switch': 0,
-        'x_exploration_rate': None,  # Will be set based on alpha_exploration_rate
-        'x_cumchoice': 0.0,
-    }
-
     def __init__(
-        self, 
-        n_participants: int,
+        self,
         n_actions: int = 4,
-        ):
+        n_participants: int = 1,
+        batch_first: bool = False,
+    ):
         super().__init__()
 
         self.n_actions = n_actions
         self.n_participants = n_participants
+        self.batch_first = batch_first
 
-        # Initialize 13 parameters (raw, will be transformed)
-        self.beta_r_raw = torch.nn.Parameter(torch.zeros(n_participants))
-        self.lapse_raw = torch.nn.Parameter(torch.zeros(n_participants))
-        self.prior_raw = torch.nn.Parameter(torch.zeros(n_participants))
-        self.alpha_exploration_rate_raw = torch.nn.Parameter(torch.zeros(n_participants))
-        self.decay_rate_raw = torch.nn.Parameter(torch.zeros(n_participants))
-        self.attention_bias1 = torch.nn.Parameter(torch.zeros(n_participants))
-        self.attention_bias2 = torch.nn.Parameter(torch.zeros(n_participants))
-        self.perseveration_strength_raw = torch.nn.Parameter(torch.zeros(n_participants))
-        self.switch_strength = torch.nn.Parameter(torch.zeros(n_participants))
-        self.lambda_param_raw = torch.nn.Parameter(torch.zeros(n_participants))
-        self.gamma_raw = torch.nn.Parameter(torch.zeros(n_participants))
-        self.temperature_raw = torch.nn.Parameter(torch.zeros(n_participants))
-        self.beta_p_raw = torch.nn.Parameter(torch.zeros(n_participants))
+        # Raw (unconstrained) parameters — one value per participant.
+        # Transformations applied in the properties below mirror the JAX model.
+        self.beta_r_raw               = torch.nn.Parameter(torch.zeros(n_participants))
+        self.lapse_raw                = torch.nn.Parameter(torch.zeros(n_participants))
+        self.prior_raw                = torch.nn.Parameter(torch.zeros(n_participants))
+        self.alpha_exploration_raw    = torch.nn.Parameter(torch.zeros(n_participants))
+        self.decay_rate_raw           = torch.nn.Parameter(torch.zeros(n_participants))
+        self.attention_bias1_raw      = torch.nn.Parameter(torch.zeros(n_participants))
+        self.attention_bias2_raw      = torch.nn.Parameter(torch.zeros(n_participants))
+        self.perseveration_raw        = torch.nn.Parameter(torch.zeros(n_participants))
+        self.switch_strength_raw      = torch.nn.Parameter(torch.zeros(n_participants))
+        self.lambda_param_raw         = torch.nn.Parameter(torch.zeros(n_participants))
+        self.gamma_raw                = torch.nn.Parameter(torch.zeros(n_participants))
+        self.temperature_raw          = torch.nn.Parameter(torch.zeros(n_participants))
+        self.beta_p_raw               = torch.nn.Parameter(torch.zeros(n_participants))
 
-        self.device = torch.device('cpu')
+    # ------------------------------------------------------------------
+    # Parameter transforms (raw → constrained, as in the JAX code)
+    # ------------------------------------------------------------------
 
-    def get_transformed_params(self):
-        """Get transformed parameters with appropriate constraints."""
-        beta_r = torch.clamp(torch.nn.functional.softplus(self.beta_r_raw), 0.01, 20)
-        lapse = torch.clamp(torch.sigmoid(self.lapse_raw), 0.01, 0.99)
-        prior = torch.clamp(torch.nn.functional.softplus(self.prior_raw), 0.01, 0.99)
-        alpha_exploration_rate = torch.clamp(torch.sigmoid(self.alpha_exploration_rate_raw), 0.01, 0.99)
-        decay_rate = torch.clamp(torch.sigmoid(self.decay_rate_raw), 0.01, 0.99)
-        perseveration_strength = torch.nn.functional.softplus(self.perseveration_strength_raw)
-        lambda_param = torch.clamp(torch.nn.functional.softplus(self.lambda_param_raw), 0.0, 1.0)
-        gamma = torch.nn.functional.softplus(self.gamma_raw)
-        temperature = torch.clamp(torch.nn.functional.softplus(self.temperature_raw) + 1e-6, 1e-6, 100)
-        beta_p = torch.nn.functional.softplus(self.beta_p_raw)
+    @staticmethod
+    def _clip_raw(x: torch.Tensor) -> torch.Tensor:
+        # JAX clips all raw params to [-5, 5] before any transform.
+        return torch.clamp(x, -5.0, 5.0)
 
-        return {
-            'beta_r': beta_r,
-            'lapse': lapse,
-            'prior': prior,
-            'alpha_exploration_rate': alpha_exploration_rate,
-            'decay_rate': decay_rate,
-            'attention_bias1': self.attention_bias1,
-            'attention_bias2': self.attention_bias2,
-            'perseveration_strength': perseveration_strength,
-            'switch_strength': self.switch_strength,
-            'lambda_param': lambda_param,
-            'gamma': gamma,
-            'temperature': temperature,
-            'beta_p': beta_p,
-        }
+    @property
+    def beta_r(self):
+        return torch.clamp(torch.nn.functional.softplus(self._clip_raw(self.beta_r_raw)), 0.01, 20.0)
 
-    def init_forward_pass(self, inputs, prev_state, batch_first):
-        """Initialize forward pass."""
-        if batch_first:
-            inputs = inputs.permute(1, 0, 2)
+    @property
+    def lapse(self):
+        return torch.clamp(torch.sigmoid(self._clip_raw(self.lapse_raw)), 0.01, 0.99)
 
-        # Extract actions and rewards
-        actions = inputs[:, :, :self.n_actions].float()  # (T, B, n_actions)
-        rewards = inputs[:, :, self.n_actions:2*self.n_actions].float()  # (T, B, n_actions)
+    @property
+    def prior(self):
+        return torch.clamp(torch.nn.functional.softplus(self._clip_raw(self.prior_raw)), 0.01, 0.99)
 
+    @property
+    def alpha_exploration_rate(self):
+        return torch.clamp(torch.sigmoid(self._clip_raw(self.alpha_exploration_raw)), 0.01, 0.99)
+
+    @property
+    def decay_rate(self):
+        return torch.clamp(torch.sigmoid(self._clip_raw(self.decay_rate_raw)), 0.01, 0.99)
+
+    @property
+    def attention_bias1(self):
+        return self._clip_raw(self.attention_bias1_raw)
+
+    @property
+    def attention_bias2(self):
+        return self._clip_raw(self.attention_bias2_raw)
+
+    @property
+    def perseveration_strength(self):
+        return torch.nn.functional.softplus(self._clip_raw(self.perseveration_raw))
+
+    @property
+    def switch_strength(self):
+        return self._clip_raw(self.switch_strength_raw)
+
+    @property
+    def lambda_param(self):
+        return torch.clamp(torch.nn.functional.softplus(self._clip_raw(self.lambda_param_raw)), 0.0, 1.0)
+
+    @property
+    def gamma(self):
+        return torch.nn.functional.softplus(self._clip_raw(self.gamma_raw))
+
+    @property
+    def temperature(self):
+        return torch.clamp(torch.nn.functional.softplus(self._clip_raw(self.temperature_raw)) + 1e-6, 1e-6, 100.0)
+
+    @property
+    def beta_p(self):
+        return torch.nn.functional.softplus(self._clip_raw(self.beta_p_raw))
+
+    # ------------------------------------------------------------------
+    # Forward pass
+    # ------------------------------------------------------------------
+
+    def forward(self, inputs, prev_state=None):
+        """
+        Args:
+            inputs: (T, B, F) or (B, T, F) if batch_first.
+                    Features: [actions (one-hot), rewards (one-hot), ..., participant_id]
+            prev_state: optional dict of state tensors from a previous call.
+
+        Returns:
+            logits: (T, B, n_actions) or (B, T, n_actions) if batch_first
+            state:  dict of final state tensors (detached from graph)
+        """
+        if self.batch_first:
+            inputs = inputs.permute(1, 0, 2)  # → (T, B, F)
+
+        T, B, _ = inputs.shape
+        inputs = inputs.nan_to_num(0.0)
+
+        # Participant IDs are stored in the last feature column (SPICE convention)
+        participant_ids = inputs[0, :, -1].long()  # (B,)
+
+        # Retrieve per-participant parameters indexed by batch participant IDs
+        beta_r   = self.beta_r[participant_ids]                    # (B,)
+        lapse    = self.lapse[participant_ids]                     # (B,)
+        prior    = self.prior[participant_ids]                     # (B,)
+        alpha_er = self.alpha_exploration_rate[participant_ids]    # (B,)
+        decay    = self.decay_rate[participant_ids]                # (B,)
+        ab1      = self.attention_bias1[participant_ids]           # (B,)
+        ab2      = self.attention_bias2[participant_ids]           # (B,)
+        perv     = self.perseveration_strength[participant_ids]    # (B,)
+        sw       = self.switch_strength[participant_ids]           # (B,)
+        gam      = self.gamma[participant_ids]                     # (B,)
+        temp     = self.temperature[participant_ids]               # (B,)
+        beta_p   = self.beta_p[participant_ids]                    # (B,)
+
+        # Initialise or restore state
         if prev_state is not None:
             self.set_state(prev_state)
         else:
-            self.set_initial_state(batch_size=inputs.shape[1])
+            self.set_initial_state(batch_size=B, prior=prior, exploration_rate=alpha_er)
 
-        timesteps = torch.arange(actions.shape[0])
-        logits = torch.zeros_like(actions)
+        logits = torch.zeros(T, B, self.n_actions, device=inputs.device)
 
-        return (actions, rewards), logits, timesteps
+        for t in range(T):
+            actions_t = inputs[t, :, :self.n_actions]              # (B, n_actions) one-hot
+            rewards_t = inputs[t, :, self.n_actions:2 * self.n_actions]  # (B, n_actions) one-hot
 
-    def set_initial_state(self, batch_size=1):
-        """Initialize the hidden state for each session."""
-        params = self.get_transformed_params()
+            q      = self.state['q_values']               # (B, n_actions)
+            old_ch = self.state['old_choice']             # (B,)
+            tsls   = self.state['trial_since_last_switch']# (B,)
+            er     = self.state['exploration_rate']       # (B,)
+            cc     = self.state['cumchoice']              # (B, n_actions)
 
-        state = {
-            'x_value_reward': torch.ones(batch_size, self.n_actions, dtype=torch.float32) * params['prior'],
-            'x_old_choice': torch.full((batch_size,), -1, dtype=torch.long),
-            'x_trial_since_last_switch': torch.zeros(batch_size, dtype=torch.long),
-            'x_exploration_rate': torch.full((batch_size,), params['alpha_exploration_rate'].item(), dtype=torch.float32),
-            'x_cumchoice': torch.zeros(batch_size, self.n_actions, dtype=torch.float32),
-        }
-        self.set_state(state)
-        return self.get_state()
+            # Current choice index (-1 means no previous choice)
+            choice_idx = actions_t.argmax(dim=-1)         # (B,)
+            had_choice = actions_t.sum(dim=-1) > 0        # (B,) whether a valid choice was made
 
-    def set_state(self, state_dict):
-        """Set the latent variables."""
-        self.state = state_dict
+            # ---- Update state based on observed choice & reward ----
+            # Scalar reward for the chosen action
+            reward_scalar = (rewards_t * actions_t).sum(dim=-1)   # (B,)
 
-    def get_state(self, detach=False):
-        """Return the memory state."""
-        state = self.state
-        if detach:
-            state = {key: state[key].detach() for key in state}
-        return state
+            # Loss-averse TD error: r - γ*(1-r) - Q[choice]
+            q_chosen = (q * actions_t).sum(dim=-1)                # (B,)
+            delta = reward_scalar - gam * (1.0 - reward_scalar) - q_chosen  # (B,)
 
-    def update_step(self, q_values, old_choice, trial_since_last_switch, exploration_rate, cumchoice, action, reward):
-        """
-        Perform one update step.
+            # Update Q-value for chosen action only (vectorised via one-hot mask)
+            q = q + delta.unsqueeze(-1) * actions_t               # (B, n_actions)
 
-        Args:
-            q_values: Current Q-values (batch_size, n_actions)
-            old_choice: Previous choice (batch_size,)
-            trial_since_last_switch: Trials since last switch (batch_size,)
-            exploration_rate: Current exploration rate (batch_size,)
-            cumchoice: Cumulative choices (batch_size, n_actions)
-            action: Current action one-hot encoded (batch_size, n_actions)
-            reward: Current reward (batch_size, n_actions)
+            # Increment counter if same action was repeated, else reset to 0
+            same_action = (choice_idx == old_ch).float()
+            tsls = torch.where(had_choice, same_action * (tsls + 1), tsls)
 
-        Returns:
-            Updated state variables
-        """
-        params = self.get_transformed_params()
+            # Slow exploration-rate decay
+            # In JAX this only happens when a valid choice/reward update exists.
+            er = torch.where(had_choice, er * (1.0 - 1e-3), er)
 
-        # Convert one-hot action to integer choice
-        current_choice = torch.argmax(action, dim=-1)  # (batch_size,)
+            # Cumulative choice count
+            cc = cc + actions_t
 
-        # Get scalar reward for the chosen action
-        reward_value = torch.sum(reward * action, dim=-1)  # (batch_size,)
+            # ---- Global Q-value update (exploration smoothing + decay) ----
+            q_mean = q.mean(dim=-1, keepdim=True)                 # (B, 1)
+            q = (1.0 - er.unsqueeze(-1)) * q + er.unsqueeze(-1) * q_mean
+            q = q * decay.unsqueeze(-1)
 
-        # Update Q-values with loss aversion
-        # delta = reward - gamma*(1-reward) - q_values[choice]
-        gamma = params['gamma']
-        delta = reward_value - gamma * (1 - reward_value) - q_values[torch.arange(q_values.shape[0]), current_choice]
+            # ---- Compute choice probabilities ----
+            # Base logit: temperature-scaled Q-values + cumulative-choice bonus
+            base_logits = beta_r.unsqueeze(-1) * q / temp.unsqueeze(-1) \
+                          + beta_p.unsqueeze(-1) * torch.log1p(cc)    # (B, n_actions)
 
-        # Update Q-value for chosen action
-        q_values_new = q_values.clone()
-        q_values_new[torch.arange(q_values.shape[0]), current_choice] += delta
+            probs = torch.softmax(base_logits, dim=-1)
+            choice_probs = (1.0 - lapse.unsqueeze(-1)) * probs \
+                           + lapse.unsqueeze(-1) / self.n_actions     # (B, n_actions)
+            step_logits = torch.log(choice_probs + 1e-8)              # (B, n_actions)
 
-        # Update trial_since_last_switch
-        trial_since_last_switch_new = torch.where(
-            current_choice == old_choice,
-            trial_since_last_switch + 1,
-            torch.zeros_like(trial_since_last_switch)
-        )
+            # ---- Add choice-conditioned bonuses (perseveration, switch, attention) ----
+            # One-hot encodings for bonus computation
+            choice_oh  = actions_t                                                     # (B, n_actions)
+            # JAX one_hot(-1) -> all zeros; preserve that behavior explicitly.
+            old_oh     = torch.nn.functional.one_hot(old_ch.clamp(min=0), self.n_actions).float()
+            old_oh     = old_oh * (old_ch >= 0).unsqueeze(-1).float()
+            opposite_oh = torch.nn.functional.one_hot((choice_idx + 2) % self.n_actions, self.n_actions).float()
 
-        # Decay exploration rate
-        exploration_rate_new = exploration_rate * (1 - 1e-3)
+            persev_bonus  = same_action.unsqueeze(-1) * perv.unsqueeze(-1) * choice_oh
+            switch_bonus  = (1.0 - same_action).unsqueeze(-1) * sw.unsqueeze(-1) * choice_oh
+            attn_bonus1   = ab1.unsqueeze(-1) * old_oh
+            attn_bonus2   = ab2.unsqueeze(-1) * opposite_oh
+            # Log of trials-since-last-switch bonus for chosen action
+            tsls_bonus    = choice_oh * torch.log1p(tsls).unsqueeze(-1)
 
-        # Update cumchoice
-        cumchoice_new = cumchoice.clone()
-        cumchoice_new[torch.arange(cumchoice.shape[0]), current_choice] += 1
-
-        # Apply exploration (regress to mean)
-        q_mean = q_values_new.mean(dim=-1, keepdim=True)
-        q_values_new = (1 - exploration_rate_new.unsqueeze(-1)) * q_values_new + exploration_rate_new.unsqueeze(-1) * q_mean
-
-        # Apply decay
-        q_values_new = q_values_new * params['decay_rate']
-
-        return q_values_new, current_choice, trial_since_last_switch_new, exploration_rate_new, cumchoice_new
-
-    def compute_choice_logits(self, q_values, old_choice, trial_since_last_switch, cumchoice, current_choice=None):
-        """
-        Compute choice logits.
-
-        Args:
-            q_values: Q-values (batch_size, n_actions)
-            old_choice: Previous choice (batch_size,)
-            trial_since_last_switch: Trials since last switch (batch_size,)
-            cumchoice: Cumulative choices (batch_size, n_actions)
-            current_choice: Current choice if available (batch_size,) - used for bonuses
-
-        Returns:
-            Choice logits (batch_size, n_actions)
-        """
-        params = self.get_transformed_params()
-        batch_size = q_values.shape[0]
-
-        # Compute base choice probabilities
-        # choice_probs = (1 - lapse) * softmax(beta_r * q_values / temperature + beta_p * log(1 + cumchoice)) + lapse / 4
-        softmax_input = params['beta_r'] * q_values / params['temperature'] + params['beta_p'] * torch.log(1 + cumchoice)
-        choice_probs = (1 - params['lapse']) * torch.softmax(softmax_input, dim=-1) + params['lapse'] / self.n_actions
-        logits = torch.log(choice_probs + 1e-10)  # Add small epsilon to avoid log(0)
-
-        # Add bonuses if we have current choice
-        if current_choice is not None:
-            # Perseveration bonus
-            perseveration_mask = (current_choice == old_choice).float().unsqueeze(-1)
-            perseveration_bonus = perseveration_mask * params['perseveration_strength'] * torch.nn.functional.one_hot(current_choice, num_classes=self.n_actions).float()
-
-            # Switch bonus
-            switch_mask = (current_choice != old_choice).float().unsqueeze(-1)
-            switch_bonus = switch_mask * params['switch_strength'] * torch.nn.functional.one_hot(current_choice, num_classes=self.n_actions).float()
-
-            # Attention bias 1 (based on old choice)
-            attention_bonus1 = torch.zeros(batch_size, self.n_actions)
-            valid_old = old_choice >= 0
-            if valid_old.any():
-                attention_bonus1[valid_old] = params['attention_bias1'] * torch.nn.functional.one_hot(old_choice[valid_old], num_classes=self.n_actions).float()
-
-            # Attention bias 2 (based on (choice + 2) % 4)
-            attention_idx = (current_choice + 2) % 4
-            attention_bonus2 = params['attention_bias2'] * torch.nn.functional.one_hot(attention_idx, num_classes=self.n_actions).float()
-
-            # Trial-based bonus
-            trial_bonus = torch.nn.functional.one_hot(current_choice, num_classes=self.n_actions).float() * torch.log(trial_since_last_switch.float().unsqueeze(-1) + 1)
-
-            logits = logits + perseveration_bonus + switch_bonus + attention_bonus1 + attention_bonus2 + trial_bonus
-
-        return logits
-
-    def forward(self, inputs, prev_state=None, batch_first=False):
-        """Forward pass through the model."""
-        input_variables, logits, timesteps = self.init_forward_pass(inputs, prev_state, batch_first)
-        actions, rewards = input_variables
-
-        # Get initial state
-        q_values = self.state['x_value_reward']
-        old_choice = self.state['x_old_choice']
-        trial_since_last_switch = self.state['x_trial_since_last_switch']
-        exploration_rate = self.state['x_exploration_rate']
-        cumchoice = self.state['x_cumchoice']
-
-        # Process each timestep
-        for t, (action, reward) in enumerate(zip(actions, rewards)):
-            # Get current choice
-            current_choice = torch.argmax(action, dim=-1)
-
-            # Compute logits for this timestep (prediction for current action)
-            logits[t] = self.compute_choice_logits(q_values, old_choice, trial_since_last_switch, cumchoice, current_choice)
-
-            # Update state based on observed action and reward
-            q_values, current_choice, trial_since_last_switch, exploration_rate, cumchoice = self.update_step(
-                q_values, old_choice, trial_since_last_switch, exploration_rate, cumchoice, action, reward
+            # JAX applies all these bonuses only when choice is present.
+            has_choice_mask = had_choice.unsqueeze(-1).float()
+            step_logits = step_logits + has_choice_mask * (
+                persev_bonus + switch_bonus + attn_bonus1 + attn_bonus2 + tsls_bonus
             )
-            old_choice = current_choice
 
-        # Update state
-        self.state['x_value_reward'] = q_values
-        self.state['x_old_choice'] = old_choice
-        self.state['x_trial_since_last_switch'] = trial_since_last_switch
-        self.state['x_exploration_rate'] = exploration_rate
-        self.state['x_cumchoice'] = cumchoice
+            logits[t] = step_logits
 
-        if batch_first:
-            logits = logits.swapaxes(0, 1)
+            # ---- Store updated state ----
+            new_old_ch = torch.where(had_choice, choice_idx, old_ch)
+            self.state = {
+                'q_values':                q,
+                'old_choice':              new_old_ch,
+                'trial_since_last_switch': tsls,
+                'exploration_rate':        er,
+                'cumchoice':               cc,
+            }
+
+        if self.batch_first:
+            logits = logits.permute(1, 0, 2)  # → (B, T, n_actions)
 
         return logits, self.get_state()
 
+    # ------------------------------------------------------------------
+    # State management (mirrors BaseRNN / MarginalValueTheoremModel API)
+    # ------------------------------------------------------------------
 
-def train_single_participant(index_participant, xs, ys, xs_test, ys_test, n_actions, epochs, lr, convergence_threshold, n_total_participants, max_restarts=10, convergence_check_interval=100):
+    def set_initial_state(self, batch_size: int = 1, prior=None, exploration_rate=None):
+        """Reset state to initial values for a new session."""
+        device = self.beta_r_raw.device
+        if prior is None:
+            prior = self.prior[:batch_size]
+        if exploration_rate is None:
+            exploration_rate = self.alpha_exploration_rate[:batch_size]
+
+        self.state = {
+            # Q-values initialised to `prior` (per-participant scalar broadcast to actions)
+            'q_values':                prior.unsqueeze(-1).expand(batch_size, self.n_actions).clone(),
+            # -1 signals "no previous choice" — use 0 as placeholder (clamped when indexing)
+            'old_choice':              torch.full((batch_size,), -1, dtype=torch.long, device=device),
+            'trial_since_last_switch': torch.zeros(batch_size, dtype=torch.float32, device=device),
+            'exploration_rate':        exploration_rate.clone().detach(),
+            'cumchoice':               torch.zeros(batch_size, self.n_actions, dtype=torch.float32, device=device),
+        }
+        return self.get_state()
+
+    def set_state(self, state_dict):
+        self.state = state_dict
+
+    def get_state(self, detach=False):
+        if detach:
+            return {k: v.detach() for k, v in self.state.items()}
+        return self.state
+
+
+# ---------------------------------------------------------------------------
+# Training
+# ---------------------------------------------------------------------------
+
+def _make_optimizer(model: Castro2025Model, lr: float) -> torch.optim.Optimizer:
+    """Return AdaBelief if available, otherwise fall back to Adam."""
+    if _ADABELIEF_AVAILABLE:
+        return AdaBelief(model.parameters(), lr=lr, print_change_log=False)
+    return torch.optim.Adam(model.parameters(), lr=lr)
+
+
+def _compute_loss(model: Castro2025Model, xs: torch.Tensor, ys: torch.Tensor) -> torch.Tensor:
+    """Single forward pass and cross-entropy loss (NaN-masked)."""
+    logits, _ = model(xs)                                          # (T, B, n_actions)
+    mask = ~torch.isnan(xs[:, :, :model.n_actions].sum(dim=-1))   # (T, B)
+    logits_flat = logits[mask]                                     # (N, n_actions)
+    labels_flat = ys[mask].argmax(dim=-1).long()                   # (N,)
+    return torch.nn.functional.cross_entropy(logits_flat, labels_flat)
+
+
+def training(
+    model: Castro2025Model,
+    xs: torch.Tensor,
+    ys: torch.Tensor,
+    xs_test: Optional[torch.Tensor] = None,
+    ys_test: Optional[torch.Tensor] = None,
+    epochs: int = 10000,
+    lr: float = 5e-2,
+    convergence_threshold: float = 1e-2,
+    convergence_check_interval: int = 100,
+    max_restarts: int = 10,
+) -> Castro2025Model:
     """
-    Train a single participant's model with multiple restarts.
-
-    Following Castro et al. 2025:
-    - Use AdaBelief optimizer with lr=5e-2
-    - Check convergence every 100 steps by comparing Omega_k to Omega_{k-100}
-    - Convergence criterion: |(Omega_k - Omega_{k-100})/Omega_{k-100}| < 1e-2
-    - Repeat from different initial parameters up to 10 times
-    - Stop when 3 programs converge to current best
-
-    Args:
-        index_participant: Index of participant
-        xs: Training data
-        ys: Training labels
-        xs_test: Test data
-        ys_test: Test labels
-        n_actions: Number of actions
-        epochs: Maximum number of epochs (10000 in paper)
-        lr: Learning rate (5e-2 in paper)
-        convergence_threshold: Convergence threshold (1e-2 in paper)
-        n_total_participants: Total number of participants
-        max_restarts: Maximum number of restarts (10 in paper)
-        convergence_check_interval: Check convergence every N steps (100 in paper)
+    Fit the model using the Castro et al. 2025 training strategy:
+      - AdaBelief optimiser (lr = 5e-2)
+      - Check convergence every `convergence_check_interval` steps:
+          |(Ω_k − Ω_{k−N}) / Ω_{k−N}| < convergence_threshold
+      - Restart from fresh random parameters up to `max_restarts` times
+      - Stop early once 3 restarts converge to the current best loss
     """
-
     best_model = None
     best_loss = float('inf')
-    converged_models = []
+    n_converged_to_best = 0
 
     for restart in range(max_restarts):
-        # Initialize new model with random parameters
-        model_participant = Castro2025Model(n_actions=n_actions)
-        optimizer = AdaBelief(model_participant.parameters(), lr=lr, print_change_log=False)
+        # Re-initialise parameters for each restart
+        candidate = Castro2025Model(
+            n_actions=model.n_actions,
+            n_participants=model.n_participants,
+            batch_first=model.batch_first,
+        )
+        optimizer = _make_optimizer(candidate, lr)
 
-        loss_history = []
+        loss_history: List[float] = []
         converged = False
 
-        # Create inner progress bar for epochs
-        epoch_pbar = tqdm(range(epochs), desc=f"P{index_participant+1}/{n_total_participants} R{restart+1}/{max_restarts}", leave=False, position=index_participant % 10)
+        pbar = tqdm(range(epochs), desc=f"Restart {restart + 1}/{max_restarts}", leave=False)
+        for epoch in pbar:
+            candidate.train()
+            optimizer.zero_grad()
+            loss = _compute_loss(candidate, xs, ys)
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(candidate.parameters(), max_norm=1.0)
+            optimizer.step()
 
-        for e in epoch_pbar:
-            # Train model
-            model_participant, optimizer, current_loss = _run_batch_training(
-                model=model_participant,
-                xs=xs,
-                ys=ys,
-                optimizer=optimizer,
-            )
+            loss_history.append(loss.item())
 
-            loss_history.append(current_loss)
-
-            # Check convergence every 100 steps (Castro et al. 2025 strategy)
-            convergence_value = float('inf')
-            if (e + 1) % convergence_check_interval == 0 and len(loss_history) >= convergence_check_interval:
+            # Convergence check (Castro et al. 2025 criterion)
+            if (epoch + 1) % convergence_check_interval == 0 and len(loss_history) >= convergence_check_interval:
                 omega_k = loss_history[-1]
-                omega_k_minus_100 = loss_history[-convergence_check_interval]
-
-                # Relative change: |(Omega_k - Omega_{k-100})/Omega_{k-100}|
-                if abs(omega_k_minus_100) > 1e-10:
-                    convergence_value = abs((omega_k - omega_k_minus_100) / omega_k_minus_100)
-
-                    if convergence_value < convergence_threshold:
+                omega_prev = loss_history[-convergence_check_interval]
+                if abs(omega_prev) > 1e-10:
+                    rel_change = abs((omega_k - omega_prev) / omega_prev)
+                    if rel_change < convergence_threshold:
                         converged = True
 
-            # Test model
+            # Live postfix
+            postfix = {'train': f'{loss_history[-1]:.4f}', 'best': f'{best_loss:.4f}'}
             if xs_test is not None:
+                candidate.eval()
                 with torch.no_grad():
-                    model_participant.eval()
-                    _, _, loss_test = _run_batch_training(
-                        model=model_participant,
-                        xs=xs_test,
-                        ys=ys_test,
-                        optimizer=optimizer,
-                    )
-                    model_participant.train()
+                    postfix['test'] = f'{_compute_loss(candidate, xs_test, ys_test).item():.4f}'
+                candidate.train()
+            pbar.set_postfix(postfix)
 
-                    epoch_pbar.set_postfix({
-                        'train': f'{current_loss:.5f}',
-                        'test': f'{loss_test:.5f}',
-                        'conv': f'{convergence_value:.2e}',
-                        'best': f'{best_loss:.5f}'
-                    })
-            else:
-                epoch_pbar.set_postfix({
-                    'loss': f'{current_loss:.5f}',
-                    'conv': f'{convergence_value:.2e}',
-                    'best': f'{best_loss:.5f}'
-                })
-
-            # Early stopping if converged
             if converged:
                 break
 
-        epoch_pbar.close()
+        pbar.close()
 
-        # Evaluate final loss
-        final_loss = loss_history[-1] if loss_history else float('inf')
-
-        # Update best model if this one is better
+        final_loss = loss_history[-1]
         if final_loss < best_loss:
             best_loss = final_loss
-            best_model = model_participant
+            best_model = candidate
 
-            # If converged, add to converged models list
-            if converged:
-                converged_models.append(final_loss)
+        # Count restarts that converged close to the current best
+        if converged and abs(final_loss - best_loss) / max(abs(best_loss), 1e-10) < 0.01:
+            n_converged_to_best += 1
+            if n_converged_to_best >= 3:
+                # Three restarts agree — stop early
+                break
 
-                # Check if we have 3 converged models close to the best
-                # "converged to current best" means within 1% of best loss
-                converged_to_best = sum(1 for loss in converged_models if abs(loss - best_loss) / max(abs(best_loss), 1e-10) < 0.01)
-
-                if converged_to_best >= 3:
-                    print(f"Participant {index_participant+1}: 3 models converged to best loss {best_loss:.5f} after {restart+1} restarts")
-                    break
-
-        # Print restart summary
         status = "converged" if converged else "max epochs"
-        print(f"Participant {index_participant+1} restart {restart+1}: loss={final_loss:.5f} ({status}), best={best_loss:.5f}")
+        print(f"  Restart {restart + 1}: loss={final_loss:.5f} ({status}), best={best_loss:.5f}")
 
     return best_model
 
 
-def training(n_actions: int, dataset_training: SpiceDataset, epochs: int, lr: float = 0.05, dataset_test: SpiceDataset = None, convergence_threshold: float = 1e-2, n_jobs: int = 1, max_restarts: int = 10, convergence_check_interval: int = 100):
-    """
-    Training loop for Castro2025 model using MLE (gradient descent).
-
-    Following Castro et al. 2025 defaults:
-    - lr: 5e-2
-    - convergence_threshold: 1e-2
-    - max_restarts: 10
-    - convergence_check_interval: 100
-    """
-
-    n_participants = len(dataset_training)
-
-    if n_jobs == 1:
-        # Sequential training
-        all_models = []
-        for index_participant in range(n_participants):
-            xs = dataset_training.xs[index_participant]
-            ys = dataset_training.ys[index_participant]
-            xs_test = dataset_test.xs[index_participant] if dataset_test is not None else None
-            ys_test = dataset_test.ys[index_participant] if dataset_test is not None else None
-
-            model = train_single_participant(
-                index_participant, xs, ys, xs_test, ys_test,
-                n_actions, epochs, lr, convergence_threshold, n_participants,
-                max_restarts, convergence_check_interval
-            )
-            all_models.append(model)
-    else:
-        # Parallel training
-        print(f"Training {n_participants} participants in parallel with {n_jobs} jobs...")
-
-        all_models = Parallel(n_jobs=n_jobs, backend='loky')(
-            delayed(train_single_participant)(
-                index_participant,
-                dataset_training.xs[index_participant],
-                dataset_training.ys[index_participant],
-                dataset_test.xs[index_participant] if dataset_test is not None else None,
-                dataset_test.ys[index_participant] if dataset_test is not None else None,
-                n_actions, epochs, lr, convergence_threshold, n_participants,
-                max_restarts, convergence_check_interval
-            )
-            for index_participant in range(n_participants)
-        )
-
-    return all_models
-
+# ---------------------------------------------------------------------------
+# Agent wrapper for SPICE evaluation pipeline
+# ---------------------------------------------------------------------------
 
 class AgentCastro2025(Agent):
-    """A class that allows running a pretrained Castro2025 model as an agent."""
+    """Wraps a trained Castro2025Model as a SPICE-compatible Agent."""
 
-    def __init__(
-        self,
-        model: Castro2025Model,
-        deterministic: bool = True,
-    ):
-        """Initialize the agent network."""
+    def __init__(self, model: Castro2025Model, deterministic: bool = True):
         super().__init__(model_rnn=None, n_actions=model.n_actions, deterministic=deterministic)
-
-        assert isinstance(model, Castro2025Model), "The passed model is not an instance of Castro2025Model."
-
+        assert isinstance(model, Castro2025Model)
         self.model = model
         self.model.eval()
 
     @property
     def q(self):
-        """Return the action values."""
-        return self.state['x_value_reward'].squeeze(0).detach().cpu().numpy()
+        """Current Q-values (numpy array)."""
+        return self.state['q_values'].squeeze(0).detach().cpu().numpy()
 
 
-def setup_agent_benchmark(path_model: str, deterministic: bool = True, **kwargs) -> List[AgentCastro2025]:
-    """Setup Castro2025 agents from saved model."""
-
-    # Load models
-    with open(path_model, 'rb') as file:
-        all_models = pickle.load(file)
-
-    agents = []
-    for model in all_models:
-        agents.append(AgentCastro2025(model=model, deterministic=deterministic))
-
-    # Count parameters (13 parameters)
+def setup_agent_benchmark(path_model: str, deterministic: bool = True, **kwargs):
+    """Load saved model and return a list of AgentCastro2025 instances."""
+    with open(path_model, 'rb') as f:
+        model = pickle.load(f)
+    agent = AgentCastro2025(model=model, deterministic=deterministic)
     n_parameters = 13
+    return [agent], n_parameters
 
-    return agents, n_parameters
 
+# ---------------------------------------------------------------------------
+# CLI entry point
+# ---------------------------------------------------------------------------
 
-def main(path_save_model: str, path_data: str, n_actions: int, n_epochs: int, lr: float, split_ratio=None, convergence_threshold: float = 1e-2, n_jobs: int = 1, max_restarts: int = 10, convergence_check_interval: int = 100):
-    """
-    Main training function.
-
-    Following Castro et al. 2025 defaults:
-    - n_epochs: 10000
-    - lr: 5e-2
-    - convergence_threshold: 1e-2
-    - max_restarts: 10
-    - convergence_check_interval: 100
-    """
-
-    # Load and split data
-    dataset_full = csv_to_dataset(
-        file=path_data,
-        df_participant_id='s_id',
-        df_choice='action',
-        )
+def main(
+    path_save_model: str,
+    path_data: str,
+    n_actions: int,
+    n_epochs: int,
+    lr: float,
+    split_ratio=None,
+    convergence_threshold: float = 1e-2,
+    convergence_check_interval: int = 100,
+    max_restarts: int = 10,
+):
+    dataset = csv_to_dataset(file=path_data, df_participant_id='s_id', df_choice='action')
 
     if split_ratio is not None:
-        dataset_training, dataset_test = split_data_along_sessiondim(
-            dataset_full,
-            list_test_sessions=split_ratio
-        )
+        dataset_train, dataset_test = split_data_along_sessiondim(dataset, list_test_sessions=split_ratio)
     else:
-        dataset_training = dataset_full
-        dataset_test = None
+        dataset_train, dataset_test = dataset, None
 
-    dataset_training = reshape_data_along_participantdim(dataset_training)
-    if dataset_test is not None:
-        dataset_test = reshape_data_along_participantdim(dataset_test)
+    n_participants = int(dataset_train.xs[..., -1].max().item()) + 1
+    xs = dataset_train.xs.permute(1, 0, 2)  # (T, B, F)
+    ys = dataset_train.ys.permute(1, 0, 2)  # (T, B, n_actions)
+    xs_test = dataset_test.xs.permute(1, 0, 2) if dataset_test is not None else None
+    ys_test = dataset_test.ys.permute(1, 0, 2) if dataset_test is not None else None
 
-    print('Training Castro2025 Model...')
-    all_models = training(
-        dataset_training=dataset_training,
-        dataset_test=dataset_test,
-        n_actions=n_actions,
+    model = Castro2025Model(n_actions=n_actions, n_participants=n_participants)
+
+    print('Training Castro2025 model...')
+    model = training(
+        model=model,
+        xs=xs, ys=ys,
+        xs_test=xs_test, ys_test=ys_test,
         epochs=n_epochs,
         lr=lr,
         convergence_threshold=convergence_threshold,
-        n_jobs=n_jobs,
-        max_restarts=max_restarts,
         convergence_check_interval=convergence_check_interval,
+        max_restarts=max_restarts,
     )
 
-    # Save models
-    with open(path_save_model, 'wb') as file:
-        pickle.dump(all_models, file)
-
+    with open(path_save_model, 'wb') as f:
+        pickle.dump(model, f)
     print(f'Model saved to {path_save_model}')
-    print('Training Castro2025 Model done!')
 
 
-if __name__ == '__main__':
-
-    parser = argparse.ArgumentParser(description='Train Castro2025 model with PyTorch (MLE via gradient descent) using Castro et al. 2025 early stopping strategy')
-
-    parser.add_argument('--path_save_model', type=str, default='params/castro2025/castro2025.pkl', help='Path to save the trained model')
-    parser.add_argument('--path_data', type=str, default='data/eckstein2024/eckstein2024.csv', help='Path to the dataset')
-    parser.add_argument('--n_actions', type=int, default=4, help='Number of actions')
-    parser.add_argument('--n_epochs', type=int, default=10000, help='Maximum number of training epochs (10000 in Castro et al. 2025)')
-    parser.add_argument('--lr', type=float, default=0.05, help='Learning rate (5e-2 in Castro et al. 2025)')
-    parser.add_argument('--split_ratio', type=str, default=None, help='Sessions to use for testing (comma-separated)')
-    parser.add_argument('--convergence_threshold', type=float, default=1e-2, help='Convergence threshold for early stopping (1e-2 in Castro et al. 2025)')
-    parser.add_argument('--convergence_check_interval', type=int, default=100, help='Check convergence every N steps (100 in Castro et al. 2025)')
-    parser.add_argument('--max_restarts', type=int, default=10, help='Maximum number of random restarts (10 in Castro et al. 2025)')
-    parser.add_argument('--n_jobs', type=int, default=1, help='Number of parallel jobs for training participants (-1 for all CPUs)')
-
+if __name__ == '__main__':    
+    parser = argparse.ArgumentParser(description='Fit Castro et al. 2025 benchmark model')
+    parser.add_argument('--path_save_model', type=str, default='params/castro2025/castro2025.pkl')
+    parser.add_argument('--path_data', type=str, default='data/eckstein2024/eckstein2024.csv')
+    parser.add_argument('--n_actions', type=int, default=4)
+    parser.add_argument('--n_epochs', type=int, default=10000)
+    parser.add_argument('--lr', type=float, default=0.05)
+    parser.add_argument('--split_ratio', type=str, default=None, help='Comma-separated test session indices')
+    parser.add_argument('--convergence_threshold', type=float, default=1e-2)
+    parser.add_argument('--convergence_check_interval', type=int, default=100)
+    parser.add_argument('--max_restarts', type=int, default=10)
     args = parser.parse_args()
-
-    # Parse split ratio
-    if args.split_ratio is not None:
-        split_ratio = [int(x) for x in args.split_ratio.split(',')]
-    else:
-        split_ratio = None
 
     main(
         path_save_model=args.path_save_model,
@@ -634,9 +578,69 @@ if __name__ == '__main__':
         n_actions=args.n_actions,
         n_epochs=args.n_epochs,
         lr=args.lr,
-        split_ratio=split_ratio,
+        split_ratio=[int(x) for x in args.split_ratio.split(',')] if args.split_ratio else None,
         convergence_threshold=args.convergence_threshold,
-        n_jobs=args.n_jobs,
-        max_restarts=args.max_restarts,
         convergence_check_interval=args.convergence_check_interval,
+        max_restarts=args.max_restarts,
     )
+
+
+'''
+if __name__=='__main__':
+    
+    from spice.utils.convert_dataset import csv_to_dataset
+    
+    file = 'weinhardt2025/data/bustamante2023/bustamante2023_processed.csv'
+    
+    dataset = csv_to_dataset(
+        file=file,
+        df_participant_id='subject_id',
+        df_choice='decision',
+        df_feedback='reward',
+        df_block='overall_round',
+        additional_inputs=['harvest_duration', 'travel_duration'],   
+    )
+    
+    n_participants = len(dataset.xs[..., -1].unique())
+    
+    mvt = MarginalValueTheoremModel(n_participants=n_participants)
+    
+    # benchmark training
+    epochs = 1000
+    metric = torch.nn.CrossEntropyLoss()
+    optimizer = torch.optim.Adam(params=mvt.parameters(), lr=0.01)
+    
+    for epoch in range(epochs):
+        
+        random_index = torch.randint(len(dataset.xs), (len(dataset.xs), 1))[:, 0]
+        
+        mask = ~torch.isnan(dataset.xs[random_index, :, 0]).reshape(-1)
+        
+        logits, state = mvt(inputs=dataset.xs[random_index], batch_first=True)
+        
+        # compute loss
+        loss = metric(
+            logits.reshape(-1, mvt.n_actions)[mask],
+            dataset.ys.argmax(dim=-1, keepdim=True).long().reshape(-1)[mask], 
+            )
+        
+        # backprop
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+        
+        print(f"Epoch {epoch+1}/{epochs} --- Loss: {loss.item():.5f}")
+        
+    print("Fitted parameters:")
+    print("\nAlpha")
+    print(mvt.alpha_env)
+    print("\nBeta")
+    print(mvt.beta)
+    print("\nC")
+    print(mvt.c)
+    print("\nBaseline Gain")
+    print(mvt.baseline_gain)
+    print("\nDepletion")
+    print(mvt.depletion)
+    
+'''
