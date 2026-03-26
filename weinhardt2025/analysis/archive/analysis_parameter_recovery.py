@@ -10,10 +10,10 @@ from sklearn.linear_model import LinearRegression
 from scipy import stats
 
 from spice import Agent, SpiceEstimator, csv_to_dataset
-from spice.precoded import workingmemory_rewardbinary, choice
+from spice.precoded import workingmemory_counterfactual, choice
 
 sys.path.append(os.path.abspath(os.path.join(os.path.__file__, '..', '..')))
-from spice.precoded import workingmemory_rewardbinary
+from spice.precoded import workingmemory_counterfactual
 from weinhardt2025.benchmarking.benchmarking_qlearning import QLearning
 
 
@@ -23,7 +23,7 @@ USE_STRUCTURAL_FILTERING = False  # Structural filtering enabled
 # spice_model = choice
 # base_name_params = 'weinhardt2025/params/synthetic/spice_synthetic_choice_SESSp_IT.pkl'
 
-spice_class = workingmemory_rewardbinary
+spice_class = workingmemory_counterfactual
 base_name_params = 'weinhardt2025/params/synthetic/spice_synthetic_SESSp_IT_0.pkl'
 
 random_sampling = [0.25, 0.5, 0.75]

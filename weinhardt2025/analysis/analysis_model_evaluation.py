@@ -336,8 +336,8 @@ if __name__=='__main__':
                    help="Sessions to test the models against (comma-separated list)")
     p.add_argument("--spice_model", default=None,
                    help="Path to the trained SPICE model (.pkl)")
-    p.add_argument("--spice_module", default="spice.precoded.workingmemory_rewardbinary",
-                   help="Name of the SPICE model module (default: spice.precoded.workingmemory_rewardbinary)")
+    p.add_argument("--spice_module", default="spice.precoded.workingmemory",
+                   help="Name of the SPICE model module (default: spice.precoded.workingmemory)")
     p.add_argument("--benchmark_model", default=None,
                    help="Path to the trained benchmark model (.pkl)")
     p.add_argument("--benchmark_module", default="weinhardt2025.benchmarking.benchmarking_qlearning",
