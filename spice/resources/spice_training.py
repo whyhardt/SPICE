@@ -612,8 +612,14 @@ def _run_sindy_training(
     xs_train: torch.Tensor,
     ys_train: torch.Tensor,
     epochs: int = 1000,
+    n_warmup_steps: int = 0,
+    sindy_alpha: float = None,
+    sindy_pruning_frequency: int = None,
+    sindy_ensemble_pruning: float = None,
+    sindy_threshold_pruning: float = None,
     verbose: bool = True,
     ):
+    
     """
     Final SINDy refit: freeze RNN weights and refit SINDy coefficients
     on the trained RNN hidden states via batched MSE 
@@ -658,13 +664,13 @@ def _run_sindy_training(
     while True:
         try:  # batch size probing
             pbar = tqdm(range(epochs))
-            for e in pbar:
+            for epoch in pbar:
                 # shuffle along sample dimension (deferred to batch indexing to avoid full-dataset gather)
                 shuffle_index = torch.randperm(n_samples_vectorized)
 
                 loss_epoch = 0
                 for index_batch in range(0, n_samples_vectorized, batch_size):
-
+                    
                     model.zero_grad()
 
                     batch_idx = shuffle_index[index_batch:index_batch+batch_size]
@@ -675,10 +681,16 @@ def _run_sindy_training(
                     _, pred_state = model(batch_xs_flat, prev_state=batch_prev_state, batch_first=True)
 
                     loss_batch = 0
+                    
+                    # prediction loss
                     for s in model.spice_config.states_in_logit:
                         loss_batch += criterion(pred_state[s], batch_target_state[s])
+                        
+                    # sparsity loss
+                    if sindy_alpha is not None:
+                        loss_batch += model.compute_weighted_coefficient_penalty(sindy_alpha=sindy_alpha, norm=1)
+                    
                     loss_batch.backward()
-
                     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                     optimizer.step()
 
@@ -688,7 +700,50 @@ def _run_sindy_training(
                             model.sindy_coefficients[module].data *= model.sindy_coefficients_presence[module]
 
                     loss_epoch += loss_batch.item()
-                pbar.set_postfix(loss=f"{loss_epoch:.7f}")
+                    
+                pbar.set_postfix(loss=f"{loss_epoch:.7f}", n_params=f"{model.count_sindy_coefficients().mean():.2f}+/-{model.count_sindy_coefficients().std():.2f}")
+                
+                # Unified pruning event with ridge recalibration
+                if (
+                    sindy_pruning_frequency is not None
+                    # and n_calls_to_train_model >= n_warmup_steps
+                    ):
+
+                    if (sindy_ensemble_pruning is None 
+                        and sindy_threshold_pruning is not None
+                        and epoch >= n_warmup_steps
+                        ):
+                        # Fallback: per-epoch patience tracking for per-member threshold pruning
+                        model.sindy_coefficient_patience(threshold=sindy_threshold_pruning)
+
+                    
+                    if (epoch % sindy_pruning_frequency == 0
+                        or epoch == 1
+                        # and n_calls_to_train_model >= n_warmup_steps
+                        ):
+                        
+                        # pruning
+                        if epoch >= n_warmup_steps:       
+                            
+                            # Ridge solve before pruning: snap coefficients to MSE-optimal
+                            # so pruning decisions are based on clean estimates
+                            # _ridge_solve_sindy(model, xs_train, ys_train)
+                            
+                            pruned = False
+                            if (sindy_ensemble_pruning is not None 
+                                and model.ensemble_size > 1
+                                ):
+                                model, pruned = _ensemble_pruning(
+                                    model=model,
+                                    sindy_ensemble_pruning=sindy_ensemble_pruning,
+                                    sindy_threshold_pruning=sindy_threshold_pruning,
+                                    verbose=verbose,
+                                    )
+
+                            elif sindy_threshold_pruning is not None and sindy_threshold_pruning > 0:
+                                # Fallback: per-member threshold pruning only (no ensemble test)
+                                model.sindy_coefficient_pruning(patience=sindy_pruning_frequency)
+                                pruned = True
             break
         except KeyboardInterrupt:
             if verbose:
@@ -1381,6 +1436,11 @@ def fit_spice(
             xs_train=xs_train_5d.to(torch.device('cpu')),
             ys_train=ys_train_5d.to(torch.device('cpu')),
             epochs=1000,
+            n_warmup_steps=n_warmup_steps,
+            sindy_alpha=sindy_alpha,
+            sindy_threshold_pruning=sindy_threshold_pruning,
+            sindy_pruning_frequency=sindy_pruning_frequency,
+            sindy_ensemble_pruning=sindy_ensemble_pruning,
             verbose=verbose,
         )
         # for rnn_module in model.submodules_rnn.values():

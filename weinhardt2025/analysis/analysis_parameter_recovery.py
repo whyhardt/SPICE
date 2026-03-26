@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 import torch
 
 from spice import SpiceEstimator, csv_to_dataset
-from spice.precoded import choice, workingmemory, workingmemory_rewardbinary, workingmemory_rewardflags
+from spice.precoded import workingmemory, workingmemory_counterfactual
 
 import sys, os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
@@ -11,15 +11,26 @@ from weinhardt2025.benchmarking.benchmarking_qlearning import QLearning
 
 
 path_data = 'weinhardt2025/data/synthetic/synthetic_PARp_IT_0.csv'
-path_model = 'weinhardt2025/params/synthetic2/spice_synthetic_PARp_IT_1.pkl'
-# path_model = 'weinhardt2025/params/synthetic/spice_e10_a0_05_t0_05.pkl'
+path_model = 'weinhardt2025/params/synthetic/spice_synthetic_PARp_IT_0_loose.pkl'
 
-spice_model = workingmemory_rewardbinary
+spice_model = workingmemory#_counterfactual
 rl_parameters = ['beta_reward', 'beta_choice', 'alpha_reward', 'alpha_penalty', 'alpha_choice', 'forget_rate']
-participants = [32, 64, 128, 256, 512]
-iterations = 3
-coefficient_threshold = 0.05
+participants = [256]#[32, 64, 128, 256, 512]
+iterations = 1
+coefficient_threshold = 0.01
 ensemble_size = 10
+
+# term collapsing in fitted model from term tuple[1] -> tuple[0]; used for binary signals where signal^1=signal^2, e.g. binary reward or choice
+term_collapsing = (
+    ('reward[t]', 'reward[t]^2'),
+    ('reward[t-1]', 'reward[t-1]^2'),
+    ('reward[t-2]', 'reward[t-2]^2'),
+    ('reward[t-3]', 'reward[t-3]^2'),
+    ('choice[t]', 'choice[t]^2'),
+    ('choice[t-1]', 'choice[t-1]^2'),
+    ('choice[t-2]', 'choice[t-2]^2'),
+    ('choice[t-3]', 'choice[t-3]^2'),
+)
 
 # Dynamically determine n_coefficients from a sample model
 sample_dataset = csv_to_dataset(
@@ -88,7 +99,7 @@ for index_par, par in enumerate(participants):
         )
         fitted_model.load_spice(path_model=path_model.replace('PAR', str(par)).replace('IT', str(it)))
         fitted_model = fitted_model.model
-        fitted_coef_vals = fitted_model.get_sindy_coefficients()
+        fitted_coef_vals = fitted_model.get_sindy_coefficients(aggregate=True)
 
         # put all coefs into storage
         index_coefs_all = 0
@@ -109,6 +120,14 @@ for index_par, par in enumerate(participants):
                     true_coef_vals += 1
                 true_coefs[index_par, par*it:par*(it+1), index_coefs_all+index_coef] = true_coef_vals
 
+            # term collapsing
+            for term in term_collapsing:
+                index_target_term = candidate_terms_fitted_model.index(term[0]) if term[0] in candidate_terms_fitted_model else None
+                index_source_term = candidate_terms_fitted_model.index(term[1]) if term[1] in candidate_terms_fitted_model else None
+                if index_source_term is not None and index_target_term is not None:
+                    fitted_coef_vals[module][..., index_target_term] += fitted_coef_vals[module][..., index_source_term]
+                    fitted_coef_vals[module][..., index_source_term] = 0
+            
             # place fitted module coefs in storage (apply presence mask)
             # fitted_coef_vals = (
             #     fitted_model.sindy_coefficients[module][0, :, 0, :] *
@@ -116,8 +135,8 @@ for index_par, par in enumerate(participants):
             # ).detach().cpu().numpy()
             # fitted_coef_vals = (fitted_model.sindy_coefficients[module][:, :, 0, :].median(dim=0)[0] * fitted_model.sindy_coefficients_presence[module][:, :, 0, :].float().median(dim=0)[0]).detach().cpu().numpy()
             index_ident = candidate_terms_fitted_model.index(module)
-            fitted_coef_vals[module][0, :, 0, index_ident] += 1
-            fitted_coefs[index_par, par*it:par*(it+1), index_coefs_all:index_coefs_all+n_terms_module] = fitted_coef_vals[module][0, :, 0]
+            fitted_coef_vals[module][:, 0, index_ident] += 1
+            fitted_coefs[index_par, par*it:par*(it+1), index_coefs_all:index_coefs_all+n_terms_module] = fitted_coef_vals[module][:, 0]
             
             index_coefs_all += n_terms_module
 
