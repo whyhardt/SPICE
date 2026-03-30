@@ -31,7 +31,7 @@ study = "dezfouli2019"
 models = ["PhiBeta", "PhiChiBetaKappaC"]
 path_model_benchmark = f'params/{study}/gql_{study}_SIMULATED_FITTED.pkl'
 setup_agent_benchmark = benchmarking_dezfouli2019.setup_agent_gql
-Dezfouli2019GQL = benchmarking_dezfouli2019.Dezfouli2019GQL
+Dezfouli2019GQL = benchmarking_dezfouli2019.Model
 
 spice_model_name = "spice"
 models.append(spice_model_name)

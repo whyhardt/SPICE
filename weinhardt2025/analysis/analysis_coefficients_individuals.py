@@ -114,7 +114,7 @@ def prepare(criterion_col, data_path: str, dataset_kwargs: dict = {}, spice_mode
     raw_df = pd.read_csv(data_path)
     
     n_actions = dataset.ys.shape[-1]
-    unique_sessions = dataset.xs[..., -1].unique().tolist()
+    unique_sessions = dataset.xs[..., -1].int().unique().tolist()
     n_participants = len(unique_sessions)
     
     # --- load or reuse SPICE model ---
@@ -161,7 +161,11 @@ def prepare(criterion_col, data_path: str, dataset_kwargs: dict = {}, spice_mode
         for c in candidate_terms[m]:
             sindy_cols.append(m+"_"+c)
 
-    index_to_session = {i: pid for i, pid in enumerate(unique_sessions)}
+    # Map integer indices back to original participant labels from the CSV.
+    # csv_to_dataset maps participants via enumerate(df["participant"].unique()),
+    # so the integer order matches the unique() order of the raw DataFrame.
+    original_pids = raw_df["participant"].unique()
+    index_to_session = {i: original_pids[i] for i in range(n_participants)}
 
     rows = []
     for p_idx in range(n_participants):

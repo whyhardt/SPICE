@@ -44,10 +44,11 @@ def csv_to_dataset(
         SpiceDataset: _description_
     """
     
-    if timeshift_additional_inputs is not None and \
-        additional_inputs is not None and \
-            len(timeshift_additional_inputs) != len(additional_inputs):
-                raise ValueError(f"timeshift_additional_inputs must have the same length as additional_inputs but has length {len(timeshift_additional_inputs)} compared to length {len(additional_inputs)} in additional_inputs")
+    if (timeshift_additional_inputs is not None 
+        and additional_inputs is not None 
+        and len(timeshift_additional_inputs) != len(additional_inputs)
+        ):
+        raise ValueError(f"timeshift_additional_inputs must have the same length as additional_inputs but has length {len(timeshift_additional_inputs)} compared to length {len(additional_inputs)} in additional_inputs")
     
     df = pd.read_csv(file, index_col=None)
     

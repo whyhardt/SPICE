@@ -174,7 +174,7 @@ def analysis_model_evaluation(
             benchmark_model = prepare_benchmark(path_model=benchmark_path, dataset=dataset, model_module=benchmark_module, model_class=benchmark_class, n_reward_features=n_reward_features)
         if benchmark_model is not None:
             print("Computing choice probabilities with benchmark model...")
-            benchmark_parameters = len([p for p in benchmark_model.parameters()])
+            benchmark_parameters = benchmark_model.count_parameters() if hasattr(benchmark_model, 'count_parameters') else len([p for p in benchmark_model.parameters()])
             benchmark_predictions, _ = benchmark_model(dataset_test.xs)
             benchmark_choice_probs = get_choice_probs(benchmark_predictions).detach().cpu()
         else:

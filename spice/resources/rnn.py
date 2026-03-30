@@ -950,7 +950,11 @@ class BaseRNN(nn.Module):
 
             # Get degree weights: [n_library_terms]
             degree_weights = self.sindy_degree_weights[module_name].clone()
-
+            # -------------------------------------------------------
+            # TODO: REMOVE IF NOT HELPING TO RECOVER ASYM LEARNING!!!
+            # -------------------------------------------------------
+            degree_weights = torch.ones_like(degree_weights)
+            
             # Compute weighted coefficient penalty for each term
             # For each coefficient, penalty = (degree + 1) * |coeff|^norm
             # degree_weights already contains (degree + 1) for each term

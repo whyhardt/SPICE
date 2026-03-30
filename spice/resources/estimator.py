@@ -70,7 +70,7 @@ class SpiceEstimator(BaseEstimator):
         save_path_spice: Optional[str] = None,
         compiled_forward: Optional[bool] = True,
         
-        kwargs_rnn_class: Optional[dict] = {},
+        kwargs_spice_class: Optional[dict] = {},
     ):
         """
         Args:
@@ -174,7 +174,7 @@ class SpiceEstimator(BaseEstimator):
             device=device,
             compiled_forward=compiled_forward,
             fit_sindy=sindy_weight > 0,
-            **kwargs_rnn_class,
+            **kwargs_spice_class,
         ).to(device)
 
         sindy_params = []

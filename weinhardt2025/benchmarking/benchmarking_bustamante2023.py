@@ -1,15 +1,7 @@
-import sys, os
-import argparse
 import torch
-from tqdm import tqdm
-import pickle
-from typing import List, Optional
-from joblib import Parallel, delayed
+from typing import Optional
 
-from spice.resources.spice_utils import SpiceDataset
-from spice.utils.convert_dataset import csv_to_dataset, split_data_along_sessiondim, reshape_data_along_participantdim
-from spice.utils.agent import Agent
-from spice.resources.spice_training import _run_batch_training
+from spice.utils.convert_dataset import csv_to_dataset
 
 
 class MarginalValueTheoremModel(torch.nn.Module):
@@ -37,7 +29,7 @@ class MarginalValueTheoremModel(torch.nn.Module):
         'cumulative_reward': 0.0,  # Cumulative reward in current patch
         'n_harvests': 0,  # Number of harvests in current patch
         'time_in_patch': 0.0,  # Time spent in current patch
-        'env_gain_rate': 0.0,  # Estimated environmental gain rate
+        'env_reward_rate': 0.0,  # Estimated environmental gain rate
         'current_tree_state': 0.0,  # Current expected reward from tree (si)
     }
 
@@ -108,7 +100,7 @@ class MarginalValueTheoremModel(torch.nn.Module):
 
             # Compute stay value using MVT: c + β(si - ρh)
             # Stay is better when expected reward exceeds opportunity cost
-            value_stay = expected_next_reward - self.state['env_gain_rate'] * harvest_duration_t
+            value_stay = expected_next_reward - self.state['env_reward_rate'] * harvest_duration_t
 
             # Compute stay logit for this timestep (for action 0 = harvest); exit value is always 0
             # Include intercept c (bias term) and inverse temperature β
@@ -125,15 +117,15 @@ class MarginalValueTheoremModel(torch.nn.Module):
             # Determine time spent on this action
             time_spent = harvest_duration_t * did_harvest + travel_duration_t * did_leave
 
-            # Update environmental gain rate using MVT learning rule (Table 2)
+            # Update environmental reward rate using MVT learning rule (Table 2)
             # delta_i = r_i/tau_i - ro_i
             reward_rate = actual_reward / (time_spent + 1e-8)  # Avoid division by zero
-            prediction_error = reward_rate - self.state['env_gain_rate']
+            prediction_error = reward_rate - self.state['env_reward_rate']
 
             # Effective learning rate: [1 - (1-alpha)^taui]
             # This accounts for the time duration of the action
             effective_lr = 1.0 - torch.pow(1.0 - self.alpha_env[participant_ids], time_spent)
-            self.state['env_gain_rate'] = self.state['env_gain_rate'] + effective_lr * prediction_error
+            self.state['env_reward_rate'] = self.state['env_reward_rate'] + effective_lr * prediction_error
 
             # Update patch state based on action taken
             # If harvested: update cumulative stats for current patch
@@ -217,7 +209,7 @@ class MarginalValueTheoremModel(torch.nn.Module):
             self.set_state(prev_state)
         else:
             self.set_initial_state(batch_size=inputs.shape[1])
-            self.state['env_gain_rate'] = self.baseline_gain[participant_ids]
+            self.state['env_reward_rate'] = self.baseline_gain[participant_ids]
             self.state['current_tree_state'] = self.baseline_gain[participant_ids]
 
         timesteps = torch.arange(actions.shape[0])
@@ -232,7 +224,7 @@ class MarginalValueTheoremModel(torch.nn.Module):
             'cumulative_reward': torch.zeros(batch_size, dtype=torch.float32),
             'n_harvests': torch.zeros(batch_size, dtype=torch.float32),  # Changed to float for torch.where compatibility
             'time_in_patch': torch.zeros(batch_size, dtype=torch.float32),
-            'env_gain_rate': torch.zeros(batch_size, dtype=torch.float32),
+            'env_reward_rate': torch.zeros(batch_size, dtype=torch.float32),
             'current_tree_state': torch.zeros(batch_size, dtype=torch.float32),
         }
         self.set_state(state)

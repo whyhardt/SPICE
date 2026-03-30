@@ -69,7 +69,7 @@ class SpiceModel(BaseRNN):
     - Items fall out of buffer (discrete forgetting)
     """
     
-    def __init__(self, **kwargs):
+    def __init__(self, reward_binary: bool = False, **kwargs):
         super().__init__(**kwargs)
         
         dropout = 0.1
@@ -84,6 +84,8 @@ class SpiceModel(BaseRNN):
         self.setup_module(key_module='value_choice', input_size=4+self.embedding_size, dropout=dropout, include_bias=True) # -> 21 terms; bias not necessary when module is applied equally to all options
         # self.setup_module(key_module='value_choice_chosen', input_size=3+self.embedding_size, dropout=dropout) # -> 21 terms; bias not necessary when module is applied equally to all options
         # self.setup_module(key_module='value_choice_not_chosen', input_size=3+self.embedding_size, dropout=dropout) # -> 21 terms; bias not necessary when module is applied equally to all options
+        
+        self.preprocess_coefficients(reward_binary=reward_binary)
         
     def forward(self, inputs, prev_state=None, batch_first=False):
         spice_signals = self.init_forward_pass(inputs, prev_state, batch_first)
@@ -178,3 +180,18 @@ class SpiceModel(BaseRNN):
         spice_signals = self.post_forward_pass(spice_signals, batch_first)
 
         return spice_signals.logits, self.get_state()
+    
+    def preprocess_coefficients(self, reward_binary: bool = True):
+        # remove unnecessary candidate terms, e.g. polynomials of binary signals
+        # if reward_binary: reward[t] = reward[t]^2 -> presence[reward[t]^2] = 0
+        # accounts for ALL control signals in workingmemory model if reward is binary; else only choice signals
+        
+        candidate_terms = self.get_candidate_terms()
+        for module in self.get_modules():
+            if ('reward' in module and reward_binary) or 'choice' in module:
+                control_signals = self.spice_config.library_setup[module]
+                for cs in control_signals:
+                    for ict, ct in enumerate(candidate_terms[module]):
+                        if cs+'^' in ct:
+                            self.sindy_coefficients_presence[module][..., ict] = 0
+        

@@ -7,6 +7,7 @@ import torch
 import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
+import json
 import importlib
 
 from spice import SpiceEstimator, csv_to_dataset, split_data_along_sessiondim, split_data_along_timedim
@@ -24,7 +25,8 @@ if __name__=='__main__':
     parser.add_argument('--module', type=str, default='spice.precoded.workingmemory', help='Module which holds the SPICE model and configuration')
     parser.add_argument('--model', type=str, default=None, help='Model name to load from and/or save to parameters of RNN')
     parser.add_argument('--data', type=str, default=None, help='Path to dataset')
-    
+    parser.add_argument('--model_kwargs', type=json.loads, default='{}', help='Additional kwargs for the SPICE model in JSON format, e.g. \'{"kwarg1": value1, "kwarg2": true}\'')
+
     # RNN training parameters
     parser.add_argument('--epochs', type=int, default=1000, help='Number of training epochs')
     parser.add_argument('--epochs_warmup', type=int, default=200, help='Number of training epochs for warmup (exp increase of sindy-weight; no pruning)')
@@ -152,6 +154,7 @@ if __name__=='__main__':
         n_experiments=n_experiments,
         n_actions=n_actions,
         n_items=n_items,
+        kwargs_spice_class=args.model_kwargs,
         
         # rnn training parameters
         epochs=args.epochs,
