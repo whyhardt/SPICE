@@ -3,6 +3,11 @@ import pickle
 import torch
 from tqdm import tqdm
 from typing import List, Optional
+import os
+import tempfile
+
+import numpy as np
+import pandas as pd
 
 try:
     from adabelief_pytorch import AdaBelief
@@ -13,7 +18,6 @@ except ImportError:
 from spice.resources.spice_utils import SpiceDataset
 from spice.utils.convert_dataset import csv_to_dataset, split_data_along_sessiondim
 from spice.utils.agent import Agent
-
 
 class Castro2025Model(torch.nn.Module):
     """
@@ -224,9 +228,11 @@ class Castro2025Model(torch.nn.Module):
             logits: (T, B, n_actions) or (B, T, n_actions) if batch_first
             state:  dict of final state tensors (detached from graph)
         """
+        
         if self.batch_first:
-            inputs = inputs.permute(1, 0, 2)  # → (T, B, F)
-
+            inputs = inputs.permute(1, 2, 0, 3)  # → (T, B, F)
+        inputs = inputs.squeeze(1)
+        
         T, B, _ = inputs.shape
         inputs = inputs.nan_to_num(0.0)
 
@@ -338,14 +344,15 @@ class Castro2025Model(torch.nn.Module):
                 'exploration_rate':        er,
                 'cumchoice':               cc,
             }
-
+        
+        logits = logits.unsqueeze(1)
         if self.batch_first:
-            logits = logits.permute(1, 0, 2)  # → (B, T, n_actions)
+            logits = logits.permute(2, 0, 1, 3)  # → (B, T, n_actions)
 
         return logits, self.get_state()
 
     # ------------------------------------------------------------------
-    # State management (mirrors BaseModel / MarginalValueTheoremModel API)
+    # State management (mirrors BaseRNN / MarginalValueTheoremModel API)
     # ------------------------------------------------------------------
 
     def set_initial_state(self, batch_size: int = 1, prior=None, exploration_rate=None):
@@ -489,13 +496,105 @@ def training(
 # ---------------------------------------------------------------------------
 
 class AgentCastro2025(Agent):
-    """Wraps a trained Castro2025Model as a SPICE-compatible Agent."""
+    """Wraps a trained Castro2025Model as a SPICE-compatible Agent.
+    - Wraps the trained Castro2025Model and implements the same new_sess, update, get_state, and choice methods that plot_session() expects.
+    Previously: used base agent initialiser, but that assumes baseRNN style model and plotting in notebook crashes with base_rnn=None. Behaviour should be same.
+    
+    Prev:
+    class AgentCastro2025(Agent):
+    #Wraps a trained Castro2025Model as a SPICE-compatible Agent.
 
     def __init__(self, model: Castro2025Model, deterministic: bool = True):
         super().__init__(model_rnn=None, n_actions=model.n_actions, deterministic=deterministic)
         assert isinstance(model, Castro2025Model)
         self.model = model
         self.model.eval()
+
+    @property
+    def q(self):
+        #Current Q-values (numpy array).
+        return self.state['q_values'].squeeze(0).detach().cpu().numpy()
+    """
+
+    def __init__(self, model: Castro2025Model, deterministic: bool = True, device: torch.device = torch.device('cpu')):
+        assert isinstance(model, Castro2025Model)
+        self.model = model.to(device).eval()
+        self.n_actions = model.n_actions
+        self.deterministic = deterministic
+        self.device = device
+        self.state = {}
+        self.logits = torch.zeros((1, 1, 1, 1, self.n_actions), device=self.device)
+        self._history = []
+        self._meta = None
+        self._additional = None
+        self._block = 0
+        self.new_sess()
+
+    def new_sess(self, participant_id: int = 0, experiment_id: int = 0, additional_embedding_inputs: np.ndarray = torch.zeros(0), **kwargs):
+        if not isinstance(participant_id, torch.Tensor):
+            participant_id = torch.tensor(participant_id, dtype=int, device=self.device)[None]
+        self._meta = torch.zeros((1, 2), dtype=torch.float32, device=self.device)
+        self._meta[0, -1] = participant_id
+        self._meta[0, -2] = experiment_id
+
+        if isinstance(additional_embedding_inputs, torch.Tensor):
+            self._additional = additional_embedding_inputs.to(self.device).view(1, -1)
+        else:
+            self._additional = torch.tensor(additional_embedding_inputs, dtype=torch.float32, device=self.device).view(1, -1)
+
+        self._history = []
+        self._block = 0
+        self.logits = torch.zeros((1, 1, 1, 1, self.n_actions), device=self.device)
+        self.state = {}
+
+    def update(self, choice: float, reward: float, block: int = 0, additional_inputs: np.ndarray = torch.zeros(0), **kwargs):
+        if not isinstance(reward, np.ndarray):
+            reward_array = np.zeros(self.n_actions) + np.nan
+            reward_array[int(choice)] = reward
+            reward = reward_array
+
+        choice_oh = torch.eye(self.n_actions, dtype=torch.float32, device=self.device)[int(choice)]
+        reward_t = torch.tensor(reward, dtype=torch.float32, device=self.device)
+        additional_t = torch.tensor(additional_inputs, dtype=torch.float32, device=self.device)
+        block_t = torch.tensor(block, dtype=torch.float32, device=self.device).view(1)
+        xs_t = torch.concat([choice_oh, reward_t, additional_t, block_t, self._meta.view(-1)]).view(-1)
+
+        self._history.append(xs_t)
+        xs = torch.stack(self._history, dim=0).unsqueeze(0)
+        if not getattr(self.model, 'batch_first', False):
+            xs = xs.permute(1, 0, 2)
+
+        with torch.no_grad():
+            logits, state = self.model(xs)
+
+        if not getattr(self.model, 'batch_first', False):
+            logits = logits.permute(1, 0, 2)
+
+        step_logits = logits[:, -1:, :]
+        self.logits = step_logits.unsqueeze(2).unsqueeze(2)
+        self.state = state
+        self._block = block
+
+    def get_state(self, numpy: bool = False, **kwargs):
+        if numpy:
+            logits = self.logits.detach().cpu().numpy()
+            state = {k: v.detach().cpu().numpy() if isinstance(v, torch.Tensor) else v for k, v in self.state.items()}
+            return logits, state
+        return self.logits, self.state
+
+    def get_choice_probs(self) -> np.ndarray:
+        logits = self.logits[0, 0, 0, 0]
+        if isinstance(logits, torch.Tensor):
+            logits = logits.detach().cpu().numpy()
+        decision_variable = logits - logits.min()
+        decision_variable = np.exp(decision_variable)
+        return decision_variable / np.sum(decision_variable)
+
+    def get_choice(self):
+        choice_probs = self.get_choice_probs()
+        if self.deterministic:
+            return np.argmax(choice_probs)
+        return np.random.choice(self.n_actions, p=choice_probs)
 
     @property
     def q(self):
@@ -527,18 +626,64 @@ def main(
     convergence_check_interval: int = 100,
     max_restarts: int = 10,
 ):
-    dataset = csv_to_dataset(file=path_data, df_participant_id='s_id', df_choice='action')
+    # Treat -1 choices as missing responses (NaN) so they are removed by csv_to_dataset.
+    # This keeps the Castro benchmark action space at 4 actions (0..3).
+    path_data_for_loading = path_data
+    temp_cleaned_csv_path = None
+    df_input = pd.read_csv(path_data)
+    if 'choice' in df_input.columns:
+        missing_choice_mask = df_input['choice'] == -1
+        n_missing_choice = int(missing_choice_mask.sum())
+        if n_missing_choice > 0:
+            df_input.loc[missing_choice_mask, 'choice'] = float('nan')
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as temp_file:
+                df_input.to_csv(temp_file.name, index=False)
+                temp_cleaned_csv_path = temp_file.name
+                path_data_for_loading = temp_cleaned_csv_path
+            print(f"Converted {n_missing_choice} rows with choice=-1 to NaN before dataset conversion.")
+
+    dataset = csv_to_dataset(
+    file = path_data_for_loading,
+    df_participant_id='participant',
+    df_choice='choice',
+    df_feedback='reward',
+    df_block='block',
+    timeshift_additional_inputs=False,
+    )
+
+    if temp_cleaned_csv_path is not None and os.path.exists(temp_cleaned_csv_path):
+        os.remove(temp_cleaned_csv_path)
 
     if split_ratio is not None:
         dataset_train, dataset_test = split_data_along_sessiondim(dataset, list_test_sessions=split_ratio)
     else:
         dataset_train, dataset_test = dataset, None
 
+    if dataset_train.ys.shape[-1] != n_actions:
+        raise ValueError(
+            f"Configured n_actions={n_actions}, but dataset has {dataset_train.ys.shape[-1]} action columns. "
+            "Check choice coding and preprocessing."
+        )
+
     n_participants = int(dataset_train.xs[..., -1].max().item()) + 1
-    xs = dataset_train.xs.permute(1, 0, 2)  # (T, B, F)
-    ys = dataset_train.ys.permute(1, 0, 2)  # (T, B, n_actions)
-    xs_test = dataset_test.xs.permute(1, 0, 2) if dataset_test is not None else None
-    ys_test = dataset_test.ys.permute(1, 0, 2) if dataset_test is not None else None
+
+    def _to_time_major_3d(tensor: torch.Tensor, name: str) -> torch.Tensor:
+        """Convert SPICE tensors from (B, T, W, F) to (T, B, F) when W (within-trial dimension) is singleton."""
+        if tensor.dim() == 4:
+            if tensor.shape[2] != 1:
+                raise ValueError(
+                    f"{name} has within-trial dimension W={tensor.shape[2]} (>1), "
+                    "but Castro2025 expects one step per trial."
+                )
+            tensor = tensor.squeeze(2)
+        elif tensor.dim() != 3:
+            raise ValueError(f"{name} must be 3D or 4D, got shape {tuple(tensor.shape)}")
+        return tensor.permute(1, 0, 2)  # (T, B, F)
+
+    xs = _to_time_major_3d(dataset_train.xs, 'dataset_train.xs')
+    ys = _to_time_major_3d(dataset_train.ys, 'dataset_train.ys')
+    xs_test = _to_time_major_3d(dataset_test.xs, 'dataset_test.xs') if dataset_test is not None else None
+    ys_test = _to_time_major_3d(dataset_test.ys, 'dataset_test.ys') if dataset_test is not None else None
 
     model = Castro2025Model(n_actions=n_actions, n_participants=n_participants)
 
@@ -554,6 +699,7 @@ def main(
         max_restarts=max_restarts,
     )
 
+    os.makedirs(os.path.dirname(path_save_model), exist_ok=True)
     with open(path_save_model, 'wb') as f:
         pickle.dump(model, f)
     print(f'Model saved to {path_save_model}')
@@ -561,12 +707,13 @@ def main(
 
 if __name__ == '__main__':    
     parser = argparse.ArgumentParser(description='Fit Castro et al. 2025 benchmark model')
-    parser.add_argument('--path_save_model', type=str, default='params/castro2025/castro2025.pkl')
-    parser.add_argument('--path_data', type=str, default='data/eckstein2024/eckstein2024.csv')
+    cwd = os.getcwd()
+    parser.add_argument('--path_save_model', type=str, default= os.path.join(cwd, 'weinhardt2025/params/castro2025/castro2025.pkl'))
+    parser.add_argument('--path_data', type=str, default= os.path.join(cwd, 'weinhardt2025/data/eckstein2024/eckstein2024.csv'))
     parser.add_argument('--n_actions', type=int, default=4)
-    parser.add_argument('--n_epochs', type=int, default=10000)
+    parser.add_argument('--n_epochs', type=int, default=1000)
     parser.add_argument('--lr', type=float, default=0.05)
-    parser.add_argument('--split_ratio', type=str, default=None, help='Comma-separated test session indices')
+    parser.add_argument('--split_ratio', type=str, default='3,4', help='Comma-separated test session indices')
     parser.add_argument('--convergence_threshold', type=float, default=1e-2)
     parser.add_argument('--convergence_check_interval', type=int, default=100)
     parser.add_argument('--max_restarts', type=int, default=10)
@@ -590,7 +737,7 @@ if __name__=='__main__':
     
     from spice.utils.convert_dataset import csv_to_dataset
     
-    file = 'weinhardt2026/data/bustamante2023/bustamante2023_processed.csv'
+    file = 'weinhardt2025/data/bustamante2023/bustamante2023_processed.csv'
     
     dataset = csv_to_dataset(
         file=file,
