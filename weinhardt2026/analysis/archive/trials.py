@@ -12,7 +12,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from weinhardt2026.utils.model_evaluation import bayesian_information_criterion, log_likelihood
 from spice.utils.plotting import plot_session
 from weinhardt2026.utils.bandits import BanditsDrift
-from spice.resources.rnn import RLRNN
+from spice.resources.model import RLRNN
 from spice.utils.agent import Agent, get_update_dynamics
 
 np.random.seed(42)

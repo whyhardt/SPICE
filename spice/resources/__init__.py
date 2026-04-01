@@ -2,7 +2,7 @@
 Base resources for SPICE package.
 """
 
-from .rnn import BaseModel
+from .model import BaseModel
 from .spice_training import fit_spice, cross_entropy_loss, mse_loss
 from .spice_utils import SpiceConfig, SpiceDataset, SpiceSignals
 

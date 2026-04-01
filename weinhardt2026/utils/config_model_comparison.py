@@ -1,7 +1,7 @@
 from typing import List, Optional
 
 from spice.resources.estimator import SpiceConfig
-from spice.resources.rnn import BaseModel
+from spice.resources.model import BaseModel
 
 class ConfigModelComparison:
     

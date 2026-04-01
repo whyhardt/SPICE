@@ -9,7 +9,7 @@ from spice.resources.spice_utils import SpiceDataset
 from spice.utils.agent import Agent, get_update_dynamics
 from spice.utils.agent import setup_agent_rnn, setup_agent_spice
 from spice.utils.convert_dataset import csv_to_dataset
-from spice.resources.rnn import RLRNN, RLRNN_eckstein2022, RLRNN_dezfouli2019
+from spice.resources.model import RLRNN, RLRNN_eckstein2022, RLRNN_dezfouli2019
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 from weinhardt2026.utils.bandits import create_dataset, BanditsDrift, BanditsFlip_eckstein2022, Bandits_Standard

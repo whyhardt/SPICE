@@ -16,7 +16,7 @@ warnings.filterwarnings('ignore')
 
 from spice.utils.agent import Agent
 from spice.utils.agent import setup_agent_rnn, setup_agent_spice
-from spice.resources.rnn import RLRNN_eckstein2022, RLRNN_dezfouli2019
+from spice.resources.model import RLRNN_eckstein2022, RLRNN_dezfouli2019
 
 # =============================================================================
 # CONFIGURATION

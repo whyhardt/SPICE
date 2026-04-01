@@ -2,7 +2,7 @@ from typing import Union
 import numpy as np
 import torch
 
-from ..resources.rnn import BaseModel
+from ..resources.model import BaseModel
 
 
 class Agent:

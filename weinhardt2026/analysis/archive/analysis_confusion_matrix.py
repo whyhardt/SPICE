@@ -11,7 +11,7 @@ import matplotlib.colors as mcolors
 
 from spice.utils.convert_dataset import csv_to_dataset
 from spice.utils.agent import Agent, get_update_dynamics
-from spice.resources.rnn import RLRNN_eckstein2022 as RLRNN
+from spice.resources.model import RLRNN_eckstein2022 as RLRNN
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 from weinhardt2026.utils.model_evaluation import log_likelihood, bayesian_information_criterion, akaike_information_criterion

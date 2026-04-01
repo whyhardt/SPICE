@@ -12,7 +12,7 @@ import shutil
 from scipy.stats import t as t_dist
 from torch.nn.functional import mse_loss  # using standard mse loss for spice should be fine most of the time
 
-from .rnn import BaseModel
+from .model import BaseModel
 from .spice_utils import SpiceDataset
 from .sindy_differentiable import get_library_term_degrees
 

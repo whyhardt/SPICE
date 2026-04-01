@@ -9,7 +9,7 @@ from sklearn.base import BaseEstimator
 from typing import Dict, Optional, Tuple, List, Union
 
 from .spice_training import fit_spice, cross_entropy_loss
-from .rnn import BaseModel
+from .model import BaseModel
 from .spice_utils import SpiceConfig, SpiceDataset
 from ..utils.agent import Agent
 

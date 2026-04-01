@@ -1,5 +1,5 @@
 from ..resources.estimator import SpiceConfig
-from ..resources.rnn import BaseModel
+from ..resources.model import BaseModel
 
 
 # -------------------------------------------------------------------------------
