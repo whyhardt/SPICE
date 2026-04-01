@@ -13,7 +13,7 @@ import importlib
 from spice import SpiceEstimator, csv_to_dataset, split_data_along_sessiondim, split_data_along_timedim
 from spice.resources.spice_training import _get_terminal_width
 
-from benchmarking.benchmarking_qlearning import QLearning
+from studies.synthetic.benchmarking_qlearning import QLearning
 from analysis.analysis_model_evaluation import analysis_model_evaluation
 
 
@@ -67,29 +67,29 @@ if __name__=='__main__':
     # args.pruning_ensemble = 0.05
     # args.pruning_population = None  # set to e.g. 0.05 for participant-level filtering
     
-    # args.data = "weinhardt2025/data/synthetic/synthetic_256p_0_0.csv"
+    # args.data = "weinhardt2026/data/synthetic/synthetic_256p_0_0.csv"
     # args.model = args.data.replace("data", "params").replace("/synthetic_", "/spice_synthetic_test_").replace(".csv", ".pkl")
     
-    # args.model = "weinhardt2025/params/eckstein2022/spice_eckstein2022.pkl"
-    # args.data = "weinhardt2025/data/eckstein2022/eckstein2022.csv"
+    # args.model = "weinhardt2026/params/eckstein2022/spice_eckstein2022.pkl"
+    # args.data = "weinhardt2026/data/eckstein2022/eckstein2022.csv"
     # args.train_ratio_time = 0.8
     
-    # args.model = "weinhardt2025/params/eckstein2024/spice_eckstein2024.pkl"
-    # args.data = "weinhardt2025/data/eckstein2024/eckstein2024.csv"
+    # args.model = "weinhardt2026/params/eckstein2024/spice_eckstein2024.pkl"
+    # args.data = "weinhardt2026/data/eckstein2024/eckstein2024.csv"
     # args.test_sessions = "1,3"
     
-    # args.model = "weinhardt2025/params/dezfouli2019/spice_dezfouli2019_test.pkl"
-    # args.data = "weinhardt2025/data/dezfouli2019/dezfouli2019.csv"
+    # args.model = "weinhardt2026/params/dezfouli2019/spice_dezfouli2019_test.pkl"
+    # args.data = "weinhardt2026/data/dezfouli2019/dezfouli2019.csv"
     # args.test_sessions = "3,6,9"
     
-    # args.data="weinhardt2025/data/sugawara2021/sugawara2021.csv" 
-    # args.model="weinhardt2025/params/sugawara2021/spice_sugawara2021.pkl" 
+    # args.data="weinhardt2026/data/sugawara2021/sugawara2021.csv" 
+    # args.model="weinhardt2026/params/sugawara2021/spice_sugawara2021.pkl" 
     # args.additional_columns="shown_at_0,shown_at_1,shown_at_0_next,shown_at_1_next"
     # args.n_items=8
     # args.test_sessions="1"
     
-    # args.data = "weinhardt2025/data/weber2024/weber2024.csv" 
-    # args.model = "weinhardt2025/params/weber2024/spice_weber2024.pkl" 
+    # args.data = "weinhardt2026/data/weber2024/weber2024.csv" 
+    # args.model = "weinhardt2026/params/weber2024/spice_weber2024.pkl" 
     # args.additional_columns = None,
     # args.test_sessions = "4,8,12"
     # ----------------------------------------------------------------------------------------------------------------------------------

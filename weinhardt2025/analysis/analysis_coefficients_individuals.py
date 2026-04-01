@@ -10,16 +10,16 @@ Usage examples:
 
   # Discrete (diagnosis-based, odds ratios):
   python analysis_coefficients.py \
-      --model weinhardt2025/params/dezfouli2019/spice_dezfouli2019_a0_05.pkl \
-      --data  weinhardt2025/data/dezfouli2019/dezfouli2019.csv \
+      --model weinhardt2026/params/dezfouli2019/spice_dezfouli2019_a0_05.pkl \
+      --data  weinhardt2026/data/dezfouli2019/dezfouli2019.csv \
       --analysis discrete \
       --criterion diag \
       --reference Healthy
 
   # Continuous (age-based, effect sizes):
   python analysis_coefficients.py \
-      --model weinhardt2025/params/eckstein2022/spice_eckstein2022.pkl \
-      --data  weinhardt2025/data/eckstein2022/eckstein2022.csv \
+      --model weinhardt2026/params/eckstein2022/spice_eckstein2022.pkl \
+      --data  weinhardt2026/data/eckstein2022/eckstein2022.csv \
       --analysis continuous \
       --criterion age 
 """

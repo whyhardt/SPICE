@@ -10,7 +10,7 @@ from copy import deepcopy
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..', '..')))
 
 from spice import csv_to_dataset, SpiceDataset, SpiceEstimator
-from weinhardt2025.utils.model_evaluation import log_likelihood, bayesian_information_criterion
+from weinhardt2026.utils.model_evaluation import log_likelihood, bayesian_information_criterion
 from spice.utils.agent import get_update_dynamics
 from spice.precoded import workingmemory_counterfactual
 
@@ -18,10 +18,10 @@ from spice.precoded import workingmemory_counterfactual
 additional_inputs = None#['age']  # If you want to include age as an additional input
 #or None if not age
 
-data_path = 'weinhardt2025/data/eckstein2022/eckstein2022.csv'
+data_path = 'weinhardt2026/data/eckstein2022/eckstein2022.csv'
 #data_path = 'data/eckstein2022/eckstein2022.csv'
 
-slcn_path = 'weinhardt2025/data/eckstein2022/SLCN.csv'
+slcn_path = 'weinhardt2026/data/eckstein2022/SLCN.csv'
 # (1a) Read raw CSV and cast 'participant' → int
 dataset = csv_to_dataset(file=data_path, additional_inputs=additional_inputs)
 original_df = pd.read_csv(data_path)
@@ -162,7 +162,7 @@ print(f"Behavioral metrics computed for {len(behavior_df)} participants.")
 
 # ─── SINDy AND RNN MODELS ──────────────────────────────────────────────────────────────────────────────
 
-model_spice_path = 'weinhardt2025/params/eckstein2022/spice_eckstein2022.pkl'
+model_spice_path = 'weinhardt2026/params/eckstein2022/spice_eckstein2022.pkl'
 
 class_rnn = workingmemory_counterfactual.SpiceModel
 
@@ -321,7 +321,7 @@ print(f"Number of participants with model metrics: {len(metrics_df)}")
 final_df = pd.merge(merged_df, metrics_df, on='participant_id', how='inner')
 print(f"After inner‐join with metrics: {len(final_df)} participants")
 
-results_path = 'weinhardt2025/analysis/participants_analysis_eckstein2022/results'
+results_path = 'weinhardt2026/analysis/participants_analysis_eckstein2022/results'
 
 final_df.to_csv(os.path.join(results_path, 'final_df_sindy_analysis_with_metrics.csv'), index=False)
 behavior_df.to_csv(os.path.join(results_path, 'behavior_metrics_fixed.csv'), index=False)

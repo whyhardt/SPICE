@@ -581,7 +581,7 @@ class BaseRNN(nn.Module):
         
         if action_mask is not None:
             mask = action_mask[-1] if action_mask.dim() >= 4 else action_mask
-            next_value = torch.where(mask == 1, next_value, self.state[key_state])
+            next_value = torch.where(mask == 1, next_value, self.state[key_state] if key_state is not None else torch.zeros_like(next_value))
 
         if key_state is not None:
             self.state[key_state] = next_value

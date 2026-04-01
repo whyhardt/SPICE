@@ -262,8 +262,8 @@ def visualize_loss_landscape_1d(
 
 if __name__ == '__main__':
     # Configuration
-    data_path = "weinhardt2025/data/eckstein2022/eckstein2022.csv"
-    model_path = "weinhardt2025/params/eckstein2022/spice_eckstein2022.pkl"
+    data_path = "weinhardt2026/data/eckstein2022/eckstein2022.csv"
+    model_path = "weinhardt2026/params/eckstein2022/spice_eckstein2022.pkl"
 
     print("Loading dataset...")
     dataset = csv_to_dataset(file=data_path)
@@ -299,7 +299,7 @@ if __name__ == '__main__':
         sindy_weight=sindy_weight,
         distance=0.5,
         steps=20,  # Reduced for faster computation (20x20=400 evaluations)
-        save_path="weinhardt2025/analysis/loss_landscape_2d.png"
+        save_path="weinhardt2026/analysis/loss_landscape_2d.png"
     )
 
     # 1D landscape
@@ -309,7 +309,7 @@ if __name__ == '__main__':
         sindy_weight=sindy_weight,
         distance=1.0,
         steps=30,  # Reduced for faster computation
-        save_path="weinhardt2025/analysis/loss_landscape_1d.png"
+        save_path="weinhardt2026/analysis/loss_landscape_1d.png"
     )
 
     print("\nDone! Loss landscape visualizations created.")

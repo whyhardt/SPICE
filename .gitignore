@@ -47,9 +47,9 @@ docs/.jekyll-metadata
 docs/.sass-cache/
 
 # SPICE
-weinhardt2025/benchmarking/params
+weinhardt2026/benchmarking/params
 playground.py
-weinhardt2025/data/weber2024_raw
+weinhardt2026/data/weber2024_raw
 
 # Files
 *.pkl

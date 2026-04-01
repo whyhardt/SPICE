@@ -341,6 +341,7 @@ class SpiceEstimator(BaseEstimator):
         self.model.init_state(batch_size=self.model.n_participants)
 
         self.model = self.model.to(self.model.device)
+        self.model.eval()
             
     def save_spice(self, path_rnn: str):
         """

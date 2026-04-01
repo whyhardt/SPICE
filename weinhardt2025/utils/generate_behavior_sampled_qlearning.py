@@ -7,7 +7,7 @@ from spice.utils.convert_dataset import dataset_to_csv
 import sys, os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
-from weinhardt2025.benchmarking.benchmarking_qlearning import QLearning
+from weinhardt2026.studies.benchmarking_qlearning import QLearning
 
 
 # --- Configuration ---
@@ -18,7 +18,7 @@ n_iterations_per_n_sessions = 8
 n_actions = 2
 sigma = [0.2]
 
-base_name = 'weinhardt2025/data/synthetic/synthetic_*.csv'
+base_name = 'weinhardt2026/data/synthetic/synthetic_*.csv'
 
 zero_threshold = 0.2
 parameter_variance = 0.2

@@ -13,7 +13,7 @@ from typing import Iterable, Optional, Tuple
 from spice import SpiceEstimator, csv_to_dataset, split_data_along_sessiondim, BaseRNN, SpiceConfig, SpiceDataset
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
-from weinhardt2025.benchmarking import benchmarking_qlearning
+from weinhardt2026.studies.synthetic import benchmarking_qlearning
 
 
 def prepare_benchmark(path_model: str, dataset: SpiceDataset, model_module: str = None, model_class: BaseRNN = None, n_reward_features: int = None) -> torch.nn.Module:
@@ -340,19 +340,19 @@ if __name__=='__main__':
                    help="Name of the SPICE model module (default: spice.precoded.workingmemory)")
     p.add_argument("--benchmark_model", default=None,
                    help="Path to the trained benchmark model (.pkl)")
-    p.add_argument("--benchmark_module", default="weinhardt2025.benchmarking.benchmarking_qlearning",
-                   help="Name of the benchmark model module (default: weinhardt2025.benchmarking.benchmarking_qlearning)")
+    p.add_argument("--benchmark_module", default="weinhardt2026.benchmarking.benchmarking_qlearning",
+                   help="Name of the benchmark model module (default: weinhardt2026.benchmarking.benchmarking_qlearning)")
     p.add_argument("--gru_model", default=None,
                    help="Path to the trained GRU model (.pkl)")
-    p.add_argument("--gru_module", default="weinhardt2025.benchmarking.benchmarking_gru",
-                   help="Name of the GRU model module (default: weinhardt2025.benchmarking.benchmarking_gru)")
+    p.add_argument("--gru_module", default="weinhardt2026.benchmarking.benchmarking_gru",
+                   help="Name of the GRU model module (default: weinhardt2026.benchmarking.benchmarking_gru)")
     args  = p.parse_args()
     
     
-    # args.data = 'weinhardt2025/data/dezfouli2019/dezfouli2019.csv'
+    # args.data = 'weinhardt2026/data/dezfouli2019/dezfouli2019.csv'
     # args.test_sessions = (3,6,9)
-    # args.spice_model = 'weinhardt2025/params/dezfouli2019/spice_dezfouli2019.pkl'
-    # args.gru_model = 'weinhardt2025/params/dezfouli2019/gru_dezfouli2019.pkl'
+    # args.spice_model = 'weinhardt2026/params/dezfouli2019/spice_dezfouli2019.pkl'
+    # args.gru_model = 'weinhardt2026/params/dezfouli2019/gru_dezfouli2019.pkl'
     # args.verbose = True    
     
     dataset = csv_to_dataset(

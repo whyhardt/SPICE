@@ -1437,10 +1437,10 @@ def fit_spice(
             ys_train=ys_train_5d.to(torch.device('cpu')),
             epochs=1000,
             n_warmup_steps=n_warmup_steps,
-            sindy_alpha=sindy_alpha,
-            sindy_threshold_pruning=sindy_threshold_pruning,
             sindy_pruning_frequency=sindy_pruning_frequency,
+            sindy_threshold_pruning=sindy_threshold_pruning,
             sindy_ensemble_pruning=sindy_ensemble_pruning,
+            sindy_alpha=sindy_alpha,
             verbose=verbose,
         )
         # for rnn_module in model.submodules_rnn.values():

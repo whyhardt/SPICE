@@ -13,8 +13,8 @@ from spice.precoded import InteractionRNN, INTERACTION_CONFIG
 
 import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
-from weinhardt2025.benchmarking import benchmarking_dezfouli2019, benchmarking_eckstein2022
-from weinhardt2025.utils.bandits import create_dataset, BanditsDrift, BanditsFlip_eckstein2022, Bandits_Standard
+from weinhardt2026.benchmarking import benchmarking_dezfouli2019, benchmarking_eckstein2022
+from weinhardt2026.utils.bandits import create_dataset, BanditsDrift, BanditsFlip_eckstein2022, Bandits_Standard
 
 
 # ----------------------- GENERAL CONFIGURATION ----------------------------
@@ -61,15 +61,15 @@ bandits_kwarg = {'sigma': 0.2}
 # ------------------- PIPELINE ----------------------------
 
 generating_model = agent_type if agent_type != 'benchmark' else benchmark_model
-path_data = f'weinhardt2025/data/{dataset}/{dataset}.csv'
-path_save = f'weinhardt2025/data/{dataset}/{dataset}_generated_behavior_{generating_model}.csv'
+path_data = f'weinhardt2026/data/{dataset}/{dataset}.csv'
+path_save = f'weinhardt2026/data/{dataset}/{dataset}_generated_behavior_{generating_model}.csv'
 
 if agent_type == 'rnn':
     path_model = path_rnn
 elif agent_type == 'q_agent':
     path_model = None
     path_data = None
-    path_save = 'weinhardt2025/data/q_agent_.csv'
+    path_save = 'weinhardt2026/data/q_agent_.csv'
 else:
     path_model = path_benchmark
 

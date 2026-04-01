@@ -14,13 +14,13 @@ Usage examples:
 
   # From CLI:
   python analysis_coefficients_distributions.py \\
-      --model weinhardt2025/params/dezfouli2019/spice_dezfouli2019.pkl \\
-      --data weinhardt2025/data/dezfouli2019/dezfouli2019.csv \\
+      --model weinhardt2026/params/dezfouli2019/spice_dezfouli2019.pkl \\
+      --data weinhardt2026/data/dezfouli2019/dezfouli2019.csv \\
       --model-module spice.precoded.workingmemory_rewardbinary \\
-      --output weinhardt2025/analysis/output/distributions
+      --output weinhardt2026/analysis/output/distributions
 
   # From Python:
-  from weinhardt2025.analysis.analysis_coefficients_distributions import (
+  from weinhardt2026.analysis.analysis_coefficients_distributions import (
       analysis_coefficients_distributions,
   )
   analysis_coefficients_distributions(spice_model=estimator, output_dir="output/")

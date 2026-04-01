@@ -13,7 +13,7 @@ from spice.utils.agent import Agent
 
 import sys, os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
-from weinhardt2025.benchmarking.benchmarking_qlearning import QLearning
+from weinhardt2026.studies.synthetic.benchmarking_qlearning import QLearning
 
 
 # Setup so that plots will look nice

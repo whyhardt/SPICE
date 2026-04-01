@@ -10,7 +10,7 @@ from copy import deepcopy
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..', '..')))
 
 from spice import csv_to_dataset, SpiceDataset, SpiceEstimator
-from weinhardt2025.utils.model_evaluation import log_likelihood, bayesian_information_criterion
+from weinhardt2026.utils.model_evaluation import log_likelihood, bayesian_information_criterion
 from spice.utils.agent import get_update_dynamics
 from spice.precoded import workingmemory_counterfactual
 
@@ -18,7 +18,7 @@ from spice.precoded import workingmemory_counterfactual
 additional_inputs = ['diag']  # include diagnosis as an additional input
 #or None if not diagnosis
 
-data_path = 'weinhardt2025/data/dezfouli2019/dezfouli2019.csv' 
+data_path = 'weinhardt2026/data/dezfouli2019/dezfouli2019.csv' 
 
 # (1) Read raw CSV and cast 'participant' → int
 dataset = csv_to_dataset(file=data_path, additional_inputs=None)
@@ -139,7 +139,7 @@ print(f"Behavioral metrics computed for {len(behavior_df)} participants.")
 
 # ─── SINDy AND RNN MODELS ──────────────────────────────────────────────────────────────────────────────
 
-model_spice_path = 'weinhardt2025/params/dezfouli2019/spice_dezfouli2019.pkl'
+model_spice_path = 'weinhardt2026/params/dezfouli2019/spice_dezfouli2019.pkl'
 
 #class_rnn = RLRNN_meta_dezfouli2019
 class_rnn = workingmemory_counterfactual.SpiceModel
@@ -353,7 +353,7 @@ print(f"Average number of sessions per participant: {session_metrics_df.groupby(
 final_df = pd.merge(merged_df, metrics_df, on='participant_id', how='inner')
 print(f"After inner‐join with metrics: {len(final_df)} participants")
 
-path_results = 'weinhardt2025/analysis/participants_analysis_dezfouli2019/results'
+path_results = 'weinhardt2026/analysis/participants_analysis_dezfouli2019/results'
 final_df.to_csv(os.path.join(path_results, 'dezfouli_final_df_sindy_analysis_with_metrics.csv'), index=False)
 behavior_df.to_csv(os.path.join(path_results, 'dezfouli_behavior_metrics_fixed.csv'), index=False)
 sindy_df.to_csv(os.path.join(path_results, 'dezfouli_sindy_parameters.csv'), index=False)

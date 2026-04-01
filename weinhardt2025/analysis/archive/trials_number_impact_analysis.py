@@ -15,8 +15,8 @@ from spice.resources.rnn import BaseRNN
 from spice.utils.agent import Agent, get_update_dynamics
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
-from weinhardt2025.utils.model_evaluation import bayesian_information_criterion, log_likelihood
-from weinhardt2025.utils.bandits import BanditsDrift, create_dataset as create_dataset_bandits
+from weinhardt2026.utils.model_evaluation import bayesian_information_criterion, log_likelihood
+from weinhardt2026.utils.bandits import BanditsDrift, create_dataset as create_dataset_bandits
 
 
 np.random.seed(42)

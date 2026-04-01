@@ -40,7 +40,7 @@ SPICE/
 │       ├── diagnostics.py              # SpiceDiagnostics — architectural bottleneck analysis
 │       └── plotting.py                 # Visualization utilities
 │
-├── weinhardt2025/                      # Paper-specific code (fitting, benchmarking, analyses)
+├── weinhardt2026/                      # Paper-specific code (fitting, benchmarking, analyses)
 │   ├── run.py                          # Main entry point for training
 │   ├── aux/                            # Jupyter notebooks per dataset
 │   ├── data/                           # 16 benchmark datasets
@@ -66,7 +66,7 @@ SPICE/
 ```bash
 pip install autospice                    # Install from PyPI
 pip install -e .                         # Install locally in editable mode
-python weinhardt2025/run.py              # Fit SPICE model to dataset
+python weinhardt2026/run.py              # Fit SPICE model to dataset
 ```
 
 ---
@@ -424,7 +424,7 @@ class MyModel(BaseRNN):
 
 ### File Organization
 - Core framework code → `spice/`
-- Research/paper code → `weinhardt2025/`
+- Research/paper code → `weinhardt2026/`
 - New utility functions → `spice/utils/`
 - New model architectures → `spice/precoded/`
 

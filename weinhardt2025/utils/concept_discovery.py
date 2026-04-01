@@ -7,7 +7,7 @@ from spice.precoded import workingmemory, workingmemory_counterfactual
 
 import sys, os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
-from weinhardt2025.benchmarking.benchmarking_qlearning import QLearning
+from weinhardt2026.studies.benchmarking_qlearning import QLearning
 
 # Description:
 # X = W * H
@@ -46,8 +46,8 @@ n_concepts = 6  # Start with fewer concepts (≈ n_features / 2)
 method = 'nmf'  # 'nmf' or 'dict' (DictionaryLearning)
 use_real = False  # if True: load trained sindy coefs; else: load groundtruth RL parameters from data file and convert into sindy coefs (baseline parameter recovery)
 
-path_data = 'weinhardt2025/data/synthetic/synthetic_256p_0_0.csv'
-path_model = 'weinhardt2025/params/synthetic/spice_synthetic_256p_0_0.pkl'
+path_data = 'weinhardt2026/data/synthetic/synthetic_256p_0_0.csv'
+path_model = 'weinhardt2026/params/synthetic/spice_synthetic_256p_0_0.pkl'
 rl_parameters = ['beta_reward', 'beta_choice', 'alpha_reward', 'alpha_penalty', 'alpha_choice', 'forget_rate']
 
 dataset = csv_to_dataset(
