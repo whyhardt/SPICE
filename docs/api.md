@@ -20,7 +20,7 @@ from spice.estimator import SpiceEstimator
 
 #### Parameters
 
-- `rnn_class` (BaseRNN): RNN class to use (can be precoded or custom implementation)
+- `rnn_class` (BaseModel): RNN class to use (can be precoded or custom implementation)
 - `spice_config` (SpiceConfig): Configuration for SPICE features and library
 - `hidden_size` (int, default=8): Size of RNN hidden layer
 - `dropout` (float, default=0.25): Dropout rate for RNN

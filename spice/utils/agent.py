@@ -2,7 +2,7 @@ from typing import Union
 import numpy as np
 import torch
 
-from ..resources.rnn import BaseRNN
+from ..resources.rnn import BaseModel
 
 
 class Agent:
@@ -14,7 +14,7 @@ class Agent:
 
   def __init__(
     self,
-    model_rnn: BaseRNN,
+    model_rnn: BaseModel,
     n_actions: int = 2,
     device = torch.device('cpu'),
     deterministic: bool = True,
@@ -32,7 +32,7 @@ class Agent:
       self.use_sindy = use_sindy
       self.device = device
       self.state = {}
-      self.model = model_rnn.eval(use_sindy=use_sindy).to(device) if isinstance(model_rnn, BaseRNN) else model_rnn.eval().to(device)
+      self.model = model_rnn.eval(use_sindy=use_sindy).to(device) if isinstance(model_rnn, BaseModel) else model_rnn.eval().to(device)
       if hasattr(self.model, 'aggregate'):
         self.model.aggregate = True
       self.new_sess()
@@ -42,7 +42,7 @@ class Agent:
     if not isinstance(participant_id, torch.Tensor):
       participant_id = torch.tensor(participant_id, dtype=int, device=self.device)[None]
     
-    if isinstance(self.model, BaseRNN):
+    if isinstance(self.model, BaseModel):
       self.model.init_state(batch_size=1)
       state = self.model.get_state()
     else:
@@ -70,20 +70,20 @@ class Agent:
     xs = torch.concat([choice, torch.tensor(reward, dtype=torch.float32), torch.tensor(additional_inputs, dtype=torch.float32), torch.tensor(block, dtype=torch.float32).view(1), self.meta_data.view(-1)]).view(1, 1, 1, -1).to(device=self.device)
     
     with torch.no_grad():
-      logits, state = self.model(xs, self.get_state()[1] if isinstance(self.model, BaseRNN) else self.get_state()[1]['hidden'])
+      logits, state = self.model(xs, self.get_state()[1] if isinstance(self.model, BaseModel) else self.get_state()[1]['hidden'])
     
     self.set_state(logits, state)
   
   def set_state(self, logits, state):
     self.logits = logits
     
-    if isinstance(self.model, BaseRNN):
+    if isinstance(self.model, BaseModel):
       self.state = self.model.get_state()
     else:
       self.state['hidden'] = state
       
   def get_state(self, numpy: bool = False, **kwargs):    
-    if isinstance(self.model, BaseRNN):
+    if isinstance(self.model, BaseModel):
       state = self.model.get_state(detach=True)
     else:
       state = self.state
@@ -107,13 +107,13 @@ class Agent:
       return tuple(np.arange(self.model.participant_embedding.num_embeddings).tolist())
     
   def get_modules(self):
-    if isinstance(self.model, BaseRNN):
+    if isinstance(self.model, BaseModel):
       return tuple(list(self.model.submodules_rnn.keys()))
     else:
       raise TypeError(f"Agent model is not a SPICE model. This function is only executable for SPICE models.")
   
   def count_parameters(self) -> np.ndarray:
-    if isinstance(self.model, BaseRNN):
+    if isinstance(self.model, BaseModel):
       return self.model.count_sindy_coefficients().detach().cpu().numpy()
     else:
       raise TypeError(f"Agent model is not a SPICE model. This function is only executable for SPICE models.")

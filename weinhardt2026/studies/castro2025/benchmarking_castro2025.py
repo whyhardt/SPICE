@@ -345,7 +345,7 @@ class Castro2025Model(torch.nn.Module):
         return logits, self.get_state()
 
     # ------------------------------------------------------------------
-    # State management (mirrors BaseRNN / MarginalValueTheoremModel API)
+    # State management (mirrors BaseModel / MarginalValueTheoremModel API)
     # ------------------------------------------------------------------
 
     def set_initial_state(self, batch_size: int = 1, prior=None, exploration_rate=None):

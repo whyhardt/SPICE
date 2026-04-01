@@ -45,7 +45,7 @@ warnings.filterwarnings("ignore")
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
-from spice import SpiceEstimator, csv_to_dataset, BaseRNN, SpiceConfig, SpiceDataset
+from spice import SpiceEstimator, csv_to_dataset, BaseModel, SpiceConfig, SpiceDataset
 
 
 # ---------------------------------------------------------------------------
@@ -75,7 +75,7 @@ def prepare_spice(
     path_model: str,
     dataset: SpiceDataset = None,
     model_module: str = None,
-    model_class: BaseRNN = None,
+    model_class: BaseModel = None,
     model_config: SpiceConfig = None,
     n_reward_features: int = None,
 ) -> SpiceEstimator:
@@ -653,7 +653,7 @@ def analysis_coefficients_distributions(
     # Or path-based loading
     model_path: str = None,
     model_module: str = None,
-    model_class: BaseRNN = None,
+    model_class: BaseModel = None,
     model_config: SpiceConfig = None,
     dataset: SpiceDataset = None,
     n_reward_features: int = None,
@@ -676,7 +676,7 @@ def analysis_coefficients_distributions(
         Path to the SPICE checkpoint (.pkl).
     model_module : str, optional
         Dotted module path (e.g. ``spice.precoded.workingmemory_rewardbinary``).
-    model_class : BaseRNN, optional
+    model_class : BaseModel, optional
         RNN class (alternative to *model_module*).
     model_config : SpiceConfig, optional
         SPICE config (required when *model_class* is given).

@@ -12,7 +12,7 @@ import shutil
 from scipy.stats import t as t_dist
 from torch.nn.functional import mse_loss  # using standard mse loss for spice should be fine most of the time
 
-from .rnn import BaseRNN
+from .rnn import BaseModel
 from .spice_utils import SpiceDataset
 from .sindy_differentiable import get_library_term_degrees
 
@@ -41,7 +41,7 @@ def _is_notebook() -> bool:
 
 def _print_training_status(
     len_last_print: int,
-    model: BaseRNN,
+    model: BaseModel,
     n_calls: int,
     epochs: int,
     loss_train: float,
@@ -284,7 +284,7 @@ def _setup_lr_scheduler(optimizer: torch.optim.Optimizer):
     
 
 def _run_batch_training(
-    model: BaseRNN,
+    model: BaseModel,
     xs: torch.Tensor,
     ys: torch.Tensor,
     optimizer: torch.optim.Optimizer = None,
@@ -346,7 +346,7 @@ def _run_batch_training(
 
 
 def _vectorize_state(
-    model: BaseRNN,
+    model: BaseModel,
     xs_train: torch.Tensor,
     ys_train: torch.Tensor,
     verbose: bool = False,
@@ -432,7 +432,7 @@ def _vectorize_state(
 
 
 def _ensemble_pruning(
-    model: BaseRNN,
+    model: BaseModel,
     sindy_ensemble_pruning: float,
     sindy_threshold_pruning: float,
     verbose: bool,
@@ -471,7 +471,7 @@ def _ensemble_pruning(
 
 
 def _ridge_solve_sindy(
-    model: BaseRNN,
+    model: BaseModel,
     xs_train: torch.Tensor,
     ys_train: torch.Tensor,
 ):
@@ -505,7 +505,7 @@ def _ridge_solve_sindy(
 
 
 def _ridge_recalibrate_sindy(
-    model: BaseRNN,
+    model: BaseModel,
     xs_train: torch.Tensor,
     ys_train: torch.Tensor,
     optimizer: torch.optim.Optimizer,
@@ -608,7 +608,7 @@ def _ridge_recalibrate_sindy(
 
 
 def _run_sindy_training(
-    model: BaseRNN,
+    model: BaseModel,
     xs_train: torch.Tensor,
     ys_train: torch.Tensor,
     epochs: int = 1000,
@@ -626,14 +626,14 @@ def _run_sindy_training(
     old: via ridge solve → prune → refit.
 
     Args:
-        model (BaseRNN): Trained RNN model with SINDy coefficients
+        model (BaseModel): Trained RNN model with SINDy coefficients
         dataset_train: Training dataset (4D)
         epochs (int): Number of epochs
         batch_size (int): Batch size for training
         verbose (bool): Print progress
 
     Returns:
-        BaseRNN: Model with refitted SINDy coefficients
+        BaseModel: Model with refitted SINDy coefficients
     """
     
     criterion = nn.MSELoss()
@@ -823,7 +823,7 @@ def _run_sindy_training(
 
 
 def _run_joint_training(
-    model: BaseRNN,
+    model: BaseModel,
     xs_train: torch.Tensor,
     ys_train: torch.Tensor,
     dataset_test: SpiceDataset,
@@ -848,7 +848,7 @@ def _run_joint_training(
     verbose: bool = False,
     keep_log: bool = False,
     path_save_checkpoints: str = None,
-) -> Tuple[BaseRNN, torch.optim.Optimizer, float, float, float]:
+) -> Tuple[BaseModel, torch.optim.Optimizer, float, float, float]:
     """
     Joint RNN-SINDy optimization with ensemble pruning.
 
@@ -1100,7 +1100,7 @@ def _minimum_effect_ci_test(
 
 
 def _compute_ensemble_masks(
-    model: BaseRNN,
+    model: BaseModel,
     test_fn: callable = _minimum_effect_ci_test,
     verbose: bool = True,
     **test_fn_kwargs,
@@ -1188,7 +1188,7 @@ def _compute_participant_masks(
 
 
 def _compute_pruning_masks(
-    model: BaseRNN,
+    model: BaseModel,
     ensemble_alpha: float = None,
     ensemble_delta: float = 0.0,
     participant_threshold: float = None,
@@ -1236,7 +1236,7 @@ def _compute_pruning_masks(
 
 
 def fit_spice(
-    model: BaseRNN,
+    model: BaseModel,
     dataset_train: SpiceDataset,
     dataset_test: SpiceDataset = None,
     optimizer: torch.optim.Optimizer = None,
@@ -1261,7 +1261,7 @@ def fit_spice(
     keep_log: bool = False,
     n_warmup_steps: int = 0,
     path_save_checkpoints: str = None,
-) -> Tuple[BaseRNN, torch.optim.Optimizer, float]:
+) -> Tuple[BaseModel, torch.optim.Optimizer, float]:
     """
     Two-stage SPICE training pipeline with ensemble pruning.
 

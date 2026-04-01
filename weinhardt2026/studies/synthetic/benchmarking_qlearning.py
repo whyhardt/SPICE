@@ -1,10 +1,10 @@
 from typing import Union
 import torch
 
-from spice import BaseRNN, SpiceConfig
+from spice import BaseModel, SpiceConfig
 
 
-class QLearning(BaseRNN):
+class QLearning(BaseModel):
     
     def __init__(self,
                  n_actions: int = 2,

@@ -21,7 +21,7 @@ SPICE/
 ├── spice/                              # Core framework (backend / pip package)
 │   ├── resources/
 │   │   ├── estimator.py                # SpiceEstimator — scikit-learn compatible wrapper
-│   │   ├── rnn.py                      # BaseRNN — core RNN + SINDy architecture
+│   │   ├── rnn.py                      # BaseModel — core RNN + SINDy architecture
 │   │   ├── spice_utils.py              # SpiceConfig, SpiceDataset, SpiceSignals
 │   │   ├── spice_training.py           # Two-stage training pipeline
 │   │   └── sindy_differentiable.py     # Differentiable SINDy polynomial library
@@ -73,7 +73,7 @@ python weinhardt2026/run.py              # Fit SPICE model to dataset
 
 ## Key Classes and Concepts
 
-### BaseRNN (`spice/resources/rnn.py`)
+### BaseModel (`spice/resources/rnn.py`)
 
 Core neural network architecture. All task-specific models subclass this.
 
@@ -194,7 +194,7 @@ Main user-facing class implementing sklearn's estimator interface.
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | **Model specification** ||||
-| `spice_class` | `BaseRNN` | *required* | RNN class (precoded or custom subclass of BaseRNN) |
+| `spice_class` | `BaseModel` | *required* | RNN class (precoded or custom subclass of BaseModel) |
 | `spice_config` | `SpiceConfig` | *required* | Architecture configuration |
 | `kwargs_rnn_class` | `dict` | `{}` | Extra keyword arguments forwarded to `spice_class.__init__()` |
 | **Data/environment** ||||
@@ -353,7 +353,7 @@ So the loss function only receives valid (non-padded) predictions and targets.
 All task-specific models follow this pattern:
 
 ```python
-class MyModel(BaseRNN):
+class MyModel(BaseModel):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.participant_embedding = self.setup_embedding(...)
@@ -412,7 +412,7 @@ class MyModel(BaseRNN):
 ### Philosophy
 - **Highly modular** over compact — prefer small, composable pieces
 - **Slim over backward-compatible** — delete dead code rather than shimming it; no `_deprecated_*` wrappers or re-exports
-- **General backend, specific frontends** — `BaseRNN` and training infrastructure stay task-agnostic; all task-specific logic lives in `class MyModel(BaseRNN)` subclasses
+- **General backend, specific frontends** — `BaseModel` and training infrastructure stay task-agnostic; all task-specific logic lives in `class MyModel(BaseModel)` subclasses
 
 ### Conventions
 - snake_case for functions/variables, PascalCase for classes
@@ -432,7 +432,7 @@ class MyModel(BaseRNN):
 
 Full guidelines: [`docs/guidelines_polynomial_amenable_architectures.md`](docs/guidelines_polynomial_amenable_architectures.md)
 
-When designing `BaseRNN` subclasses for SPICE, the architecture determines how well SINDy polynomials can approximate the learned GRU dynamics. The GRU's sigmoid gates, tanh activations, and data-dependent convex combinations are fundamentally non-polynomial — the goal is to make these capabilities *unnecessary* through architecture design:
+When designing `BaseModel` subclasses for SPICE, the architecture determines how well SINDy polynomials can approximate the learned GRU dynamics. The GRU's sigmoid gates, tanh activations, and data-dependent convex combinations are fundamentally non-polynomial — the goal is to make these capabilities *unnecessary* through architecture design:
 
 1. **Externalize gating via action masks** — If a module receives a binary selector (action flag, exit flag), split it into separate modules with explicit `action_mask` arguments instead of relying on the GRU to learn internal gating.
 2. **1–3 control signals per module** — More inputs give the GRU more dimensions for complex nonlinear interactions that polynomials can't match. Keep modules focused.

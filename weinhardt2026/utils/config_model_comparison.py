@@ -1,14 +1,14 @@
 from typing import List, Optional
 
 from spice.resources.estimator import SpiceConfig
-from spice.resources.rnn import BaseRNN
+from spice.resources.rnn import BaseModel
 
 class ConfigModelComparison:
     
     def __init__(
         self,
         study: str = None,
-        rnn_class: BaseRNN = None,
+        rnn_class: BaseModel = None,
         spice_config: SpiceConfig = None,
         file_spice: str = None,
         file_benchmark: str = None,

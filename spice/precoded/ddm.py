@@ -1,6 +1,6 @@
 import torch
 
-from spice import SpiceEstimator, BaseRNN, SpiceConfig, SpiceDataset, csv_to_dataset
+from spice import SpiceEstimator, BaseModel, SpiceConfig, SpiceDataset, csv_to_dataset
 
 
 SPICE_CONFIG = SpiceConfig(
@@ -94,7 +94,7 @@ class ThresholdFunction(torch.autograd.Function):
         return grads, None, None, None, None, None, None
 
 
-class DDMRNN(BaseRNN):
+class DDMRNN(BaseModel):
 
     def __init__(
         self,

@@ -48,7 +48,7 @@ warnings.filterwarnings("ignore")
 # Ensure project root is importable
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
-from spice import SpiceEstimator, csv_to_dataset, BaseRNN, SpiceConfig, SpiceDataset
+from spice import SpiceEstimator, csv_to_dataset, BaseModel, SpiceConfig, SpiceDataset
 
 
 # ---------------------------------------------------------------------------
@@ -78,7 +78,7 @@ SIG_COLORS = {"***": "#FF0000", "**": "#FFA500", "*": "#FFD700", "ns": "#999999"
 # 1. Preparation – extract coefficients
 # ---------------------------------------------------------------------------
 
-def prepare(criterion_col, data_path: str, dataset_kwargs: dict = {}, spice_model: SpiceEstimator = None, model_path: str = None, model_module: str = None, model_class: BaseRNN = None, model_config: SpiceConfig = None):
+def prepare(criterion_col, data_path: str, dataset_kwargs: dict = {}, spice_model: SpiceEstimator = None, model_path: str = None, model_module: str = None, model_class: BaseModel = None, model_config: SpiceConfig = None):
     """Load a trained SPICE model, extract ensemble-averaged SINDy coefficients
     per participant and merge with the data file.
 
@@ -96,7 +96,7 @@ def prepare(criterion_col, data_path: str, dataset_kwargs: dict = {}, spice_mode
         Path to the SPICE checkpoint (.pkl).  Required when *spice_model* is None.
     model_module : str, optional
         Dotted module path (e.g. ``spice.precoded.workingmemory_rewardbinary``).
-    model_class : BaseRNN, optional
+    model_class : BaseModel, optional
         RNN class (alternative to *model_module*).
     model_config : SpiceConfig, optional
         SPICE config (required when *model_class* is given).
@@ -724,7 +724,7 @@ def analysis_coefficients_individuals(
     spice_model: SpiceEstimator = None,
     path_model: str = None,
     model_module: str = None,
-    model_class: BaseRNN = None,
+    model_class: BaseModel = None,
     model_config: SpiceConfig = None,
     reference: str = None,
     dataset_kwargs: dict = {},
@@ -746,7 +746,7 @@ def analysis_coefficients_individuals(
         Path to the SPICE checkpoint (.pkl).  Required when *spice_model* is None.
     model_module : str, optional
         Dotted module path (e.g. ``spice.precoded.workingmemory_rewardbinary``).
-    model_class : BaseRNN, optional
+    model_class : BaseModel, optional
         RNN class (alternative to *model_module*).
     model_config : SpiceConfig, optional
         SPICE config (required when *model_class* is given).

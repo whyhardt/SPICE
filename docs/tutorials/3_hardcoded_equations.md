@@ -170,7 +170,7 @@ As you can see we are going to add one module which won't be an RNN-module but i
 
 
 ```python
-from spice.resources.rnn import BaseRNN
+from spice.resources.rnn import BaseModel
 from spice.estimator import SpiceConfig
 
 CUSTOM_RNN_CONFIG = SpiceConfig(
@@ -189,7 +189,7 @@ CUSTOM_RNN_CONFIG = SpiceConfig(
     },
 )
 
-class CustomLearningRateRNN(BaseRNN):
+class CustomLearningRateRNN(BaseModel):
     
     init_values = {
             'x_value_reward': 0.5,

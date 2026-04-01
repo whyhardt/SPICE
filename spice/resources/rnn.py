@@ -211,7 +211,7 @@ class ParameterModule(nn.Module):
         return self.parameter
 
         
-class BaseRNN(nn.Module):
+class BaseModel(nn.Module):
     def __init__(
         self,
         spice_config: SpiceConfig,
@@ -484,7 +484,7 @@ class BaseRNN(nn.Module):
 
         if inputs is None or (isinstance(inputs, tuple) and len(inputs) == 0):
             if value is None:
-                raise ValueError(f"When using BaseRNN.call_module you have to give at least a the state variable or inputs. Currently both are None.")
+                raise ValueError(f"When using BaseModel.call_module you have to give at least a the state variable or inputs. Currently both are None.")
             inputs = torch.zeros((W, E, B, I, 0), dtype=torch.float32, device=self.device)
         elif isinstance(inputs, tuple):
             expanded = []

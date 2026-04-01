@@ -9,7 +9,7 @@ from sklearn.base import BaseEstimator
 from typing import Dict, Optional, Tuple, List, Union
 
 from .spice_training import fit_spice, cross_entropy_loss
-from .rnn import BaseRNN
+from .rnn import BaseModel
 from .spice_utils import SpiceConfig, SpiceDataset
 from ..utils.agent import Agent
 
@@ -28,7 +28,7 @@ class SpiceEstimator(BaseEstimator):
         self,
         
         # RNN class and SPICE configuration. Can be one of the precoded models in rnn.py or a custom implementation.
-        spice_class: BaseRNN,
+        spice_class: BaseModel,
         spice_config: SpiceConfig,
         
         # Data/Environment parameters
@@ -74,7 +74,7 @@ class SpiceEstimator(BaseEstimator):
     ):
         """
         Args:
-            spice_class: RNN class. Can be one of the precoded models or a custom BaseRNN subclass.
+            spice_class: RNN class. Can be one of the precoded models or a custom BaseModel subclass.
             spice_config: SpiceConfig defining submodules, memory states, and logit mapping.
             n_actions: Number of observable actions.
             n_items: Number of internal item representations (defaults to n_actions if None).

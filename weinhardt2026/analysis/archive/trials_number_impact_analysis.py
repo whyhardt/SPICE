@@ -11,7 +11,7 @@ import torch
 import matplotlib.pyplot as plt
 import pandas as pd
 
-from spice.resources.rnn import BaseRNN
+from spice.resources.rnn import BaseModel
 from spice.utils.agent import Agent, get_update_dynamics
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))

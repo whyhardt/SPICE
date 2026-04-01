@@ -252,7 +252,7 @@ for index_sess, sess in enumerate(n_sessions):
                 # get sindy coefficients
                 sindy_coefs_library = spice_agent.model.sindy_coefficients[library][0, index_participant, 0].detach().cpu().numpy()
                 # sindy_coefs_presence_library = spice_agent.model.sindy_coefficients_presence[library][index_participant][0].detach().cpu().numpy()
-                # correct for delta-update rule (x[t+1] = x[t] + input*sindy_coefs) in sindy's next state computation (see: spice.resources.rnn.BaseRNN.forward_sindy)
+                # correct for delta-update rule (x[t+1] = x[t] + input*sindy_coefs) in sindy's next state computation (see: spice.resources.rnn.BaseModel.forward_sindy)
                 sindy_coefs_library[1] += 1
                 # sindy_coefs_presence_library = np.abs(sindy_coefs_library) > coef_threshold
                 sindy_coefs_library *= np.abs(sindy_coefs_library) > coef_threshold

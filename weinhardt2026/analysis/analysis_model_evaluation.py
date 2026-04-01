@@ -10,13 +10,13 @@ import torch
 from typing import Iterable, Optional, Tuple
 
 # standard methods and classes used for every model evaluation
-from spice import SpiceEstimator, csv_to_dataset, split_data_along_sessiondim, BaseRNN, SpiceConfig, SpiceDataset
+from spice import SpiceEstimator, csv_to_dataset, split_data_along_sessiondim, BaseModel, SpiceConfig, SpiceDataset
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 from weinhardt2026.studies.synthetic import benchmarking_qlearning
 
 
-def prepare_benchmark(path_model: str, dataset: SpiceDataset, model_module: str = None, model_class: BaseRNN = None, n_reward_features: int = None) -> torch.nn.Module:
+def prepare_benchmark(path_model: str, dataset: SpiceDataset, model_module: str = None, model_class: BaseModel = None, n_reward_features: int = None) -> torch.nn.Module:
     # --- load benchmark or GRU model ---
     n_actions = dataset.ys.shape[-1]
     n_participants = dataset.xs[..., -1].unique().shape[0]
@@ -40,7 +40,7 @@ def prepare_benchmark(path_model: str, dataset: SpiceDataset, model_module: str 
     return model.eval()
 
 
-def prepare_spice(path_model: str, dataset: SpiceDataset, model_module: str = None, model_class: BaseRNN = None, model_config: SpiceConfig = None, n_reward_features: int = None) -> SpiceEstimator:
+def prepare_spice(path_model: str, dataset: SpiceDataset, model_module: str = None, model_class: BaseModel = None, model_config: SpiceConfig = None, n_reward_features: int = None) -> SpiceEstimator:
     # --- load SPICE model via precoded module ---
     if model_module is not None and model_class is None and model_config is None:
         mod = importlib.import_module(model_module)
@@ -128,9 +128,9 @@ def analysis_model_evaluation(
     
     spice_path: str = None,    
     spice_module: str = None,
-    spice_class: BaseRNN = None,
+    spice_class: BaseModel = None,
     spice_config: SpiceConfig = None,
-    spice_model: BaseRNN = None,
+    spice_model: BaseModel = None,
     
     benchmark_path: str = None,
     benchmark_module: str = None,

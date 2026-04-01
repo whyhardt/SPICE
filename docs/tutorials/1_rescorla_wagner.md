@@ -229,7 +229,7 @@ plt.show()
 
 In this section we are going to implement the precoded RNN from scratch.
 
-This RNN will inherit from the `BaseRNN`-class which itself inherits from `pytorch.nn.Module`. This is the base class for neural networks in the `PyTorch` framework.
+This RNN will inherit from the `BaseModel`-class which itself inherits from `pytorch.nn.Module`. This is the base class for neural networks in the `PyTorch` framework.
 
 Therefore the RNN has to implement a `forward`-method which is used for prediction. Further, it needs submodules to perform computations. These submodules are stored in the dictionary ` submodules_rnn` with the key `x_ModuleName`. The start of the key `x_` means that we are talking here about a memory state variable of the RNN.
 
@@ -241,9 +241,9 @@ The structure of this RNN is shown in the following figure:
 
 
 ```python
-from spice.resources.rnn import BaseRNN
+from spice.resources.rnn import BaseModel
 
-class CustomRNN(BaseRNN):
+class CustomRNN(BaseModel):
     
     # set up a dictionary with initial values for each state in memory
     init_values = {

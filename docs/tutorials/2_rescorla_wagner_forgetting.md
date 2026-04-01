@@ -138,7 +138,7 @@ As you can see we are going to add one module which will be responsible for upda
 
 
 ```python
-from spice.resources.rnn import BaseRNN
+from spice.resources.rnn import BaseModel
 from spice.estimator import SpiceConfig
 
 
@@ -161,7 +161,7 @@ FORGETTING_RNN_CONFIG = SpiceConfig(
     },
 )
 
-class ForgettingRNN(BaseRNN):
+class ForgettingRNN(BaseModel):
     
     init_values = {
         'x_value_reward': 0.5,

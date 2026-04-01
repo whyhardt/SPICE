@@ -133,7 +133,7 @@ The structure of this RNN is shown in the following figure:
 
 ```python
 from spice.estimator import SpiceConfig
-from spice.resources.rnn import BaseRNN
+from spice.resources.rnn import BaseModel
 
 custom_config = SpiceConfig(
     rnn_modules=['x_value_reward_chosen', 'x_value_reward_not_chosen', 'x_value_choice_chosen', 'x_value_choice_not_chosen'],
@@ -155,7 +155,7 @@ custom_config = SpiceConfig(
     }    
 )
 
-class CustomRNN(BaseRNN):
+class CustomRNN(BaseModel):
 
     init_values = {
             'x_value_reward': 0.5,

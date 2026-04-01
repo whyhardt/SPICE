@@ -1,5 +1,5 @@
 from ..resources.estimator import SpiceConfig
-from ..resources.rnn import BaseRNN
+from ..resources.rnn import BaseModel
 
 import torch
 
@@ -65,7 +65,7 @@ CONFIG = SpiceConfig(
 )
 
 
-class SpiceModel(BaseRNN):
+class SpiceModel(BaseModel):
     """
     Working memory as explicit buffer of recent rewards.
     

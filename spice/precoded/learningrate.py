@@ -1,5 +1,5 @@
 from ..resources.estimator import SpiceConfig
-from ..resources.rnn import BaseRNN
+from ..resources.rnn import BaseModel
 
 import torch
 
@@ -24,7 +24,7 @@ CONFIG = SpiceConfig(
 )
 
 
-class SpiceModel(BaseRNN):
+class SpiceModel(BaseModel):
     
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
