@@ -25,22 +25,22 @@ CONFIG = SpiceConfig(
             'reward[t-3]',
             ],
         
-        'value_choice': [
-            'choice[t]',
+        # 'value_choice': [
+        #     'choice[t]',
+        #     'choice[t-1]', 
+        #     'choice[t-2]',
+        #     'choice[t-3]',
+        #     ],
+        'value_choice_chosen': [
             'choice[t-1]', 
             'choice[t-2]',
             'choice[t-3]',
             ],
-        # 'value_choice_chosen': [
-        #     'choice[t-1]', 
-        #     'choice[t-2]',
-        #     'choice[t-3]',
-        #     ],
-        # 'value_choice_not_chosen': [
-        #     'choice[t-1]', 
-        #     'choice[t-2]',
-        #     'choice[t-3]',
-        #     ],
+        'value_choice_not_chosen': [
+            'choice[t-1]', 
+            'choice[t-2]',
+            'choice[t-3]',
+            ],
     },
     
     memory_state = {
@@ -81,9 +81,9 @@ class SpiceModel(BaseModel):
         self.setup_module(key_module='value_reward_chosen', input_size=4+self.embedding_size, dropout=dropout)  # -> 21 terms
         self.setup_module(key_module='value_reward_not_chosen', input_size=3+self.embedding_size, dropout=dropout)  # -> 21 terms
         
-        self.setup_module(key_module='value_choice', input_size=4+self.embedding_size, dropout=dropout, include_bias=True) # -> 21 terms; bias not necessary when module is applied equally to all options
-        # self.setup_module(key_module='value_choice_chosen', input_size=3+self.embedding_size, dropout=dropout) # -> 21 terms; bias not necessary when module is applied equally to all options
-        # self.setup_module(key_module='value_choice_not_chosen', input_size=3+self.embedding_size, dropout=dropout) # -> 21 terms; bias not necessary when module is applied equally to all options
+        # self.setup_module(key_module='value_choice', input_size=4+self.embedding_size, dropout=dropout, include_bias=True) # -> 21 terms; bias not necessary when module is applied equally to all options
+        self.setup_module(key_module='value_choice_chosen', input_size=3+self.embedding_size, dropout=dropout) # -> 21 terms; bias not necessary when module is applied equally to all options
+        self.setup_module(key_module='value_choice_not_chosen', input_size=3+self.embedding_size, dropout=dropout) # -> 21 terms; bias not necessary when module is applied equally to all options
         
         self.preprocess_coefficients(reward_binary=reward_binary)
         
@@ -124,12 +124,25 @@ class SpiceModel(BaseModel):
             )
 
             # CHOICE VALUE UPDATES
+            # self.call_module(
+            #     key_module='value_choice',
+            #     key_state='value_choice',
+            #     action_mask=None,
+            #     inputs=(
+            #         spice_signals.actions[trial],
+            #         self.state['buffer_action_1'],
+            #         self.state['buffer_action_2'],
+            #         self.state['buffer_action_3'],
+            #     ),
+            #     participant_index=spice_signals.participant_ids,
+            #     participant_embedding=participant_embedding,
+            # )
+            
             self.call_module(
-                key_module='value_choice',
+                key_module='value_choice_chosen',
                 key_state='value_choice',
-                action_mask=None,
+                action_mask=spice_signals.actions[trial],
                 inputs=(
-                    spice_signals.actions[trial],
                     self.state['buffer_action_1'],
                     self.state['buffer_action_2'],
                     self.state['buffer_action_3'],
@@ -137,31 +150,18 @@ class SpiceModel(BaseModel):
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
             )
-            
-            # self.call_module(
-            #     key_module='value_choice_chosen',
-            #     key_state='value_choice',
-            #     action_mask=spice_signals.actions[trial],
-            #     inputs=(
-            #         self.state['buffer_action_1'],
-            #         self.state['buffer_action_2'],
-            #         self.state['buffer_action_3'],
-            #     ),
-            #     participant_index=spice_signals.participant_ids,
-            #     participant_embedding=participant_embedding,
-            # )
-            # self.call_module(
-            #     key_module='value_choice_not_chosen',
-            #     key_state='value_choice',
-            #     action_mask=1-spice_signals.actions[trial],
-            #     inputs=(
-            #         self.state['buffer_action_1'],
-            #         self.state['buffer_action_2'],
-            #         self.state['buffer_action_3'],
-            #     ),
-            #     participant_index=spice_signals.participant_ids,
-            #     participant_embedding=participant_embedding,
-            # )
+            self.call_module(
+                key_module='value_choice_not_chosen',
+                key_state='value_choice',
+                action_mask=1-spice_signals.actions[trial],
+                inputs=(
+                    self.state['buffer_action_1'],
+                    self.state['buffer_action_2'],
+                    self.state['buffer_action_3'],
+                ),
+                participant_index=spice_signals.participant_ids,
+                participant_embedding=participant_embedding,
+            )
 
             # BUFFER UPDATES:
             # REWARD BUFFER UPDATES: Shift reward buffer for chosen action, keep for not chosen action

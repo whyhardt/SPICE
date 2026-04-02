@@ -157,7 +157,7 @@ class SpiceEstimator(BaseEstimator):
         
         # SPICE attributes
         self.spice_config = spice_config
-        self.rnn_class = spice_class
+        self.spice_class = spice_class
         self.spice_features = None
         self.model = spice_class(
             n_actions=n_actions,
@@ -320,7 +320,7 @@ class SpiceEstimator(BaseEstimator):
         # Infer ensemble_size from saved coefficient shape: (E, P, X, terms)
         self.model.ensemble_size = loaded_parameters['model']['sindy_coefficients.'+next(iter(self.model.submodules_rnn))].shape[0]
         
-        self.model = self.rnn_class(
+        self.model = self.spice_class(
             spice_config=self.spice_config,
             n_actions=self.model.n_actions,
             n_items=self.model.n_items,
@@ -361,3 +361,4 @@ class SpiceEstimator(BaseEstimator):
         
     def set_device(self, device: torch.device):
         self.model.to(device)
+        self.device = device

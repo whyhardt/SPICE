@@ -153,48 +153,15 @@ class GQLModel(torch.nn.Module):
         return 4 * self.d + 2 * self.d
 
 
-if __name__ == '__main__':
-
-    file = 'weinhardt2026/data/dezfouli2019/dezfouli2019.csv'
-
-    dataset = csv_to_dataset(file=file)
-
-    n_participants = len(dataset.xs[..., -1].unique())
-
-    model = GQLModel(n_participants=n_participants, batch_first=True)
-
-    # Training
-    epochs = 1000
-    metric = torch.nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(params=model.parameters(), lr=0.01)
-
-    for epoch in range(epochs):
-
-        random_index = torch.randint(len(dataset.xs), (len(dataset.xs), 1))[:, 0]
-
-        mask = ~torch.isnan(dataset.xs[random_index, :, 0]).reshape(-1)
-
-        logits, state = model(inputs=dataset.xs[random_index])
-
-        loss = metric(
-            logits.reshape(-1, model.n_actions)[mask],
-            dataset.ys[random_index].argmax(dim=-1).long().reshape(-1)[mask],
-        )
-
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-
-        print(f"Epoch {epoch + 1}/{epochs} --- Loss: {loss.item():.5f}")
-
-    print("\nFitted parameters:")
-    print("\nPhi (Q-value learning rate)")
-    print(model.phi)
-    print("\nChi (choice history learning rate)")
-    print(model.chi)
-    print("\nBeta (Q-value weight)")
-    print(model.beta)
-    print("\nKappa (choice history weight)")
-    print(model.kappa)
-    print("\nC (interaction matrix)")
-    print(model.C)
+class EnvironmentDezfouli2019:
+    
+    def __init__(self):
+        self.reward_probs = {
+            0: (0.25, 0.05),
+            1: (0.12, 0.05),
+            2: (0.08, 0.05),
+        }
+        
+    def step(self):
+        
+        return 

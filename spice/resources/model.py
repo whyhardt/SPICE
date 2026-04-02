@@ -55,84 +55,8 @@ class EnsembleEmbedding(nn.Module):
             embedded = self.weight[:, indices]
         return self.dropout(embedded)
 
-
-# class EnsembleGRUModule(nn.Module):
-#     """GRU module with independent parameters per ensemble member.
     
-#     Uses manual GRU cell implementation with einsum for vectorized
-#     computation across ensemble members.
-
-#     Input:  (within_ts, ensemble, batch, n_items, features)
-#     Output: (within_ts, ensemble, batch, n_items, 1)
-#     """
-#     def __init__(self, ensemble_size, input_size, dropout=0., compiled_forward=True, **kwargs):
-#         super().__init__()
-        
-#         self._compile = compiled_forward
-        
-#         proj_size = 8 + input_size
-#         hidden_size = 1
-#         input_size = input_size if input_size > 0 else 1
-        
-#         # Linear projection: (E, proj_size, input_size)
-#         self.weight_linear = nn.Parameter(torch.empty(ensemble_size, proj_size, input_size))
-#         self.bias_linear = nn.Parameter(torch.zeros(ensemble_size, proj_size))
-#         nn.init.xavier_uniform_(self.weight_linear.view(ensemble_size, proj_size, input_size))
-        
-#         # GRU cell parameters: 3 gates (reset, update, new) x hidden_size
-#         self.weight_ih = nn.Parameter(torch.empty(ensemble_size, 3 * hidden_size, proj_size))
-#         self.weight_hh = nn.Parameter(torch.empty(ensemble_size, 3 * hidden_size, hidden_size))
-#         self.bias_ih = nn.Parameter(torch.zeros(ensemble_size, 3 * hidden_size))
-#         self.bias_hh = nn.Parameter(torch.zeros(ensemble_size, 3 * hidden_size))
-#         nn.init.xavier_uniform_(self.weight_ih.view(ensemble_size, 3 * hidden_size, proj_size))
-#         nn.init.orthogonal_(self.weight_hh.view(ensemble_size, 3 * hidden_size, hidden_size))
-
-#         self.dropout = nn.Dropout(p=dropout)
-#         self.hidden_size = hidden_size
-#         self.ensemble_size = ensemble_size
-
-#         if compiled_forward:
-#             self._compiled_forward = torch.compile(self._uncompiled_forward, dynamic=True)
-
-#     def _uncompiled_forward(self, inputs, state):
-#         # inputs: (W, E, B, I, F)
-#         # state:  (W, E, B, I) — last row is current hidden state
-#         W, E, B, I, F = inputs.shape
-
-#         x = inputs.reshape(W, E, B * I, F)                          # (W, E, B*I, F)
-#         h = state[-1].contiguous().reshape(E, B * I, 1) if state is not None else torch.zeros(E, B * I, 1, device=inputs.device)
-
-#         # Linear projection via einsum
-#         y = torch.einsum('eoi,webi->webo', self.weight_linear, x) + self.bias_linear.unsqueeze(1)  # (W, E, B*I, proj)
-#         y = self.dropout(y)
-
-#         # Pre-compute all input-to-hidden gates (independent of h)
-#         gi_all = torch.einsum('ego,webo->webg', self.weight_ih, y) + self.bias_ih.unsqueeze(1)  # (W, E, B*I, 3*H)
-
-#         # GRU cell over within-trial timesteps
-#         H = self.hidden_size
-#         outputs = []
-#         for t in range(W):
-#             gi = gi_all[t] # (E, B*I, 3*H)
-#             # gi = torch.einsum('ego,ebo->ebg', self.weight_ih, y[t]) + self.bias_ih.unsqueeze(1)  # (W, E, B*I, 3*H)
-#             gh = torch.einsum('ego,ebo->ebg', self.weight_hh, h) + self.bias_hh.unsqueeze(1)     # (E, B*I, 3*H)
-#             r = torch.sigmoid(gi[..., :H] + gh[..., :H])           # reset gate
-#             z = torch.sigmoid(gi[..., H:2*H] + gh[..., H:2*H])     # update gate
-#             n = torch.tanh(gi[..., 2*H:] + r * gh[..., 2*H:])      # new gate
-#             h = (1 - z) * n + z * h                                  # (E, B*I, H)
-#             outputs.append(h)
-
-#         output = torch.stack(outputs)              # (W, E, B*I, H)
-#         return output.reshape(W, E, B, I, 1)
-
-#     def forward(self, inputs, state):
-#         if self._compile:
-#             return self._compiled_forward(inputs, state)
-#         else:
-#             return self._uncompiled_forward(inputs, state)
-    
-    
-class EnsembleGRUModule(nn.Module):
+class EnsembleRNNModule(nn.Module):
     """GRU module with independent parameters per ensemble member.
     
     Uses manual GRU cell implementation with einsum for vectorized
@@ -427,7 +351,7 @@ class BaseModel(nn.Module):
         if polynomial_degree is None:
             polynomial_degree = self.sindy_polynomial_degree
         
-        self.submodules_rnn[key_module] = EnsembleGRUModule(ensemble_size=self.ensemble_size, input_size=input_size, dropout=dropout, compiled_forward=self.compiled_forward)
+        self.submodules_rnn[key_module] = EnsembleRNNModule(ensemble_size=self.ensemble_size, input_size=input_size, dropout=dropout, compiled_forward=self.compiled_forward)
         self.sindy_specs[key_module] = {}
         self.sindy_specs[key_module]['include_bias'] = include_bias
         self.sindy_specs[key_module]['interaction_only'] = interaction_only

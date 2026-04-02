@@ -35,6 +35,7 @@ if __name__=='__main__':
     parser.add_argument('--ensemble', type=int, default=10, help='Number of independent members in the ensemble setup')
     
     # SINDy training parameters
+    parser.add_argument('--sindy_skip_refit', action='store_false', help='Refits the SINDy coefficients in Stage 2 training (default: True)')
     parser.add_argument('--sindy_weight', type=float, default=0.1, help='Weight for SINDy regularization during RNN training')
     parser.add_argument('--sindy_alpha', type=float, default=0.0001, help='Degree-weighted coefficient penalty strength (ridge alpha)')
     parser.add_argument('--pruning_frequency', type=int, default=100, help='Epochs between pruning events')
@@ -182,16 +183,18 @@ if __name__=='__main__':
     
     if args.epochs == 0:
         estimator.load_spice(args.model)
+    estimator.sindy_refit = ~args.sindy_skip_refit
+    
+    if args.epochs > 0 or args.sindy_skip_refit:
+        training_device_str = "CUDA" if estimator.device == torch.device('cuda') else "CPU"
+        print("Training device:", training_device_str)
+        print("="*_get_terminal_width())
+        # if args.epochs > 0:
+        estimator.fit(*dataset_tuple)
         
-    training_device_str = "CUDA" if estimator.device == torch.device('cuda') else "CPU"
-    print("Training device:", training_device_str)
-    print("="*_get_terminal_width())
-    # if args.epochs > 0:
-    estimator.fit(*dataset_tuple)
-    
-    print("\nTraining complete!")
-    
-    print(f"\nModel saved to: {args.model}")
+        print("\nTraining complete!")
+        
+        print(f"\nModel saved to: {args.model}")
     
     if args.results:
         

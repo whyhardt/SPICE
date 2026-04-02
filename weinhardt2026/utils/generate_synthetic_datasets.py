@@ -7,7 +7,7 @@ from spice.utils.convert_dataset import dataset_to_csv
 import sys, os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
-from weinhardt2026.studies.benchmarking_qlearning import QLearning
+from weinhardt2026.studies.synthetic.benchmarking_qlearning import QLearning
 
 
 # --- Configuration ---

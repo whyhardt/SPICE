@@ -54,12 +54,14 @@ def prepare_spice(path_model: str, dataset: SpiceDataset, model_module: str = No
     
     n_actions = dataset.ys.shape[-1]
     n_participants = dataset.xs[..., -1].unique().shape[0]
+    n_experiments = dataset.xs[..., -2].unique().shape[0]
     
     spice_estimator = SpiceEstimator(
         spice_class=rnn_class,
         spice_config=spice_config,
         n_actions=n_actions,
         n_participants=n_participants,
+        n_experiments=n_experiments,
         n_reward_features=n_reward_features,
         sindy_library_polynomial_degree=2,
     )
@@ -84,12 +86,10 @@ def log_likelihood(data: torch.tensor, probs: torch.tensor, **kwargs):
     probs = torch.clip(probs, epsilon, 1 - epsilon)
     
     # Calculate log-likelihood for each observation
-    log_likelihoods = data * torch.log(probs)# + (1 - data) * torch.log(1 - probs)
-    # log_likelihoods = data * torch.log(probs)
-    # log_likelihoods = torch.sum(data * torch.log(probs), axis=-1)
+    log_likelihoods = data * torch.log(probs)
     
     # Sum log-likelihoods over all observations
-    return torch.sum(log_likelihoods)
+    return log_likelihoods
 
 
 def bayesian_information_criterion(data: torch.Tensor, probs: torch.Tensor, n_parameters: int, nll: torch.Tensor = None, **kwargs):
@@ -100,7 +100,8 @@ def bayesian_information_criterion(data: torch.Tensor, probs: torch.Tensor, n_pa
     if nll is None:
         nll = log_likelihood(data=data, probs=probs)
     
-    n_samples = (data[:, 0] != -1).sum()
+    # n_samples = (data[:, 0] != -1).sum()
+    n_samples = (~torch.isnan(data[..., 0])).sum()
     return 2 * nll + n_parameters * torch.log(n_samples)
 
 
@@ -115,16 +116,19 @@ def akaike_information_criterion(data: torch.Tensor, probs: torch.Tensor, n_para
     return 2 * nll + 2 * n_parameters
 
 
-def get_scores(probs: torch.Tensor, targets: torch.Tensor, n_parameters: int) -> Tuple[float, float, float]:
+def get_scores(probs: torch.Tensor, targets: torch.Tensor, n_parameters: int) -> tuple[tuple[float, float, float], torch.Tensor]:
     nll = -log_likelihood(data=targets, probs=probs)
-    bic = bayesian_information_criterion(data=targets, probs=probs, n_parameters=n_parameters, nll=nll)
-    aic = akaike_information_criterion(data=targets, probs=probs, n_parameters=n_parameters, nll=nll)
-    return nll, aic, bic
+    nll_sum = torch.nansum(nll)
+
+    bic = bayesian_information_criterion(data=targets, probs=probs, n_parameters=n_parameters, nll=nll_sum)
+    aic = akaike_information_criterion(data=targets, probs=probs, n_parameters=n_parameters, nll=nll_sum)
+    
+    
+    return (nll_sum, aic, bic), nll
 
 
 def analysis_model_evaluation(
     dataset: SpiceDataset,
-    list_test_sessions: Optional[Iterable[int]] = None,
     
     spice_path: str = None,    
     spice_module: str = None,
@@ -149,21 +153,10 @@ def analysis_model_evaluation(
     # General setup
     # ------------------------------------------------------------
     
-    participant_ids = dataset.xs[:, 0, -1].unique().cpu().numpy()
-    n_participants = int(max(participant_ids)+1)
     n_actions = dataset.ys.shape[-1]
-    
-    # ------------------------------------------------------------
-    # Dataset splitting
-    # ------------------------------------------------------------
-
-    if list_test_sessions is not None:
-        _, dataset_test = split_data_along_sessiondim(dataset, list_test_sessions=list_test_sessions)
-    else:
-        _, dataset_test = dataset, dataset
-        
+            
     # NaN data mask
-    nan_mask = ~torch.isnan(dataset_test.xs[..., :n_actions].sum(dim=-1))
+    nan_mask = ~torch.isnan(dataset.xs[..., :n_actions].sum(dim=-1))
 
     # ------------------------------------------------------------
     # Model setup
@@ -175,18 +168,18 @@ def analysis_model_evaluation(
         if benchmark_model is not None:
             print("Computing choice probabilities with benchmark model...")
             benchmark_parameters = benchmark_model.count_parameters() if hasattr(benchmark_model, 'count_parameters') else len([p for p in benchmark_model.parameters()])
-            benchmark_predictions, _ = benchmark_model(dataset_test.xs)
+            benchmark_predictions, _ = benchmark_model(dataset.xs)
             benchmark_choice_probs = get_choice_probs(benchmark_predictions).detach().cpu()
         else:
             benchmark_parameters = torch.nan
             
         # setup GRU model
         if gru_model is None and gru_path is not None and (gru_module is not None or gru_class is not None):
-            gru_model = prepare_benchmark(path_model=gru_path, dataset=dataset, model_module=gru_module, model_class=gru_class, n_reward_features=1)
+            gru_model = prepare_benchmark(path_model=gru_path, dataset=dataset, model_module=gru_module, model_class=gru_class)
         if gru_model is not None:
             print("Computing choice probabilities with GRU model...")
             gru_parameters = sum(p.numel() for p in gru_model.parameters())
-            gru_predictions, _ = gru_model(dataset_test.xs)
+            gru_predictions, _ = gru_model(dataset.xs)
             gru_choice_probs = get_choice_probs(gru_predictions).detach().cpu()
         else:
             gru_parameters = torch.nan
@@ -204,7 +197,7 @@ def analysis_model_evaluation(
             
             # use spice
             print("Computing choice probabilities with SPICE model...")
-            spice_rnn_predictions, spice_predictions = spice_model.predict(dataset_test.xs.to(spice_model.device))           
+            spice_rnn_predictions, spice_predictions = spice_model.predict(dataset.xs.to(spice_model.device))           
             spice_rnn_predictions, spice_predictions = torch.tensor(spice_rnn_predictions), torch.tensor(spice_predictions)
             spice_rnn_choice_probs = get_choice_probs(spice_rnn_predictions).detach().cpu()
             spice_choice_probs = get_choice_probs(spice_predictions).detach().cpu()
@@ -217,69 +210,47 @@ def analysis_model_evaluation(
     # ------------------------------------------------------------
     
     scores = torch.zeros((4, 3))
-    metric_participant = torch.zeros((len(scores), len(dataset_test)))
-    parameters_participant = torch.zeros((1, len(dataset_test)))
-    considered_trials_participant = torch.zeros(len(dataset_test))
-    considered_trials = 0
+    metric_participant = torch.zeros((len(scores), len(dataset)))
     
-    for index_data in range(len(dataset_test)):
-        # use whole session to include warm-up phase; make sure to exclude warm-up phase when computing metrics
-        pid = dataset_test.xs[index_data, 0, 0, -1].int().item()
+    considered_trials_participant = (~torch.isnan(dataset.xs[:, :, 0, 0])).sum(dim=1)
+    considered_trials = considered_trials_participant.sum()
+    
+    # SPICE model
+    if spice_model is not None:
+        participant_ids = dataset.xs[:, 0, 0, -1].cpu().numpy()
+        experiment_ids = dataset.xs[:, 0, 0, -2].cpu().numpy()
+
+        scores_spice, nll_per_sample = get_scores(targets=dataset.ys, probs=spice_choice_probs, n_parameters=spice_parameters[participant_ids, experiment_ids].mean().item())
+        scores[3] += torch.tensor(scores_spice)
+        metric_participant[3] = nll_per_sample.sum(dim=-1).nansum(dim=1)[..., 0]
+        parameters_participant = spice_parameters[participant_ids, experiment_ids].unsqueeze(0)
         
-        # get number of actual trials
-        n_trials = nan_mask[index_data].sum()
-        considered_trials_participant[index_data] += n_trials
-        considered_trials += n_trials
+        scores_spice_rnn, nll_per_sample = get_scores(targets=dataset.ys, probs=spice_rnn_choice_probs, n_parameters=spice_rnn_parameters)
+        scores[2] += torch.tensor(scores_spice_rnn)
+        metric_participant[2] = nll_per_sample.sum(dim=-1).nansum(dim=1)[..., 0]     
+    else:
+        parameters_participant = torch.zeros((1, len(dataset)))
         
-        # SPICE model
-        if spice_model is not None:
-            scores_spice = torch.tensor(
-                get_scores(targets=dataset_test.ys[index_data, nan_mask[index_data]], 
-                           probs=spice_choice_probs[index_data, nan_mask[index_data]], 
-                           n_parameters=spice_parameters[pid],
-                           ))
-            scores[3] += scores_spice
-            
-            scores_spice_rnn = torch.tensor(
-                get_scores(targets=dataset_test.ys[index_data, nan_mask[index_data]], 
-                           probs=spice_rnn_choice_probs[index_data, nan_mask[index_data]], 
-                           n_parameters=spice_rnn_parameters,
-                           ))
-            scores[2] += scores_spice_rnn
-            
-            metric_participant[2, index_data] = scores_spice_rnn[0]      
-            metric_participant[3, index_data] = scores_spice[0]      
-            parameters_participant[0, index_data] = spice_parameters[pid]
+    # Benchmark model
+    if benchmark_model is not None:
+        scores_benchmark, nll_per_sample = get_scores(targets=dataset.ys, probs=benchmark_choice_probs, n_parameters=benchmark_parameters)
+        scores[0] += torch.tensor(scores_benchmark)
+        metric_participant[0] = nll_per_sample.sum(dim=-1).nansum(dim=1)[..., 0]
         
-        # Benchmark model
-        if benchmark_model is not None:
-            scores_benchmark = torch.tensor(
-                get_scores(targets=dataset_test.ys[index_data, nan_mask[index_data]], 
-                           probs=benchmark_choice_probs[index_data, nan_mask[index_data]], 
-                           n_parameters=benchmark_parameters,
-                           ))
-            scores[0] += scores_benchmark
-            metric_participant[0, index_data] = scores_benchmark[0]
-                  
-        # GRU model
-        if gru_model is not None:
-            scores_gru = torch.tensor(
-                get_scores(targets=dataset_test.ys[index_data, nan_mask[index_data]], 
-                           probs=gru_choice_probs[index_data, nan_mask[index_data]], 
-                           n_parameters=gru_parameters,
-                           ))
-            scores[1] += scores_gru
-            metric_participant[1, index_data] = scores_gru[0]
+    # GRU model
+    if gru_model is not None:
+        scores_gru, nll_per_sample = get_scores(targets=dataset.ys, probs=gru_choice_probs, n_parameters=gru_parameters)
+        scores[1] += torch.tensor(scores_gru)
+        metric_participant[1] = nll_per_sample.sum(dim=-1).nansum(dim=1)[..., 0]
         
     # ------------------------------------------------------------
     # Post processing
     # ------------------------------------------------------------
 
     # compute trial-level metrics (and NLL -> Likelihood)
-    scores = scores / considered_trials
-    avg_trial_likelihood = torch.exp(-scores[:, 0])
+    # scores = scores / considered_trials
+    avg_trial_likelihood = torch.exp(-scores[:, 0] / considered_trials)
 
-    metric_participant_std = (metric_participant/considered_trials_participant).std(dim=1)
     avg_trial_likelihood_participant = np.exp(- metric_participant / considered_trials_participant)
     avg_trial_likelihood_participant_std = avg_trial_likelihood_participant.std(dim=1)
     parameter_participant_std = parameters_participant.std(dim=1)[0]
@@ -304,8 +275,7 @@ def analysis_model_evaluation(
         n_parameters.reshape(-1, 1), 
         n_parameters_std.reshape(-1, 1),
         scores[:, :1], 
-        metric_participant_std.reshape(-1, 1), 
-        scores[:, 1:], 
+        scores[:, 1:],
         ), dim=1)
     
     # ------------------------------------------------------------
@@ -315,7 +285,7 @@ def analysis_model_evaluation(
     df = pd.DataFrame(
         data=scores,
         index=['Benchmark', 'GRU', 'SPICE-RNN', 'SPICE'],
-        columns = ('Trial Lik.', '(std)', 'n_parameters', '(std)', 'NLL', '(std)', 'AIC', 'BIC'),
+        columns = ('Trial Lik.', '(std)', 'n_parameters', '(std)', 'NLL', 'AIC', 'BIC'),
         )
     
     if verbose:
@@ -340,24 +310,24 @@ if __name__=='__main__':
                    help="Name of the SPICE model module (default: spice.precoded.workingmemory)")
     p.add_argument("--benchmark_model", default=None,
                    help="Path to the trained benchmark model (.pkl)")
-    p.add_argument("--benchmark_module", default="weinhardt2026.benchmarking.benchmarking_qlearning",
-                   help="Name of the benchmark model module (default: weinhardt2026.benchmarking.benchmarking_qlearning)")
+    p.add_argument("--benchmark_module", default="weinhardt2026.studies.synthetic.benchmarking_qlearning",
+                   help="Name of the benchmark model module (default: weinhardt2026.studies.synthetic.benchmarking_qlearning)")
     p.add_argument("--gru_model", default=None,
                    help="Path to the trained GRU model (.pkl)")
-    p.add_argument("--gru_module", default="weinhardt2026.benchmarking.benchmarking_gru",
-                   help="Name of the GRU model module (default: weinhardt2026.benchmarking.benchmarking_gru)")
+    p.add_argument("--gru_module", default="weinhardt2026.utils.benchmarking_gru",
+                   help="Name of the GRU model module (default: weinhardt2026.utils.benchmarking_gru)")
     args  = p.parse_args()
     
     
-    # args.data = 'weinhardt2026/data/dezfouli2019/dezfouli2019.csv'
-    # args.test_sessions = (3,6,9)
-    # args.spice_model = 'weinhardt2026/params/dezfouli2019/spice_dezfouli2019.pkl'
-    # args.gru_model = 'weinhardt2026/params/dezfouli2019/gru_dezfouli2019.pkl'
-    # args.verbose = True    
+    args.data = 'weinhardt2026/studies/dezfouli2019/data/dezfouli2019_experimentid.csv'
+    args.spice_model = 'weinhardt2026/studies/dezfouli2019/params/spice_emb_dezfouli2019.pkl'
+    # args.gru_model = 'weinhardt2026/studies/dezfouli2019/params/gru_dezfouli2019.pkl'
+    args.test_sessions = (3,6,9)
+    args.verbose = True    
     
     dataset = csv_to_dataset(
         file=args.data,
-    )
+    )    
     
     analysis_model_evaluation(
         dataset=dataset,

@@ -98,9 +98,8 @@ class Castro2025Model(torch.nn.Module):
     -------------------------------------------------------------------------------------------------
     -------------------------------------------------------------------------------------------------
 
-    Translated from the original JAX implementation. One parameter set per participant,
-    matching the SPICE convention of per-participant SINDy coefficients.
-
+    Translated from the original JAX implementation. One parameter set per participant.
+    
     Model parameters (per participant):
     - beta_r:                   Value scaling in softmax
     - lapse:                    Lapse rate (uniform exploration probability)

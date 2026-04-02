@@ -21,7 +21,7 @@ SPICE/
 ├── spice/                              # Core framework (backend / pip package)
 │   ├── resources/
 │   │   ├── estimator.py                # SpiceEstimator — scikit-learn compatible wrapper
-│   │   ├── rnn.py                      # BaseModel — core RNN + SINDy architecture
+│   │   ├── model.py                    # BaseModel — core RNN + SINDy architecture
 │   │   ├── spice_utils.py              # SpiceConfig, SpiceDataset, SpiceSignals
 │   │   ├── spice_training.py           # Two-stage training pipeline
 │   │   └── sindy_differentiable.py     # Differentiable SINDy polynomial library
@@ -37,16 +37,22 @@ SPICE/
 │   │   └── workingmemory_*.py          # Working memory variants
 │   └── utils/
 │       ├── convert_dataset.py          # CSV ↔ SpiceDataset conversion pipeline
-│       ├── diagnostics.py              # SpiceDiagnostics — architectural bottleneck analysis
 │       └── plotting.py                 # Visualization utilities
 │
 ├── weinhardt2026/                      # Paper-specific code (fitting, benchmarking, analyses)
 │   ├── run.py                          # Main entry point for training
-│   ├── aux/                            # Jupyter notebooks per dataset
-│   ├── data/                           # 16 benchmark datasets
-│   ├── params/                         # Pre-trained model parameters
-│   ├── benchmarking/                   # Baseline comparisons (Q-learning, GRU, etc.)
-│   └── analysis/                       # Post-hoc analysis pipelines
+│   ├── studies/                        # Self-contained study directories
+│   │   ├── synthetic/                  # Synthetic parameter recovery
+│   │   ├── braun2018/                  # Each study has: notebook, benchmarking script,
+│   │   ├── bustamante2023/             #   data/, params/, results/
+│   │   ├── castro2025/
+│   │   ├── dezfouli2019/
+│   │   ├── ganesh2024a/
+│   │   ├── huang2026/
+│   │   ├── hwang2026/
+│   │   └── archive/                    # Inactive studies
+│   ├── analysis/                       # Cross-study analysis pipelines
+│   └── utils/                          # Shared utilities (benchmarking, bandits, etc.)
 │
 ├── docs/                               # Documentation and tutorials
 ├── pyproject.toml                      # Package config (autospice v0.2.0, Python >=3.11)
@@ -73,12 +79,12 @@ python weinhardt2026/run.py              # Fit SPICE model to dataset
 
 ## Key Classes and Concepts
 
-### BaseModel (`spice/resources/rnn.py`)
+### BaseModel (`spice/resources/model.py`)
 
 Core neural network architecture. All task-specific models subclass this.
 
 **Key components:**
-- `submodules_rnn` — `ModuleDict` of GRU-based submodules, each learning one cognitive mechanism
+- `submodules_rnn` — `ModuleDict` of RNN submodules (residual architecture), each learning one cognitive mechanism
 - `sindy_coefficients` — Learnable `Dict[module_name, Tensor]` with shape `(E, P, X, n_terms)`
 - `sindy_coefficients_presence` — Binary masks for active coefficients (same shape)
 - `sindy_candidate_terms` / `sindy_degree_weights` — Library of basis functions and complexity penalties
@@ -87,13 +93,13 @@ Core neural network architecture. All task-specific models subclass this.
 
 **Key methods:**
 
-#### `setup_module()` — Register a GRU submodule with its SINDy configuration
+#### `setup_module()` — Register an RNN submodule with its SINDy configuration
 
 ```python
 setup_module(
     key_module: str,          # Module name (must match a key in SpiceConfig.library_setup)
-    input_size: int,          # Number of GRU input features (control signals + embeddings; excludes own state)
-    dropout: float = 0.,      # Dropout rate in the GRU module
+    input_size: int,          # Number of RNN input features (control signals + embeddings; excludes own state)
+    dropout: float = 0.,      # Dropout rate in the RNN module
     polynomial_degree: int = None,  # SINDy library degree (None → use model default)
     include_bias: bool = True,      # Include constant term '1' in SINDy library
     include_state: bool = True,     # Include own state variable in SINDy library
@@ -101,7 +107,7 @@ setup_module(
 )
 ```
 
-Creates an `EnsembleGRUModule` and initializes SINDy coefficients + candidate library for this module. The `input_size` should account for the control signals plus any embeddings that will be concatenated at call time. **Important:** `input_size` defines the GRU's input dimension, NOT the SINDy library features. The SINDy library is constructed only from the control signals (defined in `SpiceConfig.library_setup`) + the module's own state (if `include_state=True`), up to `polynomial_degree`. Embeddings are NOT included in the SINDy library — they feed the GRU only, while participant variation in SINDy is handled via per-participant coefficients.
+Creates an `EnsembleRNNModule` and initializes SINDy coefficients + candidate library for this module. The `input_size` should account for the control signals plus any embeddings that will be concatenated at call time. **Important:** `input_size` defines the RNN's input dimension, NOT the SINDy library features. The SINDy library is constructed only from the control signals (defined in `SpiceConfig.library_setup`) + the module's own state (if `include_state=True`), up to `polynomial_degree`. Embeddings are NOT included in the SINDy library — they feed the RNN only, while participant variation in SINDy is handled via per-participant coefficients.
 
 #### `call_module()` — Forward pass through a submodule (RNN or SINDy path)
 
@@ -119,7 +125,7 @@ call_module(
 ) -> torch.Tensor  # [W,E,B,I] updated state
 ```
 
-Executes the module's forward pass. Broadcasts and concatenates inputs + embeddings to `[W,E,B,I,features]`, runs through GRU (or SINDy equation if `use_sindy=True`), applies `action_mask` (only masked items updated, unmasked retain previous state), clips to `[-10, 10]`, and updates `self.state[key_state]`. During training, also computes SINDy loss (MSE between RNN and SINDy predictions) accumulated in `model.sindy_loss`.
+Executes the module's forward pass. Broadcasts and concatenates inputs + embeddings to `[W,E,B,I,features]`, runs through the RNN submodule (or SINDy equation if `use_sindy=True`), applies `action_mask` (only masked items updated, unmasked retain previous state), clips to `[-10, 10]`, and updates `self.state[key_state]`. During training, also computes SINDy loss (MSE between RNN and SINDy predictions) accumulated in `model.sindy_loss`.
 
 **Other methods:**
 - `setup_embedding()` — Create participant/experiment embeddings
@@ -130,7 +136,15 @@ Executes the module's forward pass. Broadcasts and concatenates inputs + embeddi
 - `sindy_ridge_solve()` — Direct least-squares coefficient solving
 - `sindy_coefficient_pruning()` — Hard thresholding with patience
 
-**Ensemble support:** `EnsembleLinear`, `EnsembleEmbedding`, `EnsembleGRUModule` — vectorized computation across ensemble members.
+**Ensemble support:** `EnsembleLinear`, `EnsembleEmbedding`, `EnsembleRNNModule` — vectorized computation across ensemble members.
+
+**`EnsembleRNNModule` architecture:** Uses a residual update (not a traditional GRU):
+1. Concatenate input with current state: `x_t = concat(x[t], h)`
+2. Non-linear projection via GELU: `gi = GELU(W_linear @ x_t + b_linear)`
+3. Candidate computation: `n = W_n @ gi + b_n`
+4. Residual update: `h = h + n`
+
+No sigmoid/tanh gates — the architecture is inherently polynomial-amenable.
 
 ### SpiceConfig (`spice/resources/spice_utils.py`)
 
@@ -210,7 +224,7 @@ Main user-facing class implementing sklearn's estimator interface.
 | `batch_size` | `int` | `None` | Training batch size (`None` = auto-detect max via GPU probing) |
 | `n_steps_per_call` | `int` | `None` | BPTT truncation length (`None` = full sequence) |
 | `ensemble_size` | `int` | `1` | Number of independent RNN ensemble members |
-| `dropout` | `float` | `0.` | Dropout rate in GRU modules |
+| `dropout` | `float` | `0.` | Dropout rate in RNN modules |
 | `l2_rnn` | `float` | `0` | L2 weight decay for RNN parameters |
 | `convergence_threshold` | `float` | `0` | Early stopping threshold (0 = disabled) |
 | `scheduler` | `bool` | `False` | Enable ReduceOnPlateauWithRestarts LR scheduler |
@@ -254,7 +268,7 @@ PyTorch-based polynomial library computation for end-to-end gradient flow. Funct
 | X | Experiments | |
 | C | Candidate terms | SINDy library size |
 
-**Items vs. Actions:** Items and actions can be decoupled. `n_items` is the number of latent value representations the model maintains internally (state shape uses I). `n_actions` is the observable action space (logits shape uses A). By default `n_items = n_actions`, but they can differ — e.g., in a two-armed bandit with multiple symbol pairs, items might be contrast-specific values (low vs. high) while actions are position-specific (left vs. right). See `aux/ganesh2024a_choice_position.ipynb` for an example.
+**Items vs. Actions:** Items and actions can be decoupled. `n_items` is the number of latent value representations the model maintains internally (state shape uses I). `n_actions` is the observable action space (logits shape uses A). By default `n_items = n_actions`, but they can differ — e.g., in a two-armed bandit with multiple symbol pairs, items might be contrast-specific values (low vs. high) while actions are position-specific (left vs. right). See `weinhardt2026/studies/ganesh2024a/ganesh2024a.ipynb` for an example.
 
 **Canonical internal shapes:**
 - Input: `(T, W, E, B, F)` — after `init_forward_pass()` promotes from batch-first `(B, T, W, F)`
@@ -432,55 +446,16 @@ class MyModel(BaseModel):
 
 Full guidelines: [`docs/guidelines_polynomial_amenable_architectures.md`](docs/guidelines_polynomial_amenable_architectures.md)
 
-When designing `BaseModel` subclasses for SPICE, the architecture determines how well SINDy polynomials can approximate the learned GRU dynamics. The GRU's sigmoid gates, tanh activations, and data-dependent convex combinations are fundamentally non-polynomial — the goal is to make these capabilities *unnecessary* through architecture design:
+When designing `BaseModel` subclasses for SPICE, the architecture determines how well SINDy polynomials can approximate the learned RNN dynamics. The RNN submodules use a residual architecture (GELU projection + additive update) that is inherently more polynomial-amenable than traditional GRUs, but good architecture design still matters:
 
-1. **Externalize gating via action masks** — If a module receives a binary selector (action flag, exit flag), split it into separate modules with explicit `action_mask` arguments instead of relying on the GRU to learn internal gating.
-2. **1–3 control signals per module** — More inputs give the GRU more dimensions for complex nonlinear interactions that polynomials can't match. Keep modules focused.
-3. **Precompute non-polynomial transforms in `forward()`** — Differencing, running averages, counting, clipping — anything expressible in closed form belongs in `forward()`, not inside a GRU module.
-4. **Separate memory states per cognitive function** — One state tracking multiple functions forces multiplexed encoding that requires GRU gating. Use separate `key_state` entries (e.g., `value_reward`, `value_depletion`, `value_tenure`).
+1. **Externalize gating via action masks** — If a module receives a binary selector (action flag, exit flag), split it into separate modules with explicit `action_mask` arguments instead of relying on the RNN to learn internal gating.
+2. **1–3 control signals per module** — More inputs give the RNN more dimensions for complex nonlinear interactions that polynomials can't match. Keep modules focused.
+3. **Precompute non-polynomial transforms in `forward()`** — Differencing, running averages, counting, clipping — anything expressible in closed form belongs in `forward()`, not inside an RNN module.
+4. **Separate memory states per cognitive function** — One state tracking multiple functions forces multiplexed encoding. Use separate `key_state` entries (e.g., `value_reward`, `value_depletion`, `value_tenure`).
 5. **Match polynomial degree to mechanism** — Use `polynomial_degree=1` for additive updates (e.g., Rescorla-Wagner), `polynomial_degree=2` for multiplicative interactions (e.g., prediction error scaling).
-6. **Keep inputs in [-1, 1]** — Small inputs keep sigmoid ≈ linear and tanh ≈ identity, making GRU dynamics approximately polynomial.
-7. **Remove redundant inputs** — Irrelevant inputs force the GRU to learn sigmoid-based ignoring, which polynomials can't replicate. Validate with input gradient analysis after fitting with `sindy_weight=0`.
+6. **Keep inputs in [-1, 1]** — Small inputs keep the RNN dynamics in a regime amenable to polynomial approximation.
+7. **Remove redundant inputs** — Irrelevant inputs force the RNN to learn to ignore them, wasting capacity. Validate with input gradient analysis after fitting with `sindy_weight=0`.
 8. **Additive logit composition** — Combine simple module outputs (`logits = state['a'] + state['b'] + state['c']`) rather than packing complexity into one module.
-
-### Diagnosing Architectural Bottlenecks (`spice/utils/diagnostics.py`)
-
-`SpiceDiagnostics` identifies which modules prevent polynomial-amenable dynamics discovery. It works entirely by external probing via forward hooks — no backend modifications.
-
-```python
-from spice.utils.diagnostics import SpiceDiagnostics
-
-diag = SpiceDiagnostics(estimator, dataset)
-r2_report = diag.polynomial_adequacy()     # per-module R²
-gate_report = diag.gate_saturation()       # per-module gate distributions
-```
-
-#### `polynomial_adequacy(degree=None)` — Per-module polynomial R² test
-
-Hooks each `EnsembleGRUModule` during a forward pass (`use_sindy=False`), collects `(h_in, controls, h_out)` per timestep, builds the polynomial library via `compute_polynomial_library`, fits OLS (`lstsq`), and reports R² per module. Automatically filters out items whose state never varies (never updated by action masks).
-
-| R² value | Interpretation |
-|----------|----------------|
-| > 0.95 | SINDy-friendly |
-| 0.90–0.95 | Marginal — consider minor restructuring |
-| < 0.90 | Needs restructuring |
-| < 0.80 | Fundamental expressiveness mismatch |
-
-Returns a `DataFrame` with columns: `module`, `r2`, `n_samples`, `n_terms`, `n_active_items`, `delta_h_std`.
-
-#### `gate_saturation()` — Per-module GRU gate distribution analysis
-
-Recomputes gate activations externally from module weights (linear projection → `W_ih`/`W_hh` → sigmoid for update/reset gates). Returns raw `z` (update) and `r` (reset) gate tensors plus summary statistics per module.
-
-| Gate distribution | Interpretation |
-|-------------------|----------------|
-| Unimodal, peak near 0.5 | GRU in linear regime (SINDy-friendly) |
-| Bimodal, peaks near 0 and 1 | Hard mode-switching (split this module) |
-| Unimodal, peak near 0 or 1 | Gate effectively constant (module may be simplified) |
-
-Returns `Dict[module_name, {'z': Tensor, 'r': Tensor, 'z_mean', 'z_std', 'r_mean', 'r_std'}]`.
-
-**Typical workflow:** Fit with `sindy_weight=0` → run both diagnostics → restructure modules with low R² or bimodal gates → repeat until all modules R² > 0.95 → fit with `sindy_weight > 0`.
 
 ---
 
