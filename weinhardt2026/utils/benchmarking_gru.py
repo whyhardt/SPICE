@@ -1,6 +1,6 @@
 import torch
 
-from spice import SpiceDataset, csv_to_dataset, split_data_along_sessiondim, split_data_along_timedim, Agent, cross_entropy_loss
+from spice import SpiceDataset, csv_to_dataset, split_data_along_sessiondim, split_data_along_timedim, cross_entropy_loss
 
 
 class Model(torch.nn.Module):
@@ -15,7 +15,7 @@ class Model(torch.nn.Module):
         
         self.linear_in = torch.nn.Linear(in_features=self.n_actions+self.n_reward_features+self.additional_inputs, out_features=hidden_size)
         self.dropout = torch.nn.Dropout(dropout)
-        self.gru = torch.nn.GRU(input_size=hidden_size, hidden_size=hidden_size, batch_first=True)
+        self.gru = torch.nn.GRU(input_size=hidden_size, hidden_size=hidden_size, batch_first=True,)
         self.linear_out = torch.nn.Linear(in_features=hidden_size, out_features=n_actions)
         
     def forward(self, inputs, state=None):
@@ -35,19 +35,6 @@ class Model(torch.nn.Module):
         y = self.linear_out(y).unsqueeze(2)
         return y, state
 
-  
-def setup_agent_gru(path_model: str, gru: torch.nn.Module = None) -> Agent:
-    state_dict = torch.load(path_model, map_location=torch.device('cpu'))
-    
-    hidden_size = state_dict['linear_in.weight'].shape[0]
-    n_actions = state_dict['linear_out.weight'].shape[0]
-    additional_inputs = state_dict['linear_in.weight'].shape[1] - 1 - n_actions
-    
-    if gru is None:
-        gru = Model(n_actions=n_actions, hidden_size=hidden_size, additional_inputs=additional_inputs)
-    gru.load_state_dict(state_dict=state_dict)
-    agent = Agent(model_rnn=gru, n_actions=gru.n_actions)
-    return agent
 
 def training(
     model: Model, 
@@ -115,12 +102,15 @@ def training(
         
     return model
 
+
 def main(path_save_model:str, path_data: str, epochs: int, lr: float, split_ratio: float, device=torch.device('cpu')):
     
+    dataset = csv_to_dataset(path_data)
+    dataset.normalize_rewards()
     if isinstance(split_ratio, float):
-        dataset_training, dataset_test = split_data_along_timedim(csv_to_dataset(path_data), split_ratio=split_ratio)
+        dataset_training, dataset_test = split_data_along_timedim(dataset, split_ratio=split_ratio)
     else:
-        dataset_training, dataset_test = split_data_along_sessiondim(csv_to_dataset(path_data), list_test_sessions=split_ratio)
+        dataset_training, dataset_test = split_data_along_sessiondim(dataset, test_sessions=split_ratio)
     
     n_actions = dataset_training.ys.shape[-1]
     n_participants = len(dataset_training.xs[..., -1].unique())
@@ -135,6 +125,7 @@ def main(path_save_model:str, path_data: str, epochs: int, lr: float, split_rati
     # save GRU model
     torch.save(gru.state_dict(), path_save_model)
     print('Saved GRU to ' + path_save_model)
+    
     
 if __name__=='__main__':
     

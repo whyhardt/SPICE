@@ -1,7 +1,58 @@
-import torch
-from typing import Optional
+import sys
 
-from spice.utils.convert_dataset import csv_to_dataset
+import torch
+from typing import Optional, Union
+
+from spice import SpiceEstimator, SpiceDataset, csv_to_dataset, split_data_along_sessiondim
+
+sys.path.append('../../..')
+from weinhardt2026.utils.task import Env, generate_behavior as _generate_behavior
+
+
+def get_dataset(path_data: str = None, test_sessions: tuple[int] = None, verbose: bool = False) -> tuple[SpiceDataset, SpiceDataset, dict]:
+    
+    # Load your data
+    if path_data is None:
+        path_data = 'data/bustamante2023.csv'
+    
+    dataset = csv_to_dataset(
+        file = path_data,
+        df_participant_id='subject_id',
+        df_choice='decision',
+        df_feedback='reward',
+        df_block='overall_round',
+        additional_inputs=['harvest_duration', 'travel_duration'],
+        )
+    dataset.normalize_rewards()
+
+    # structure of dataset:
+    # dataset has two main attributes: xs -> inputs; ys -> targets (next action)
+    # shape: (n_participants*n_blocks*n_experiments, n_trials, n_timesteps=1, features)
+    # features are (n_actions * action, n_actions * reward, n_additional_inputs * additional_input, timestep, trial, block, experiment, participant)
+
+    # in order to set up the participant embedding we have to compute the number of unique participants in our data 
+    # to get the number of participants n_participants we do:
+    n_participants = dataset.n_participants
+    n_actions = dataset.n_actions
+    n_additional_inputs = dataset.n_additional_inputs
+    
+    if verbose:
+        print(f"Shape of dataset: {dataset.xs.shape}")
+        print(f"Number of participants: {n_participants}")
+        print(f"Number of actions in dataset: {n_actions}")
+        print(f"Number of additional inputs: {dataset.xs.shape[-1]-2*n_actions-3}")
+        
+    if test_sessions is None:
+        test_sessions = (3, 6)
+    dataset_train, dataset_test = split_data_along_sessiondim(dataset, test_sessions)  
+    
+    info_dataset = {
+        'n_participants': n_participants,
+        'n_actions': n_actions,
+        'n_additional_inputs': n_additional_inputs,
+    }
+    
+    return dataset_train, dataset_test, info_dataset
 
 
 class MarginalValueTheoremModel(torch.nn.Module):
@@ -241,61 +292,48 @@ class MarginalValueTheoremModel(torch.nn.Module):
             state = {key: state[key].detach() for key in state}
         return state
     
+
+class EnvironmentBustamante2023(Env):
+    """
+    A patch foraging environment with depleting rewards.
+    """
     
-if __name__=='__main__':
+    def __init__(self, n_actions, n_participants, n_blocks):
+        super().__init__(n_actions, n_participants, n_blocks)
+        
+        
+def generate_behavior(
+    model: Union[SpiceEstimator, torch.nn.Module],
+    path_data: str = None,
+    dataset: SpiceDataset = None,
+    save_dataset: str = None,
+    ) -> SpiceDataset:
     
-    from spice.utils.convert_dataset import csv_to_dataset
+    assert path_data is not None or dataset is not None, "At least path_data or dataset have to be passed."
     
-    file = 'weinhardt2026/data/bustamante2023/bustamante2023_processed.csv'
+    if save_dataset is None:
+        save_dataset = 'data/bustamante2023_generated.csv'
     
-    dataset = csv_to_dataset(
-        file=file,
-        df_participant_id='subject_id',
-        df_choice='decision',
-        df_feedback='reward',
-        df_block='overall_round',
-        additional_inputs=['harvest_duration', 'travel_duration'],   
+    n_blocks = 8
+    dataset, _, _ = get_dataset(path_data=path_data)
+    
+    environment = EnvironmentBustamante2023(
+        n_actions=dataset.n_actions, 
+        n_participants=dataset.n_participants, 
+        n_blocks=n_blocks,
+        )
+    
+    dataset_gen = _generate_behavior(
+        dataset=dataset,
+        model=model,
+        environment=environment,
+        save_dataset=save_dataset,
     )
     
-    n_participants = len(dataset.xs[..., -1].unique())
+    return dataset_gen
     
-    mvt = MarginalValueTheoremModel(n_participants=n_participants)
     
-    # benchmark training
-    epochs = 1000
-    metric = torch.nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(params=mvt.parameters(), lr=0.01)
-    
-    for epoch in range(epochs):
+
         
-        random_index = torch.randint(len(dataset.xs), (len(dataset.xs), 1))[:, 0]
+            
         
-        mask = ~torch.isnan(dataset.xs[random_index, :, 0]).reshape(-1)
-        
-        logits, state = mvt(inputs=dataset.xs[random_index], batch_first=True)
-        
-        # compute loss
-        loss = metric(
-            logits.reshape(-1, mvt.n_actions)[mask],
-            dataset.ys.argmax(dim=-1, keepdim=True).long().reshape(-1)[mask], 
-            )
-        
-        # backprop
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-        
-        print(f"Epoch {epoch+1}/{epochs} --- Loss: {loss.item():.5f}")
-        
-    print("Fitted parameters:")
-    print("\nAlpha")
-    print(mvt.alpha_env)
-    print("\nBeta")
-    print(mvt.beta)
-    print("\nC")
-    print(mvt.c)
-    print("\nBaseline Gain")
-    print(mvt.baseline_gain)
-    print("\nDepletion")
-    print(mvt.depletion)
-    

@@ -90,8 +90,8 @@ class SpiceModel(BaseModel):
         self.setup_module(key_module='value_choice_not_chosen', input_size=3 + self.embedding_size) # -> 15 terms -> 21+15+15+15 = 66 terms in total
         self.setup_module(key_module='value_choice_not_displayed', input_size=3 + self.embedding_size) # -> 15 terms -> 21+15+15+15 = 66 terms in total
 
-    def forward(self, inputs, prev_state=None, batch_first=False):
-        spice_signals = self.init_forward_pass(inputs, prev_state, batch_first)
+    def forward(self, inputs, prev_state=None):
+        spice_signals = self.init_forward_pass(inputs, prev_state)
 
         # Get shown items (raw indices) - these are time-shifted, so they refer to the NEXT trial
         # additional_inputs shape: [T_out, W, B, n_add]; for RL W=1
@@ -245,6 +245,6 @@ class SpiceModel(BaseModel):
             # log action values
             spice_signals.logits[timestep] = torch.concat([value_at_0, value_at_1], dim=-1)
 
-        spice_signals = self.post_forward_pass(spice_signals, batch_first)
+        spice_signals = self.post_forward_pass(spice_signals)
         
         return spice_signals.logits, self.get_state()

@@ -111,6 +111,7 @@ def prepare(criterion_col, data_path: str, dataset_kwargs: dict = {}, spice_mode
     """
     # --- load data to infer dimensions ---
     dataset = csv_to_dataset(file=data_path, **dataset_kwargs)
+    dataset.normalize_rewards()
     raw_df = pd.read_csv(data_path)
     
     n_actions = dataset.ys.shape[-1]

@@ -375,7 +375,7 @@ class MyModel(BaseModel):
         self.setup_module(key_module='module_B', input_size=X, ...)
         self.setup_module(key_module='module_C', input_size=X, ...)
 
-    def forward(self, inputs, prev_state=None, batch_first=False):
+    def forward(self, inputs, prev_state=None):
         spice_signals = self.init_forward_pass(...)
         embeddings = self.participant_embedding(spice_signals.participants_ids)
 
@@ -470,6 +470,104 @@ When designing `BaseModel` subclasses for SPICE, the architecture determines how
 - **SINDy convergence**: If coefficients don't converge, adjust `sindy_weight` or increase epochs
 - **Patience tuning**: Too low → premature elimination; too high → delayed sparsification
 - **Degree weights**: Overly aggressive penalties may suppress necessary nonlinear terms
+
+## Generative Benchmarking (`weinhardt2026/utils/task.py`)
+
+Generative benchmarking simulates new behavioral data by running a fitted model through the original task environment. This produces synthetic datasets that can be compared against the original human data.
+
+### Architecture
+
+```
+task.py                          # Shared infrastructure
+├── Env (base class)             # Abstract task environment
+└── generate_behavior()          # Batched trial-by-trial generation loop
+
+studies/<study>/benchmarking_<study>.py  # Per-study file
+├── get_dataset()                # Load & split data
+├── BenchmarkModel (nn.Module)   # Hand-coded cognitive model (e.g. GQLModel)
+├── Environment<Study>(Env)      # Study-specific reward mechanics
+└── generate_behavior()          # Thin wrapper → calls shared _generate_behavior
+```
+
+### Env Base Class
+
+All task environments subclass `Env` and implement batched `reset()` + `step()`:
+
+```python
+class Env:
+    def __init__(self, n_actions: int, n_participants: int, n_blocks: int):
+        ...
+
+    @property
+    def n_sessions(self) -> int:
+        return self.n_participants * self.n_blocks
+
+    def reset(self, block_ids: torch.Tensor, participant_ids: torch.Tensor = None) -> None:
+        """Set up per-session environment state from dataset metadata."""
+        ...
+
+    def step(self, action: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """One trial for all sessions in parallel.
+        Args:    action: (n_sessions,) integer action indices.
+        Returns: (reward, terminated) — both (n_sessions,) tensors.
+        """
+        ...
+```
+
+### Shared `generate_behavior()` Flow
+
+1. Extract `block_ids` and `participant_ids` from dataset metadata (`xs[:, 0, 0, -3]` and `xs[:, 0, 0, -1]`)
+2. Call `environment.reset(block_ids, participant_ids)`
+3. Resolve model: `SpiceEstimator` → unwrap `.model`; raw `nn.Module` → use directly
+4. For each trial `t` in `range(n_trials)`:
+   - `reward, _ = environment.step(action_idx)` — environment gives reward for current action
+   - Build observation: one-hot action + partial-feedback reward (NaN for unchosen) + metadata from original dataset
+   - Forward pass: `rnn(obs, state)` for `BaseModel`, `rnn(obs, state)` otherwise
+   - Normalize logits: 5D `(E,B,T,W,A)` → mean over ensemble → 4D → extract `(B, A)`
+   - Sample next action: `multinomial(softmax(logits))`
+5. Restore NaN padding for variable-length sessions (matching original dataset structure)
+
+### Study-Specific Environment Pattern
+
+```python
+class EnvironmentMyStudy(Env):
+    REWARD_PROBS = torch.tensor([...])  # Task-specific reward structure
+
+    def __init__(self, n_actions, n_participants, n_blocks):
+        super().__init__(n_actions, n_participants, n_blocks)
+
+    def reset(self, block_ids, participant_ids=None):
+        # Map block IDs to per-session reward parameters
+        self.session_reward_probs = self.REWARD_PROBS[block_ids]
+
+    def step(self, action):
+        # Sample rewards based on task mechanics
+        probs = self.session_reward_probs[torch.arange(len(action)), action]
+        reward = torch.bernoulli(probs)
+        return reward, torch.zeros(len(action), dtype=torch.bool)
+```
+
+### Study-Specific `generate_behavior` Wrapper
+
+```python
+def generate_behavior(model, path_data=None, dataset=None, save_dataset=None):
+    if dataset is None:
+        dataset, _, _ = get_dataset(path_data=path_data)
+    environment = EnvironmentMyStudy(
+        n_actions=dataset.n_actions,
+        n_participants=dataset.n_participants,
+        n_blocks=N_BLOCKS,
+    )
+    return _generate_behavior(dataset=dataset, model=model, environment=environment, save_dataset=save_dataset)
+```
+
+### Dataset Metadata Conventions
+
+Block and participant IDs in dataset metadata (`xs[..., -3]` and `xs[..., -1]`):
+- **Participant IDs**: 0-indexed (remapped by `csv_to_dataset`)
+- **Block IDs**: Kept as-is from the CSV (typically 1-indexed). Environment `reset()` receives these raw values — index reward tables accordingly.
+
+---
 
 ## Documentation
 

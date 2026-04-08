@@ -29,17 +29,16 @@ class SpiceModel(BaseModel):
         self.setup_module(key_module='value_reward_chosen', input_size=1+self.embedding_size)
         self.setup_module(key_module='value_reward_not_chosen', input_size=0+self.embedding_size)
         
-    def forward(self, inputs, prev_state=None, batch_first=False):
+    def forward(self, inputs, prev_state=None):
         """Forward pass of the RNN
 
         Args:
             inputs (torch.Tensor): includes all necessary inputs (action, reward, participant id) to the RNN to let it compute the next action
             prev_state (Tuple[torch.Tensor], optional): That's the previous memory state of the RNN containing the reward-based value. Defaults to None.
-            batch_first (bool, optional): Indicates whether the first dimension of inputs is batch (True) or timesteps (False). Defaults to False.
         """
         
         # First, we have to initialize all the inputs and outputs (i.e. logits)
-        spice_signals = self.init_forward_pass(inputs, prev_state, batch_first)
+        spice_signals = self.init_forward_pass(inputs, prev_state)
         
         participant_embedding = self.participant_embedding(spice_signals.participant_ids)
         
@@ -68,7 +67,7 @@ class SpiceModel(BaseModel):
             # Now keep track of this value in the output array
             spice_signals.logits[timestep] = self.state['value_reward']
 
-        # post-process the forward pass; give here as inputs the logits, batch_first and all values from the memory state
-        spice_signals = self.post_forward_pass(spice_signals, batch_first)
+        # post-process the forward pass
+        spice_signals = self.post_forward_pass(spice_signals)
         
         return spice_signals.logits, self.get_state()

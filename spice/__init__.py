@@ -8,14 +8,12 @@ from .resources.spice_utils import SpiceConfig, SpiceDataset, SpiceSignals
 from .resources.spice_training import cross_entropy_loss, mse_loss
 from .utils.convert_dataset import csv_to_dataset, dataset_to_csv, split_data_along_sessiondim, split_data_along_timedim
 from .utils.plotting import plot_session
-from .utils.agent import Agent, get_update_dynamics
 
 __version__ = "0.1.0"
 __all__ = [
     "SpiceEstimator",
     "SpiceConfig",
     "BaseModel",
-    "SpiceConfig",
     "SpiceDataset",
     "SpiceSignals",
     "csv_to_dataset",
@@ -23,9 +21,6 @@ __all__ = [
     "split_data_along_sessiondim",
     "split_data_along_timedim",
     "plot_session",
-    "setup_agent",
-    "Agent",
-    "get_update_dynamics",
     "cross_entropy_loss",
     "mse_loss",
 ]

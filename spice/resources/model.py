@@ -156,7 +156,8 @@ class BaseModel(nn.Module):
         
         device=torch.device('cpu'),
         compiled_forward=True,
-        
+        batch_first: bool = True,
+
         **kwargs,
         ):
         super().__init__()
@@ -176,6 +177,7 @@ class BaseModel(nn.Module):
         # define general network parameters
         self.spice_config = spice_config
         self.device = device
+        self.batch_first = batch_first
         self.n_actions = n_actions
         self.n_reward_features = n_reward_features if n_reward_features is not None else n_actions
         self.embedding_size = embedding_size
@@ -210,21 +212,21 @@ class BaseModel(nn.Module):
         self.state = None
         self.init_state()  # initial memory state
         
-    def forward(self, inputs, prev_state, batch_first=False):
+    def forward(self, inputs, state):
         raise NotImplementedError('This method is not implemented.')
     
-    def init_forward_pass(self, inputs: torch.Tensor, prev_state: Dict[str, torch.Tensor], batch_first: bool) -> SpiceSignals:
+    def init_forward_pass(self, inputs: torch.Tensor, prev_state: Dict[str, torch.Tensor]) -> SpiceSignals:
         # Promote 4D -> 5D by adding ensemble dimension
         if inputs.dim() == 4:
             # (B, T, W, F) -> (E, B, T, W, F)
-            if batch_first:
+            if self.batch_first:
                 inputs = inputs.unsqueeze(0).expand(self.ensemble_size, -1, -1, -1, -1)
             else:
                 # (T, W, B, F) -> (T, W, E, B, F)
                 inputs = inputs.unsqueeze(2).expand(-1, -1, self.ensemble_size, -1, -1)
 
         # canonical shape: (outer_ts, within_ts, ensemble, batch, features)
-        if batch_first:
+        if self.batch_first:
             inputs = inputs.permute(2, 3, 0, 1, 4)  # (E, B, T, W, F) -> (T, W, E, B, F)
 
         self.sindy_loss = torch.tensor(0, requires_grad=True, device=self.device, dtype=torch.float32)
@@ -264,9 +266,9 @@ class BaseModel(nn.Module):
 
         return spice_signals
 
-    def post_forward_pass(self, spice_signals: SpiceSignals, batch_first: bool) -> SpiceSignals:
+    def post_forward_pass(self, spice_signals: SpiceSignals) -> SpiceSignals:
 
-        if batch_first:
+        if self.batch_first:
             # (T, 1, E, B, A) -> (E, B, T, 1, A)
             spice_signals.logits = spice_signals.logits.permute(2, 3, 0, 1, 4)
 

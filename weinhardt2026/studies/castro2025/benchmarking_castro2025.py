@@ -1,23 +1,49 @@
-import argparse
-import pickle
-import torch
-from tqdm import tqdm
-from typing import List, Optional
+import sys
 import os
-import tempfile
 
+import torch
 import numpy as np
-import pandas as pd
+from typing import Union
 
-try:
-    from adabelief_pytorch import AdaBelief
-    _ADABELIEF_AVAILABLE = True
-except ImportError:
-    _ADABELIEF_AVAILABLE = False
+from spice import SpiceEstimator, SpiceDataset, csv_to_dataset, split_data_along_sessiondim
 
-from spice.resources.spice_utils import SpiceDataset
-from spice.utils.convert_dataset import csv_to_dataset, split_data_along_sessiondim
-from spice.utils.agent import Agent
+base_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(base_dir+'/../../..')
+
+from weinhardt2026.utils.task import Env, generate_behavior as _generate_behavior
+
+
+def get_dataset(path_data: str = None, test_sessions: tuple[int] = None, verbose: bool = False) -> tuple[SpiceDataset, SpiceDataset, dict]:
+
+    # Load your data
+    if path_data is None:
+        path_data = 'data/eckstein2024.csv'
+
+    dataset = csv_to_dataset(
+        file = path_data,
+        )
+    dataset.normalize_rewards()
+
+    n_participants = dataset.n_participants
+    n_actions = dataset.n_actions
+
+    if verbose:
+        print(f"Shape of dataset: {dataset.xs.shape}")
+        print(f"Number of participants: {n_participants}")
+        print(f"Number of actions in dataset: {n_actions}")
+
+    if test_sessions is not None:
+        dataset_train, dataset_test = split_data_along_sessiondim(dataset, test_sessions)
+    else:
+        dataset_train, dataset_test = dataset, None
+        
+    info_dataset = {
+        'n_participants': n_participants,
+        'n_actions': n_actions,
+    }
+    
+    return dataset_train, dataset_test, info_dataset
+
 
 class Castro2025Model(torch.nn.Module):
     """
@@ -380,413 +406,100 @@ class Castro2025Model(torch.nn.Module):
         if detach:
             return {k: v.detach() for k, v in self.state.items()}
         return self.state
-
-
-# ---------------------------------------------------------------------------
-# Training
-# ---------------------------------------------------------------------------
-
-def _make_optimizer(model: Castro2025Model, lr: float) -> torch.optim.Optimizer:
-    """Return AdaBelief if available, otherwise fall back to Adam."""
-    if _ADABELIEF_AVAILABLE:
-        return AdaBelief(model.parameters(), lr=lr, print_change_log=False)
-    return torch.optim.Adam(model.parameters(), lr=lr)
-
-
-def _compute_loss(model: Castro2025Model, xs: torch.Tensor, ys: torch.Tensor) -> torch.Tensor:
-    """Single forward pass and cross-entropy loss (NaN-masked)."""
-    logits, _ = model(xs)                                          # (T, B, n_actions)
-    mask = ~torch.isnan(xs[:, :, :model.n_actions].sum(dim=-1))   # (T, B)
-    logits_flat = logits[mask]                                     # (N, n_actions)
-    labels_flat = ys[mask].argmax(dim=-1).long()                   # (N,)
-    return torch.nn.functional.cross_entropy(logits_flat, labels_flat)
-
-
-def training(
-    model: Castro2025Model,
-    xs: torch.Tensor,
-    ys: torch.Tensor,
-    xs_test: Optional[torch.Tensor] = None,
-    ys_test: Optional[torch.Tensor] = None,
-    epochs: int = 10000,
-    lr: float = 5e-2,
-    convergence_threshold: float = 1e-2,
-    convergence_check_interval: int = 100,
-    max_restarts: int = 10,
-) -> Castro2025Model:
-    """
-    Fit the model using the Castro et al. 2025 training strategy:
-      - AdaBelief optimiser (lr = 5e-2)
-      - Check convergence every `convergence_check_interval` steps:
-          |(Ω_k − Ω_{k−N}) / Ω_{k−N}| < convergence_threshold
-      - Restart from fresh random parameters up to `max_restarts` times
-      - Stop early once 3 restarts converge to the current best loss
-    """
-    best_model = None
-    best_loss = float('inf')
-    n_converged_to_best = 0
-
-    for restart in range(max_restarts):
-        # Re-initialise parameters for each restart
-        candidate = Castro2025Model(
-            n_actions=model.n_actions,
-            n_participants=model.n_participants,
-            batch_first=model.batch_first,
-        )
-        optimizer = _make_optimizer(candidate, lr)
-
-        loss_history: List[float] = []
-        converged = False
-
-        pbar = tqdm(range(epochs), desc=f"Restart {restart + 1}/{max_restarts}", leave=False)
-        for epoch in pbar:
-            candidate.train()
-            optimizer.zero_grad()
-            loss = _compute_loss(candidate, xs, ys)
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(candidate.parameters(), max_norm=1.0)
-            optimizer.step()
-
-            loss_history.append(loss.item())
-
-            # Convergence check (Castro et al. 2025 criterion)
-            if (epoch + 1) % convergence_check_interval == 0 and len(loss_history) >= convergence_check_interval:
-                omega_k = loss_history[-1]
-                omega_prev = loss_history[-convergence_check_interval]
-                if abs(omega_prev) > 1e-10:
-                    rel_change = abs((omega_k - omega_prev) / omega_prev)
-                    if rel_change < convergence_threshold:
-                        converged = True
-
-            # Live postfix
-            postfix = {'train': f'{loss_history[-1]:.4f}', 'best': f'{best_loss:.4f}'}
-            if xs_test is not None:
-                candidate.eval()
-                with torch.no_grad():
-                    postfix['test'] = f'{_compute_loss(candidate, xs_test, ys_test).item():.4f}'
-                candidate.train()
-            pbar.set_postfix(postfix)
-
-            if converged:
-                break
-
-        pbar.close()
-
-        final_loss = loss_history[-1]
-        if final_loss < best_loss:
-            best_loss = final_loss
-            best_model = candidate
-
-        # Count restarts that converged close to the current best
-        if converged and abs(final_loss - best_loss) / max(abs(best_loss), 1e-10) < 0.01:
-            n_converged_to_best += 1
-            if n_converged_to_best >= 3:
-                # Three restarts agree — stop early
-                break
-
-        status = "converged" if converged else "max epochs"
-        print(f"  Restart {restart + 1}: loss={final_loss:.5f} ({status}), best={best_loss:.5f}")
-
-    return best_model
-
-
-# ---------------------------------------------------------------------------
-# Agent wrapper for SPICE evaluation pipeline
-# ---------------------------------------------------------------------------
-
-class AgentCastro2025(Agent):
-    """Wraps a trained Castro2025Model as a SPICE-compatible Agent.
-    - Wraps the trained Castro2025Model and implements the same new_sess, update, get_state, and choice methods that plot_session() expects.
-    Previously: used base agent initialiser, but that assumes baseRNN style model and plotting in notebook crashes with base_rnn=None. Behaviour should be same.
     
-    Prev:
-    class AgentCastro2025(Agent):
-    #Wraps a trained Castro2025Model as a SPICE-compatible Agent.
+    
+class EnvironmentEckstein2024(Env):
+    """Drifting multi-armed bandit (Castro et al., 2025; Eckstein et al., 2026).
 
-    def __init__(self, model: Castro2025Model, deterministic: bool = True):
-        super().__init__(model_rnn=None, n_actions=model.n_actions, deterministic=deterministic)
-        assert isinstance(model, Castro2025Model)
-        self.model = model
-        self.model.eval()
+    Arm means follow independent Gaussian random walks:
+        mu[t,i] ~ N(lambda * mu[t-1,i] + (1 - lambda) * center, sigma_drift)
+        r[t,i]  ~ N(mu[t,i], sigma_obs)
 
-    @property
-    def q(self):
-        #Current Q-values (numpy array).
-        return self.state['q_values'].squeeze(0).detach().cpu().numpy()
+    Default parameters from Ecsktein et al. (2026):
+        lambda = 0.9836, sigma_drift = 2.8, sigma_obs = 4, center = 50 (0-100 scale)
+
+    Rewards are returned normalized to [0, 1].
     """
 
-    def __init__(self, model: Castro2025Model, deterministic: bool = True, device: torch.device = torch.device('cpu')):
-        assert isinstance(model, Castro2025Model)
-        self.model = model.to(device).eval()
-        self.n_actions = model.n_actions
-        self.deterministic = deterministic
-        self.device = device
-        self.state = {}
-        self.logits = torch.zeros((1, 1, 1, 1, self.n_actions), device=self.device)
-        self._history = []
-        self._meta = None
-        self._additional = None
-        self._block = 0
-        self.new_sess()
+    def __init__(
+        self,
+        n_participants: int,
+        n_blocks: int = 5,
+        n_actions: int = 4,
+        lam: float = 0.9836,
+        sigma_drift: float = 2.8,
+        sigma_obs: float = 4.0,
+        center: float = 50.0,
+        scale: float = 100.0,
+    ):
+        super().__init__(n_actions=n_actions, n_participants=n_participants, n_blocks=n_blocks)
+        self.lam = lam
+        self.sigma_drift = sigma_drift
+        self.sigma_obs = sigma_obs
+        self.center = center
+        self.scale = scale
+        self.means = None
+        self._rng = np.random.default_rng()
 
-    def new_sess(self, participant_id: int = 0, experiment_id: int = 0, additional_embedding_inputs: np.ndarray = torch.zeros(0), **kwargs):
-        if not isinstance(participant_id, torch.Tensor):
-            participant_id = torch.tensor(participant_id, dtype=int, device=self.device)[None]
-        self._meta = torch.zeros((1, 2), dtype=torch.float32, device=self.device)
-        self._meta[0, -1] = participant_id
-        self._meta[0, -2] = experiment_id
+    def reset(self, seed: int = None, **kwargs):
+        """Reset arm means to center. Optionally set RNG seed for reproducibility."""
+        if seed is not None:
+            self._rng = np.random.default_rng(seed)
+        self.means = np.full(self.n_actions, self.center)
+        return {}
 
-        if isinstance(additional_embedding_inputs, torch.Tensor):
-            self._additional = additional_embedding_inputs.to(self.device).view(1, -1)
-        else:
-            self._additional = torch.tensor(additional_embedding_inputs, dtype=torch.float32, device=self.device).view(1, -1)
+    def step(self, action: int):
+        """Choose an arm, receive reward, and drift all arm means.
 
-        self._history = []
-        self._block = 0
-        self.logits = torch.zeros((1, 1, 1, 1, self.n_actions), device=self.device)
-        self.state = {}
-
-    def update(self, choice: float, reward: float, block: int = 0, additional_inputs: np.ndarray = torch.zeros(0), **kwargs):
-        if not isinstance(reward, np.ndarray):
-            reward_array = np.zeros(self.n_actions) + np.nan
-            reward_array[int(choice)] = reward
-            reward = reward_array
-
-        choice_oh = torch.eye(self.n_actions, dtype=torch.float32, device=self.device)[int(choice)]
-        reward_t = torch.tensor(reward, dtype=torch.float32, device=self.device)
-        additional_t = torch.tensor(additional_inputs, dtype=torch.float32, device=self.device)
-        block_t = torch.tensor(block, dtype=torch.float32, device=self.device).view(1)
-        xs_t = torch.concat([choice_oh, reward_t, additional_t, block_t, self._meta.view(-1)]).view(-1)
-
-        self._history.append(xs_t)
-        xs = torch.stack(self._history, dim=0).unsqueeze(0)
-        if not getattr(self.model, 'batch_first', False):
-            xs = xs.permute(1, 0, 2)
-
-        with torch.no_grad():
-            logits, state = self.model(xs)
-
-        if not getattr(self.model, 'batch_first', False):
-            logits = logits.permute(1, 0, 2)
-
-        step_logits = logits[:, -1:, :]
-        self.logits = step_logits.unsqueeze(2).unsqueeze(2)
-        self.state = state
-        self._block = block
-
-    def get_state(self, numpy: bool = False, **kwargs):
-        if numpy:
-            logits = self.logits.detach().cpu().numpy()
-            state = {k: v.detach().cpu().numpy() if isinstance(v, torch.Tensor) else v for k, v in self.state.items()}
-            return logits, state
-        return self.logits, self.state
-
-    def get_choice_probs(self) -> np.ndarray:
-        logits = self.logits[0, 0, 0, 0]
-        if isinstance(logits, torch.Tensor):
-            logits = logits.detach().cpu().numpy()
-        decision_variable = logits - logits.min()
-        decision_variable = np.exp(decision_variable)
-        return decision_variable / np.sum(decision_variable)
-
-    def get_choice(self):
-        choice_probs = self.get_choice_probs()
-        if self.deterministic:
-            return np.argmax(choice_probs)
-        return np.random.choice(self.n_actions, p=choice_probs)
-
-    @property
-    def q(self):
-        """Current Q-values (numpy array)."""
-        return self.state['q_values'].squeeze(0).detach().cpu().numpy()
-
-
-def setup_agent_benchmark(path_model: str, deterministic: bool = True, **kwargs):
-    """Load saved model and return a list of AgentCastro2025 instances."""
-    with open(path_model, 'rb') as f:
-        model = pickle.load(f)
-    agent = AgentCastro2025(model=model, deterministic=deterministic)
-    n_parameters = 13
-    return [agent], n_parameters
-
-
-# ---------------------------------------------------------------------------
-# CLI entry point
-# ---------------------------------------------------------------------------
-
-def main(
-    path_save_model: str,
-    path_data: str,
-    n_actions: int,
-    n_epochs: int,
-    lr: float,
-    split_ratio=None,
-    convergence_threshold: float = 1e-2,
-    convergence_check_interval: int = 100,
-    max_restarts: int = 10,
-):
-    # Treat -1 choices as missing responses (NaN) so they are removed by csv_to_dataset.
-    # This keeps the Castro benchmark action space at 4 actions (0..3).
-    path_data_for_loading = path_data
-    temp_cleaned_csv_path = None
-    df_input = pd.read_csv(path_data)
-    if 'choice' in df_input.columns:
-        missing_choice_mask = df_input['choice'] == -1
-        n_missing_choice = int(missing_choice_mask.sum())
-        if n_missing_choice > 0:
-            df_input.loc[missing_choice_mask, 'choice'] = float('nan')
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as temp_file:
-                df_input.to_csv(temp_file.name, index=False)
-                temp_cleaned_csv_path = temp_file.name
-                path_data_for_loading = temp_cleaned_csv_path
-            print(f"Converted {n_missing_choice} rows with choice=-1 to NaN before dataset conversion.")
-
-    dataset = csv_to_dataset(
-    file = path_data_for_loading,
-    df_participant_id='participant',
-    df_choice='choice',
-    df_feedback='reward',
-    df_block='block',
-    timeshift_additional_inputs=False,
-    )
-
-    if temp_cleaned_csv_path is not None and os.path.exists(temp_cleaned_csv_path):
-        os.remove(temp_cleaned_csv_path)
-
-    if split_ratio is not None:
-        dataset_train, dataset_test = split_data_along_sessiondim(dataset, list_test_sessions=split_ratio)
-    else:
-        dataset_train, dataset_test = dataset, None
-
-    if dataset_train.ys.shape[-1] != n_actions:
-        raise ValueError(
-            f"Configured n_actions={n_actions}, but dataset has {dataset_train.ys.shape[-1]} action columns. "
-            "Check choice coding and preprocessing."
+        Returns:
+            reward: float in [0, 1] (clipped)
+            terminated: always False (session length managed externally)
+        """
+        n_sessions = action.shape[0]
+        reward_raw = self._rng.normal(self.means[action], self.sigma_obs)
+        reward = np.clip(reward_raw / self.scale, 0.0, 1.0).astype(float)
+        reward_cols = np.full((n_sessions, self.n_actions), float('nan'))
+        reward_cols[np.arange(n_sessions), action] = reward
+        
+        self.means = self._rng.normal(
+            self.lam * self.means + (1.0 - self.lam) * self.center,
+            self.sigma_drift,
         )
 
-    n_participants = int(dataset_train.xs[..., -1].max().item()) + 1
+        return torch.Tensor(reward_cols), False
+    
 
-    def _to_time_major_3d(tensor: torch.Tensor, name: str) -> torch.Tensor:
-        """Convert SPICE tensors from (B, T, W, F) to (T, B, F) when W (within-trial dimension) is singleton."""
-        if tensor.dim() == 4:
-            if tensor.shape[2] != 1:
-                raise ValueError(
-                    f"{name} has within-trial dimension W={tensor.shape[2]} (>1), "
-                    "but Castro2025 expects one step per trial."
-                )
-            tensor = tensor.squeeze(2)
-        elif tensor.dim() != 3:
-            raise ValueError(f"{name} must be 3D or 4D, got shape {tuple(tensor.shape)}")
-        return tensor.permute(1, 0, 2)  # (T, B, F)
+def generate_behavior(
+    model: Union[SpiceEstimator, torch.nn.Module],
+    path_data: str = None,
+    dataset: SpiceDataset = None,
+    save_dataset: str = None,
+    ) -> SpiceDataset:
+    """Generate synthetic behavior for the Dezfouli 2019 two-armed bandit task.
 
-    xs = _to_time_major_3d(dataset_train.xs, 'dataset_train.xs')
-    ys = _to_time_major_3d(dataset_train.ys, 'dataset_train.ys')
-    xs_test = _to_time_major_3d(dataset_test.xs, 'dataset_test.xs') if dataset_test is not None else None
-    ys_test = _to_time_major_3d(dataset_test.ys, 'dataset_test.ys') if dataset_test is not None else None
+    Args:
+        model: Fitted model (SpiceEstimator or torch.nn.Module).
+        path_data: Path to the original CSV data file.
+        dataset: Pre-loaded SpiceDataset (used if provided, otherwise loaded from path_data).
+        save_dataset: Optional path to save the generated dataset as CSV.
 
-    model = Castro2025Model(n_actions=n_actions, n_participants=n_participants)
+    Returns:
+        SpiceDataset with model-generated behavior.
+    """
+    if dataset is None:
+        dataset, _, _ = get_dataset(path_data=path_data)
 
-    print('Training Castro2025 model...')
-    model = training(
+    environment = EnvironmentEckstein2024(
+        n_actions=dataset.n_actions,
+        n_participants=dataset.n_participants,
+        n_blocks=5,
+    )
+    
+    dataset_gen = _generate_behavior(
+        dataset=dataset,
         model=model,
-        xs=xs, ys=ys,
-        xs_test=xs_test, ys_test=ys_test,
-        epochs=n_epochs,
-        lr=lr,
-        convergence_threshold=convergence_threshold,
-        convergence_check_interval=convergence_check_interval,
-        max_restarts=max_restarts,
+        environment=environment,
+        save_dataset=save_dataset,
     )
 
-    os.makedirs(os.path.dirname(path_save_model), exist_ok=True)
-    with open(path_save_model, 'wb') as f:
-        pickle.dump(model, f)
-    print(f'Model saved to {path_save_model}')
-
-
-if __name__ == '__main__':    
-    parser = argparse.ArgumentParser(description='Fit Castro et al. 2025 benchmark model')
-    cwd = os.getcwd()
-    parser.add_argument('--path_save_model', type=str, default= os.path.join(cwd, 'weinhardt2025/params/castro2025/castro2025.pkl'))
-    parser.add_argument('--path_data', type=str, default= os.path.join(cwd, 'weinhardt2025/data/eckstein2024/eckstein2024.csv'))
-    parser.add_argument('--n_actions', type=int, default=4)
-    parser.add_argument('--n_epochs', type=int, default=1000)
-    parser.add_argument('--lr', type=float, default=0.05)
-    parser.add_argument('--split_ratio', type=str, default='3,4', help='Comma-separated test session indices')
-    parser.add_argument('--convergence_threshold', type=float, default=1e-2)
-    parser.add_argument('--convergence_check_interval', type=int, default=100)
-    parser.add_argument('--max_restarts', type=int, default=10)
-    args = parser.parse_args()
-
-    main(
-        path_save_model=args.path_save_model,
-        path_data=args.path_data,
-        n_actions=args.n_actions,
-        n_epochs=args.n_epochs,
-        lr=args.lr,
-        split_ratio=[int(x) for x in args.split_ratio.split(',')] if args.split_ratio else None,
-        convergence_threshold=args.convergence_threshold,
-        convergence_check_interval=args.convergence_check_interval,
-        max_restarts=args.max_restarts,
-    )
-
-
-'''
-if __name__=='__main__':
-    
-    from spice.utils.convert_dataset import csv_to_dataset
-    
-    file = 'weinhardt2025/data/bustamante2023/bustamante2023_processed.csv'
-    
-    dataset = csv_to_dataset(
-        file=file,
-        df_participant_id='subject_id',
-        df_choice='decision',
-        df_feedback='reward',
-        df_block='overall_round',
-        additional_inputs=['harvest_duration', 'travel_duration'],   
-    )
-    
-    n_participants = len(dataset.xs[..., -1].unique())
-    
-    mvt = MarginalValueTheoremModel(n_participants=n_participants)
-    
-    # benchmark training
-    epochs = 1000
-    metric = torch.nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(params=mvt.parameters(), lr=0.01)
-    
-    for epoch in range(epochs):
-        
-        random_index = torch.randint(len(dataset.xs), (len(dataset.xs), 1))[:, 0]
-        
-        mask = ~torch.isnan(dataset.xs[random_index, :, 0]).reshape(-1)
-        
-        logits, state = mvt(inputs=dataset.xs[random_index], batch_first=True)
-        
-        # compute loss
-        loss = metric(
-            logits.reshape(-1, mvt.n_actions)[mask],
-            dataset.ys.argmax(dim=-1, keepdim=True).long().reshape(-1)[mask], 
-            )
-        
-        # backprop
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-        
-        print(f"Epoch {epoch+1}/{epochs} --- Loss: {loss.item():.5f}")
-        
-    print("Fitted parameters:")
-    print("\nAlpha")
-    print(mvt.alpha_env)
-    print("\nBeta")
-    print(mvt.beta)
-    print("\nC")
-    print(mvt.c)
-    print("\nBaseline Gain")
-    print(mvt.baseline_gain)
-    print("\nDepletion")
-    print(mvt.depletion)
-    
-'''
+    return dataset_gen

@@ -7,11 +7,11 @@ import torch
 import numpy as np
 from sklearn.base import BaseEstimator
 from typing import Dict, Optional, Tuple, List, Union
+from copy import copy
 
 from .spice_training import fit_spice, cross_entropy_loss
 from .model import BaseModel
 from .spice_utils import SpiceConfig, SpiceDataset
-from ..utils.agent import Agent
 
 
 warnings.filterwarnings("ignore")
@@ -112,8 +112,6 @@ class SpiceEstimator(BaseEstimator):
         
         super(BaseEstimator, self).__init__()
         
-        self.use_sindy = use_sindy
-        
         # Training parameters
         self.epochs = epochs
         self.warmup_steps = warmup_steps
@@ -168,7 +166,6 @@ class SpiceEstimator(BaseEstimator):
             sindy_polynomial_degree=sindy_library_polynomial_degree,
             sindy_alpha=sindy_alpha,
             ensemble_size=ensemble_size,
-            use_sindy=use_sindy,
             n_items=n_items,
             n_reward_features=n_reward_features,
             device=device,
@@ -177,6 +174,8 @@ class SpiceEstimator(BaseEstimator):
             **kwargs_spice_class,
         ).to(device)
 
+        self.use_sindy(use_sindy)
+        
         sindy_params = []
         rnn_params = []
         for name, param in self.model.named_parameters():
@@ -249,7 +248,7 @@ class SpiceEstimator(BaseEstimator):
             print(f'Saving SPICE model to {self.save_path_model}...')
             self.save_spice(self.save_path_model)
    
-    def predict(self, conditions: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    def predict(self, conditions: np.ndarray) -> np.ndarray:
         """
         Make predictions using both RNN and SPICE models.
         
@@ -269,17 +268,19 @@ class SpiceEstimator(BaseEstimator):
         else:
             raise TypeError(f"conditions must be either of type numpy.ndarray or torch.Tensor.")
         
-        # rnn predictions — average across ensemble dim (E, B, T, W, A) -> (B, T, W, A)
-        self.model.use_sindy = False
+        aggregate_original = copy(self.model.aggregate)
         self.model.aggregate = True
-        prediction_rnn = self.model(conditions, batch_first=True)[0].mean(dim=0)
         
-        # SPICE predictions — average across ensemble dim
-        self.model.use_sindy = True
-        prediction_spice = self.model(conditions, batch_first=True)[0].mean(dim=0)
+        if self._use_sindy:
+            # SPICE predictions — average across ensemble dim
+            prediction = self.model(conditions)[0].mean(dim=0).detach().cpu().numpy()
+        else:
+            # rnn predictions — average across ensemble dim (E, B, T, W, A) -> (B, T, W, A)
+            prediction = self.model(conditions)[0].mean(dim=0).detach().cpu().numpy()
         
-        return prediction_rnn, prediction_spice
-
+        self.model.aggregate = aggregate_original
+        return prediction
+    
     def print_spice_model(self, participant_id: int = 0, experiment_id: int = 0) -> None:
         """
         Get the learned SPICE features and equations.
@@ -362,3 +363,18 @@ class SpiceEstimator(BaseEstimator):
     def set_device(self, device: torch.device):
         self.model.to(device)
         self.device = device
+    
+    def use_sindy(self, mode: bool = True):
+        self._use_sindy = mode
+        self.model.use_sindy = mode
+        
+    def eval(self, use_sindy: bool = True, aggregate: bool =True):
+        self.model.eval(use_sindy=use_sindy, aggregate=aggregate)
+        self.use_sindy(mode=use_sindy)
+        
+    def train(self, mode: bool = True, use_sindy: bool = False):
+        self.model.train(mode=mode, use_sindy=use_sindy)
+        self.use_sindy(mode=self.use_sindy)
+    
+    def __call__(self, conditions, state) -> torch.Tensor:
+        return self.model(conditions, state)

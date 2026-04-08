@@ -73,7 +73,7 @@ class SpiceDiagnostics:
         model.use_sindy = False
         with torch.no_grad():
             xs = self.dataset.xs.to(model.device)
-            model(xs, batch_first=True)
+            model(xs)
         model.use_sindy = was_sindy
 
         for h in handles:

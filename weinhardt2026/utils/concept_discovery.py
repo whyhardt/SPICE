@@ -54,6 +54,7 @@ dataset = csv_to_dataset(
     file=path_data,
     additional_inputs=rl_parameters,
 )
+dataset.normalize_rewards()
 n_participants = len(dataset.xs[:, 0, -1].unique())
 n_experiments = len(dataset.xs[:, 0, -2].unique())
 n_actions = dataset.ys.shape[-1]

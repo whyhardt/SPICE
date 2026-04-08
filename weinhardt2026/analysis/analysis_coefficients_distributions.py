@@ -840,6 +840,7 @@ if __name__ == "__main__":
     dataset = None
     if args.data is not None:
         dataset = csv_to_dataset(file=args.data)
+        dataset.normalize_rewards()
 
     analysis_coefficients_distributions(
         model_path=args.model,

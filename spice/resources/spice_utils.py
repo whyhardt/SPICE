@@ -5,10 +5,10 @@ import torch
 
 class SpiceDataset(torch.utils.data.Dataset):
     def __init__(
-        self, 
-        xs: torch.Tensor, 
+        self,
+        xs: torch.Tensor,
         ys: torch.Tensor,
-        normalize_features: tuple[int] = None, 
+        n_reward_features: int = None,
         sequence_length: int = None,
         stride: int = 1,
         device=None,
@@ -25,7 +25,7 @@ class SpiceDataset(torch.utils.data.Dataset):
         
         if device is None:
             device = torch.device('cpu')
-        
+
         # check for type of xs and ys
         if not isinstance(xs, torch.Tensor):
             xs = torch.tensor(xs, dtype=torch.float32)
@@ -41,18 +41,6 @@ class SpiceDataset(torch.utils.data.Dataset):
             xs = xs.unsqueeze(2)  # add within_trial_timesteps=1
         if len(ys.shape) == 3:
             ys = ys.unsqueeze(2)
-            
-        if normalize_features is not None:
-            if isinstance(normalize_features, int):
-                normalize_features = tuple(normalize_features)
-            for feature in normalize_features:
-                xs[:, :, :, feature] = self.normalize(xs[:, :, :, feature])
-        
-        # normalize data
-        # x_std = xs.std(dim=(0, 1))
-        # x_mean = xs.mean(dim=(0, 1))
-        # xs = (xs - x_mean) / x_std
-        # ys = (ys - x_mean) / x_std
         
         sequence_length = None if sequence_length == -1 else sequence_length
         self.sequence_length = sequence_length if sequence_length is not None else xs.shape[1]
@@ -64,10 +52,57 @@ class SpiceDataset(torch.utils.data.Dataset):
         self.xs = xs.to(device)
         self.ys = ys.to(device)
         
-    def normalize(self, data):
-        x_min = torch.min(data)
-        x_max = torch.max(data)
-        return (data - x_min) / (x_max - x_min)
+        self.n_actions = self.ys.shape[-1]
+        self.n_participants = self.xs[..., -1].max().int().item() + 1
+        self.n_experiments = self.xs[..., -2].max().int().item() + 1
+        self.n_blocks = self.xs[..., -3].max().int().item() + 1
+        self.n_trials = self.xs.shape[1]
+        self.n_timesteps = self.xs.shape[2]
+        self.n_reward_features = n_reward_features if n_reward_features is not None else self.n_actions
+        self.n_additional_inputs = self.xs.shape[-1] - (self.n_actions + self.n_reward_features + 5)
+        
+    def normalize_column(self, index, range=None):
+        """Normalize feature column(s) in xs to a target range.
+
+        Args:
+            index: Feature column index (int, slice, or list of ints).
+            range: Target (min, max) tuple. If None, auto-detected from data:
+                - (0, 1) if all values are non-negative
+                - (-1, 0) if all values are non-positive
+                - (-1, 1) if values span both signs
+
+        Returns:
+            self (for chaining).
+        """
+        data = self.xs[..., index]
+        valid = data[~torch.isnan(data)]
+        if valid.numel() == 0:
+            return self
+        d_min = valid.min().item()
+        d_max = valid.max().item()
+        if d_max == d_min:
+            return self
+
+        if range is not None:
+            target_min, target_max = range
+        else:
+            target_min = -1 if d_min < 0 else 0
+            target_max = 1 if d_max > 0 else 0
+            if target_min == target_max:
+                return self
+
+        normalized = (data - d_min) / (d_max - d_min)
+        self.xs[..., index] = normalized * (target_max - target_min) + target_min
+        return self
+
+    def normalize_rewards(self, range=None):
+        """Normalize reward feature columns in xs.
+
+        Convenience wrapper around normalize_column for the reward slice.
+        """
+        reward_start = self.n_actions
+        reward_end = self.n_actions + self.n_reward_features
+        return self.normalize_column(slice(reward_start, reward_end), range=range)
         
     def set_sequences(self, xs, ys):
         # sets sequences of length sequence_length with specified stride from the dataset

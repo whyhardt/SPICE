@@ -115,8 +115,8 @@ class DDMRNN(BaseModel):
         self.participant_embedding = self.setup_embedding(num_embeddings=self.n_participants, embedding_size=self.embedding_size, dropout=self.dropout)
         self.setup_module(key_module='drift', input_size=1+self.embedding_size, dropout=self.dropout)
 
-    def forward(self, inputs: torch.Tensor, prev_state: torch.Tensor = None, batch_first: bool = False):
-        spice_signals = self.init_forward_pass(inputs, prev_state, batch_first)
+    def forward(self, inputs: torch.Tensor, prev_state: torch.Tensor = None):
+        spice_signals = self.init_forward_pass(inputs, prev_state)
 
         T, _W, E, B, A = spice_signals.actions.shape
         
@@ -338,14 +338,14 @@ if __name__=='__main__':
     
     model_rnn = spice_estimator.rnn_agent.model
     model_spice = spice_estimator.spice_agent.model
-    signed_rt_rnn, state_rnn = model_rnn(dataset.xs.unsqueeze(0).repeat(model_rnn.ensemble_size, 1, 1, 1, 1).to(device), batch_first=True)
+    signed_rt_rnn, state_rnn = model_rnn(dataset.xs.unsqueeze(0).repeat(model_rnn.ensemble_size, 1, 1, 1, 1).to(device))
     
     rt_rnn_mean = signed_rt_rnn.mean(dim=0)
     drift_rnn_mean = state_rnn['drift'].mean(dim=1)
     drift_rnn_std = state_rnn['drift'].std(dim=1)
     
     if spice_estimator.sindy_weight > 0:
-        signed_rt_spice, state_spice = model_spice(dataset.xs.to(device), batch_first=True)
+        signed_rt_spice, state_spice = model_spice(dataset.xs.to(device))
         rt_spice_mean = signed_rt_spice.mean(dim=0)
         drift_spice_mean = state_spice['drift'].mean(dim=1)
         drift_spice_std = state_spice['drift'].std(dim=1)

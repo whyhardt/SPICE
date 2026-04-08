@@ -109,6 +109,7 @@ if __name__=='__main__':
         additional_inputs=args.additional_columns.split(',') if args.additional_columns else None,
         timeshift_additional_inputs=args.timeshift_additional_columns,
     )
+    dataset.normalize_rewards()
     
     if args.train_ratio_time:
         args.test_sessions = None

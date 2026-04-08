@@ -73,9 +73,9 @@ class QLearning(BaseModel):
                 experiment_id=torch.arange(0, self.n_experiments),
             )
 
-    def forward(self, inputs: torch.Tensor, prev_state = None, batch_first: bool = False):
+    def forward(self, inputs: torch.Tensor, prev_state = None):
         
-        spice_signals = self.init_forward_pass(inputs, prev_state, batch_first)
+        spice_signals = self.init_forward_pass(inputs, prev_state)
         
         # chosen_reward_success = spice_signals.rewards.sum(dim=-1, keepdim=True).repeat(1, 1, 1, self.n_actions) == 1
         # chosen_reward_fail = spice_signals.rewards.sum(dim=-1, keepdim=True).repeat(1, 1, 1, self.n_actions) != 1
@@ -131,7 +131,7 @@ class QLearning(BaseModel):
             
             spice_signals.logits[timestep] = self.state['value_reward'] + self.state['value_choice']
             
-        spice_signals = self.post_forward_pass(spice_signals, batch_first)
+        spice_signals = self.post_forward_pass(spice_signals)
         
         return spice_signals.logits, self.state
 

@@ -120,27 +120,6 @@ def csv_to_dataset(
         if isinstance(df_feedback, str):
             df_feedback = df_feedback,
 
-        # normalize rewards
-        r_min, r_max = [], []
-        for feedback_column in df_feedback:
-            # valid_rewards = df[reward_column][df[reward_column] != -1]
-            # if len(valid_rewards) > 0:
-            r_min.append(np.nanmin(df[feedback_column]))
-            r_max.append(np.nanmax(df[feedback_column]))
-        r_min = 0 if np.min(r_min) >= 0 else np.min(r_min)
-        r_max = 0 if np.max(r_max) <= 0 else np.max(r_max)
-        # No scaling if rewards are always the same
-        if r_max != r_min:
-            for feedback_column in df_feedback:
-                # normalize to range [0,1] --- additional adjustments in next lines if necessary
-                df[feedback_column] = (df[feedback_column] - r_min) / (r_max - r_min)
-                if r_min < 0 and r_max == 0:
-                    # scale to range [-1,0] if only negative rewards
-                    df[feedback_column] = df[feedback_column]-1
-                if r_min < 0 and r_max > 0:
-                    # scale to range [-1,1] if negative and positive rewards
-                    df[feedback_column] = (df[feedback_column]-0.5)*2
-
     # --------------------------------------------------------------------------------
     # ADDITIONAL INPUTS
     # --------------------------------------------------------------------------------
@@ -241,7 +220,7 @@ def csv_to_dataset(
             xs = xs[:, :-1]
             ys = ys[:, :-1]
     
-    dataset = SpiceDataset(xs, ys, device=device, sequence_length=sequence_length)
+    dataset = SpiceDataset(xs, ys, device=device, sequence_length=sequence_length, n_reward_features=n_reward_cols)
     
     return dataset
 
@@ -415,7 +394,7 @@ def split_data_along_timedim(dataset: SpiceDataset, split_ratio: float, device: 
     return SpiceDataset(train_xs, train_ys, device=device), SpiceDataset(test_xs, test_ys, device=device)
 
 
-def split_data_along_sessiondim(dataset: SpiceDataset, list_test_sessions: List[int] = None, device: torch.device = torch.device('cpu')):
+def split_data_along_sessiondim(dataset: SpiceDataset, test_sessions: list[int] = None, device: torch.device = torch.device('cpu')):
     """Split the data along the time dimension (dim=1). 
     Each session (dim=0) can be of individual length and is therefore post-padded with -1.
     To split the data into training and testing samples according to the split_ratio each session's individual length has to be considered.
@@ -433,7 +412,7 @@ def split_data_along_sessiondim(dataset: SpiceDataset, list_test_sessions: List[
         tuple(DatasetRNN, DatasetRNN): Training data and testing data splitted along time dimension (dim=1)
     """
     
-    if list_test_sessions is not None:
+    if test_sessions is not None:
         
         dim = 1
         xs, ys = dataset.xs.cpu(), dataset.ys.cpu()
@@ -445,8 +424,8 @@ def split_data_along_sessiondim(dataset: SpiceDataset, list_test_sessions: List[
         session_ids = xs[:, 0, 0, -3].unique()
         
         # set training sessions
-        if list_test_sessions:
-            session_ids_test = torch.tensor(list_test_sessions, dtype=torch.float32)
+        if test_sessions:
+            session_ids_test = torch.tensor(test_sessions, dtype=torch.float32)
         else:
             session_ids_test = torch.tensor([])
 
@@ -482,7 +461,7 @@ def split_data_along_sessiondim(dataset: SpiceDataset, list_test_sessions: List[
         test_xs = torch.cat(test_xs_list, dim=0) if test_xs_list else torch.zeros((0, *xs.shape[1:]))
         test_ys = torch.cat(test_ys_list, dim=0) if test_ys_list else torch.zeros((0, *ys.shape[1:]))
 
-        return SpiceDataset(train_xs, train_ys, device=device), SpiceDataset(test_xs, test_ys, device=device)
+        return SpiceDataset(train_xs, train_ys, device=device, n_reward_features=dataset.n_reward_features), SpiceDataset(test_xs, test_ys, device=device, n_reward_features=dataset.n_reward_features)
 
     else:
         return dataset, dataset

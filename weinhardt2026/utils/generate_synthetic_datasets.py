@@ -155,7 +155,7 @@ def build_single_step_input(
         participant_ids: (B,) participant IDs
 
     Returns:
-        xs: (B, T=1, W=1, F) tensor ready for model.forward(batch_first=True)
+        xs: (B, T=1, W=1, F) tensor ready for model.forward()
     """
     B = choice_onehot.shape[0]
     metadata = np.stack([
@@ -305,7 +305,7 @@ def generate_all():
 
                 with torch.no_grad():
                     model_logits, _ = model(
-                        xs_step, model.get_state(detach=True), batch_first=True)
+                        xs_step, model.get_state(detach=True))
 
                 # model_logits shape: (E=1, B, T=1, W=1, A)
                 logits = model_logits[0, :, 0, 0, :]  # (B, A)

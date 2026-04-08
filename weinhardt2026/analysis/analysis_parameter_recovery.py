@@ -37,6 +37,7 @@ sample_dataset = csv_to_dataset(
     file=path_data.replace('PAR', str(participants[0])).replace('IT', '0'),
     additional_inputs=rl_parameters
 )
+sample_dataset.normalize_rewards()
 sample_model = SpiceEstimator(
     spice_class=spice_model.SpiceModel,
     spice_config=spice_model.CONFIG,
@@ -77,6 +78,7 @@ for index_par, par in enumerate(participants):
         
         # load dataset and collect true rl parameters
         dataset = csv_to_dataset(file=path_data.replace('PAR', str(par)).replace('IT', str(it)), additional_inputs=rl_parameters)
+        dataset.normalize_rewards()
         n_actions = dataset.ys.shape[-1]
         mask = dataset.xs[:, 0, 0, -3] == 0  # block -> 0; each participant only once
         rl_parameters_dataset = {param: dataset.xs[mask, 0, 0, n_actions*2+index_param].unsqueeze(-1) for index_param, param in enumerate(rl_parameters)}

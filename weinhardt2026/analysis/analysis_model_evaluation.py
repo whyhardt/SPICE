@@ -5,15 +5,10 @@ import argparse
 import importlib
 import numpy as np
 import pandas as pd
-from tqdm import tqdm
 import torch
-from typing import Iterable, Optional, Tuple
 
 # standard methods and classes used for every model evaluation
-from spice import SpiceEstimator, csv_to_dataset, split_data_along_sessiondim, BaseModel, SpiceConfig, SpiceDataset
-
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
-from weinhardt2026.studies.synthetic import benchmarking_qlearning
+from spice import SpiceEstimator, csv_to_dataset, BaseModel, SpiceConfig, SpiceDataset
 
 
 def prepare_benchmark(path_model: str, dataset: SpiceDataset, model_module: str = None, model_class: BaseModel = None, n_reward_features: int = None) -> torch.nn.Module:
@@ -126,84 +121,58 @@ def get_scores(probs: torch.Tensor, targets: torch.Tensor, n_parameters: int) ->
     
     return (nll_sum, aic, bic), nll
 
-
+@torch.no_grad()
 def analysis_model_evaluation(
     dataset: SpiceDataset,
-    
-    spice_path: str = None,    
-    spice_module: str = None,
-    spice_class: BaseModel = None,
-    spice_config: SpiceConfig = None,
-    spice_model: BaseModel = None,
-    
-    benchmark_path: str = None,
-    benchmark_module: str = None,
-    benchmark_class: torch.nn.Module = None,
+    spice_model: SpiceEstimator = None,
     benchmark_model: torch.nn.Module = None,
-    
-    gru_path: str = None,
-    gru_module: str = None,
-    gru_class: torch.nn.Module = None,
     gru_model: torch.nn.Module = None,
-    
     verbose: bool = False,
     ):
-    
-    # ------------------------------------------------------------
-    # General setup
-    # ------------------------------------------------------------
-    
-    n_actions = dataset.ys.shape[-1]
-            
-    # NaN data mask
-    nan_mask = ~torch.isnan(dataset.xs[..., :n_actions].sum(dim=-1))
 
     # ------------------------------------------------------------
-    # Model setup
+    # Compute choice probs
     # ------------------------------------------------------------
-    with torch.no_grad():
-        # setup benchmark model
-        if benchmark_model is None and benchmark_path is not None and (benchmark_module is not None or benchmark_class is not None):
-            benchmark_model = prepare_benchmark(path_model=benchmark_path, dataset=dataset, model_module=benchmark_module, model_class=benchmark_class, n_reward_features=n_reward_features)
-        if benchmark_model is not None:
-            print("Computing choice probabilities with benchmark model...")
-            benchmark_parameters = benchmark_model.count_parameters() if hasattr(benchmark_model, 'count_parameters') else len([p for p in benchmark_model.parameters()])
-            benchmark_predictions, _ = benchmark_model(dataset.xs)
-            benchmark_choice_probs = get_choice_probs(benchmark_predictions).detach().cpu()
-        else:
-            benchmark_parameters = torch.nan
-            
-        # setup GRU model
-        if gru_model is None and gru_path is not None and (gru_module is not None or gru_class is not None):
-            gru_model = prepare_benchmark(path_model=gru_path, dataset=dataset, model_module=gru_module, model_class=gru_class)
-        if gru_model is not None:
-            print("Computing choice probabilities with GRU model...")
-            gru_parameters = sum(p.numel() for p in gru_model.parameters())
-            gru_predictions, _ = gru_model(dataset.xs)
-            gru_choice_probs = get_choice_probs(gru_predictions).detach().cpu()
-        else:
-            gru_parameters = torch.nan
-            
-        # setup SPICE model
-        if spice_model is None and spice_path is not None and (spice_module is not None or (spice_class is not None and spice_config is not None)):
-            spice_model = prepare_spice(path_model=spice_path, dataset=dataset, model_module=spice_module, model_class=spice_class, model_config=spice_config)
-        if spice_model is not None:
-            spice_parameters = spice_model.count_sindy_coefficients()
-            
-            spice_rnn_parameters = 0
-            for module in spice_model.get_modules():
-                spice_rnn_parameters += sum(p.numel() for p in spice_model.model.submodules_rnn[module].parameters())
-            spice_rnn_parameters += spice_model.model.embedding_size
-            
-            # use spice
-            print("Computing choice probabilities with SPICE model...")
-            spice_rnn_predictions, spice_predictions = spice_model.predict(dataset.xs.to(spice_model.device))           
-            spice_rnn_predictions, spice_predictions = torch.tensor(spice_rnn_predictions), torch.tensor(spice_predictions)
-            spice_rnn_choice_probs = get_choice_probs(spice_rnn_predictions).detach().cpu()
-            spice_choice_probs = get_choice_probs(spice_predictions).detach().cpu()
-        else:
-            spice_parameters = torch.nan
-            spice_rnn_parameters = torch.nan
+    if benchmark_model is not None:
+        print("Computing choice probabilities with benchmark model...")
+        benchmark_parameters = benchmark_model.count_parameters() if hasattr(benchmark_model, 'count_parameters') else len([p for p in benchmark_model.parameters()])
+        benchmark_predictions, _ = benchmark_model(dataset.xs)
+        benchmark_choice_probs = get_choice_probs(benchmark_predictions).detach().cpu()
+    else:
+        benchmark_parameters = torch.nan
+        
+    # setup GRU model
+    if gru_model is not None:
+        print("Computing choice probabilities with GRU model...")
+        gru_parameters = sum(p.numel() for p in gru_model.parameters())
+        gru_predictions, _ = gru_model(dataset.xs)
+        gru_choice_probs = get_choice_probs(gru_predictions).detach().cpu()
+    else:
+        gru_parameters = torch.nan
+        
+    # setup SPICE model
+    if spice_model is not None:
+        spice_parameters = spice_model.count_sindy_coefficients()
+        
+        spice_rnn_parameters = 0
+        for module in spice_model.get_modules():
+            spice_rnn_parameters += sum(p.numel() for p in spice_model.model.submodules_rnn[module].parameters())
+        spice_rnn_parameters += spice_model.model.embedding_size
+        
+        # use spice
+        print("Computing choice probabilities with SPICE model...")
+        
+        spice_model.use_sindy(False)
+        spice_rnn_predictions = spice_model(dataset.xs.to(spice_model.device))           
+        spice_rnn_choice_probs = get_choice_probs(spice_rnn_predictions).detach().cpu()
+        
+        spice_model.use_sindy(True)
+        spice_predictions = spice_model(dataset.xs.to(spice_model.device))           
+        spice_choice_probs = get_choice_probs(spice_predictions).detach().cpu()
+        
+    else:
+        spice_parameters = torch.nan
+        spice_rnn_parameters = torch.nan
             
     # ------------------------------------------------------------
     # Evaluation pipeline
@@ -327,8 +296,9 @@ if __name__=='__main__':
     
     dataset = csv_to_dataset(
         file=args.data,
-    )    
-    
+    )
+    dataset.normalize_rewards()
+
     analysis_model_evaluation(
         dataset=dataset,
         list_test_sessions=args.test_sessions,

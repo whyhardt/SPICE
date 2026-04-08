@@ -39,7 +39,7 @@ def compute_loss_for_landscape(model, inputs, targets, sindy_weight=0.1):
 
         # Forward pass
         mask = xs[..., :1] > -1
-        model_output = model(xs, model.get_state(), batch_first=True)
+        model_output = model(xs, model.get_state())
         ys_pred = model_output[0]
         sindy_loss = model_output[2] if len(model_output) > 2 else 0
 

@@ -86,8 +86,8 @@ class SpiceModel(BaseModel):
         # self.setup_module(key_module='value_choice_chosen', input_size=3+self.embedding_size, dropout=dropout) # -> 21 terms; bias not necessary when module is applied equally to all options
         # self.setup_module(key_module='value_choice_not_chosen', input_size=3+self.embedding_size, dropout=dropout) # -> 21 terms; bias not necessary when module is applied equally to all options
 
-    def forward(self, inputs, prev_state=None, batch_first=False):
-        spice_signals = self.init_forward_pass(inputs, prev_state, batch_first)
+    def forward(self, inputs, prev_state=None):
+        spice_signals = self.init_forward_pass(inputs, prev_state)
         
         # perform time-invariant computations
         participant_embedding = self.participant_embedding(spice_signals.participant_ids)
@@ -181,6 +181,6 @@ class SpiceModel(BaseModel):
             spice_signals.logits[timestep] = self.state['value_reward'] + self.state['value_choice']
             
             
-        spice_signals = self.post_forward_pass(spice_signals, batch_first)
+        spice_signals = self.post_forward_pass(spice_signals)
         
         return spice_signals.logits, self.get_state()

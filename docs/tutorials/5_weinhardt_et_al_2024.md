@@ -194,7 +194,7 @@ class CustomRNN(BaseModel):
         # set up hard-coded equations
         self.submodules_eq['x_value_reward_chosen'] = lambda value, inputs: value + inputs[..., 1] * (inputs[..., 0] - value)
         
-    def forward(self, inputs, prev_state=None, batch_first=False):
+    def forward(self, inputs, prev_state=None):
         """Forward pass of the RNN
 
         Args:
@@ -204,7 +204,7 @@ class CustomRNN(BaseModel):
         """
         
         # First, we have to initialize all the inputs and outputs (i.e. logits)
-        inputs, ids, logits, timesteps = self.init_forward_pass(inputs, prev_state, batch_first)
+        inputs, ids, logits, timesteps = self.init_forward_pass(inputs, prev_state)
         actions, rewards, _, _ = inputs
         participant_id, _ = ids
         

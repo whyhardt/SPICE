@@ -330,7 +330,7 @@ class CustomRNN(BaseModel):
         self.submodules_rnn['x_value_reward_chosen'] = self.setup_module(input_size=1+self.embedding_size)
         self.submodules_rnn['x_value_reward_not_chosen'] = self.setup_module(input_size=0+self.embedding_size)
         
-    def forward(self, inputs, prev_state=None, batch_first=False):
+    def forward(self, inputs, prev_state=None):
         """Forward pass of the RNN
 
         Args:
@@ -340,7 +340,7 @@ class CustomRNN(BaseModel):
         """
         
         # First, we have to initialize all the inputs and outputs (i.e. logits)
-        inputs, ids, logits, timesteps = self.init_forward_pass(inputs, prev_state, batch_first)
+        inputs, ids, logits, timesteps = self.init_forward_pass(inputs, prev_state)
         actions, rewards, _, _ = inputs
         participant_id, _ = ids
 

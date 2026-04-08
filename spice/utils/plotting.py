@@ -7,7 +7,11 @@ import matplotlib.cm as cm
 import torch
 from typing import Tuple, Optional
 
-from .agent import Agent, get_update_dynamics
+try:
+    from .agent import Agent, get_update_dynamics
+except ImportError:
+    Agent = None
+    get_update_dynamics = None
 
 
 def plot_dynamics(

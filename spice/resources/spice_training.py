@@ -315,7 +315,7 @@ def _run_batch_training(
         ys_step = ys[:, :, t:t+n_steps]
 
         state = model.get_state(detach=True)
-        ys_pred, _ = model(xs_step, state, batch_first=True)
+        ys_pred, _ = model(xs_step, state)
 
         # Mask out padding (NaN values)
         # xs_step is 5D: (E, B, T_out, T_in, F)
@@ -399,7 +399,7 @@ def _vectorize_state(
 
                 # Forward one timestep for this sub-batch
                 xs_sub = xs_train[:, b_start:b_end, t:t+1].to(model.device)
-                updated_state = model(xs_sub, model.get_state(), batch_first=True)[1]
+                updated_state = model(xs_sub, model.get_state())[1]
 
                 # Record post-forward state
                 for s in state_keys:
@@ -495,7 +495,7 @@ def _ridge_solve_sindy(
         for rnn_module in model.submodules_rnn.values():
             rnn_module.eval()
         prev_state_args = dict(prev_state={s: t.clone() for s, t in input_state_buffer.items()})
-        model(inputs=xs_flat.to(model.device), **prev_state_args, batch_first=True)
+        model(inputs=xs_flat.to(model.device), **prev_state_args)
 
     model.rnn_training_finished = prev_rnn_training_finished
     if was_training:
@@ -558,7 +558,7 @@ def _ridge_recalibrate_sindy(
         for rnn_module in model.submodules_rnn.values():
             rnn_module.eval()
         prev_state_args = dict(prev_state={s: t.clone() for s, t in input_state_buffer.items()})
-        model(inputs=xs_flat.to(model.device), **prev_state_args, batch_first=True)
+        model(inputs=xs_flat.to(model.device), **prev_state_args)
 
     # 4. SGD reconditioning: warm-start optimizer at the new coefficient landscape
     if n_reconditioning_epochs > 0:
@@ -572,7 +572,7 @@ def _ridge_recalibrate_sindy(
         for epoch in range(n_reconditioning_epochs):
             optimizer.zero_grad()
             iter_prev_state = {s: t.clone() for s, t in input_state_buffer.items()}
-            _, pred_state = model(xs_flat.to(model.device), prev_state=iter_prev_state, batch_first=True)
+            _, pred_state = model(xs_flat.to(model.device), prev_state=iter_prev_state)
             loss = sum(
                 criterion(pred_state[s], target_state_buffer[s])
                 for s in model.spice_config.states_in_logit
@@ -678,7 +678,7 @@ def _run_sindy_training(
                     batch_target_state = {s: t[:, :, batch_idx] for s, t in target_state_buffer_train.items()}
                     batch_xs_flat = xs_flat[:, batch_idx].to(model.device)
 
-                    _, pred_state = model(batch_xs_flat, prev_state=batch_prev_state, batch_first=True)
+                    _, pred_state = model(batch_xs_flat, prev_state=batch_prev_state)
 
                     loss_batch = 0
                     
@@ -778,7 +778,7 @@ def _run_sindy_training(
     # # Step 1: Solve (respects current presence mask)
     # prev_state_args = dict(prev_state={s: t.clone() for s, t in input_state_buffer_train.items()})
     # with torch.no_grad():
-    #     model(inputs=xs_flat.to(model.device), **prev_state_args, batch_first=True)
+    #     model(inputs=xs_flat.to(model.device), **prev_state_args)
 
     # # Step 2: Prune small terms
     # model.sindy_coefficient_patience(threshold=pruning_threshold)
@@ -789,13 +789,13 @@ def _run_sindy_training(
     # sindy_alpha += model.sindy_alpha
     # model.sindy_alpha = 0
     # with torch.no_grad():
-    #     model(inputs=xs_flat.to(model.device), **prev_state_args, batch_first=True)
+    #     model(inputs=xs_flat.to(model.device), **prev_state_args)
     # model.sindy_alpha += sindy_alpha
     
     # # Evaluate
     # model.eval(use_sindy=True)
     # with torch.no_grad():
-    #     _, state_pred = model(inputs=xs_flat.to(model.device), **prev_state_args, batch_first=True)
+    #     _, state_pred = model(inputs=xs_flat.to(model.device), **prev_state_args)
     # # model.train(use_sindy=True)
     # # for rnn_module in model.submodules_rnn.values():
     # #     rnn_module.eval()
