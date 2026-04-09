@@ -3,32 +3,59 @@ import torch
 from spice import SpiceDataset, csv_to_dataset, split_data_along_sessiondim, split_data_along_timedim, cross_entropy_loss
 
 
-class Model(torch.nn.Module):
+class GRUModel(torch.nn.Module):
     
-    def __init__(self, n_actions, additional_inputs: int = 0, hidden_size: int = 16, n_reward_features: int = None, dropout: float = 0.1, **kwargs):
+    def __init__(
+        self, 
+        n_actions, 
+        additional_inputs: int = 0, 
+        hidden_size: int = 16, 
+        n_reward_features: int = None, 
+        dropout: float = 0.1, 
+        n_participants: int = 1, 
+        n_experiments: int = 1, 
+        embedding_size: int = 16, 
+        **kwargs,
+        ):
         super().__init__()
         
         self.gru_features = hidden_size
         self.n_actions = n_actions
         self.additional_inputs = additional_inputs
         self.n_reward_features = n_actions if n_reward_features is None else n_reward_features
+        self.n_participants = n_participants
+        self.n_experiments = n_experiments
+        self.participant_embedding_size = embedding_size if n_participants > 1 else 0
+        self.experiment_embedding_size = embedding_size if n_experiments > 1 else 0
         
-        self.linear_in = torch.nn.Linear(in_features=self.n_actions+self.n_reward_features+self.additional_inputs, out_features=hidden_size)
+        self.participant_embedding = torch.nn.Embedding(num_embeddings=n_participants, embedding_dim=embedding_size)
+        self.experiment_embedding = torch.nn.Embedding(num_embeddings=n_experiments, embedding_dim=embedding_size)
+        
+        self.linear_in = torch.nn.Linear(in_features=self.n_actions+self.n_reward_features+self.additional_inputs+self.participant_embedding_size+self.experiment_embedding_size, out_features=hidden_size)
         self.dropout = torch.nn.Dropout(dropout)
         self.gru = torch.nn.GRU(input_size=hidden_size, hidden_size=hidden_size, batch_first=True,)
         self.linear_out = torch.nn.Linear(in_features=hidden_size, out_features=n_actions)
         
-    def forward(self, inputs, state=None):
+    def forward(self, inputs: torch.Tensor, state: torch.Tensor = None):
         
+        inputs = inputs.nan_to_num(0.)
         actions = inputs[..., :self.n_actions]
-        rewards = inputs[..., self.n_actions:self.n_actions+self.n_reward_features].nan_to_num(0)
+        rewards = inputs[..., self.n_actions:self.n_actions+self.n_reward_features]
         additional_inputs = inputs[..., self.n_actions+self.n_reward_features:self.n_actions+self.n_reward_features+self.additional_inputs]
-        inputs = torch.concat((actions, rewards, additional_inputs), dim=-1)
+        xs = torch.concat((actions, rewards, additional_inputs), dim=-1)
+
+        if self.n_experiments > 1:
+            experiment_embedding = self.experiment_embedding[inputs[..., -2].long()]
+            xs = torch.concat((xs, experiment_embedding), dim=-1)
+        
+        if self.n_participants > 1:
+            participant_embedding = self.participant_embedding(inputs[..., -1].long())
+            xs = torch.concat((xs, participant_embedding), dim=-1)
         
         if state is not None and len(inputs.shape) == 3:
             state = state.reshape(1, 1, self.gru_features)
         
-        y = self.linear_in(inputs[:, :, 0].nan_to_num(0))
+        y = self.linear_in(xs[:, :, 0])
         y = self.dropout(y)
         y, state = self.gru(y, state)
         y = self.dropout(y)
@@ -37,7 +64,7 @@ class Model(torch.nn.Module):
 
 
 def training(
-    model: Model, 
+    model: GRUModel, 
     optimizer: torch.optim.Optimizer, 
     dataset_train: SpiceDataset, 
     dataset_test: SpiceDataset = None, 
@@ -115,7 +142,7 @@ def main(path_save_model:str, path_data: str, epochs: int, lr: float, split_rati
     n_actions = dataset_training.ys.shape[-1]
     n_participants = len(dataset_training.xs[..., -1].unique())
     
-    gru = Model(input_size=n_actions+1, n_actions=n_actions, n_participants=n_participants).to(device)
+    gru = GRUModel(input_size=n_actions+1, n_actions=n_actions, n_participants=n_participants).to(device)
     optimizer = torch.optim.Adam(gru.parameters(), lr=lr)
     
     print('Training GRU...')

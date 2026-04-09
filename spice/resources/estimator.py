@@ -368,6 +368,9 @@ class SpiceEstimator(BaseEstimator):
         self._use_sindy = mode
         self.model.use_sindy = mode
         
+    def aggregate(self, mode: bool = True):
+        self.model.aggregate = mode
+        
     def eval(self, use_sindy: bool = True, aggregate: bool =True):
         self.model.eval(use_sindy=use_sindy, aggregate=aggregate)
         self.use_sindy(mode=use_sindy)
@@ -376,5 +379,5 @@ class SpiceEstimator(BaseEstimator):
         self.model.train(mode=mode, use_sindy=use_sindy)
         self.use_sindy(mode=self.use_sindy)
     
-    def __call__(self, conditions, state) -> torch.Tensor:
+    def __call__(self, conditions: torch.Tensor, state: torch.Tensor = None) -> torch.Tensor:
         return self.model(conditions, state)

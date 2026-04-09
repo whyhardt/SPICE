@@ -304,6 +304,7 @@ def _run_batch_training(
     if n_steps is None:
         n_steps = xs.shape[2]
 
+    model.aggregate = False
     model.init_state(batch_size=B, within_ts=xs.shape[3])
     state = model.get_state(detach=True)
 
@@ -678,7 +679,7 @@ def _run_sindy_training(
                     batch_target_state = {s: t[:, :, batch_idx] for s, t in target_state_buffer_train.items()}
                     batch_xs_flat = xs_flat[:, batch_idx].to(model.device)
 
-                    _, pred_state = model(batch_xs_flat, prev_state=batch_prev_state)
+                    _, pred_state = model(batch_xs_flat, batch_prev_state)
 
                     loss_batch = 0
                     

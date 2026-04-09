@@ -2,6 +2,7 @@
 Test script for end-to-end differentiable SPICE training.
 This runs the full pipeline with SINDy regularization during RNN training.
 """
+import sys
 import argparse
 import torch
 import numpy as np
@@ -39,8 +40,8 @@ if __name__=='__main__':
     parser.add_argument('--sindy_weight', type=float, default=0.1, help='Weight for SINDy regularization during RNN training')
     parser.add_argument('--sindy_alpha', type=float, default=0.0001, help='Degree-weighted coefficient penalty strength (ridge alpha)')
     parser.add_argument('--pruning_frequency', type=int, default=100, help='Epochs between pruning events')
-    parser.add_argument('--pruning_threshold', type=float, default=0.05, help='Threshold value for cutting off sindy terms (lowered for delta-form coefficients)')
-    parser.add_argument('--pruning_ensemble', type=float, default=0.01, help='t-test threshold for ensemble-based pruning')
+    parser.add_argument('--pruning_threshold', type=float, default=0.01, help='Threshold value for cutting off sindy terms (lowered for delta-form coefficients)')
+    parser.add_argument('--pruning_ensemble', type=float, default=0.05, help='t-test threshold for ensemble-based pruning')
     parser.add_argument('--pruning_population', type=float, default=None, help='Percentage of participants which have to have a term active in order to keep it.')
     
     # Data setup parameters

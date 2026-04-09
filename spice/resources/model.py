@@ -136,6 +136,7 @@ class ParameterModule(nn.Module):
 
         
 class BaseModel(nn.Module):
+    
     def __init__(
         self,
         spice_config: SpiceConfig,
@@ -400,9 +401,15 @@ class BaseModel(nn.Module):
         Returns:
             torch.Tensor: [within_ts, ensemble, batch, n_items] — full within-trial trajectory
         """
-
-        value = self.state[key_state] if key_state is not None and key_state in self.state else None  # [W, E, B, I]
-
+        
+        if key_state is not None: 
+            if key_state in self.state:
+                value = self.get_state()[key_state]  # [W, E, B, I]
+            else:
+                KeyError(f"key_state {key_state} is not in BaseModel's state.")
+        else:
+            value = None
+            
         E = self.ensemble_size
         B = self.state[list(self.state.keys())[0]].shape[2]
         I = self.n_items
@@ -490,7 +497,7 @@ class BaseModel(nn.Module):
             and participant_index is not None
             ):
             action_mask_2d = action_mask[-1] if action_mask is not None and action_mask.dim() >= 4 else action_mask
-            value_0 = self.state[key_state][-1].unsqueeze(0) if key_state is not None else torch.zeros(W, E, B, I, device=self.device)
+            value_0 = self.get_state()[key_state][-1].unsqueeze(0) if key_state is not None else torch.zeros(W, E, B, I, device=self.device)
             self.sindy_loss = self.sindy_loss + self.compute_sindy_loss_for_module(
                     module_name=key_module,
                     h_current=torch.concat((value_0, next_value[:-1])),
@@ -506,9 +513,10 @@ class BaseModel(nn.Module):
         next_value = torch.clip(input=next_value, min=-1e1, max=1e1)
         
         if action_mask is not None:
+            state = self.get_state()[key_state]
             mask = action_mask[-1] if action_mask.dim() >= 4 else action_mask
-            next_value = torch.where(mask == 1, next_value, self.state[key_state] if key_state is not None else torch.zeros_like(next_value))
-
+            next_value = torch.where(mask == 1, next_value,  state if key_state is not None else torch.zeros_like(next_value))
+            
         if key_state is not None:
             self.state[key_state] = next_value
 
@@ -984,3 +992,10 @@ class BaseModel(nn.Module):
         self.use_sindy = use_sindy
         self.aggregate = False
         return self
+    
+    def __call__(self, *args, **kwargs):
+        logits, state = super().__call__(*args, **kwargs)
+        if self.aggregate:
+            dim_ensemble = 0 if self.batch_first else 2
+            logits = logits.nanmean(dim=dim_ensemble)
+        return logits, state

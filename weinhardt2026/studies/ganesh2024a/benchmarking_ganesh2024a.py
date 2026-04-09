@@ -55,8 +55,9 @@ def get_dataset(path_data: str = None, test_sessions: tuple[int] = None, verbose
     dataset_train, dataset_test = split_data_along_sessiondim(dataset, test_sessions)
 
     info_dataset = {
-        'n_participants': n_participants,
-        'n_actions': n_actions,
+        'n_participants': dataset.n_participants,
+        'n_actions': dataset.n_actions,
+        'n_additional_inputs': dataset.n_additional_inputs,
     }
 
     return dataset_train, dataset_test, info_dataset

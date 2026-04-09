@@ -8,61 +8,7 @@ import pandas as pd
 import torch
 
 # standard methods and classes used for every model evaluation
-from spice import SpiceEstimator, csv_to_dataset, BaseModel, SpiceConfig, SpiceDataset
-
-
-def prepare_benchmark(path_model: str, dataset: SpiceDataset, model_module: str = None, model_class: BaseModel = None, n_reward_features: int = None) -> torch.nn.Module:
-    # --- load benchmark or GRU model ---
-    n_actions = dataset.ys.shape[-1]
-    n_participants = dataset.xs[..., -1].unique().shape[0]
-    
-    if model_module is not None and model_class is None:
-        mod = importlib.import_module(model_module)
-        model_class = mod.Model
-    elif model_module is None and model_class is not None:
-        pass
-    else:
-        raise ValueError("You have to give either (model_module) OR (model_class AND model_config).")
-    
-    model = model_class(
-        n_actions=n_actions,
-        n_participants=n_participants,
-        n_reward_features=n_reward_features,
-        )
-    
-    state_dict = torch.load(path_model, map_location='cpu')
-    model.load_state_dict(state_dict)
-    return model.eval()
-
-
-def prepare_spice(path_model: str, dataset: SpiceDataset, model_module: str = None, model_class: BaseModel = None, model_config: SpiceConfig = None, n_reward_features: int = None) -> SpiceEstimator:
-    # --- load SPICE model via precoded module ---
-    if model_module is not None and model_class is None and model_config is None:
-        mod = importlib.import_module(model_module)
-        rnn_class = mod.SpiceModel
-        spice_config = mod.CONFIG
-    elif model_module is None and model_class is not None and model_config is not None:
-        rnn_class = model_class
-        spice_config = model_config
-    else:
-        raise ValueError("You have to give either (model_module) OR (model_class AND model_config).")
-    
-    n_actions = dataset.ys.shape[-1]
-    n_participants = dataset.xs[..., -1].unique().shape[0]
-    n_experiments = dataset.xs[..., -2].unique().shape[0]
-    
-    spice_estimator = SpiceEstimator(
-        spice_class=rnn_class,
-        spice_config=spice_config,
-        n_actions=n_actions,
-        n_participants=n_participants,
-        n_experiments=n_experiments,
-        n_reward_features=n_reward_features,
-        sindy_library_polynomial_degree=2,
-    )
-    spice_estimator.load_spice(path_model=path_model)
-    spice_estimator.model.eval()
-    return spice_estimator
+from spice import SpiceEstimator, csv_to_dataset, SpiceDataset
 
 
 def get_choice_probs(logits: torch.Tensor) -> torch.Tensor:
@@ -121,6 +67,7 @@ def get_scores(probs: torch.Tensor, targets: torch.Tensor, n_parameters: int) ->
     
     return (nll_sum, aic, bic), nll
 
+
 @torch.no_grad()
 def analysis_model_evaluation(
     dataset: SpiceDataset,
@@ -129,10 +76,11 @@ def analysis_model_evaluation(
     gru_model: torch.nn.Module = None,
     verbose: bool = False,
     ):
-
+    
     # ------------------------------------------------------------
     # Compute choice probs
     # ------------------------------------------------------------
+    
     if benchmark_model is not None:
         print("Computing choice probabilities with benchmark model...")
         benchmark_parameters = benchmark_model.count_parameters() if hasattr(benchmark_model, 'count_parameters') else len([p for p in benchmark_model.parameters()])
@@ -144,6 +92,7 @@ def analysis_model_evaluation(
     # setup GRU model
     if gru_model is not None:
         print("Computing choice probabilities with GRU model...")
+        gru_model.eval()
         gru_parameters = sum(p.numel() for p in gru_model.parameters())
         gru_predictions, _ = gru_model(dataset.xs)
         gru_choice_probs = get_choice_probs(gru_predictions).detach().cpu()
@@ -161,19 +110,19 @@ def analysis_model_evaluation(
         
         # use spice
         print("Computing choice probabilities with SPICE model...")
-        
-        spice_model.use_sindy(False)
-        spice_rnn_predictions = spice_model(dataset.xs.to(spice_model.device))           
-        spice_rnn_choice_probs = get_choice_probs(spice_rnn_predictions).detach().cpu()
-        
-        spice_model.use_sindy(True)
-        spice_predictions = spice_model(dataset.xs.to(spice_model.device))           
+        spice_model.eval()
+        spice_predictions, _ = spice_model(dataset.xs.to(spice_model.device))           
         spice_choice_probs = get_choice_probs(spice_predictions).detach().cpu()
         
+        spice_model.use_sindy(False)
+        spice_model.model.init_state(batch_size=dataset.xs.shape[0])
+        spice_rnn_predictions, _ = spice_model(dataset.xs.to(spice_model.device))           
+        spice_rnn_choice_probs = get_choice_probs(spice_rnn_predictions).detach().cpu()
+        spice_model.use_sindy(True)
     else:
         spice_parameters = torch.nan
         spice_rnn_parameters = torch.nan
-            
+        
     # ------------------------------------------------------------
     # Evaluation pipeline
     # ------------------------------------------------------------
