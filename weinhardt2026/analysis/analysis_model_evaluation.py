@@ -110,14 +110,15 @@ def analysis_model_evaluation(
         
         # use spice
         print("Computing choice probabilities with SPICE model...")
-        spice_model.eval()
+        spice_model.eval(use_sindy=True, aggregate=False)
+        
         spice_predictions, _ = spice_model(dataset.xs.to(spice_model.device))           
-        spice_choice_probs = get_choice_probs(spice_predictions).detach().cpu()
+        spice_choice_probs = get_choice_probs(spice_predictions.mean(dim=0)).detach().cpu()
         
         spice_model.use_sindy(False)
         spice_model.model.init_state(batch_size=dataset.xs.shape[0])
         spice_rnn_predictions, _ = spice_model(dataset.xs.to(spice_model.device))           
-        spice_rnn_choice_probs = get_choice_probs(spice_rnn_predictions).detach().cpu()
+        spice_rnn_choice_probs = get_choice_probs(spice_rnn_predictions.mean(dim=0)).detach().cpu()
         spice_model.use_sindy(True)
     else:
         spice_parameters = torch.nan
@@ -210,57 +211,3 @@ def analysis_model_evaluation(
         print(df)
     
     return df
-
-
-if __name__=='__main__':
-    p = argparse.ArgumentParser(
-        description="Model evaluation pipeline",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=__doc__,
-    )
-    p.add_argument("--data", default=None,
-                   help="Path to the experiment data CSV")
-    p.add_argument("--test_sessions", default=None,
-                   help="Sessions to test the models against (comma-separated list)")
-    p.add_argument("--spice_model", default=None,
-                   help="Path to the trained SPICE model (.pkl)")
-    p.add_argument("--spice_module", default="spice.precoded.workingmemory",
-                   help="Name of the SPICE model module (default: spice.precoded.workingmemory)")
-    p.add_argument("--benchmark_model", default=None,
-                   help="Path to the trained benchmark model (.pkl)")
-    p.add_argument("--benchmark_module", default="weinhardt2026.studies.synthetic.benchmarking_qlearning",
-                   help="Name of the benchmark model module (default: weinhardt2026.studies.synthetic.benchmarking_qlearning)")
-    p.add_argument("--gru_model", default=None,
-                   help="Path to the trained GRU model (.pkl)")
-    p.add_argument("--gru_module", default="weinhardt2026.utils.benchmarking_gru",
-                   help="Name of the GRU model module (default: weinhardt2026.utils.benchmarking_gru)")
-    args  = p.parse_args()
-    
-    
-    args.data = 'weinhardt2026/studies/dezfouli2019/data/dezfouli2019_experimentid.csv'
-    args.spice_model = 'weinhardt2026/studies/dezfouli2019/params/spice_emb_dezfouli2019.pkl'
-    # args.gru_model = 'weinhardt2026/studies/dezfouli2019/params/gru_dezfouli2019.pkl'
-    args.test_sessions = (3,6,9)
-    args.verbose = True    
-    
-    dataset = csv_to_dataset(
-        file=args.data,
-    )
-    dataset.normalize_rewards()
-
-    analysis_model_evaluation(
-        dataset=dataset,
-        list_test_sessions=args.test_sessions,
-        
-        spice_path=args.spice_model,
-        spice_module=args.spice_module,
-        
-        benchmark_path=args.benchmark_model,
-        benchmark_module=args.benchmark_module,
-        
-        gru_path=args.gru_model,
-        gru_module=args.gru_module,
-        
-        verbose=True,
-    )
-    

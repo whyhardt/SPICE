@@ -268,17 +268,8 @@ class SpiceEstimator(BaseEstimator):
         else:
             raise TypeError(f"conditions must be either of type numpy.ndarray or torch.Tensor.")
         
-        aggregate_original = copy(self.model.aggregate)
-        self.model.aggregate = True
-        
-        if self._use_sindy:
-            # SPICE predictions — average across ensemble dim
-            prediction = self.model(conditions)[0].mean(dim=0).detach().cpu().numpy()
-        else:
-            # rnn predictions — average across ensemble dim (E, B, T, W, A) -> (B, T, W, A)
-            prediction = self.model(conditions)[0].mean(dim=0).detach().cpu().numpy()
-        
-        self.model.aggregate = aggregate_original
+        # average across ensemble dim (E, B, T, W, A) -> (B, T, W, A)
+        prediction = self.model(conditions)[0].mean(dim=0).detach().cpu().numpy()
         return prediction
     
     def print_spice_model(self, participant_id: int = 0, experiment_id: int = 0) -> None:
@@ -370,7 +361,13 @@ class SpiceEstimator(BaseEstimator):
         
     def aggregate(self, mode: bool = True):
         self.model.aggregate = mode
-        
+    
+    def aggregate_coefficients(self):
+        for module in self.get_modules():
+            self.model.sindy_coefficients[module] = self.model.sindy_coefficients[module].mean(dim=0, keepdim=True).expand(self.ensemble_size, -1, -1, -1)
+            self.model.sindy_coefficients_presence[module] = self.model.sindy_coefficients[module].abs() >= self.sindy_threshold_pruning
+        # self.model.aggregate = True
+    
     def eval(self, use_sindy: bool = True, aggregate: bool =True):
         self.model.eval(use_sindy=use_sindy, aggregate=aggregate)
         self.use_sindy(mode=use_sindy)

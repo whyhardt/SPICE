@@ -59,15 +59,6 @@ if __name__=='__main__':
     # DEBUG CONFIGURATION
     # ----------------------------------------------------------------------------------------------------------------------------------
     
-    # args.results = False
-    # args.sindy_weight = 0.1
-    # args.epochs = 1 # 10
-    # args.epochs_warmup = 5
-    # args.ensemble = 10
-    # args.pruning_frequency = 1
-    # args.pruning_threshold = 0.05
-    # args.pruning_ensemble = 0.05
-    # args.pruning_population = None  # set to e.g. 0.05 for participant-level filtering
     
     # args.data = "weinhardt2026/data/synthetic/synthetic_256p_0_0.csv"
     # args.model = args.data.replace("data", "params").replace("/synthetic_", "/spice_synthetic_test_").replace(".csv", ".pkl")
@@ -76,9 +67,10 @@ if __name__=='__main__':
     # args.data = "weinhardt2026/data/eckstein2022/eckstein2022.csv"
     # args.train_ratio_time = 0.8
     
-    # args.model = "weinhardt2026/params/eckstein2024/spice_eckstein2024.pkl"
-    # args.data = "weinhardt2026/data/eckstein2024/eckstein2024.csv"
-    # args.test_sessions = "1,3"
+    args.module = "studies.castro2025.spice_castro2025_2"
+    args.model = "weinhardt2026/studies/castro2025/params/spice_castro2025.pkl"
+    args.data = "weinhardt2026/studies/castro2025/data/eckstein2024.csv"
+    args.test_sessions = "1,3"
     
     # args.model = "weinhardt2026/params/dezfouli2019/spice_dezfouli2019_test.pkl"
     # args.data = "weinhardt2026/data/dezfouli2019/dezfouli2019.csv"

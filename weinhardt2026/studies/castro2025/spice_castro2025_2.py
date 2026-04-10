@@ -152,9 +152,12 @@ class SpiceModel(BaseModel):
             self.state['action[t-3]'] = self.state['action[t-2]']
             self.state['action[t-2]'] = self.state['action[t-1]']
             self.state['action[t-1]'] = spice_signals.actions[trial]
-            self.state['reward[t-3]'] = torch.where(spice_signals.actions[trial]==1, self.state['reward[t-2]'], self.state['reward[t-3]'])
-            self.state['reward[t-2]'] = torch.where(spice_signals.actions[trial]==1, self.state['reward[t-1]'], self.state['reward[t-2]'])
-            self.state['reward[t-1]'] = torch.where(spice_signals.actions[trial]==1, spice_signals.rewards[trial], self.state['reward[t-1]'])
+            # self.state['reward[t-3]'] = torch.where(spice_signals.actions[trial]==1, self.state['reward[t-2]'], self.state['reward[t-3]'])
+            # self.state['reward[t-2]'] = torch.where(spice_signals.actions[trial]==1, self.state['reward[t-1]'], self.state['reward[t-2]'])
+            # self.state['reward[t-1]'] = torch.where(spice_signals.actions[trial]==1, spice_signals.rewards[trial], self.state['reward[t-1]'])
+            self.state['reward[t-3]'] = self.state['reward[t-2]']
+            self.state['reward[t-2]'] = self.state['reward[t-1]']
+            self.state['reward[t-1]'] = self.state['value_reward']
             
             # Logits
             spice_signals.logits[trial] = (

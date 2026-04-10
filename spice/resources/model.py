@@ -304,9 +304,6 @@ class BaseModel(nn.Module):
         if detach:
             state = {key: state[key].detach() for key in state}
 
-        if self.aggregate:
-            state = {key: s.mean(dim=1, keepdim=True).expand(-1, self.ensemble_size, -1, -1) for key, s in state.items()}
-            
         return state
     
     def to(self, device: torch.device):
