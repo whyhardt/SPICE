@@ -67,10 +67,10 @@ if __name__=='__main__':
     # args.data = "weinhardt2026/data/eckstein2022/eckstein2022.csv"
     # args.train_ratio_time = 0.8
     
-    args.module = "studies.castro2025.spice_castro2025_2"
-    args.model = "weinhardt2026/studies/castro2025/params/spice_castro2025.pkl"
-    args.data = "weinhardt2026/studies/castro2025/data/eckstein2024.csv"
-    args.test_sessions = "1,3"
+    # args.module = "studies.castro2025.spice_castro2025_2"
+    # args.model = "weinhardt2026/studies/castro2025/params/spice_castro2025.pkl"
+    # args.data = "weinhardt2026/studies/castro2025/data/eckstein2024.csv"
+    # args.test_sessions = "1,3"
     
     # args.model = "weinhardt2026/params/dezfouli2019/spice_dezfouli2019_test.pkl"
     # args.data = "weinhardt2026/data/dezfouli2019/dezfouli2019.csv"
@@ -115,11 +115,12 @@ if __name__=='__main__':
         print("Training/test split: None")
         dataset_train, dataset_test = dataset, dataset
     
-    if args.sindy_weight > 0:
-        dataset_tuple = dataset_train.xs, dataset_train.ys, dataset_train.xs, dataset_train.ys
-    else:
-        dataset_tuple = dataset_train.xs, dataset_train.ys, None, None
-         
+    # if args.sindy_weight > 0:
+    #     dataset_tuple = dataset_train.xs, dataset_train.ys, dataset_train.xs, dataset_train.ys
+    # else:
+    #     dataset_tuple = dataset_train.xs, dataset_train.ys, None, None
+    dataset_tuple = dataset_train.xs, dataset_train.ys, dataset_test.xs, dataset_test.ys
+    
     n_actions = dataset_train.ys.shape[-1]
     n_participants = len(dataset_train.xs[..., -1].unique())
     n_experiments = len(dataset_train.xs[..., -2].unique())
@@ -180,7 +181,7 @@ if __name__=='__main__':
         estimator.load_spice(args.model)
     estimator.sindy_refit = ~args.sindy_skip_refit
     
-    if args.epochs > 0 or args.sindy_skip_refit:
+    if estimator.epochs > 0 or estimator.sindy_refit:
         training_device_str = "CUDA" if estimator.device == torch.device('cuda') else "CPU"
         print("Training device:", training_device_str)
         print("="*_get_terminal_width())
