@@ -83,7 +83,11 @@ class EnsembleRNNModule(nn.Module):
         self.weight_n = nn.Parameter(torch.empty(ensemble_size, 1, proj_size))
         self.bias_n = nn.Parameter(torch.zeros(ensemble_size, 1))
         nn.init.xavier_uniform_(self.weight_n.view(ensemble_size, 1, proj_size))
-        
+
+        # Output rescaling layer: learns to rescale bounded [-1,1] values
+        # Shape: (E, 1, 1) - learnable scale per ensemble member
+        self.weight_out_scale = nn.Parameter(torch.ones(ensemble_size, 1, 1))
+
         self.dropout = nn.Dropout(p=dropout)
         self.hidden_size = hidden_size
         self.ensemble_size = ensemble_size
@@ -110,10 +114,11 @@ class EnsembleRNNModule(nn.Module):
             
             # New candidate
             n = torch.einsum('ego,ebo->ebg', self.weight_n, gi) + self.bias_n.unsqueeze(1)     # (E, B*I, 1)
-            
-            # new hidden state
-            h = h + n                               # (E, B*I, H)
-        
+
+            # New hidden state: bounded + learnable rescaling
+            h_bounded = torch.nn.functional.tanh(h + n)     # (E, B*I, 1) in [-1, 1]
+            h = h_bounded * self.weight_out_scale           # (E, B*I, 1) rescaled by (E, 1, 1)
+
             outputs.append(h)
             
         output = torch.stack(outputs)              # (W, E, B*I, H)
