@@ -12,8 +12,23 @@ Usage:
     # Per-module polynomial R² test
     r2_report = diag.polynomial_adequacy()
 
-    # Per-module GRU gate distributions
-    gate_report = diag.gate_saturation()
+    # Which modules have the largest SINDy approximation gap?
+    sindy_report = diag.sindy_loss_per_module()
+
+    # Which modules hurt behavioral prediction when swapped to SINDy?
+    swap_report = diag.module_swap_test()
+
+    # Is the RNN relying on embeddings that SINDy can't access?
+    emb_report = diag.embedding_dependence()
+
+    # Are hidden states in polynomial-friendly ranges?
+    state_report = diag.state_range()
+
+    # What's the polynomial missing?
+    residual_report = diag.residual_structure()
+
+    # Combined summary table
+    summary_df = diag.summary()
 """
 
 import torch
@@ -403,3 +418,416 @@ class SpiceDiagnostics:
             })
 
         return pd.DataFrame(results)
+
+    # ------------------------------------------------------------------
+    # New diagnostics for identifying SINDy bottleneck modules
+    # ------------------------------------------------------------------
+
+    def sindy_loss_per_module(self) -> pd.DataFrame:
+        """Per-module SINDy approximation error using trained coefficients.
+
+        Monkey-patches ``compute_sindy_loss_for_module`` during a single
+        forward pass to record the MSE between each module's RNN output
+        and its SINDy prediction (using the *current* trained coefficients).
+
+        Useful after training with ``sindy_weight > 0`` to see which
+        modules contribute most to the total ``sindy_loss`` gap.
+
+        Returns:
+            DataFrame with columns: module, sindy_mse, n_trials
+        """
+        model = self.model
+        device = model.device
+
+        module_losses: Dict[str, List[float]] = {
+            name: [] for name in model.submodules_rnn
+        }
+
+        # Capture per-module loss by intercepting the computation
+        original_compute = type(model).compute_sindy_loss_for_module
+
+        def recording_compute(self_model, module_name, **kwargs):
+            loss = original_compute(self_model, module_name=module_name, **kwargs)
+            # Undo the 1/n_modules normalization applied internally
+            raw_loss = loss.item() * len(self_model.submodules_rnn)
+            module_losses[module_name].append(raw_loss)
+            return loss
+
+        # Save model state
+        was_training = model.training
+        was_sindy = model.use_sindy
+        was_fit_sindy = getattr(model, 'fit_sindy', True)
+        was_rnn_finished = getattr(model, 'rnn_training_finished', False)
+
+        # eval() disables dropout; override training flag so the sindy_loss
+        # gate check in call_module fires
+        model.eval()
+        model.training = True
+        model.use_sindy = False
+        model.fit_sindy = True
+        model.rnn_training_finished = False
+        type(model).compute_sindy_loss_for_module = recording_compute
+
+        with torch.no_grad():
+            xs = self.dataset.xs.to(device)
+            model(xs)
+
+        # Restore
+        type(model).compute_sindy_loss_for_module = original_compute
+        model.use_sindy = was_sindy
+        model.fit_sindy = was_fit_sindy
+        model.rnn_training_finished = was_rnn_finished
+        if was_training:
+            model.train()
+        else:
+            model.eval()
+
+        results = []
+        for name in model.submodules_rnn:
+            losses = module_losses[name]
+            if losses:
+                results.append({
+                    'module': name,
+                    'sindy_mse': round(sum(losses) / len(losses), 6),
+                    'n_trials': len(losses),
+                })
+
+        return pd.DataFrame(results)
+
+    def module_swap_test(self, loss_fn=None) -> pd.DataFrame:
+        """Behavioral loss impact of swapping each module individually to SINDy.
+
+        For each module, swaps only that module from RNN to SINDy while
+        keeping all other modules as RNN. Measures the behavioral cross-
+        entropy loss change to identify which module causes the largest
+        prediction degradation.
+
+        Requires trained SINDy coefficients (``sindy_weight > 0`` during
+        training, or a completed Stage 2 ridge refit).
+
+        Also reports the all-RNN baseline and all-SINDy loss for context.
+
+        Args:
+            loss_fn: Loss function ``(prediction, target) -> scalar``.
+                     Defaults to cross-entropy.
+
+        Returns:
+            DataFrame with columns: module, loss_rnn, loss_sindy_swap,
+                                    loss_delta, loss_all_sindy
+        """
+        if loss_fn is None:
+            from spice.resources.spice_training import cross_entropy_loss
+            loss_fn = cross_entropy_loss
+
+        model = self.model
+        device = model.device
+        model.eval()
+
+        xs = self.dataset.xs.to(device)
+        ys = self.dataset.ys.to(device)
+
+        def _compute_loss(logits):
+            # logits: (E, B, T, W, A) from post_forward_pass
+            # ys:     (B, T, W, A)
+            if logits.dim() == 5:
+                logits = logits.mean(dim=0)  # average over ensemble
+            # NaN masking (same logic as _run_batch_training)
+            mask = ~torch.isnan(xs[..., :model.n_actions].sum(dim=-1))
+            return loss_fn(logits[mask], ys[mask]).item()
+
+        was_sindy = model.use_sindy
+
+        # Baseline: all RNN
+        model.use_sindy = False
+        with torch.no_grad():
+            logits_rnn, _ = model(xs)
+        loss_rnn = _compute_loss(logits_rnn)
+
+        # All SINDy
+        model.use_sindy = True
+        with torch.no_grad():
+            logits_sindy, _ = model(xs)
+        loss_all_sindy = _compute_loss(logits_sindy)
+
+        # Per-module swap: temporarily override call_module so that only
+        # the target module uses SINDy, all others remain RNN.
+        original_call = model.call_module  # bound method
+
+        results = []
+        for target_module in model.submodules_rnn:
+            def _make_wrapper(target):
+                def wrapper(**kwargs):
+                    key_module = kwargs.get('key_module')
+                    model.use_sindy = (key_module == target)
+                    return original_call(**kwargs)
+                return wrapper
+
+            model.call_module = _make_wrapper(target_module)
+            with torch.no_grad():
+                logits_swap, _ = model(xs)
+            swap_loss = _compute_loss(logits_swap)
+
+            results.append({
+                'module': target_module,
+                'loss_rnn': round(loss_rnn, 6),
+                'loss_sindy_swap': round(swap_loss, 6),
+                'loss_delta': round(swap_loss - loss_rnn, 6),
+                'loss_all_sindy': round(loss_all_sindy, 6),
+            })
+
+        # Restore
+        del model.call_module  # remove instance override -> class method restored
+        model.use_sindy = was_sindy
+
+        return pd.DataFrame(results)
+
+    def embedding_dependence(self) -> pd.DataFrame:
+        """Weight-norm analysis of control vs embedding vs state importance.
+
+        For each RNN module, computes the L2 norm of the first-layer
+        weights (``weight_linear``) partitioned by input group:
+
+        - **controls**: the SINDy-visible control signals
+        - **embedding**: participant/experiment embeddings (SINDy-invisible)
+        - **state**: the module's own hidden state
+
+        High ``emb_frac`` indicates the RNN relies on information that
+        SINDy cannot access, pointing to a fundamental expressiveness gap.
+
+        Returns:
+            DataFrame with columns: module, control_norm, emb_norm,
+                                    state_norm, emb_frac
+        """
+        model = self.model
+        results = []
+
+        for module_name in model.submodules_rnn:
+            rnn = model.submodules_rnn[module_name]
+            n_controls = len(self.config.library_setup[module_name])
+
+            # weight_linear: (E, proj_size, input_size+1)
+            # Columns: [controls(n_c), embedding(emb_dim), state(1)]
+            W = rnn.weight_linear.detach().cpu().float()
+            total_cols = W.shape[2]  # input_size + 1
+            emb_dim = total_cols - n_controls - 1  # embedding columns
+
+            # Per-ensemble L2 norm of each group, then average over E
+            if n_controls > 0:
+                ctrl_norm = W[:, :, :n_controls].norm(dim=(1, 2)).mean().item()
+            else:
+                ctrl_norm = 0.0
+
+            if emb_dim > 0:
+                emb_norm = W[:, :, n_controls:n_controls + emb_dim].norm(dim=(1, 2)).mean().item()
+            else:
+                emb_norm = 0.0
+
+            state_norm = W[:, :, -1].norm(dim=1).mean().item()
+
+            total_norm = ctrl_norm + emb_norm + state_norm
+            emb_frac = emb_norm / total_norm if total_norm > 1e-8 else 0.0
+
+            results.append({
+                'module': module_name,
+                'control_norm': round(ctrl_norm, 4),
+                'emb_norm': round(emb_norm, 4),
+                'state_norm': round(state_norm, 4),
+                'emb_frac': round(emb_frac, 4),
+            })
+
+        return pd.DataFrame(results)
+
+    def state_range(self) -> pd.DataFrame:
+        """Distribution statistics of hidden states and updates per module.
+
+        Collects the state entering each module (``h_in``) and the residual
+        update (``delta_h = h_out - h_in``) across all trials. Reports
+        range, std, and fraction of values outside [-1, 1] and [-2, 2].
+
+        States with large magnitude or high variance degrade polynomial
+        approximation quality (higher-degree terms blow up).
+
+        Returns:
+            DataFrame with columns: module, metric, min, max, mean, std,
+                                    pct_outside_1, pct_outside_2
+        """
+        hook_data = self._collect_module_data()
+        results = []
+
+        for module_name in self.model.submodules_rnn:
+            calls = hook_data[module_name]
+            if not calls:
+                continue
+
+            all_h_in = []
+            all_delta = []
+
+            for inputs, state, output in calls:
+                E, B, I = output.shape[1], output.shape[2], output.shape[3]
+                h_in = state[-1] if state is not None else torch.zeros(E, B, I)
+                h_out = output[-1, :, :, :, 0]
+                all_h_in.append(h_in.reshape(-1))
+                all_delta.append((h_out - h_in).reshape(-1))
+
+            for metric_name, values in [('state_in', torch.cat(all_h_in)),
+                                         ('delta_h', torch.cat(all_delta))]:
+                results.append({
+                    'module': module_name,
+                    'metric': metric_name,
+                    'min': round(values.min().item(), 4),
+                    'max': round(values.max().item(), 4),
+                    'mean': round(values.mean().item(), 4),
+                    'std': round(values.std().item(), 4),
+                    'pct_outside_1': round(
+                        (values.abs() > 1).float().mean().item() * 100, 1),
+                    'pct_outside_2': round(
+                        (values.abs() > 2).float().mean().item() * 100, 1),
+                })
+
+        return pd.DataFrame(results)
+
+    def residual_structure(self, degree: Optional[int] = None) -> pd.DataFrame:
+        """Correlation between polynomial-fit residuals and input features.
+
+        After fitting an OLS polynomial to each module's dynamics, computes
+        the Pearson correlation between the residuals and each library
+        input (state, control signals). High correlation indicates
+        systematic signal the polynomial cannot capture — suggesting
+        missing terms, insufficient degree, or fundamentally non-polynomial
+        dynamics.
+
+        Args:
+            degree: Polynomial degree. If None, uses each module's
+                    configured degree.
+
+        Returns:
+            DataFrame with columns: module, feature, correlation, abs_correlation
+        """
+        hook_data = self._collect_module_data()
+        results = []
+
+        for module_name in self.model.submodules_rnn:
+            calls = hook_data[module_name]
+            if not calls:
+                continue
+
+            mod_degree = (degree if degree is not None
+                          else self.model.sindy_specs[module_name]['polynomial_degree'])
+            n_controls = len(self.config.library_setup[module_name])
+            feature_names = list(self.model.sindy_specs[module_name]['input_names'])
+            library_terms = self.model.sindy_candidate_terms[module_name]
+
+            all_h_in = []
+            all_controls = []
+            all_delta = []
+
+            for inputs, state, output in calls:
+                W, E, B, I, F = inputs.shape
+                h_in = state[-1] if state is not None else torch.zeros(E, B, I)
+                controls = (inputs[-1, :, :, :, :n_controls] if n_controls > 0
+                            else inputs[-1, :, :, :, :0])
+                h_out = output[-1, :, :, :, 0]
+
+                all_h_in.append(h_in.reshape(E * B, I))
+                all_controls.append(controls.reshape(E * B, I, n_controls))
+                all_delta.append((h_out - h_in).reshape(E * B, I))
+
+            h_in_stacked = torch.stack(all_h_in)        # (T, EB, I)
+            controls_stacked = torch.stack(all_controls)  # (T, EB, I, C)
+            delta_stacked = torch.stack(all_delta)        # (T, EB, I)
+
+            # Filter inactive items
+            I = h_in_stacked.shape[2]
+            active_items = [i for i in range(I)
+                           if h_in_stacked[:, :, i].var() > 1e-6]
+            if not active_items:
+                active_items = list(range(I))
+
+            h_in_f = h_in_stacked[:, :, active_items]
+            controls_f = controls_stacked[:, :, active_items, :]
+            delta_f = delta_stacked[:, :, active_items]
+
+            # OLS polynomial fit
+            library_matrix = compute_polynomial_library(
+                h_in_f, controls_f, mod_degree, feature_names, library_terms,
+            )
+            n_terms = library_matrix.shape[-1]
+            lib_flat = library_matrix.reshape(-1, n_terms).float()
+            dh_flat = delta_f.reshape(-1, 1).float()
+
+            coeffs = torch.linalg.lstsq(lib_flat, dh_flat).solution
+            residuals = (dh_flat - lib_flat @ coeffs).squeeze(-1)  # (N,)
+
+            # Correlate residuals with each raw input feature
+            h_in_flat = h_in_f.reshape(-1).float()
+            raw_features: List[Tuple[str, torch.Tensor]] = [('state', h_in_flat)]
+            control_names = list(self.config.library_setup[module_name])
+            for c_idx, c_name in enumerate(control_names):
+                raw_features.append(
+                    (c_name, controls_f[:, :, :, c_idx].reshape(-1).float()))
+
+            for feat_name, feat_values in raw_features:
+                if feat_values.std() < 1e-8 or residuals.std() < 1e-8:
+                    corr = 0.0
+                else:
+                    corr = torch.corrcoef(
+                        torch.stack([residuals, feat_values])
+                    )[0, 1].item()
+
+                results.append({
+                    'module': module_name,
+                    'feature': feat_name,
+                    'correlation': round(corr, 4),
+                    'abs_correlation': round(abs(corr), 4),
+                })
+
+        return pd.DataFrame(results)
+
+    def summary(self, degree: Optional[int] = None) -> pd.DataFrame:
+        """Combined per-module diagnostic report.
+
+        Merges polynomial R², embedding dependence fraction, and state
+        range into a single table for quick triage.
+
+        | Column             | What it tells you                       |
+        |--------------------|-----------------------------------------|
+        | r2                 | Can a polynomial express the dynamics?  |
+        | delta_h_std        | Scale of state updates                  |
+        | emb_frac           | SINDy-invisible information reliance    |
+        | state_max          | Polynomial-unfriendly magnitude?        |
+        | state_pct_outside_1| Fraction of states outside [-1, 1]      |
+
+        Args:
+            degree: Polynomial degree override (passed to polynomial_adequacy).
+
+        Returns:
+            DataFrame indexed by module.
+        """
+        r2_df = self.polynomial_adequacy(degree=degree)
+        emb_df = self.embedding_dependence()
+        state_df = self.state_range()
+
+        # Pivot state_range to get per-module state_in stats
+        state_in = state_df[state_df['metric'] == 'state_in'].set_index('module')
+
+        rows = []
+        for _, r2_row in r2_df.iterrows():
+            name = r2_row['module']
+            row = {
+                'module': name,
+                'r2': r2_row['r2'],
+                'delta_h_std': r2_row['delta_h_std'],
+            }
+
+            emb_match = emb_df[emb_df['module'] == name]
+            if not emb_match.empty:
+                row['emb_frac'] = emb_match.iloc[0]['emb_frac']
+
+            if name in state_in.index:
+                s = state_in.loc[name]
+                row['state_max'] = max(abs(s['min']), abs(s['max']))
+                row['state_pct_outside_1'] = s['pct_outside_1']
+
+            rows.append(row)
+
+        return pd.DataFrame(rows)

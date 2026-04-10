@@ -507,7 +507,7 @@ class BaseModel(nn.Module):
                 )
 
         # clip next_value to a specific range
-        next_value = torch.clip(input=next_value, min=-1e1, max=1e1)
+        # next_value = torch.clip(input=next_value, min=-1e1, max=1e1)
         
         if action_mask is not None:
             state = self.get_state()[key_state]
