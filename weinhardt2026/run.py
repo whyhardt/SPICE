@@ -95,6 +95,7 @@ if __name__=='__main__':
         raise ValueError("kwargs train_ratio_time and test_sessions cannot be assigned at the same time.")
     
     print("\n"+"="*_get_terminal_width())
+    print(f"Module: {args.module}")
     print(f"Dataset: {args.data}")
     dataset = csv_to_dataset(
         file=args.data,
