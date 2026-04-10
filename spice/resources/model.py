@@ -116,9 +116,10 @@ class EnsembleRNNModule(nn.Module):
             n = torch.einsum('ego,ebo->ebg', self.weight_n, gi) + self.bias_n.unsqueeze(1)     # (E, B*I, 1)
 
             # New hidden state: bounded + learnable rescaling
-            h_bounded = torch.nn.functional.tanh(h + n)     # (E, B*I, 1) in [-1, 1]
-            h = h_bounded * self.weight_out_scale           # (E, B*I, 1) rescaled by (E, 1, 1)
-
+            h = h + n
+            # h_bounded = torch.nn.functional.tanh(h + n)     # (E, B*I, 1) in [-1, 1]
+            # h = h_bounded * self.weight_out_scale           # (E, B*I, 1) rescaled by (E, 1, 1)
+            
             outputs.append(h)
             
         output = torch.stack(outputs)              # (W, E, B*I, H)
