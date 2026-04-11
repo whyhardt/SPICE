@@ -84,10 +84,7 @@ class EnsembleRNNModule(nn.Module):
         self.bias_n = nn.Parameter(torch.zeros(ensemble_size, 1))
         nn.init.xavier_uniform_(self.weight_n.view(ensemble_size, 1, proj_size))
 
-        # Output rescaling layer: learns to rescale bounded [-1,1] values
-        # Shape: (E, 1, 1) - learnable scale per ensemble member
-        # self.weight_out_scale = nn.Parameter(torch.ones(ensemble_size, 1, 1))
-        self.layer_norm = torch.nn.LayerNorm(1)
+        self.batch_norm = torch.nn.BatchNorm1d(ensemble_size)
 
         self.dropout = nn.Dropout(p=dropout)
         self.hidden_size = hidden_size
@@ -118,8 +115,9 @@ class EnsembleRNNModule(nn.Module):
 
             # New hidden state with layer normalization for stability
             h = h + n                                               # (E, B*I, 1)
-            h = self.layer_norm(h)                                 # Normalize across all items per ensemble
 
+            h = self.batch_norm(h.squeeze(-1).t()).t().unsqueeze(-1)
+            
             outputs.append(h)
 
         output = torch.stack(outputs)              # (W, E, B*I, H)
@@ -518,7 +516,7 @@ class BaseModel(nn.Module):
                 )
 
         # clip next_value to a specific range
-        # next_value = torch.clip(input=next_value, min=-1e1, max=1e1)
+        next_value = torch.clip(input=next_value, min=-1e1, max=1e1)
 
         # Apply action mask: store complete state, but return only masked update
         if action_mask is not None:
