@@ -78,7 +78,7 @@ class SpiceModel(BaseModel):
         for trial in spice_signals.trials:
             
             # REWARD VALUE UPDATES
-            value_reward_env = self.call_module(
+            self.call_module(
                 key_module='value_reward_env',
                 key_state='value_reward_env',
                 inputs=reward_full[trial],
@@ -86,25 +86,25 @@ class SpiceModel(BaseModel):
                 participant_embedding=participant_embedding,
             )
             
-            self.call_module(
+            value_reward = self.call_module(
                 key_module='value_reward_chosen',
                 key_state='value_reward',
                 action_mask=spice_signals.actions[trial],
                 inputs=(
-                    value_reward_env,
+                    self.state['value_reward_env'],
                     spice_signals.rewards[trial],
                     # self.state['reward[t-1]'],
                 ),
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
             )
-
-            self.call_module(
+            
+            value_reward += self.call_module(
                 key_module='value_reward_not_chosen',
                 key_state='value_reward',
                 action_mask=1-spice_signals.actions[trial],
                 inputs=(
-                    value_reward_env,
+                    self.state['value_reward_env'],
                     # self.state['reward[t-1]'],
                 ),
                 participant_index=spice_signals.participant_ids,
@@ -112,7 +112,7 @@ class SpiceModel(BaseModel):
             )
 
             # CHOICE VALUE UPDATES
-            self.call_module(
+            value_choice = self.call_module(
                 key_module='value_choice_chosen',
                 key_state='value_choice',
                 action_mask=spice_signals.actions[trial],
@@ -121,7 +121,7 @@ class SpiceModel(BaseModel):
                 participant_embedding=participant_embedding,
             )
 
-            self.call_module(
+            value_choice += self.call_module(
                 key_module='value_choice_not_chosen',
                 key_state='value_choice',
                 action_mask=1-spice_signals.actions[trial],
@@ -133,7 +133,7 @@ class SpiceModel(BaseModel):
             # VOLATILITY UPDATES
             dvalue = self.state['value_reward'] - self.state['value_reward[t-1]']
 
-            self.call_module(
+            volatility = self.call_module(
                 key_module='volatility_chosen',
                 key_state='volatility',
                 action_mask=spice_signals.actions[trial],
@@ -142,7 +142,7 @@ class SpiceModel(BaseModel):
                 participant_embedding=participant_embedding,
             )
 
-            self.call_module(
+            volatility += self.call_module(
                 key_module='volatility_not_chosen',
                 key_state='volatility',
                 action_mask=1-spice_signals.actions[trial],
@@ -156,9 +156,12 @@ class SpiceModel(BaseModel):
             
             # Logits
             spice_signals.logits[trial] = (
-                self.state['value_reward']
-                + self.state['value_choice']
-                + self.state['volatility']
+                # self.state['value_reward']
+                # + self.state['value_choice']
+                # + self.state['volatility']
+                value_reward
+                + value_choice
+                + volatility
             )
             
         spice_signals = self.post_forward_pass(spice_signals)

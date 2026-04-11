@@ -44,7 +44,8 @@ class SpiceModel(BaseModel):
             # Let's perform the belief update for the reward-based value of the chosen option
             # since all values are given to the rnn-module (independent of each other), the chosen value is selected by setting the action to the chosen one
             # if we would like to perform a similar update by calling a rnn-module for the non-chosen action, we would set the parameter to action=1-action.
-            self.call_module(
+            # call_module returns the scaled state (for logits) while storing the normalized state internally (for stability)
+            value_reward_scaled = self.call_module(
                 key_module='value_reward_chosen',
                 key_state='value_reward',
                 action_mask=spice_signals.actions[timestep, 0],
@@ -53,8 +54,8 @@ class SpiceModel(BaseModel):
                 participant_embedding=participant_embedding,
                 )
 
-            # Now keep track of this value in the output array
-            spice_signals.logits[timestep] = self.state['value_reward']
+            # Use the scaled value for logit computation
+            spice_signals.logits[timestep] = value_reward_scaled
         
         # post-process the forward pass
         # self.state['value_reward'] = value_reward

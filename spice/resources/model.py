@@ -86,7 +86,8 @@ class EnsembleRNNModule(nn.Module):
 
         # Output rescaling layer: learns to rescale bounded [-1,1] values
         # Shape: (E, 1, 1) - learnable scale per ensemble member
-        self.weight_out_scale = nn.Parameter(torch.ones(ensemble_size, 1, 1))
+        # self.weight_out_scale = nn.Parameter(torch.ones(ensemble_size, 1, 1))
+        self.layer_norm = torch.nn.LayerNorm(1)
 
         self.dropout = nn.Dropout(p=dropout)
         self.hidden_size = hidden_size
@@ -106,22 +107,21 @@ class EnsembleRNNModule(nn.Module):
         # GRU cell over within-trial timesteps
         outputs = []
         for t in range(W):
-            
+
             # Non-linear projection via einsum
             x_t = torch.concat((x[t], h), dim=-1)
             gi = torch.einsum('eoi,ebi->ebo', self.weight_linear, x_t) + self.bias_linear.unsqueeze(1)  # (E, B*I, proj)
             gi = self.dropout(torch.nn.functional.gelu(gi))
-            
+
             # New candidate
             n = torch.einsum('ego,ebo->ebg', self.weight_n, gi) + self.bias_n.unsqueeze(1)     # (E, B*I, 1)
 
-            # New hidden state: bounded + learnable rescaling
-            h = h + n
-            # h_bounded = torch.nn.functional.tanh(h + n)     # (E, B*I, 1) in [-1, 1]
-            # h = h_bounded * self.weight_out_scale           # (E, B*I, 1) rescaled by (E, 1, 1)
-            
+            # New hidden state with layer normalization for stability
+            h = h + n                                               # (E, B*I, 1)
+            h = self.layer_norm(h)                                 # Normalize across all items per ensemble
+
             outputs.append(h)
-            
+
         output = torch.stack(outputs)              # (W, E, B*I, H)
         return output.reshape(W, E, B, I, 1)
 
@@ -202,6 +202,7 @@ class BaseModel(nn.Module):
         self.recording = {}
         self.submodules_rnn = nn.ModuleDict()
         self.submodules_eq = dict()
+        self.module_output_scales = nn.ParameterDict()  # Learnable output scale per module (for logit computation)
 
         # Differentiable SINDy coefficients
         self.sindy_polynomial_degree = sindy_polynomial_degree
@@ -364,6 +365,10 @@ class BaseModel(nn.Module):
         self.sindy_specs[key_module]['include_state'] = include_state
         self.sindy_specs[key_module]['polynomial_degree'] = polynomial_degree
         self.setup_sindy_coefficients(key_module=key_module, polynomial_degree=polynomial_degree)
+
+        # Initialize learnable output scale for this module (one per ensemble member)
+        # This scales the output for logit computation while keeping internal state normalized
+        self.module_output_scales[key_module] = nn.Parameter(torch.ones(self.ensemble_size))
         
         # set name of each input variable which are then used in the library as features
         input_names = []
@@ -514,16 +519,32 @@ class BaseModel(nn.Module):
 
         # clip next_value to a specific range
         # next_value = torch.clip(input=next_value, min=-1e1, max=1e1)
-        
+
+        # Apply action mask: store complete state, but return only masked update
         if action_mask is not None:
             state = self.get_state()[key_state]
             mask = action_mask[-1] if action_mask.dim() >= 4 else action_mask
-            next_value = torch.where(mask == 1, next_value,  state if key_state is not None else torch.zeros_like(next_value))
-            
-        if key_state is not None:
-            self.state[key_state] = next_value
+            next_value = next_value * mask  # Masked update (unmasked items → 0)
+            old_state = state * (1-mask) if key_state is not None else torch.zeros_like(next_value)
+            next_state = next_value + old_state  # Complete state (masked: new, unmasked: old)
+        else:
+            next_state = next_value
 
-        return next_value  # [W, E, B, I]
+        # Store normalized state (for stability and SINDy fitting)
+        if key_state is not None:
+            self.state[key_state] = next_state
+
+        # Apply learned output scale for logit computation (compensates for layer norm)
+        # Return scaled masked update (only items updated by this module contribute)
+        if key_module in self.module_output_scales:
+            # Reshape scale from (E,) to (1, E, 1, 1) for broadcasting over (W, E, B, I)
+            scale = self.module_output_scales[key_module].view(1, -1, 1, 1)
+            next_value_scaled = next_value * scale
+        else:
+            # Equation modules don't have scales
+            next_value_scaled = next_value
+
+        return next_value_scaled  # [W, E, B, I] - scaled masked update
     
     def setup_sindy_coefficients(self, key_module: str, polynomial_degree: int = None):
         """
