@@ -253,11 +253,11 @@ class Castro2025Model(torch.nn.Module):
             logits: (T, B, n_actions) or (B, T, n_actions) if batch_first
             state:  dict of final state tensors (detached from graph)
         """
-        
+
         if self.batch_first:
             inputs = inputs.permute(1, 2, 0, 3)  # → (T, B, F)
         inputs = inputs.squeeze(1)
-        
+
         T, B, _ = inputs.shape
         inputs = inputs.nan_to_num(0.0)
 
@@ -296,31 +296,34 @@ class Castro2025Model(torch.nn.Module):
             er     = self.state['exploration_rate']       # (B,)
             cc     = self.state['cumchoice']              # (B, n_actions)
 
-            # Current choice index (-1 means no previous choice)
-            choice_idx = actions_t.argmax(dim=-1)         # (B,)
-            had_choice = actions_t.sum(dim=-1) > 0        # (B,) whether a valid choice was made
-
             # ---- Update state based on observed choice & reward ----
             # Scalar reward for the chosen action
             reward_scalar = (rewards_t * actions_t).sum(dim=-1)   # (B,)
 
             # Loss-averse TD error: r - γ*(1-r) - Q[choice]
-            q_chosen = (q * actions_t).sum(dim=-1)                # (B,)
+            q_chosen = (q * actions_t).sum(dim=-1)                # (B,) 
             delta = reward_scalar - gam * (1.0 - reward_scalar) - q_chosen  # (B,)
 
             # Update Q-value for chosen action only (vectorised via one-hot mask)
             q = q + delta.unsqueeze(-1) * actions_t               # (B, n_actions)
 
+
+            # Current choice index (-1 means no previous choice)
+            choice_idx = actions_t.argmax(dim=-1)         # (B,)
+            had_choice = actions_t.sum(dim=-1) > 0        # (B,) whether a valid choice was made
+
             # Increment counter if same action was repeated, else reset to 0
             same_action = (choice_idx == old_ch).float()
-            tsls = torch.where(had_choice, same_action * (tsls + 1), tsls)
+            tsls = torch.where(had_choice, same_action * (tsls + 1), tsls) # if had_choice=True & same_action=True → increment; 
+                                                                             # if had_choice=True & same_action=False (=0) → reset to 0; 
+                                                                                # if had_choice=False → keep previous tsls (no update without a valid choice)
 
             # Slow exploration-rate decay
             # In JAX this only happens when a valid choice/reward update exists.
-            er = torch.where(had_choice, er * (1.0 - 1e-3), er)
+            er = torch.where(had_choice, er * (1.0 - 1e-3), er) # per batch row: if valid choice, decay; otherwise keep unchanged.
 
             # Cumulative choice count
-            cc = cc + actions_t
+            cc = cc + actions_t  # actions_t is one-hot, so this increments the count only for the chosen action (choice=True)
 
             # ---- Global Q-value update (exploration smoothing + decay) ----
             q_mean = q.mean(dim=-1, keepdim=True)                 # (B, 1)
@@ -329,36 +332,36 @@ class Castro2025Model(torch.nn.Module):
 
             # ---- Compute choice probabilities ----
             # Base logit: temperature-scaled Q-values + cumulative-choice bonus
-            base_logits = beta_r.unsqueeze(-1) * q / temp.unsqueeze(-1) \
-                          + beta_p.unsqueeze(-1) * torch.log1p(cc)    # (B, n_actions)
+            base_logits = beta_r.unsqueeze(-1) * q / temp.unsqueeze(-1) + beta_p.unsqueeze(-1) * torch.log1p(cc)    # (B, n_actions)
 
             probs = torch.softmax(base_logits, dim=-1)
-            choice_probs = (1.0 - lapse.unsqueeze(-1)) * probs \
-                           + lapse.unsqueeze(-1) / self.n_actions     # (B, n_actions)
-            step_logits = torch.log(choice_probs + 1e-8)              # (B, n_actions)
+            choice_probs = (1.0 - lapse.unsqueeze(-1)) * probs + lapse.unsqueeze(-1) / self.n_actions     # (B, n_actions)
+            #choice_logits = torch.log(choice_probs + 1e-8)              # (B, n_actions)
+            choice_logits = torch.log(choice_probs)
 
             # ---- Add choice-conditioned bonuses (perseveration, switch, attention) ----
             # One-hot encodings for bonus computation
             choice_oh  = actions_t                                                     # (B, n_actions)
             # JAX one_hot(-1) -> all zeros; preserve that behavior explicitly.
-            old_oh     = torch.nn.functional.one_hot(old_ch.clamp(min=0), self.n_actions).float()
-            old_oh     = old_oh * (old_ch >= 0).unsqueeze(-1).float()
+            old_choice_oh     = torch.nn.functional.one_hot(old_ch.clamp(min=0), self.n_actions).float()
+            old_choice_oh     = old_choice_oh * (old_ch >= 0).unsqueeze(-1).float()
             opposite_oh = torch.nn.functional.one_hot((choice_idx + 2) % self.n_actions, self.n_actions).float()
 
             persev_bonus  = same_action.unsqueeze(-1) * perv.unsqueeze(-1) * choice_oh
             switch_bonus  = (1.0 - same_action).unsqueeze(-1) * sw.unsqueeze(-1) * choice_oh
-            attn_bonus1   = ab1.unsqueeze(-1) * old_oh
+            attn_bonus1   = ab1.unsqueeze(-1) * old_choice_oh
             attn_bonus2   = ab2.unsqueeze(-1) * opposite_oh
+
             # Log of trials-since-last-switch bonus for chosen action
             tsls_bonus    = choice_oh * torch.log1p(tsls).unsqueeze(-1)
 
             # JAX applies all these bonuses only when choice is present.
             has_choice_mask = had_choice.unsqueeze(-1).float()
-            step_logits = step_logits + has_choice_mask * (
+            choice_logits = choice_logits + has_choice_mask * (
                 persev_bonus + switch_bonus + attn_bonus1 + attn_bonus2 + tsls_bonus
             )
 
-            logits[t] = step_logits
+            logits[t] = choice_logits
 
             # ---- Store updated state ----
             new_old_ch = torch.where(had_choice, choice_idx, old_ch)
@@ -389,6 +392,7 @@ class Castro2025Model(torch.nn.Module):
             exploration_rate = self.alpha_exploration_rate[:batch_size]
 
         self.state = {
+            # uses B even though not in JAX, becasue JAX snippet is one-session notation, Python implementation is the batched equivalent.
             # Q-values initialised to `prior` (per-participant scalar broadcast to actions)
             'q_values':                prior.unsqueeze(-1).expand(batch_size, self.n_actions).clone(),
             # -1 signals "no previous choice" — use 0 as placeholder (clamped when indexing)
