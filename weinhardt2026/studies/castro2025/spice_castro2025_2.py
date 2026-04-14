@@ -78,7 +78,7 @@ class SpiceModel(BaseModel):
         for trial in spice_signals.trials:
             
             # REWARD VALUE UPDATES
-            self.call_module(
+            value_reward_env = self.call_module(
                 key_module='value_reward_env',
                 key_state='value_reward_env',
                 inputs=reward_full[trial],
@@ -91,7 +91,7 @@ class SpiceModel(BaseModel):
                 key_state='value_reward',
                 action_mask=spice_signals.actions[trial],
                 inputs=(
-                    self.state['value_reward_env'],
+                    value_reward_env,
                     spice_signals.rewards[trial],
                     # self.state['reward[t-1]'],
                 ),
@@ -104,7 +104,7 @@ class SpiceModel(BaseModel):
                 key_state='value_reward',
                 action_mask=1-spice_signals.actions[trial],
                 inputs=(
-                    self.state['value_reward_env'],
+                    value_reward_env,
                     # self.state['reward[t-1]'],
                 ),
                 participant_index=spice_signals.participant_ids,
