@@ -426,7 +426,7 @@ class SpiceDiagnostics:
     def sindy_loss_per_module(self) -> pd.DataFrame:
         """Per-module SINDy approximation error using trained coefficients.
 
-        Monkey-patches ``compute_sindy_loss_for_module`` during a single
+        Monkey-patches ``compute_vectorized_sindy_loss`` during a single
         forward pass to record the MSE between each module's RNN output
         and its SINDy prediction (using the *current* trained coefficients).
 
@@ -439,19 +439,44 @@ class SpiceDiagnostics:
         model = self.model
         device = model.device
 
-        module_losses: Dict[str, List[float]] = {
-            name: [] for name in model.submodules_rnn
-        }
+        module_losses: Dict[str, float] = {}
+        module_n_trials: Dict[str, int] = {}
 
-        # Capture per-module loss by intercepting the computation
-        original_compute = type(model).compute_sindy_loss_for_module
+        # Capture per-module loss by intercepting the vectorized computation
+        original_compute = type(model).compute_vectorized_sindy_loss
 
-        def recording_compute(self_model, module_name, **kwargs):
-            loss = original_compute(self_model, module_name=module_name, **kwargs)
-            # Undo the 1/n_modules normalization applied internally
-            raw_loss = loss.item() * len(self_model.submodules_rnn)
-            module_losses[module_name].append(raw_loss)
-            return loss
+        def recording_compute(self_model):
+            # Compute per-module loss from buffers without accumulating
+            for module_name, buffers in self_model._sindy_buffers.items():
+                if module_name not in self_model.sindy_coefficients:
+                    continue
+
+                n_trials = len(buffers['h_current'])
+                h_current = torch.cat(buffers['h_current'], dim=0)
+                h_next_rnn = torch.cat(buffers['h_next_rnn'], dim=0)
+                controls = torch.cat(buffers['controls'], dim=0)
+
+                W_per_trial = buffers['h_current'][0].shape[0]
+                masks = torch.stack(buffers['action_mask'], dim=0)
+                if W_per_trial > 1:
+                    masks = masks.unsqueeze(1).expand(-1, W_per_trial, -1, -1, -1)
+                    masks = masks.reshape(-1, *masks.shape[2:])
+
+                h_next_sindy = self_model.forward_sindy(
+                    h_current=h_current,
+                    key_module=module_name,
+                    participant_ids=buffers['participant_ids'],
+                    experiment_ids=buffers['experiment_ids'],
+                    controls=controls,
+                    polynomial_degree=self_model.sindy_polynomial_degree,
+                )
+
+                diff = (h_next_rnn - h_next_sindy) ** 2
+                masked_diff = torch.where(masks == 1, diff, torch.zeros_like(diff))
+                n_masked = masks.sum(dim=-1).clamp(min=1)
+                per_sample_loss = masked_diff.sum(dim=-1) / n_masked
+                module_losses[module_name] = per_sample_loss.mean().item()
+                module_n_trials[module_name] = n_trials
 
         # Save model state
         was_training = model.training
@@ -466,14 +491,14 @@ class SpiceDiagnostics:
         model.use_sindy = False
         model.fit_sindy = True
         model.rnn_training_finished = False
-        type(model).compute_sindy_loss_for_module = recording_compute
+        type(model).compute_vectorized_sindy_loss = recording_compute
 
         with torch.no_grad():
             xs = self.dataset.xs.to(device)
             model(xs)
 
         # Restore
-        type(model).compute_sindy_loss_for_module = original_compute
+        type(model).compute_vectorized_sindy_loss = original_compute
         model.use_sindy = was_sindy
         model.fit_sindy = was_fit_sindy
         model.rnn_training_finished = was_rnn_finished
@@ -484,12 +509,11 @@ class SpiceDiagnostics:
 
         results = []
         for name in model.submodules_rnn:
-            losses = module_losses[name]
-            if losses:
+            if name in module_losses:
                 results.append({
                     'module': name,
-                    'sindy_mse': round(sum(losses) / len(losses), 6),
-                    'n_trials': len(losses),
+                    'sindy_mse': round(module_losses[name], 6),
+                    'n_trials': module_n_trials[name],
                 })
 
         return pd.DataFrame(results)

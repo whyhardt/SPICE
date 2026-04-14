@@ -328,9 +328,11 @@ def plot_value_trajectories(
     session_idx = _get_session_idx(dataset, participant_id, block_id)
 
     # Get actual actions from dataset
-    actual_actions = dataset.ys[session_idx, :, 0, :].cpu()  # (T, A)
+    n_actions = dataset.ys.shape[-1]
+    actual_actions = dataset.xs[session_idx, :, 0, :n_actions].cpu()  # (T, A)
     actual_action_idx = torch.argmax(actual_actions, dim=-1)  # (T,)
-
+    y_actual_action = torch.zeros_like(rnn_data['probs'])
+    
     # Determine number of rows
     n_value_states = len(rnn_data['states'])
     n_rows = 2 + n_value_states  # probs + logits + states
@@ -383,7 +385,7 @@ def plot_value_trajectories(
     actual_mask = (actual_action_idx[trial_range] == action_idx).numpy()
     if actual_mask.any():
         ax.scatter(time_steps[actual_mask],
-                  rnn_data['probs'][trial_range, action_idx].numpy()[actual_mask],
+                  y_actual_action[trial_range, action_idx].numpy()[actual_mask],
                   color=colors['actual'], s=30, alpha=0.5, marker='o',
                   label='Actual choice', zorder=10)
 
@@ -397,19 +399,31 @@ def plot_value_trajectories(
     # ----- Row 2: Logits -----
     ax = axes[1]
 
+    value_min = 0
+    
     ax.plot(time_steps, rnn_data['logits'][trial_range, action_idx].numpy(),
             label='SPICE-RNN', color=colors['spice_rnn'], linewidth=1.5, alpha=0.8)
+    value_min = min(value_min, min(rnn_data['logits'][trial_range, action_idx].numpy()))
     ax.plot(time_steps, spice_data['logits'][trial_range, action_idx].numpy(),
             label='SPICE', color=colors['spice'], linewidth=1.5, alpha=0.8)
-
+    value_min = min(value_min, min(spice_data['logits'][trial_range, action_idx].numpy()))
+    
     if benchmark_data is not None:
+        value_min = min(value_min, min(benchmark_data['logits'][trial_range, action_idx].numpy()))
         ax.plot(time_steps, benchmark_data['logits'][trial_range, action_idx].numpy(),
                 label='Benchmark', color=colors['benchmark'], linewidth=1.5, linestyle='--', alpha=0.7)
 
     if gru_data is not None:
+        value_min = min(value_min, min(gru_data['logits'][trial_range, action_idx].numpy()))
         ax.plot(time_steps, gru_data['logits'][trial_range, action_idx].numpy(),
                 label='GRU', color=colors['gru'], linewidth=1.5, linestyle='--', alpha=0.7)
 
+    if actual_mask.any():
+        ax.scatter(time_steps[actual_mask],
+                  value_min+y_actual_action[trial_range, action_idx].numpy()[actual_mask],
+                  color=colors['actual'], s=30, alpha=0.5, marker='o',
+                  label='Actual choice', zorder=10)
+    
     ax.axhline(0, color='black', linewidth=0.5, linestyle='--', alpha=0.3)
     ax.set_ylabel(f'Logit(Action {action_idx})', fontsize=10)
     ax.set_title('Logits', fontsize=12, fontweight='bold')
@@ -422,7 +436,9 @@ def plot_value_trajectories(
         
         rnn_state_vals = rnn_data['states'][state_key]
         spice_state_vals = spice_data['states'][state_key]
-        
+
+        value_min = 0
+
         # Check dimensionality
         if rnn_state_vals.dim() == 1:
             # Single value per timestep
@@ -435,14 +451,21 @@ def plot_value_trajectories(
             n_items = rnn_state_vals.shape[1]
             for item_idx in range(n_items):
                 item_suffix = f' (Item {item_idx})' if n_items > 1 else ''
-
+                value_min = min(value_min, np.min(rnn_state_vals[trial_range, item_idx].numpy()))
+                value_min = min(value_min, np.min(spice_state_vals[trial_range, item_idx].numpy())) 
                 ax.plot(time_steps, rnn_state_vals[trial_range, item_idx].numpy(),
                        label=f'SPICE-RNN{item_suffix}', color=colors['spice_rnn'],
                        linewidth=1.5, alpha=0.8, linestyle=['-', '--', '-.', ':'][item_idx % 4])
-                ax.plot(time_steps, spice_state_vals[trial_range, item_idx].numpy(),
-                       label=f'SPICE{item_suffix}', color=colors['spice'],
-                       linewidth=1.5, alpha=0.8, linestyle=['-', '--', '-.', ':'][item_idx % 4])
+                # ax.plot(time_steps, spice_state_vals[trial_range, item_idx].numpy(),
+                #        label=f'SPICE{item_suffix}', color=colors['spice'],
+                #        linewidth=1.5, alpha=0.8, linestyle=['-', '--', '-.', ':'][item_idx % 4])
 
+        if actual_mask.any():
+            ax.scatter(time_steps[actual_mask],
+                    value_min+y_actual_action[trial_range, action_idx].numpy()[actual_mask],
+                    color=colors['actual'], s=30, alpha=0.5, marker='o',
+                    label='Actual choice', zorder=10)
+        
         ax.axhline(0, color='black', linewidth=0.5, linestyle='--', alpha=0.3)
         ax.set_ylabel(f'{state_key}', fontsize=10)
         ax.set_title(f'Value: {state_key}', fontsize=12, fontweight='bold')
