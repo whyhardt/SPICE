@@ -27,8 +27,8 @@ Usage examples:
       benchmark_model=benchmark,
       gru_model=gru,
       output_path="output/trajectories.png",
-      participant_idx=0,
-      block_idx=0,
+      participant_id=0,
+      block_id=1,
       action_idx=0,
   )
 """
@@ -53,15 +53,15 @@ from spice import SpiceEstimator, SpiceDataset
 
 def _get_session_idx(
     dataset: SpiceDataset,
-    participant_idx: int,
-    block_idx: int,
+    participant_id: int,
+    block_id: int,
 ) -> int:
-    """Convert participant and block indices to session index.
+    """Convert participant ID and block ID to session index.
 
     Args:
         dataset: SpiceDataset
-        participant_idx: Participant index (0-indexed)
-        block_idx: Block index (0-indexed for a given participant)
+        participant_id: Participant ID from dataset (0-indexed after csv_to_dataset remapping)
+        block_id: Block ID from dataset (raw from CSV, often 1-indexed)
 
     Returns:
         session_idx: Flat session index in the dataset
@@ -70,28 +70,14 @@ def _get_session_idx(
     participant_ids = dataset.xs[:, 0, 0, -1].cpu().numpy()  # (n_sessions,)
     block_ids = dataset.xs[:, 0, 0, -3].cpu().numpy()  # (n_sessions,)
 
-    # Find all sessions for this participant
-    participant_sessions = np.where(participant_ids == participant_idx)[0]
-
-    if len(participant_sessions) == 0:
-        raise ValueError(f"Participant {participant_idx} not found in dataset")
-
-    # Get block IDs for this participant
-    participant_blocks = block_ids[participant_sessions]
-
-    # Get unique blocks and find the requested block
-    unique_blocks = np.unique(participant_blocks)
-
-    if block_idx >= len(unique_blocks):
-        raise ValueError(f"Block {block_idx} not found for participant {participant_idx}. "
-                        f"Available blocks (0-indexed): 0-{len(unique_blocks)-1}")
-
-    # Map block_idx to actual block_id
-    target_block_id = unique_blocks[block_idx]
-
     # Find session that matches both participant and block
-    session_mask = (participant_ids == participant_idx) & (block_ids == target_block_id)
-    session_idx = np.where(session_mask)[0][0]
+    session_mask = (participant_ids == participant_id) & (block_ids == block_id)
+    matching_sessions = np.where(session_mask)[0]
+
+    if len(matching_sessions) == 0:
+        raise ValueError(f"No session found for participant_id={participant_id}, block_id={block_id}")
+
+    session_idx = matching_sessions[0]
 
     return int(session_idx)
 
@@ -100,16 +86,16 @@ def _get_session_idx(
 def extract_trajectories(
     dataset: SpiceDataset,
     spice_model: SpiceEstimator,
-    participant_idx: int = 0,
-    block_idx: int = 0,
+    participant_id: int = 0,
+    block_id: int = 1,
 ) -> Tuple[Dict[str, torch.Tensor], Dict[str, torch.Tensor]]:
     """Extract predictions and internal states for SPICE-RNN and SPICE.
 
     Args:
         dataset: Input dataset (SpiceDataset)
         spice_model: Trained SPICE model
-        participant_idx: Participant index (0-indexed, default: 0)
-        block_idx: Block index within participant (0-indexed, default: 0)
+        participant_id: Participant ID from dataset (0-indexed, default: 0)
+        block_id: Block ID from dataset (raw from CSV, default: 1)
 
     Returns:
         rnn_data: dict with keys 'logits', 'probs', 'states'
@@ -121,7 +107,7 @@ def extract_trajectories(
     device = spice_model.device
 
     # Convert participant + block to session index
-    session_idx = _get_session_idx(dataset, participant_idx, block_idx)
+    session_idx = _get_session_idx(dataset, participant_id, block_id)
 
     # Extract single session
     xs_session = dataset.xs[session_idx:session_idx+1].to(device)  # (1, T, W, F)
@@ -226,23 +212,23 @@ def _extract_state_trajectory(model, xs: torch.Tensor) -> Dict[str, torch.Tensor
 def extract_benchmark_predictions(
     dataset: SpiceDataset,
     benchmark_model: torch.nn.Module,
-    participant_idx: int = 0,
-    block_idx: int = 0,
+    participant_id: int = 0,
+    block_id: int = 1,
 ) -> Dict[str, torch.Tensor]:
     """Extract predictions from benchmark model.
 
     Args:
         dataset: Input dataset
         benchmark_model: Hand-coded cognitive model
-        participant_idx: Participant index (0-indexed)
-        block_idx: Block index within participant (0-indexed)
+        participant_id: Participant ID from dataset (0-indexed)
+        block_id: Block ID from dataset (raw from CSV)
 
     Returns:
         data: dict with keys 'logits', 'probs'
     """
     benchmark_model.eval()
 
-    session_idx = _get_session_idx(dataset, participant_idx, block_idx)
+    session_idx = _get_session_idx(dataset, participant_id, block_id)
     xs_session = dataset.xs[session_idx:session_idx+1]
 
     logits, _ = benchmark_model(xs_session)
@@ -257,23 +243,23 @@ def extract_benchmark_predictions(
 def extract_gru_predictions(
     dataset: SpiceDataset,
     gru_model: torch.nn.Module,
-    participant_idx: int = 0,
-    block_idx: int = 0,
+    participant_id: int = 0,
+    block_id: int = 1,
 ) -> Dict[str, torch.Tensor]:
     """Extract predictions from GRU model.
 
     Args:
         dataset: Input dataset
         gru_model: GRU baseline model
-        participant_idx: Participant index (0-indexed)
-        block_idx: Block index within participant (0-indexed)
+        participant_id: Participant ID from dataset (0-indexed)
+        block_id: Block ID from dataset (raw from CSV)
 
     Returns:
         data: dict with keys 'logits', 'probs'
     """
     gru_model.eval()
 
-    session_idx = _get_session_idx(dataset, participant_idx, block_idx)
+    session_idx = _get_session_idx(dataset, participant_id, block_id)
     xs_session = dataset.xs[session_idx:session_idx+1]
 
     logits, _ = gru_model(xs_session)
@@ -293,8 +279,8 @@ def plot_value_trajectories(
     spice_model: SpiceEstimator = None,
     benchmark_model: torch.nn.Module = None,
     gru_model: torch.nn.Module = None,
-    participant_idx: int = 0,
-    block_idx: int = 0,
+    participant_id: int = 0,
+    block_id: int = 1,
     action_idx: int = 0,
     output_path: str = None,
     figsize: Tuple[int, int] = None,
@@ -313,8 +299,8 @@ def plot_value_trajectories(
         spice_model: Trained SPICE estimator
         benchmark_model: Optional benchmark model
         gru_model: Optional GRU baseline
-        participant_idx: Participant index (0-indexed, default: 0)
-        block_idx: Block index within participant (0-indexed, default: 0)
+        participant_id: Participant ID from dataset (0-indexed, default: 0)
+        block_id: Block ID from dataset (raw from CSV, default: 1)
         action_idx: Which action to plot probabilities for (default: 0)
         output_path: Save path (if None, displays interactively)
         figsize: Figure size (auto-computed if None)
@@ -328,18 +314,18 @@ def plot_value_trajectories(
     # Extract data
     rnn_data, spice_data = None, None
     if spice_model is not None:
-        rnn_data, spice_data = extract_trajectories(dataset, spice_model, participant_idx, block_idx)
+        rnn_data, spice_data = extract_trajectories(dataset, spice_model, participant_id, block_id)
 
     benchmark_data = None
     if benchmark_model is not None:
-        benchmark_data = extract_benchmark_predictions(dataset, benchmark_model, participant_idx, block_idx)
+        benchmark_data = extract_benchmark_predictions(dataset, benchmark_model, participant_id, block_id)
 
     gru_data = None
     if gru_model is not None:
-        gru_data = extract_gru_predictions(dataset, gru_model, participant_idx, block_idx)
+        gru_data = extract_gru_predictions(dataset, gru_model, participant_id, block_id)
 
     # Get session index for extracting actual actions
-    session_idx = _get_session_idx(dataset, participant_idx, block_idx)
+    session_idx = _get_session_idx(dataset, participant_id, block_id)
 
     # Get actual actions from dataset
     actual_actions = dataset.ys[session_idx, :, 0, :].cpu()  # (T, A)
@@ -402,7 +388,7 @@ def plot_value_trajectories(
                   label='Actual choice', zorder=10)
 
     ax.set_ylabel(f'P(Action {action_idx})', fontsize=10)
-    ax.set_title(f'Action Probabilities - Participant {participant_idx}, Block {block_idx}',
+    ax.set_title(f'Action Probabilities - Participant {participant_id}, Block {block_id}',
                 fontsize=12, fontweight='bold')
     ax.legend(loc='upper right', fontsize=8, ncol=2)
     ax.grid(True, alpha=0.3)
@@ -431,7 +417,7 @@ def plot_value_trajectories(
     ax.grid(True, alpha=0.3)
 
     # ----- Rows 3+: Value trajectories -----
-    for i, state_key in enumerate(spice_model.spice_config.states_in_logit):
+    for i, state_key in enumerate(rnn_data['states']):
         ax = axes[2 + i]
         
         rnn_state_vals = rnn_data['states'][state_key]
@@ -495,7 +481,7 @@ def plot_value_trajectories_multi(
     Args:
         dataset: Input dataset
         spice_model: Trained SPICE estimator
-        participant_block_pairs: List of (participant_idx, block_idx) tuples
+        participant_block_pairs: List of (participant_id, block_id) tuples
         action_idx: Which action to plot probabilities for
         output_dir: Directory to save plots (if None, displays interactively)
         figsize: Figure size (auto-computed if None)
@@ -507,20 +493,20 @@ def plot_value_trajectories_multi(
     """
     figs = []
 
-    for participant_idx, block_idx in participant_block_pairs:
+    for participant_id, block_id in participant_block_pairs:
         output_path = None
         if output_dir is not None:
             os.makedirs(output_dir, exist_ok=True)
             output_path = os.path.join(
                 output_dir,
-                f"trajectories_p{participant_idx}_b{block_idx}.png"
+                f"trajectories_p{participant_id}_b{block_id}.png"
             )
 
         fig = plot_value_trajectories(
             dataset=dataset,
             spice_model=spice_model,
-            participant_idx=participant_idx,
-            block_idx=block_idx,
+            participant_id=participant_id,
+            block_id=block_id,
             action_idx=action_idx,
             output_path=output_path,
             figsize=figsize,
