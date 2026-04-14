@@ -67,10 +67,11 @@ if __name__=='__main__':
     # args.data = "weinhardt2026/data/eckstein2022/eckstein2022.csv"
     # args.train_ratio_time = 0.8
     
-    # args.module = "studies.castro2025.spice_castro2025_2"
-    # args.model = "weinhardt2026/studies/castro2025/params/spice_castro2025.pkl"
-    # args.data = "weinhardt2026/studies/castro2025/data/eckstein2024.csv"
-    # args.test_sessions = "1,3"
+    args.module = "studies.castro2025.spice_castro2025_2"
+    args.model = "weinhardt2026/studies/castro2025/params/spice_castro2025.pkl"
+    args.data = "weinhardt2026/studies/castro2025/data/eckstein2024.csv"
+    args.test_sessions = "2"
+    args.results = True
     
     # args.model = "weinhardt2026/params/dezfouli2019/spice_dezfouli2019_test.pkl"
     # args.data = "weinhardt2026/data/dezfouli2019/dezfouli2019.csv"

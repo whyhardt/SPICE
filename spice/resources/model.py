@@ -84,10 +84,8 @@ class EnsembleRNNModule(nn.Module):
         self.bias_n = nn.Parameter(torch.zeros(ensemble_size, 1))
         nn.init.xavier_uniform_(self.weight_n.view(ensemble_size, 1, proj_size))
 
-        # Output rescaling layer: learns to rescale bounded [-1,1] values
-        # Shape: (E, 1, 1) - learnable scale per ensemble member
-        self.weight_out_scale = nn.Parameter(torch.ones(ensemble_size, 1, 1))
-
+        # self.batch_norm = torch.nn.BatchNorm1d(ensemble_size)
+        
         self.dropout = nn.Dropout(p=dropout)
         self.hidden_size = hidden_size
         self.ensemble_size = ensemble_size
@@ -106,22 +104,22 @@ class EnsembleRNNModule(nn.Module):
         # GRU cell over within-trial timesteps
         outputs = []
         for t in range(W):
-            
+
             # Non-linear projection via einsum
             x_t = torch.concat((x[t], h), dim=-1)
             gi = torch.einsum('eoi,ebi->ebo', self.weight_linear, x_t) + self.bias_linear.unsqueeze(1)  # (E, B*I, proj)
             gi = self.dropout(torch.nn.functional.gelu(gi))
-            
+
             # New candidate
             n = torch.einsum('ego,ebo->ebg', self.weight_n, gi) + self.bias_n.unsqueeze(1)     # (E, B*I, 1)
 
-            # New hidden state: bounded + learnable rescaling
-            h = h + n
-            # h_bounded = torch.nn.functional.tanh(h + n)     # (E, B*I, 1) in [-1, 1]
-            # h = h_bounded * self.weight_out_scale           # (E, B*I, 1) rescaled by (E, 1, 1)
+            # New hidden state with layer normalization for stability
+            h = h + n                                               # (E, B*I, 1)
+
+            # h = self.batch_norm(h.squeeze(-1).t()).t().unsqueeze(-1)
             
             outputs.append(h)
-            
+
         output = torch.stack(outputs)              # (W, E, B*I, H)
         return output.reshape(W, E, B, I, 1)
 
@@ -202,6 +200,7 @@ class BaseModel(nn.Module):
         self.recording = {}
         self.submodules_rnn = nn.ModuleDict()
         self.submodules_eq = dict()
+        self.module_output_scales = nn.ParameterDict()  # Learnable output scale per module (for logit computation)
 
         # Differentiable SINDy coefficients
         self.sindy_polynomial_degree = sindy_polynomial_degree
@@ -342,6 +341,7 @@ class BaseModel(nn.Module):
         include_bias = True, 
         include_state = True,
         interaction_only = False,
+        rescale_at_output = True,
         ):
         """This method creates the standard RNN-module used in computational discovery of cognitive dynamics
 
@@ -364,6 +364,11 @@ class BaseModel(nn.Module):
         self.sindy_specs[key_module]['include_state'] = include_state
         self.sindy_specs[key_module]['polynomial_degree'] = polynomial_degree
         self.setup_sindy_coefficients(key_module=key_module, polynomial_degree=polynomial_degree)
+
+        # Initialize learnable output scale for this module (one per ensemble member)
+        # This scales the output for logit computation while keeping internal state normalized
+        # if rescale_at_output:
+        #     self.module_output_scales[key_module] = nn.Parameter(torch.ones(self.ensemble_size))            
         
         # set name of each input variable which are then used in the library as features
         input_names = []
@@ -493,37 +498,61 @@ class BaseModel(nn.Module):
         else:
             raise ValueError(f'Invalid module key {key_module}.')
 
-        # SINDy loss (uses unclipped values, last within-trial step)
-        if (self.fit_sindy 
-            and self.training 
-            and not self.rnn_training_finished 
+        # Buffer states for vectorized SINDy loss (computed in __call__ after forward)
+        if (self.fit_sindy
+            and self.training
+            and not self.rnn_training_finished
             and participant_index is not None
             ):
             action_mask_2d = action_mask[-1] if action_mask is not None and action_mask.dim() >= 4 else action_mask
             value_0 = self.get_state()[key_state][-1].unsqueeze(0) if key_state is not None else torch.zeros(W, E, B, I, device=self.device)
-            self.sindy_loss = self.sindy_loss + self.compute_sindy_loss_for_module(
-                    module_name=key_module,
-                    h_current=torch.concat((value_0, next_value[:-1])),
-                    h_next_rnn=next_value,
-                    controls=inputs,
-                    action_mask=action_mask_2d,
-                    participant_ids=participant_index,
-                    experiment_ids=experiment_index,
-                    polynomial_degree=self.sindy_polynomial_degree,
-                )
+
+            if key_module not in self._sindy_buffers:
+                self._sindy_buffers[key_module] = {
+                    'h_current': [],
+                    'h_next_rnn': [],
+                    'controls': [],
+                    'action_mask': [],
+                    'participant_ids': participant_index,
+                    'experiment_ids': experiment_index,
+                }
+
+            self._sindy_buffers[key_module]['h_current'].append(torch.cat((value_0, next_value[:-1])))
+            self._sindy_buffers[key_module]['h_next_rnn'].append(next_value)
+            self._sindy_buffers[key_module]['controls'].append(inputs)
+            self._sindy_buffers[key_module]['action_mask'].append(
+                action_mask_2d if action_mask_2d is not None
+                else torch.ones(E, B, I, device=self.device)
+            )
 
         # clip next_value to a specific range
-        # next_value = torch.clip(input=next_value, min=-1e1, max=1e1)
-        
+        next_value = torch.clip(input=next_value, min=-100, max=100)
+
+        # Apply action mask: store complete state, but return only masked update
         if action_mask is not None:
             state = self.get_state()[key_state]
             mask = action_mask[-1] if action_mask.dim() >= 4 else action_mask
-            next_value = torch.where(mask == 1, next_value,  state if key_state is not None else torch.zeros_like(next_value))
-            
-        if key_state is not None:
-            self.state[key_state] = next_value
+            next_value = next_value * mask  # Masked update (unmasked items → 0)
+            old_state = state * (1-mask) if key_state is not None else torch.zeros_like(next_value)
+            next_state = next_value + old_state  # Complete state (masked: new, unmasked: old)
+        else:
+            next_state = next_value
 
-        return next_value  # [W, E, B, I]
+        # Store normalized state (for stability and SINDy fitting)
+        if key_state is not None:
+            self.state[key_state] = next_state
+
+        # Apply learned output scale for logit computation (compensates for layer norm)
+        # Return scaled masked update (only items updated by this module contribute)
+        # if key_module in self.module_output_scales:
+        #     # Reshape scale from (E,) to (1, E, 1, 1) for broadcasting over (W, E, B, I)
+        #     scale = self.module_output_scales[key_module].view(1, -1, 1, 1)
+        #     next_value_scaled = next_value * scale
+        # else:
+        #     # Equation modules don't have scales
+        #     next_value_scaled = next_value
+
+        return next_value  # [W, E, B, I] - scaled masked update
     
     def setup_sindy_coefficients(self, key_module: str, polynomial_degree: int = None):
         """
@@ -638,63 +667,54 @@ class BaseModel(nn.Module):
         
         return h_next_sindy
     
-    def compute_sindy_loss_for_module(
-        self,
-        module_name: str,
-        h_current: torch.Tensor,
-        h_next_rnn: torch.Tensor,
-        controls: torch.Tensor,
-        action_mask: torch.Tensor,
-        participant_ids: torch.Tensor,
-        experiment_ids: torch.Tensor,
-        polynomial_degree: int = 2,
-    ) -> torch.Tensor:
+    def compute_vectorized_sindy_loss(self):
+        """Compute SINDy loss vectorized across all buffered timesteps.
+
+        Called from __call__() after forward() completes. Processes the
+        per-module buffers collected during call_module() and computes a
+        single batched forward_sindy() + MSE per module.
         """
-        Compute differentiable SINDy reconstruction loss for one module.
-        Direct comparison per ensemble member (no cross-ensemble averaging).
+        n_modules = len(self.submodules_rnn)
 
-        Args:
-            module_name: Name of the RNN module
-            h_current: Current hidden state [W, E, B, I]
-            h_next_rnn: RNN's predicted next state [W, E, B, I]
-            controls: Control inputs [W, E, B, I, n_controls]
-            action_mask: Binary mask [E, B, I] or None
-            participant_ids: Participant indices [E, B]
-            experiment_ids: Experiment indices [E, B]
-            polynomial_degree: Polynomial degree
+        for module_name, buffers in self._sindy_buffers.items():
+            if module_name not in self.sindy_coefficients:
+                continue
 
-        Returns:
-            Scalar loss tensor
-        """
+            n_trials = len(buffers['h_current'])
 
-        if module_name not in self.sindy_coefficients:
-            return torch.tensor(0.0, device=self.device)
+            # Concatenate across trials: (T*W, E, B, I) and (T*W, E, B, I, n_controls)
+            h_current = torch.cat(buffers['h_current'], dim=0)
+            h_next_rnn = torch.cat(buffers['h_next_rnn'], dim=0)
+            controls = torch.cat(buffers['controls'], dim=0)
 
-        h_next_sindy = self.forward_sindy(
-            h_current=h_current,
-            key_module=module_name,
-            participant_ids=participant_ids,
-            experiment_ids=experiment_ids,
-            controls=controls,
-            polynomial_degree=polynomial_degree,
-        )  # [W, E, B, I]
+            # Build action mask: (T*W, E, B, I)
+            W_per_trial = buffers['h_current'][0].shape[0]
+            masks = torch.stack(buffers['action_mask'], dim=0)  # (T, E, B, I)
+            if W_per_trial > 1:
+                masks = masks.unsqueeze(1).expand(-1, W_per_trial, -1, -1, -1)
+                masks = masks.reshape(-1, *masks.shape[2:])  # (T*W, E, B, I)
 
-        # Direct comparison: [W, E, B, I]
-        diff = (h_next_rnn - h_next_sindy) ** 2
+            # Single forward_sindy call for all timesteps
+            h_next_sindy = self.forward_sindy(
+                h_current=h_current,
+                key_module=module_name,
+                participant_ids=buffers['participant_ids'],
+                experiment_ids=buffers['experiment_ids'],
+                controls=controls,
+                polynomial_degree=self.sindy_polynomial_degree,
+            )  # (T*W, E, B, I)
 
-        if action_mask is not None:
-            masked_diff = torch.where(action_mask == 1, diff, 0)
-            n_masked = action_mask.sum(dim=-1).clamp(min=1)  # (E, B)
-        else:
-            masked_diff = diff
-            n_masked = diff.shape[-1]
+            # Masked MSE
+            diff = (h_next_rnn - h_next_sindy) ** 2
+            masked_diff = torch.where(masks == 1, diff, torch.zeros_like(diff))
+            n_masked = masks.sum(dim=-1).clamp(min=1)  # (T*W, E, B)
+            per_sample_loss = masked_diff.sum(dim=-1) / n_masked  # (T*W, E, B)
 
-        sindy_loss = torch.mean(masked_diff.sum(dim=-1) / n_masked) / len(self.submodules_rnn)
+            # mean() gives mean over (T*W, E, B); multiply by n_trials to match
+            # the original sum-of-means: sum_{t} mean_{W,E,B}(loss_t) = T * mean_{T*W,E,B}
+            sindy_loss = torch.clamp(per_sample_loss.mean() * n_trials / n_modules, max=100.0)
 
-        # Clip loss to prevent explosion
-        sindy_loss = torch.clamp(sindy_loss, max=100.0)
-
-        return sindy_loss
+            self.sindy_loss = self.sindy_loss + sindy_loss
     
     def sindy_ridge_solve(self, key_module: str, participant_ids: torch.Tensor, experiment_ids: torch.Tensor, h_next: torch.Tensor, h_current: torch.Tensor, controls: torch.Tensor):
         W, E, B, I = h_next.shape
@@ -997,7 +1017,10 @@ class BaseModel(nn.Module):
         return self
     
     def __call__(self, *args, **kwargs):
+        self._sindy_buffers = {}
         logits, state = super().__call__(*args, **kwargs)
+        if self._sindy_buffers:
+            self.compute_vectorized_sindy_loss()
         if self.aggregate:
             dim_ensemble = 0 if self.batch_first else 2
             logits = logits.nanmean(dim=dim_ensemble)
