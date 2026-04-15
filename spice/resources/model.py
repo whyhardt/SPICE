@@ -56,36 +56,81 @@ class EnsembleEmbedding(nn.Module):
         return self.dropout(embedded)
 
     
+class EnsembleMultilinear(nn.Module):
+    """Multilinear projection: element-wise product of ``degree`` independent linear projections.
+
+    For degree=1: linear (no non-linearity)
+    For degree=2: bilinear — (W1 x + b1) * (W2 x + b2), exactly degree-2 polynomial
+    For degree=3: trilinear, exactly degree-3 polynomial
+    ...and so on.
+
+    The output is an exact degree-N polynomial in the input, which aligns
+    perfectly with a SINDy polynomial library of the same degree.
+
+    Parameters per projection: (ensemble_size, output_size, input_size)
+    Input:  (E, B, F)
+    Output: (E, B, O)
+    """
+    def __init__(self, ensemble_size: int, input_size: int, output_size: int, degree: int = 2):
+        super().__init__()
+        assert degree >= 1, f"degree must be >= 1, got {degree}"
+        self.degree = degree
+
+        self.weights = nn.ParameterList([
+            nn.Parameter(torch.empty(ensemble_size, output_size, input_size))
+            for _ in range(degree)
+        ])
+        self.biases = nn.ParameterList([
+            nn.Parameter(torch.zeros(ensemble_size, output_size))
+            for _ in range(degree)
+        ])
+        for w in self.weights:
+            nn.init.xavier_uniform_(w)
+
+    def forward(self, x):
+        # x: (E, B, F) -> (E, B, O)
+        result = torch.einsum('eoi,ebi->ebo', self.weights[0], x) + self.biases[0].unsqueeze(1)
+        for w, b in zip(self.weights[1:], self.biases[1:]):
+            result = result * (torch.einsum('eoi,ebi->ebo', w, x) + b.unsqueeze(1))
+        if self.degree > 1:
+            result = result * (1.0 / self.degree ** 0.5)
+        return result
+
+
 class EnsembleRNNModule(nn.Module):
-    """GRU module with independent parameters per ensemble member.
-    
-    Uses manual GRU cell implementation with einsum for vectorized
-    computation across ensemble members.
+    """RNN module with independent parameters per ensemble member.
+
+    Uses a residual update with a multilinear projection whose polynomial
+    degree can be matched to the SINDy library degree.
 
     Input:  (within_ts, ensemble, batch, n_items, features)
     Output: (within_ts, ensemble, batch, n_items, 1)
     """
-    def __init__(self, ensemble_size, input_size, dropout=0., compiled_forward=True, **kwargs):
+    def __init__(self, ensemble_size, input_size, dropout=0., compiled_forward=True, polynomial_degree=2, **kwargs):
         super().__init__()
-        
+
         self._compile = compiled_forward
-        
+
         proj_size = 8 + input_size
         hidden_size = 1
         input_size = input_size if input_size > 0 else 1
-        
-        # Linear projection: (E, proj_size, input_size)
-        self.weight_linear = nn.Parameter(torch.empty(ensemble_size, proj_size, input_size+1))
-        self.bias_linear = nn.Parameter(torch.zeros(ensemble_size, proj_size))
-        nn.init.xavier_uniform_(self.weight_linear.view(ensemble_size, proj_size, input_size+1))
-        
-        # GRU cell parameters: 3 gates (reset, update, new) x hidden_size
+
+        # Multilinear projection: degree-N polynomial non-linearity
+        self.projection = EnsembleMultilinear(
+            ensemble_size=ensemble_size,
+            input_size=input_size + 1,  # +1 for hidden state
+            output_size=proj_size,
+            degree=polynomial_degree,
+        )
+
+        # LayerNorm after multilinear projection to bound activation magnitudes
+        self.layer_norm = nn.LayerNorm(proj_size)
+
+        # Output projection
         self.weight_n = nn.Parameter(torch.empty(ensemble_size, 1, proj_size))
         self.bias_n = nn.Parameter(torch.zeros(ensemble_size, 1))
         nn.init.xavier_uniform_(self.weight_n.view(ensemble_size, 1, proj_size))
 
-        # self.batch_norm = torch.nn.BatchNorm1d(ensemble_size)
-        
         self.dropout = nn.Dropout(p=dropout)
         self.hidden_size = hidden_size
         self.ensemble_size = ensemble_size
@@ -101,23 +146,18 @@ class EnsembleRNNModule(nn.Module):
         x = inputs.reshape(W, E, B * I, F)                          # (W, E, B*I, F)
         h = state[-1].contiguous().reshape(E, B * I, 1) if state is not None else torch.zeros(E, B * I, 1, device=inputs.device)
 
-        # GRU cell over within-trial timesteps
         outputs = []
         for t in range(W):
-
-            # Non-linear projection via einsum
             x_t = torch.concat((x[t], h), dim=-1)
-            gi = torch.einsum('eoi,ebi->ebo', self.weight_linear, x_t) + self.bias_linear.unsqueeze(1)  # (E, B*I, proj)
-            gi = self.dropout(torch.nn.functional.gelu(gi))
-
-            # New candidate
+            # gi = self.dropout(self.layer_norm(self.projection(x_t)))
+            gi = self.dropout(self.projection(x_t))
+            
+            # Candidate
             n = torch.einsum('ego,ebo->ebg', self.weight_n, gi) + self.bias_n.unsqueeze(1)     # (E, B*I, 1)
 
-            # New hidden state with layer normalization for stability
+            # Residual update
             h = h + n                                               # (E, B*I, 1)
 
-            # h = self.batch_norm(h.squeeze(-1).t()).t().unsqueeze(-1)
-            
             outputs.append(h)
 
         output = torch.stack(outputs)              # (W, E, B*I, H)
@@ -357,7 +397,13 @@ class BaseModel(nn.Module):
         if polynomial_degree is None:
             polynomial_degree = self.sindy_polynomial_degree
         
-        self.submodules_rnn[key_module] = EnsembleRNNModule(ensemble_size=self.ensemble_size, input_size=input_size, dropout=dropout, compiled_forward=self.compiled_forward)
+        self.submodules_rnn[key_module] = EnsembleRNNModule(
+            ensemble_size=self.ensemble_size, 
+            input_size=input_size, 
+            dropout=dropout, 
+            compiled_forward=self.compiled_forward, 
+            polynomial_degree=polynomial_degree,
+            )
         self.sindy_specs[key_module] = {}
         self.sindy_specs[key_module]['include_bias'] = include_bias
         self.sindy_specs[key_module]['interaction_only'] = interaction_only
