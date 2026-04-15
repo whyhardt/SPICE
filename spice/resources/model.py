@@ -128,6 +128,9 @@ class EnsembleRNNModule(nn.Module):
         self.bias_n = nn.Parameter(torch.zeros(ensemble_size, 1))
         nn.init.xavier_uniform_(self.weight_n.view(ensemble_size, 1, proj_size))
 
+        # Linear damping
+        self.damping_coefficient = nn.Parameter(torch.full((ensemble_size, 1, 1), -3.0))
+        
         self.dropout = nn.Dropout(p=dropout)
         self.hidden_size = hidden_size
         self.ensemble_size = ensemble_size
@@ -152,8 +155,9 @@ class EnsembleRNNModule(nn.Module):
             n = torch.einsum('ego,ebo->ebg', self.weight_n, gi) + self.bias_n.unsqueeze(1)     # (E, B*I, 1)
 
             # Residual update
-            h = h + n                                               # (E, B*I, 1)
-
+            update_gate = torch.nn.functional.sigmoid(self.damping_coefficient)
+            h = (1 - update_gate) * h + update_gate * n                                               # (E, B*I, 1)
+            
             outputs.append(h)
 
         output = torch.stack(outputs)              # (W, E, B*I, H)
