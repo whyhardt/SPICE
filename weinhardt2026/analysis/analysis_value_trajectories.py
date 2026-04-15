@@ -456,9 +456,9 @@ def plot_value_trajectories(
                 ax.plot(time_steps, rnn_state_vals[trial_range, item_idx].numpy(),
                        label=f'SPICE-RNN{item_suffix}', color=colors['spice_rnn'],
                        linewidth=1.5, alpha=0.8, linestyle=['-', '--', '-.', ':'][item_idx % 4])
-                # ax.plot(time_steps, spice_state_vals[trial_range, item_idx].numpy(),
-                #        label=f'SPICE{item_suffix}', color=colors['spice'],
-                #        linewidth=1.5, alpha=0.8, linestyle=['-', '--', '-.', ':'][item_idx % 4])
+                ax.plot(time_steps, spice_state_vals[trial_range, item_idx].numpy(),
+                       label=f'SPICE{item_suffix}', color=colors['spice'],
+                       linewidth=1.5, alpha=0.8, linestyle=['-', '--', '-.', ':'][item_idx % 4])
 
         if actual_mask.any():
             ax.scatter(time_steps[actual_mask],

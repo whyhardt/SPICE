@@ -85,7 +85,7 @@ class EnsembleMultilinear(nn.Module):
             for _ in range(degree)
         ])
         for w in self.weights:
-            nn.init.xavier_uniform_(w)
+            nn.init.xavier_uniform_(w, gain=1.0 / degree)# ** 0.5)
 
     def forward(self, x):
         # x: (E, B, F) -> (E, B, O)
@@ -123,9 +123,6 @@ class EnsembleRNNModule(nn.Module):
             degree=polynomial_degree,
         )
 
-        # LayerNorm after multilinear projection to bound activation magnitudes
-        self.layer_norm = nn.LayerNorm(proj_size)
-
         # Output projection
         self.weight_n = nn.Parameter(torch.empty(ensemble_size, 1, proj_size))
         self.bias_n = nn.Parameter(torch.zeros(ensemble_size, 1))
@@ -149,7 +146,6 @@ class EnsembleRNNModule(nn.Module):
         outputs = []
         for t in range(W):
             x_t = torch.concat((x[t], h), dim=-1)
-            # gi = self.dropout(self.layer_norm(self.projection(x_t)))
             gi = self.dropout(self.projection(x_t))
             
             # Candidate
@@ -750,8 +746,9 @@ class BaseModel(nn.Module):
                 polynomial_degree=self.sindy_polynomial_degree,
             )  # (T*W, E, B, I)
 
-            # Masked MSE
-            diff = (h_next_rnn - h_next_sindy) ** 2
+            # Masked Huber loss — MSE for small errors, L1 for large errors
+            # Caps gradient at delta, preventing explosion from large RNN-SINDy divergence
+            diff = torch.nn.functional.huber_loss(h_next_rnn, h_next_sindy, reduction='none', delta=1.0)
             masked_diff = torch.where(masks == 1, diff, torch.zeros_like(diff))
             n_masked = masks.sum(dim=-1).clamp(min=1)  # (T*W, E, B)
             per_sample_loss = masked_diff.sum(dim=-1) / n_masked  # (T*W, E, B)
