@@ -85,8 +85,8 @@ class EnsembleMultilinear(nn.Module):
             for _ in range(degree)
         ])
         for w in self.weights:
-            nn.init.xavier_uniform_(w, gain=1.0 / degree)# ** 0.5)
-
+            nn.init.xavier_normal_(w, gain=0.01)# ** 0.5)
+            
     def forward(self, x):
         # x: (E, B, F) -> (E, B, O)
         result = torch.einsum('eoi,ebi->ebo', self.weights[0], x) + self.biases[0].unsqueeze(1)
