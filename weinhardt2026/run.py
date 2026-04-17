@@ -32,7 +32,7 @@ if __name__=='__main__':
     parser.add_argument('--epochs', type=int, default=1000, help='Number of training epochs')
     parser.add_argument('--epochs_warmup', type=int, default=200, help='Number of training epochs for warmup (exp increase of sindy-weight; no pruning)')
     parser.add_argument('--lr', type=float, default=0.01, help='Learning rate')
-    parser.add_argument('--rnn_l2_lambda', type=float, default=0., help='L2 Reg of the RNN parameters')
+    parser.add_argument('--l2', type=float, default=0., help='L2 Reg of the RNN parameters')
     parser.add_argument('--ensemble', type=int, default=10, help='Number of independent members in the ensemble setup')
     
     # SINDy training parameters
@@ -159,10 +159,10 @@ if __name__=='__main__':
         learning_rate=args.lr,
         warmup_steps=args.epochs_warmup,
         ensemble_size=args.ensemble,
-        l2_rnn=args.rnn_l2_lambda,
+        l2_rnn=args.l2,
         scheduler=False,
         batch_size=None,
-
+        
         # sindy fitting parameters
         # sindy_weight=args.sindy_weight,
         # sindy_alpha=args.sindy_alpha,
