@@ -71,14 +71,14 @@ class SpiceModel(BaseModel):
             dropout=self.dropout,
         )
         
-        self.setup_module(key_module='reward_environment', input_size=1 + self.embedding_size, include_state=True)        
-        self.setup_module(key_module='reward_patch_harvest', input_size=1 + self.embedding_size, include_state=True)
-        self.setup_module(key_module='reward_patch_exit', input_size=self.embedding_size, include_state=True)
-        
-        self.setup_module(key_module='depletion_patch_harvest', input_size=1 + self.embedding_size, include_state=True)
-        self.setup_module(key_module='depletion_patch_exit', input_size=0 + self.embedding_size, include_state=True)
+        self.setup_module(key_module='reward_environment', input_size=1, embedding_size=self.embedding_size, include_state=True)
+        self.setup_module(key_module='reward_patch_harvest', input_size=1, embedding_size=self.embedding_size, include_state=True)
+        self.setup_module(key_module='reward_patch_exit', input_size=0, embedding_size=self.embedding_size, include_state=True)
 
-        self.setup_module(key_module='continuation_patch', input_size=1 + self.embedding_size, include_state=True)        
+        self.setup_module(key_module='depletion_patch_harvest', input_size=1, embedding_size=self.embedding_size, include_state=True)
+        self.setup_module(key_module='depletion_patch_exit', input_size=0, embedding_size=self.embedding_size, include_state=True)
+
+        self.setup_module(key_module='continuation_patch', input_size=1, embedding_size=self.embedding_size, include_state=True)        
         
     def forward(self, inputs, prev_state=None):
         

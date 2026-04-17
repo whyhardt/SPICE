@@ -53,10 +53,10 @@ class SpiceModel(BaseModel):
         # self.betas['value_choice'] = self.setup_constant(embedding_size=self.embedding_size)
         
         # set up the submodules
-        self.setup_module(key_module='value_reward_chosen', input_size=2+self.embedding_size)
-        self.setup_module(key_module='value_reward_not_chosen', input_size=1+self.embedding_size)
-        self.setup_module(key_module='value_choice_chosen', input_size=1+self.embedding_size)
-        self.setup_module(key_module='value_choice_not_chosen', input_size=1+self.embedding_size)
+        self.setup_module(key_module='value_reward_chosen', input_size=2, embedding_size=self.embedding_size)
+        self.setup_module(key_module='value_reward_not_chosen', input_size=1, embedding_size=self.embedding_size)
+        self.setup_module(key_module='value_choice_chosen', input_size=1, embedding_size=self.embedding_size)
+        self.setup_module(key_module='value_choice_not_chosen', input_size=1, embedding_size=self.embedding_size)
 
     def forward(self, inputs, prev_state=None):
         """Forward pass of the RNN

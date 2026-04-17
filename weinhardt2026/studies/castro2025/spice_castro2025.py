@@ -56,20 +56,20 @@ class SpiceModel(BaseModel):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         
-        dropout = 0.1
+        dropout = 0.
         
         self.participant_embedding = self.setup_embedding(self.n_participants, self.embedding_size, dropout=dropout)
         
-        self.setup_module(key_module='value_reward_env', input_size=1+self.embedding_size, dropout=dropout)
-        
-        self.setup_module(key_module='value_reward_chosen', input_size=2+self.embedding_size, dropout=dropout)
-        self.setup_module(key_module='value_reward_not_chosen', input_size=1+self.embedding_size, dropout=dropout)
-        
-        self.setup_module(key_module='value_choice_chosen', input_size=0+self.embedding_size, dropout=dropout)
-        self.setup_module(key_module='value_choice_not_chosen', input_size=0+self.embedding_size, dropout=dropout)
-        
-        self.setup_module(key_module='volatility_chosen', input_size=1+self.embedding_size, dropout=dropout)
-        self.setup_module(key_module='volatility_not_chosen', input_size=self.embedding_size, dropout=dropout)
+        self.setup_module(key_module='value_reward_env', input_size=1, embedding_size=self.embedding_size, dropout=dropout)
+
+        self.setup_module(key_module='value_reward_chosen', input_size=2, embedding_size=self.embedding_size, dropout=dropout)
+        self.setup_module(key_module='value_reward_not_chosen', input_size=1, embedding_size=self.embedding_size, dropout=dropout)
+
+        self.setup_module(key_module='value_choice_chosen', input_size=0, embedding_size=self.embedding_size, dropout=dropout)
+        self.setup_module(key_module='value_choice_not_chosen', input_size=0, embedding_size=self.embedding_size, dropout=dropout)
+
+        self.setup_module(key_module='volatility_chosen', input_size=1, embedding_size=self.embedding_size, dropout=dropout)
+        self.setup_module(key_module='volatility_not_chosen', input_size=0, embedding_size=self.embedding_size, dropout=dropout)
         
     def forward(self, inputs, state=None):
         spice_signals = self.init_forward_pass(inputs, state)

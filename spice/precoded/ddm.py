@@ -113,7 +113,7 @@ class DDMRNN(BaseModel):
         self.init_time = 0.2
         
         self.participant_embedding = self.setup_embedding(num_embeddings=self.n_participants, embedding_size=self.embedding_size, dropout=self.dropout)
-        self.setup_module(key_module='drift', input_size=1+self.embedding_size, dropout=self.dropout)
+        self.setup_module(key_module='drift', input_size=1, embedding_size=self.embedding_size, dropout=self.dropout)
 
     def forward(self, inputs: torch.Tensor, prev_state: torch.Tensor = None):
         spice_signals = self.init_forward_pass(inputs, prev_state)

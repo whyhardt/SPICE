@@ -83,12 +83,12 @@ class SpiceModel(BaseModel):
         
         # Value learning module (slow updates)
         # Can use recent reward history to modulate learning
-        self.setup_module(key_module='value_reward_chosen', input_size=4 + self.embedding_size)  # -> 21 terms
-        self.setup_module(key_module='value_reward_not_chosen', input_size=3 + self.embedding_size)  # -> 15 terms
-        self.setup_module(key_module='value_reward_not_displayed', input_size=3 + self.embedding_size)  # -> 15 terms
-        self.setup_module(key_module='value_choice_chosen', input_size=3 + self.embedding_size) # -> 15 terms
-        self.setup_module(key_module='value_choice_not_chosen', input_size=3 + self.embedding_size) # -> 15 terms -> 21+15+15+15 = 66 terms in total
-        self.setup_module(key_module='value_choice_not_displayed', input_size=3 + self.embedding_size) # -> 15 terms -> 21+15+15+15 = 66 terms in total
+        self.setup_module(key_module='value_reward_chosen', input_size=4, embedding_size=self.embedding_size)  # -> 21 terms
+        self.setup_module(key_module='value_reward_not_chosen', input_size=3, embedding_size=self.embedding_size)  # -> 15 terms
+        self.setup_module(key_module='value_reward_not_displayed', input_size=3, embedding_size=self.embedding_size)  # -> 15 terms
+        self.setup_module(key_module='value_choice_chosen', input_size=3, embedding_size=self.embedding_size) # -> 15 terms
+        self.setup_module(key_module='value_choice_not_chosen', input_size=3, embedding_size=self.embedding_size) # -> 15 terms -> 21+15+15+15 = 66 terms in total
+        self.setup_module(key_module='value_choice_not_displayed', input_size=3, embedding_size=self.embedding_size) # -> 15 terms -> 21+15+15+15 = 66 terms in total
 
     def forward(self, inputs, prev_state=None):
         spice_signals = self.init_forward_pass(inputs, prev_state)

@@ -49,6 +49,7 @@ class SpiceEstimator(BaseEstimator):
         device: Optional[torch.device] = torch.device('cpu'),
         scheduler: Optional[bool] = False,
         ensemble_size: Optional[int] = 1,
+        embedding_size: Optional[int] = 32,
         l2_rnn: Optional[float] = 0,
         dropout: Optional[float] = 0.,
         loss_fn: Optional[callable] = cross_entropy_loss,
@@ -125,6 +126,7 @@ class SpiceEstimator(BaseEstimator):
         self.keep_log = keep_log
         self.deterministic = False
         self.ensemble_size = ensemble_size
+        self.embedding_size = embedding_size
         self.l2_rnn = l2_rnn
         self.loss_fn = loss_fn
         self.compiled_forward = compiled_forward
@@ -166,6 +168,7 @@ class SpiceEstimator(BaseEstimator):
             sindy_polynomial_degree=sindy_library_polynomial_degree,
             sindy_alpha=sindy_alpha,
             ensemble_size=ensemble_size,
+            embedding_size=embedding_size,
             n_items=n_items,
             n_reward_features=n_reward_features,
             device=device,

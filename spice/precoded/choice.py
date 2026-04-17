@@ -33,9 +33,9 @@ class SpiceModel(BaseModel):
         self.experiment_embedding = self.setup_embedding(self.n_experiments, 1)
                 
         # set up the submodules
-        self.setup_module(key_module='value_reward_chosen', input_size=1+self.embedding_size+1, dropout=dropout)
-        self.setup_module(key_module='value_reward_not_chosen', input_size=0+self.embedding_size+1, dropout=dropout)
-        self.setup_module(key_module='value_choice', input_size=1+self.embedding_size+1, dropout=dropout)
+        self.setup_module(key_module='value_reward_chosen', input_size=1, embedding_size=self.embedding_size+1, dropout=dropout)
+        self.setup_module(key_module='value_reward_not_chosen', input_size=0, embedding_size=self.embedding_size+1, dropout=dropout)
+        self.setup_module(key_module='value_choice', input_size=1, embedding_size=self.embedding_size+1, dropout=dropout)
         
     def forward(self, inputs, prev_state=None):
         """Forward pass of the RNN

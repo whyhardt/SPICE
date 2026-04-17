@@ -72,18 +72,16 @@ class SpiceModel(BaseModel):
     def __init__(self, reward_binary: bool = False, **kwargs):
         super().__init__(**kwargs)
         
-        dropout = 0.1
-        
-        self.participant_embedding = self.setup_embedding(self.n_participants, self.embedding_size, dropout=dropout)
+        self.participant_embedding = self.setup_embedding(self.n_participants, self.embedding_size, dropout=self.dropout)
         
         # Value learning module (slow updates)
         # Can use recent reward history to modulate learning
-        self.setup_module(key_module='value_reward_chosen', input_size=4+self.embedding_size, dropout=dropout)  # -> 21 terms
-        self.setup_module(key_module='value_reward_not_chosen', input_size=3+self.embedding_size, dropout=dropout)  # -> 21 terms
-        
-        # self.setup_module(key_module='value_choice', input_size=4+self.embedding_size, dropout=dropout, include_bias=True) # -> 21 terms; bias not necessary when module is applied equally to all options
-        self.setup_module(key_module='value_choice_chosen', input_size=3+self.embedding_size, dropout=dropout) # -> 21 terms; bias not necessary when module is applied equally to all options
-        self.setup_module(key_module='value_choice_not_chosen', input_size=3+self.embedding_size, dropout=dropout) # -> 21 terms; bias not necessary when module is applied equally to all options
+        self.setup_module(key_module='value_reward_chosen', input_size=4, embedding_size=self.embedding_size, dropout=self.dropout)  # -> 21 terms
+        self.setup_module(key_module='value_reward_not_chosen', input_size=3, embedding_size=self.embedding_size, dropout=self.dropout)  # -> 21 terms
+
+        # self.setup_module(key_module='value_choice', input_size=4, embedding_size=self.embedding_size, dropout=dropout, include_bias=True) # -> 21 terms; bias not necessary when module is applied equally to all options
+        self.setup_module(key_module='value_choice_chosen', input_size=3, embedding_size=self.embedding_size, dropout=self.dropout) # -> 21 terms; bias not necessary when module is applied equally to all options
+        self.setup_module(key_module='value_choice_not_chosen', input_size=3, embedding_size=self.embedding_size, dropout=self.dropout) # -> 21 terms; bias not necessary when module is applied equally to all options
         
         self.preprocess_coefficients(reward_binary=reward_binary)
         

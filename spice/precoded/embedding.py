@@ -53,8 +53,8 @@ class SpiceModel(BaseModel):
         # and here we specify the general module architecture
         # add to the input_size the embedding_size as well because we are going to pass the participant-embedding to the RNN-modules
         # set up the submodules
-        self.setup_module(key_module='value_reward_chosen', input_size=1+self.embedding_size)
-        self.setup_module(key_module='value_reward_not_chosen', input_size=0+self.embedding_size)
+        self.setup_module(key_module='value_reward_chosen', input_size=1, embedding_size=self.embedding_size)
+        self.setup_module(key_module='value_reward_not_chosen', input_size=0, embedding_size=self.embedding_size)
         
     def forward(self, inputs, prev_state=None):
         """Forward pass of the RNN

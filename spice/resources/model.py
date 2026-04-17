@@ -12,6 +12,15 @@ from .spice_utils import SpiceConfig, SpiceSignals
 torch._dynamo.config.force_parameter_static_shapes = False
 
 
+class ParameterModule(nn.Module):
+    def __init__(self, ensemble_size=1):
+        super().__init__()
+        self.parameter = nn.Parameter(torch.ones(ensemble_size))
+
+    def forward(self, *args, **kwargs):
+        return self.parameter
+    
+
 class EnsembleLinear(nn.Module):
     """Linear layer with independent parameters per ensemble member.
 
@@ -56,9 +65,9 @@ class EnsembleEmbedding(nn.Module):
         return self.dropout(embedded)
 
     
-class EnsembleMultilinear(nn.Module):
-    """Multilinear projection: element-wise product of ``degree`` independent linear projections.
-
+class EnsemblePolynomialLayer(nn.Module):
+    """Polynomial projection: element-wise product of ``degree`` independent linear projections.
+    
     For degree=1: linear (no non-linearity)
     For degree=2: bilinear — (W1 x + b1) * (W2 x + b2), exactly degree-2 polynomial
     For degree=3: trilinear, exactly degree-3 polynomial
@@ -87,11 +96,30 @@ class EnsembleMultilinear(nn.Module):
         for w in self.weights:
             nn.init.xavier_normal_(w, gain=0.01)# ** 0.5)
             
-    def forward(self, x):
+    def forward(self, x, weight_offsets=None, bias_offsets=None):
+        """Forward pass through multilinear projection.
+
+        Args:
+            x: (E, B, F) input tensor
+            weight_offsets: Optional list of (E, B, O, I) per-batch weight offsets (one per degree).
+                When provided, effective weights are group + offset per batch element.
+            bias_offsets: Optional list of (E, B, O) per-batch bias offsets (one per degree).
+        """
         # x: (E, B, F) -> (E, B, O)
-        result = torch.einsum('eoi,ebi->ebo', self.weights[0], x) + self.biases[0].unsqueeze(1)
-        for w, b in zip(self.weights[1:], self.biases[1:]):
-            result = result * (torch.einsum('eoi,ebi->ebo', w, x) + b.unsqueeze(1))
+        if weight_offsets is None:
+            # Original path: shared weights across batch
+            result = torch.einsum('eoi,ebi->ebo', self.weights[0], x) + self.biases[0].unsqueeze(1)
+            for w, b in zip(self.weights[1:], self.biases[1:]):
+                result = result * (torch.einsum('eoi,ebi->ebo', w, x) + b.unsqueeze(1))
+        else:
+            # Per-batch path: group weights + per-participant offsets
+            w_eff = self.weights[0].unsqueeze(1) + weight_offsets[0]  # (E,1,O,I) + (E,B,O,I)
+            b_eff = self.biases[0].unsqueeze(1) + bias_offsets[0]     # (E,1,O) + (E,B,O)
+            result = torch.einsum('eboi,ebi->ebo', w_eff, x) + b_eff
+            for k in range(1, self.degree):
+                w_eff = self.weights[k].unsqueeze(1) + weight_offsets[k]
+                b_eff = self.biases[k].unsqueeze(1) + bias_offsets[k]
+                result = result * (torch.einsum('eboi,ebi->ebo', w_eff, x) + b_eff)
         if self.degree > 1:
             result = result * (1.0 / self.degree ** 0.5)
         return result
@@ -103,20 +131,29 @@ class EnsembleRNNModule(nn.Module):
     Uses a residual update with a multilinear projection whose polynomial
     degree can be matched to the SINDy library degree.
 
+    When ``embedding_size > 0``, a hypernetwork generates per-participant
+    weight offsets from the embedding, so each participant gets its own
+    effective RNN weights: ``W_eff = W_group + W_offset(embedding)``.
+    The group-level weights are the structured parameters (bias of the
+    hypernetwork conceptually), while the offset generator encodes how
+    individual participants deviate from the group.
+
     Input:  (within_ts, ensemble, batch, n_items, features)
     Output: (within_ts, ensemble, batch, n_items, 1)
     """
-    def __init__(self, ensemble_size, input_size, dropout=0., compiled_forward=True, polynomial_degree=2, **kwargs):
+    def __init__(self, ensemble_size, input_size, embedding_size=0, dropout=0., compiled_forward=True, polynomial_degree=2, max_offset_ratio=0.5, **kwargs):
         super().__init__()
 
         self._compile = compiled_forward
+        self.embedding_size = embedding_size
+        self.max_offset_ratio = max_offset_ratio
 
-        proj_size = 8 + input_size
+        proj_size = input_size * polynomial_degree + 1
         hidden_size = 1
         input_size = input_size if input_size > 0 else 1
 
         # Multilinear projection: degree-N polynomial non-linearity
-        self.projection = EnsembleMultilinear(
+        self.projection = EnsemblePolynomialLayer(
             ensemble_size=ensemble_size,
             input_size=input_size + 1,  # +1 for hidden state
             output_size=proj_size,
@@ -128,55 +165,177 @@ class EnsembleRNNModule(nn.Module):
         self.bias_n = nn.Parameter(torch.zeros(ensemble_size, 1))
         nn.init.xavier_uniform_(self.weight_n.view(ensemble_size, 1, proj_size))
 
-        # Linear damping
+        # Linear damping (group-level, shared across participants)
         self.damping_coefficient = nn.Parameter(torch.full((ensemble_size, 1, 1), -3.0))
-        
+
         self.dropout = nn.Dropout(p=dropout)
         self.hidden_size = hidden_size
         self.ensemble_size = ensemble_size
 
+        # Hypernetwork: embedding -> per-participant weight offsets
+        # Two-layer MLP with GELU non-linearity. The final layer is zero-initialized
+        # so the model starts as a pure group model (zero offsets).
+        if embedding_size > 0:
+            # Compute split sizes for each weight/bias matrix
+            self._offset_split_sizes = []
+            for w in self.projection.weights:
+                self._offset_split_sizes.append(w.shape[1] * w.shape[2])  # O * I_in
+            for b in self.projection.biases:
+                self._offset_split_sizes.append(b.shape[1])  # O
+            self._offset_split_sizes.append(self.weight_n.shape[1] * self.weight_n.shape[2])  # 1 * proj_size
+            self._offset_split_sizes.append(self.bias_n.shape[1])  # 1
+            self._offset_split_sizes.append(1)  # damping coefficient offset
+
+            n_total_params = sum(self._offset_split_sizes)
+            hypernet_hidden = embedding_size
+            self.hypernet_in = EnsembleLinear(ensemble_size, embedding_size, hypernet_hidden)
+            self.hypernet_out = EnsembleLinear(ensemble_size, hypernet_hidden, n_total_params)
+            # Zero-init output layer so offsets start at zero
+            nn.init.zeros_(self.hypernet_out.weight)
+            nn.init.zeros_(self.hypernet_out.bias)
+
         if compiled_forward:
             self._compiled_forward = torch.compile(self._uncompiled_forward, dynamic=True)
 
-    def _uncompiled_forward(self, inputs, state):
-        # inputs: (W, E, B, I, F)
+    @staticmethod
+    def _constrain_offset(offset, reference, max_ratio):
+        """Scale offset so its norm doesn't exceed max_ratio * reference norm.
+
+        Projects offset onto a ball of radius ``max_ratio * ||reference||``.
+        Offsets within budget pass through unchanged — no expressivity loss.
+        As group weights grow during training, the offset budget grows proportionally.
+
+        Args:
+            offset: (E, B, ...) per-participant offset
+            reference: (E, ...) group-level parameter (detached for norm computation)
+            max_ratio: maximum ratio of offset norm to reference norm
+        """
+        param_dims = tuple(range(1, reference.dim()))
+        offset_dims = tuple(range(2, offset.dim()))
+
+        ref_norm = reference.detach().norm(dim=param_dims) if param_dims else reference.detach().abs().squeeze(-1)
+        off_norm = offset.norm(dim=offset_dims) if offset_dims else offset.abs().squeeze(-1)
+
+        # Floor prevents dead offsets when group weights are near zero (e.g. bias init)
+        max_norm = (ref_norm.unsqueeze(1) * max_ratio).clamp(min=0.01)
+        scale = (max_norm / (off_norm + 1e-8)).clamp(max=1.0)
+
+        for _ in range(len(offset_dims)):
+            scale = scale.unsqueeze(-1)
+
+        return offset * scale
+
+    def _generate_weight_offsets(self, embedding):
+        """Generate per-participant weight offsets from embedding.
+
+        Args:
+            embedding: (E, B, emb_dim) — B already includes item expansion if needed.
+
+        Returns:
+            proj_w_offsets: list of (E, B, O, I_in) per degree
+            proj_b_offsets: list of (E, B, O) per degree
+            out_w_offset: (E, B, 1, proj_size)
+            out_b_offset: (E, B, 1)
+        """
+        E = embedding.shape[0]
+        B = embedding.shape[1]
+
+        # EnsembleLinear expects ensemble dim second-to-last: (B, E, emb)
+        # Transpose before MLP, transpose back after.
+        emb_t = embedding.transpose(0, 1)  # (B, E, emb)
+        offsets = self.hypernet_out(self.dropout(torch.nn.functional.gelu(self.hypernet_in(self.dropout(emb_t)))))
+        offsets = offsets.transpose(0, 1)  # (E, B, n_total)
+
+        parts = offsets.split(self._offset_split_sizes, dim=-1)
+
+        # Projection weight offsets (constrained relative to group weights)
+        idx = 0
+        proj_w_offsets = []
+        for w in self.projection.weights:
+            O, I_in = w.shape[1], w.shape[2]
+            offset = self._constrain_offset(parts[idx].reshape(E, B, O, I_in), w, self.max_offset_ratio)
+            proj_w_offsets.append(offset)
+            idx += 1
+
+        # Projection bias offsets
+        proj_b_offsets = []
+        for b in self.projection.biases:
+            offset = self._constrain_offset(parts[idx], b, self.max_offset_ratio)
+            proj_b_offsets.append(offset)
+            idx += 1
+
+        # Output weight offset
+        out_w_offset = self._constrain_offset(
+            parts[idx].reshape(E, B, self.weight_n.shape[1], self.weight_n.shape[2]),
+            self.weight_n, self.max_offset_ratio,
+        )
+        idx += 1
+
+        # Output bias offset
+        out_b_offset = self._constrain_offset(parts[idx], self.bias_n, self.max_offset_ratio)
+        
+        return proj_w_offsets, proj_b_offsets, out_w_offset, out_b_offset
+
+    def precompute_offsets(self, embedding, n_items):
+        """Pre-compute per-participant weight offsets from embedding.
+
+        Call once per forward pass; results are reused across trials.
+
+        Args:
+            embedding: (E, B, emb_dim)
+            n_items: number of items (I) for expansion
+
+        Returns:
+            Tuple of (proj_w_offsets, proj_b_offsets, out_w_offset, out_b_offset)
+        """
+        # Expand embedding for items: (E, B, D) -> (E, B*I, D)
+        emb_expanded = embedding.unsqueeze(2).expand(-1, -1, n_items, -1).reshape(
+            embedding.shape[0], embedding.shape[1] * n_items, embedding.shape[2]
+        )
+        return self._generate_weight_offsets(emb_expanded)
+
+    def _uncompiled_forward(self, inputs, state, precomputed_offsets=None):
+        # inputs: (W, E, B, I, F) — control signals only (no embeddings)
         # state:  (W, E, B, I) — last row is current hidden state
+        # precomputed_offsets: tuple from precompute_offsets() or None
         W, E, B, I, F = inputs.shape
 
         x = inputs.reshape(W, E, B * I, F)                          # (W, E, B*I, F)
         h = state[-1].contiguous().reshape(E, B * I, 1) if state is not None else torch.zeros(E, B * I, 1, device=inputs.device)
 
+        if precomputed_offsets is not None:
+            proj_w_offsets, proj_b_offsets, out_w_offset, out_b_offset = precomputed_offsets
+        else:
+            proj_w_offsets = proj_b_offsets = None
+            out_w_offset = out_b_offset = None
+
         outputs = []
         for t in range(W):
-            x_t = torch.concat((x[t], h), dim=-1)
-            gi = self.dropout(self.projection(x_t))
-            
-            # Candidate
-            n = torch.einsum('ego,ebo->ebg', self.weight_n, gi) + self.bias_n.unsqueeze(1)     # (E, B*I, 1)
+            x_t = torch.concat((h, x[t]), dim=-1)
+            gi = self.projection(x_t, weight_offsets=proj_w_offsets, bias_offsets=proj_b_offsets)
 
-            # Residual update
+            # Candidate: per-participant output weights if hypernetwork active
+            if out_w_offset is not None:
+                wn_eff = self.weight_n.unsqueeze(1) + out_w_offset    # (E,1,1,O) + (E,B,1,O) -> (E,B,1,O)
+                bn_eff = self.bias_n.unsqueeze(1) + out_b_offset      # (E,1,1) + (E,B,1) -> (E,B,1)
+                n = torch.einsum('ebgo,ebo->ebg', wn_eff, gi) + bn_eff
+            else:
+                n = torch.einsum('ego,ebo->ebg', self.weight_n, gi) + self.bias_n.unsqueeze(1)     # (E, B*I, 1)
+
+            # Residual update with damping
             update_gate = torch.nn.functional.sigmoid(self.damping_coefficient)
             h = (1 - update_gate) * h + update_gate * n                                               # (E, B*I, 1)
-            
+
             outputs.append(h)
 
         output = torch.stack(outputs)              # (W, E, B*I, H)
         return output.reshape(W, E, B, I, 1)
 
-    def forward(self, inputs, state):
+    def forward(self, inputs, state, precomputed_offsets=None):
         if self._compile:
-            return self._compiled_forward(inputs, state)
+            return self._compiled_forward(inputs, state, precomputed_offsets)
         else:
-            return self._uncompiled_forward(inputs, state)
-           
-            
-class ParameterModule(nn.Module):
-    def __init__(self, ensemble_size=1):
-        super().__init__()
-        self.parameter = nn.Parameter(torch.ones(ensemble_size))
-
-    def forward(self, *args, **kwargs):
-        return self.parameter
+            return self._uncompiled_forward(inputs, state, precomputed_offsets)
 
         
 class BaseModel(nn.Module):
@@ -193,6 +352,7 @@ class BaseModel(nn.Module):
         
         ensemble_size: int = 1,
         embedding_size: int = 32,
+        dropout: float = 0.,
         
         use_sindy: bool = False,
         sindy_polynomial_degree: int = 1,
@@ -226,6 +386,7 @@ class BaseModel(nn.Module):
         self.n_actions = n_actions
         self.n_reward_features = n_reward_features if n_reward_features is not None else n_actions
         self.embedding_size = embedding_size
+        self.dropout = dropout
         self.n_participants = n_participants
         self.n_experiments = n_experiments
         self.n_sessions = n_participants * n_experiments
@@ -373,12 +534,14 @@ class BaseModel(nn.Module):
         return EnsembleEmbedding(self.ensemble_size, num_embeddings, embedding_size, dropout=dropout)
     
     def setup_module(
-        self, 
-        key_module: str, 
-        input_size: int, 
-        dropout: float = 0., 
-        polynomial_degree: int = None, 
-        include_bias = True, 
+        self,
+        key_module: str,
+        input_size: int,
+        embedding_size: int = 0,
+        dropout: float = 0.,
+        polynomial_degree: int = None,
+        max_offset_ratio: float = 0.5,
+        include_bias = True,
         include_state = True,
         interaction_only = False,
         rescale_at_output = True,
@@ -386,23 +549,30 @@ class BaseModel(nn.Module):
         """This method creates the standard RNN-module used in computational discovery of cognitive dynamics
 
         Args:
-            input_size (_type_): The number of inputs (excluding the memory state)
-            dropout (_type_): Dropout rate before output layer
+            input_size: The number of control signal inputs (excluding the memory state and embeddings)
+            embedding_size: Size of participant/experiment embedding for hypernetwork weight generation.
+                When > 0, the RNN generates per-participant weights from the embedding instead of
+                receiving it as an input. This keeps the bilinear input space clean (controls + state only).
+            dropout: Dropout rate before output layer
+            max_offset_ratio: Maximum ratio of per-participant offset norm to group weight norm.
+                Constrains individual deviations to be at most this fraction of the group weights,
+                preventing bilinear amplification from destabilizing training.
 
         Returns:
             torch.nn.Module: A torch module which can be called by one line and returns state update
         """
-        
-        # GRU network
+
         if polynomial_degree is None:
             polynomial_degree = self.sindy_polynomial_degree
-        
+
         self.submodules_rnn[key_module] = EnsembleRNNModule(
-            ensemble_size=self.ensemble_size, 
-            input_size=input_size, 
-            dropout=dropout, 
-            compiled_forward=self.compiled_forward, 
+            ensemble_size=self.ensemble_size,
+            input_size=input_size,
+            embedding_size=embedding_size,
+            dropout=dropout,
+            compiled_forward=self.compiled_forward,
             polynomial_degree=polynomial_degree,
+            max_offset_ratio=max_offset_ratio,
             )
         self.sindy_specs[key_module] = {}
         self.sindy_specs[key_module]['include_bias'] = include_bias
@@ -494,18 +664,25 @@ class BaseModel(nn.Module):
             experiment_embedding = torch.zeros(E, B, 0, dtype=torch.float32, device=self.device)
 
         embedding = torch.cat((experiment_embedding, participant_embedding), dim=-1)  # [E, B, emb]
-        embedding = embedding.view(1, E, B, 1, -1).expand(W, -1, -1, I, -1)  # [W, E, B, I, emb]
 
         # Replace NaN in inputs
         inputs = torch.nan_to_num(inputs, nan=0.0)
-        
+
+        # Hypernet offsets: during training, regenerate each call_module() invocation
+        # (= each trial) for fresh dropout masks. During eval, cache once per forward pass.
+        if self.training or key_module not in self._hypernet_offsets:
+            rnn = self.submodules_rnn[key_module] if key_module in self.submodules_rnn else None
+            if rnn is not None and rnn.embedding_size > 0 and embedding.shape[-1] > 0:
+                self._hypernet_offsets[key_module] = rnn.precompute_offsets(embedding, self.n_items)
+            else:
+                self._hypernet_offsets[key_module] = None
+
         if key_module in self.submodules_rnn.keys():
-            if (not self.use_sindy  # RNN mode 
+            if (not self.use_sindy  # RNN mode
                 # or (self.use_sindy and self.training and self.rnn_training_finished)  # SINDy LSTSQ-solve
                 ):
-                # Get RNN module prediction
-                inputs_rnn = torch.cat((inputs, embedding), dim=-1)  # [W, E, B, I, feat+emb]
-                next_value = self.submodules_rnn[key_module](inputs_rnn, state=value).squeeze(-1)  # [W, E, B, I]
+                # Get RNN module prediction — offsets pre-computed from embedding via hypernetwork
+                next_value = self.submodules_rnn[key_module](inputs, state=value, precomputed_offsets=self._hypernet_offsets[key_module]).squeeze(-1)  # [W, E, B, I]
                 if activation_rnn is not None:
                     next_value = activation_rnn(next_value)
                 # if self.use_sindy:
@@ -912,7 +1089,7 @@ class BaseModel(nn.Module):
         for module in module_list:
             n_terms = self.sindy_coefficients[module].shape[-1]
             self.sindy_pruning_patience_counters[module] = all_patience[..., start_idx:start_idx + n_terms]
-            
+            start_idx += n_terms
     def count_sindy_coefficients(self) -> torch.Tensor:
         """Returns count of active coefficients per (ensemble, participant, experiment)."""
         coefficients = torch.zeros(self.n_participants, self.n_experiments, device=self.device)
@@ -1065,6 +1242,7 @@ class BaseModel(nn.Module):
     
     def __call__(self, *args, **kwargs):
         self._sindy_buffers = {}
+        self._hypernet_offsets = {}
         logits, state = super().__call__(*args, **kwargs)
         if self._sindy_buffers:
             self.compute_vectorized_sindy_loss()

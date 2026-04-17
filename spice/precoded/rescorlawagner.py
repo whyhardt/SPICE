@@ -24,7 +24,7 @@ class SpiceModel(BaseModel):
         self.participant_embedding = self.setup_embedding(num_embeddings=self.n_participants, embedding_size=self.embedding_size, dropout=0.1)
         
         # set up the submodules
-        self.setup_module(key_module='value_reward_chosen', input_size=1+self.embedding_size)
+        self.setup_module(key_module='value_reward_chosen', input_size=1, embedding_size=self.embedding_size)
         
     def forward(self, inputs, prev_state=None):
         """Forward pass of the RNN
