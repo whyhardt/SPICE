@@ -10,9 +10,9 @@ Discovering computational models that explain human cognition and behavior remai
 
 ### Core Methodology
 
-1. **RNN Training**: A task-specific RNN learns to predict human behavior, implicitly capturing latent cognitive mechanisms in disentangled submodules
-2. **SINDy Regularization**: During training, SINDy equations act as regularizers (similar to SINDy-SHRED), pushing submodule dynamics toward spaces amenable to SINDy candidate terms
-3. **Equation Discovery**: SINDy approximates the fitted dynamics in each disentangled submodule, yielding interpretable symbolic equations
+1. **Polynomial RNN Training**: A task-specific polynomial RNN learns to predict human behavior, with each submodule implementing an exact polynomial update whose coefficients can be analytically extracted
+2. **Sparse Pruning**: During training, minimum-effect CI tests prune insignificant polynomial terms, yielding sparse interpretable equations
+3. **Equation Discovery**: The unfolded polynomial coefficients directly give the discovered equations — no separate SINDy fitting step needed
 
 ## Repository Structure
 
@@ -84,12 +84,10 @@ python weinhardt2026/run.py              # Fit SPICE model to dataset
 Core neural network architecture. All task-specific models subclass this.
 
 **Key components:**
-- `submodules_rnn` — `ModuleDict` of RNN submodules (residual architecture), each learning one cognitive mechanism
-- `sindy_coefficients` — Learnable `Dict[module_name, Tensor]` with shape `(E, P, X, n_terms)`
-- `sindy_coefficients_presence` — Binary masks for active coefficients (same shape)
-- `sindy_candidate_terms` / `sindy_degree_weights` — Library of basis functions and complexity penalties
-- `sindy_cutoff_patience_counters` — Patience counters for threshold-based pruning
-- `use_sindy` — Boolean toggle: `True` = equation mode, `False` = RNN mode
+- `submodules_rnn` — `ModuleDict` of polynomial RNN submodules, each learning one cognitive mechanism
+- `sindy_coefficients_presence` — Binary masks for active polynomial terms, shape `(E, P, X, n_terms)`
+- `sindy_candidate_terms` — Library term names per module
+- `sindy_pruning_patience_counters` — Patience counters for threshold-based pruning
 
 **Key methods:**
 
@@ -109,7 +107,7 @@ setup_module(
 
 Creates an `EnsembleRNNModule` and initializes SINDy coefficients + candidate library for this module. The `input_size` should account for the control signals plus any embeddings that will be concatenated at call time. **Important:** `input_size` defines the RNN's input dimension, NOT the SINDy library features. The SINDy library is constructed only from the control signals (defined in `SpiceConfig.library_setup`) + the module's own state (if `include_state=True`), up to `polynomial_degree`. Embeddings are NOT included in the SINDy library — they feed the RNN only, while participant variation in SINDy is handled via per-participant coefficients.
 
-#### `call_module()` — Forward pass through a submodule (RNN or SINDy path)
+#### `call_module()` — Forward pass through a submodule (polynomial path)
 
 ```python
 call_module(
@@ -118,33 +116,34 @@ call_module(
     action_mask: torch.Tensor = None,         # Binary mask [W,E,B,I]: 1=update, 0=keep previous
     inputs: Union[Tensor, Tuple[Tensor]] = None,  # Control signals, each broadcastable to [W,E,B,I]
     participant_embedding: torch.Tensor = None,    # Learned embeddings [E,B,emb_dim]
-    participant_index: torch.Tensor = None,        # Participant IDs [E,B] for SINDy coefficient indexing
+    participant_index: torch.Tensor = None,        # Participant IDs [E,B] for coefficient indexing
     experiment_embedding: torch.Tensor = None,     # Experiment embeddings [E,B,emb_dim]
-    experiment_index: torch.Tensor = None,         # Experiment IDs [E,B] for SINDy coefficient indexing
-    activation_rnn: Callable = None,               # Optional activation on RNN output (e.g. torch.relu)
+    experiment_index: torch.Tensor = None,         # Experiment IDs [E,B] for coefficient indexing
 ) -> torch.Tensor  # [W,E,B,I] updated state
 ```
 
-Executes the module's forward pass. Broadcasts and concatenates inputs + embeddings to `[W,E,B,I,features]`, runs through the RNN submodule (or SINDy equation if `use_sindy=True`), applies `action_mask` (only masked items updated, unmasked retain previous state), clips to `[-10, 10]`, and updates `self.state[key_state]`. During training, also computes SINDy loss (MSE between RNN and SINDy predictions) accumulated in `model.sindy_loss`.
+Executes the module's polynomial forward pass. Broadcasts and concatenates inputs + embeddings to `[W,E,B,I,features]`, unfolds polynomial coefficients from RNN weights, applies sparsity mask from `sindy_coefficients_presence`, computes gated polynomial update, applies `action_mask` (only masked items updated), clips to `[-10, 10]`, and updates `self.state[key_state]`.
 
 **Other methods:**
 - `setup_embedding()` — Create participant/experiment embeddings
 - `init_forward_pass()` — Promote input to canonical 5D shape, extract signals
 - `post_forward_pass()` — Reshape outputs back to batch-first format
-- `forward_sindy()` — Compute state update using sparse polynomial equations
-- `compute_sindy_loss_for_module()` — MSE loss between RNN and SINDy predictions
-- `sindy_ridge_solve()` — Direct least-squares coefficient solving
+- `get_sindy_coefficients()` — Return effective polynomial coefficients (gate absorbed)
 - `sindy_coefficient_pruning()` — Hard thresholding with patience
+- `get_spice_model_string()` — Print discovered equations
 
 **Ensemble support:** `EnsembleLinear`, `EnsembleEmbedding`, `EnsembleRNNModule` — vectorized computation across ensemble members.
 
-**`EnsembleRNNModule` architecture:** Uses a residual update (not a traditional GRU):
-1. Concatenate input with current state: `x_t = concat(x[t], h)`
-2. Non-linear projection via GELU: `gi = GELU(W_linear @ x_t + b_linear)`
-3. Candidate computation: `n = W_n @ gi + b_n`
-4. Residual update: `h = h + n`
+**`EnsembleRNNModule` architecture:** Uses a gated polynomial update:
+1. Concatenate input with current state: `x_t = concat(h, x[t])`
+2. Multilinear polynomial projection: `gi = Π_d(W_d @ x_t + b_d) / √D` (product of D linear forms = exact degree-D polynomial)
+3. Candidate computation: `n = W_out @ gi + b_out`
+4. Gated update: `h = (1-α)*h + α_n*n` where `α = sigmoid(damping_coefficient)`, `α_n = α` by default
 
-No sigmoid/tanh gates — the architecture is inherently polynomial-amenable.
+The `damping_coefficient` is a scalar `nn.Parameter` shared across all ensemble members.
+`scale_candidate = True` (default): `α_n = α`; set to `False` for `α_n = 1` (unscaled candidate).
+
+**Effective coefficients:** `unfold_polynomial_coefficients()` analytically expands the multilinear product into monomial-basis coefficients. All reporting uses effective coefficients with the gate absorbed: `c_eff = α_n * θ` for non-state terms, `c_eff = (1-α) + α_n * θ` for the state self-term.
 
 ### SpiceConfig (`spice/resources/spice_utils.py`)
 
@@ -231,16 +230,12 @@ Main user-facing class implementing sklearn's estimator interface.
 | `bagging` | `bool` | `False` | Whether to use bagging |
 | `loss_fn` | `callable` | `cross_entropy_loss` | Behavioral loss function `(prediction, target) → scalar` |
 | `device` | `torch.device` | `cpu` | Compute device |
-| **SPICE / SINDy** ||||
-| `use_sindy` | `bool` | `False` | Enable SINDy integration |
-| `sindy_weight` | `float` | `0.1` | Lambda for SINDy regularization loss |
-| `sindy_alpha` | `float` | `1e-4` | Degree-weighted L1 penalty strength |
-| `sindy_library_polynomial_degree` | `int` | `1` | Max polynomial degree for SINDy candidate library |
+| **Polynomial pruning** ||||
+| `sindy_library_polynomial_degree` | `int` | `1` | Max polynomial degree for candidate library |
 | `sindy_pruning_frequency` | `int` | `1` | Epochs between pruning events |
 | `sindy_threshold_pruning` | `float` | `None` | Minimum effect size delta for CI test (`None` = disabled) |
 | `sindy_ensemble_pruning` | `float` | `None` | Confidence level for ensemble CI test (e.g. `0.05`; primary pruning mechanism) |
 | `sindy_population_pruning` | `float` | `None` | Cross-participant presence threshold 0-1 (`None` = disabled) |
-| `sindy_reconditioning_epochs` | `int` | `3` | Pure SINDy SGD epochs after ridge recalibration to warm-start the optimizer (`0` = disable) |
 | **Output / misc** ||||
 | `verbose` | `bool` | `False` | Print training progress |
 | `keep_log` | `bool` | `False` | Keep full training log (vs. live terminal update) |
@@ -303,38 +298,31 @@ SpiceDataset: shape (sessions, outer_ts, within_ts=1, features)
 
 ---
 
-## Two-Stage Training Pipeline (`spice/resources/spice_training.py`)
+## Training Pipeline (`spice/resources/spice_training.py`)
 
 Main function: `fit_spice()`
 
-### Stage 1: Joint RNN-SINDy Training
+### Single-Stage Polynomial RNN Training
 
-The loss is composed in `_run_batch_training()`:
+The loss in `_run_batch_training()` is purely behavioral:
 ```python
-loss = loss_fn(ys_pred, ys_step)                                          # behavioral loss
-loss = loss + sindy_weight * model.sindy_loss                             # SINDy regularization
-loss = loss + model.compute_weighted_coefficient_penalty(sindy_alpha, norm=1)  # degree-weighted L1 penalty
+loss = loss_fn(ys_pred, ys_step)  # behavioral loss only
 ```
 
-- `loss_fn(ys_pred, ys_step)` — behavioral prediction loss (cross-entropy by default, custom loss supported)
-- `sindy_weight * model.sindy_loss` — MSE between RNN and SINDy predictions (computed inside `call_module` during forward pass). Only added when `sindy_weight > 0`.
-- `compute_weighted_coefficient_penalty(sindy_alpha, norm=1)` — L1 penalty on SINDy coefficients, weighted by term degree (higher-degree terms penalized more). Only added when `sindy_alpha > 0`.
+Regularization is handled by AdamW's L2 weight decay, which implicitly penalizes higher-degree polynomial terms more.
 
 **Epoch flow:**
-1. **Warmup**: For the first `n_warmup_steps` epochs, `sindy_weight` is exponentially scaled up from ~0 to its full value. No pruning during warmup.
-2. **Batch training**: Random session batches → forward pass → loss → backprop. RNN and SINDy coefficients use separate optimizer param groups (SINDy lr=0.01 fixed, RNN lr configurable with optional scheduler).
-3. **Validation**: If test data provided, evaluate both RNN-only and SINDy loss.
+1. **Warmup**: No pruning during the first `n_warmup_steps` epochs.
+2. **Batch training**: Random session batches → polynomial forward pass → behavioral loss → backprop with gradient clipping (max_norm=1.0).
+3. **Validation**: Single forward pass on test data.
 4. **Pruning** (every `sindy_pruning_frequency` epochs, after warmup):
+   - Polynomial coefficients are unfolded from RNN weights and scaled by α_n (effective coefficients).
    - **Primary mechanism** (`sindy_ensemble_pruning`): Minimum-effect CI test across ensemble members — a term survives iff `|mean| - t_crit * SE > delta` where `delta = sindy_threshold_pruning`.
    - **Fallback** (no ensemble test): Per-member hard thresholding with patience accumulation.
    - **Population filter** (`sindy_population_pruning`): Optional cross-participant consistency check.
    - Terms must fail **2 consecutive pruning events** before permanent removal (patience counter resets on success).
 5. **LR scheduler**: `ReduceOnPlateauWithRestarts` — reduces RNN lr by 0.1× on plateau, restarts when hitting min_lr.
 6. **Convergence check**: Exponentially smoothed loss change vs. threshold.
-
-### Stage 2: Final SINDy Refit
-- Freeze RNN weights
-- Refit SINDy coefficients via SGD on vectorized hidden states
 
 ### Custom Loss Functions
 
@@ -467,9 +455,7 @@ When designing `BaseModel` subclasses for SPICE, the architecture determines how
 - **Overlapping action masks** in sequential `call_module` calls: second call overwrites first for shared items
 - **Shape mismatches**: Ensure `xs` has shape `(batch, timesteps, features)` and `ys` has shape `(batch, timesteps, actions)`
 - **One-hot encoding**: Actions and rewards must be one-hot encoded, not integer indices
-- **SINDy convergence**: If coefficients don't converge, adjust `sindy_weight` or increase epochs
 - **Patience tuning**: Too low → premature elimination; too high → delayed sparsification
-- **Degree weights**: Overly aggressive penalties may suppress necessary nonlinear terms
 
 ## Generative Benchmarking (`weinhardt2026/utils/task.py`)
 

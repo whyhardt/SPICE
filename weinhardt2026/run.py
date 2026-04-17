@@ -73,9 +73,9 @@ if __name__=='__main__':
     # args.test_sessions = "2"
     # args.results = True
     
-    # args.model = "weinhardt2026/params/dezfouli2019/spice_dezfouli2019_test.pkl"
-    # args.data = "weinhardt2026/data/dezfouli2019/dezfouli2019.csv"
-    # args.test_sessions = "3,6,9"
+    args.model = "weinhardt2026/studies/dezfouli2019/params/spice_dezfouli2019_test.pkl"
+    args.data = "weinhardt2026/studies/dezfouli2019/data/dezfouli2019.csv"
+    args.test_sessions = "3,6,9"
     
     # args.data="weinhardt2026/data/sugawara2021/sugawara2021.csv" 
     # args.model="weinhardt2026/params/sugawara2021/spice_sugawara2021.pkl" 
@@ -164,8 +164,8 @@ if __name__=='__main__':
         batch_size=None,
 
         # sindy fitting parameters
-        sindy_weight=args.sindy_weight,
-        sindy_alpha=args.sindy_alpha,
+        # sindy_weight=args.sindy_weight,
+        # sindy_alpha=args.sindy_alpha,
         sindy_library_polynomial_degree=2,
         sindy_pruning_frequency=args.pruning_frequency,
         sindy_threshold_pruning=args.pruning_threshold,
@@ -180,9 +180,9 @@ if __name__=='__main__':
     
     if args.epochs == 0:
         estimator.load_spice(args.model)
-    estimator.sindy_refit = ~args.sindy_skip_refit
+    # estimator.sindy_refit = ~args.sindy_skip_refit
     
-    if estimator.epochs > 0 or estimator.sindy_refit:
+    if estimator.epochs > 0:# or estimator.sindy_refit:
         training_device_str = "CUDA" if estimator.device == torch.device('cuda') else "CPU"
         print("Training device:", training_device_str)
         print("="*_get_terminal_width())

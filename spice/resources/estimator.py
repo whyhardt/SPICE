@@ -26,24 +26,24 @@ class SpiceEstimator(BaseEstimator):
     
     def __init__(
         self,
-        
-        # RNN class and SPICE configuration. Can be one of the precoded models in rnn.py or a custom implementation.
+
+        # RNN class and SPICE configuration
         spice_class: BaseModel,
         spice_config: SpiceConfig,
-        
+
         # Data/Environment parameters
         n_actions: int = 2,
         n_participants: int = 1,
         n_experiments: int = 1,
         n_items: int = None,
         n_reward_features: int = None,
-        
+
         # RNN training parameters
         epochs: Optional[int] = 1,
         warmup_steps: Optional[int] = 0,
         bagging: Optional[bool] = False,
-        n_steps_per_call: Optional[int] = None,  # number of timesteps in one backward-call; -1 for full sequence
-        batch_size: Optional[int] = None,  # -1 for a batch-size equal to the number of participants in the data
+        n_steps_per_call: Optional[int] = None,
+        batch_size: Optional[int] = None,
         learning_rate: Optional[float] = 1e-2,
         convergence_threshold: Optional[float] = 0,
         device: Optional[torch.device] = torch.device('cpu'),
@@ -54,23 +54,18 @@ class SpiceEstimator(BaseEstimator):
         dropout: Optional[float] = 0.,
         loss_fn: Optional[callable] = cross_entropy_loss,
 
-        # SPICE training parameters
-        use_sindy: Optional[bool] = False,
-        sindy_weight: Optional[float] = 0.1,  # Weight for SINDy regularization loss
-        sindy_alpha: Optional[float] = 1e-4,  # Degree-weighted coefficient penalty strength (ridge alpha)
+        # Polynomial pruning parameters
         sindy_library_polynomial_degree: Optional[int] = 1,
-        sindy_pruning_frequency: Optional[int] = 1,  # Epochs between pruning events
-        sindy_threshold_pruning: Optional[float] = None,  # Optional per-member threshold pruning (None to disable)
-        sindy_ensemble_pruning: Optional[float] = None,  # Ensemble t-test significance level (primary pruning mechanism)
-        sindy_population_pruning: Optional[float] = None,  # Optional cross-participant filter (0-1)
-        sindy_reconditioning_epochs: Optional[int] = 3,  # Pure SINDy SGD epochs after ridge recalibration
-        sindy_refit: Optional[bool] = True,  # Enable Stage 2 Training (SINDy refit on frozen RNN parameters) 
+        sindy_pruning_frequency: Optional[int] = 1,
+        sindy_threshold_pruning: Optional[float] = None,
+        sindy_ensemble_pruning: Optional[float] = None,
+        sindy_population_pruning: Optional[float] = None,
 
         verbose: Optional[bool] = False,
         keep_log: Optional[bool] = False,
         save_path_spice: Optional[str] = None,
         compiled_forward: Optional[bool] = True,
-        
+
         kwargs_spice_class: Optional[dict] = {},
     ):
         """
@@ -83,7 +78,7 @@ class SpiceEstimator(BaseEstimator):
             n_experiments: Number of experiments.
             n_reward_features: Number of reward feature columns in the dataset.
             epochs: Number of training epochs.
-            warmup_steps: Epochs of exponential SINDy weight warmup (no pruning during warmup).
+            warmup_steps: Epochs before pruning begins (no pruning during warmup).
             bagging: Whether to use bagging.
             n_steps_per_call: BPTT truncation length (None = full sequence).
             batch_size: Training batch size (None = auto-detect max via GPU probing).
@@ -92,27 +87,23 @@ class SpiceEstimator(BaseEstimator):
             device: Compute device (default: 'cpu').
             scheduler: Enable ReduceOnPlateauWithRestarts LR scheduler.
             ensemble_size: Number of independent RNN ensemble members.
-            l2_rnn: L2 weight decay for RNN parameters.
-            dropout: Dropout rate in GRU modules.
+            l2_rnn: L2 weight decay (applied via AdamW — implicitly penalizes higher-degree polynomial terms more).
+            dropout: Dropout rate in RNN modules.
             loss_fn: Behavioral loss function (prediction, target) -> scalar.
-            use_sindy: Enable SINDy integration.
-            sindy_weight: Lambda for SINDy regularization loss.
-            sindy_alpha: Degree-weighted L1 penalty strength.
-            sindy_library_polynomial_degree: Max polynomial degree for SINDy candidate library.
+            sindy_library_polynomial_degree: Max polynomial degree.
             sindy_pruning_frequency: Epochs between pruning events.
             sindy_threshold_pruning: Minimum effect size delta for CI test (None = disabled).
             sindy_ensemble_pruning: Confidence level for ensemble CI test (primary pruning mechanism).
             sindy_population_pruning: Cross-participant presence threshold 0-1 (None = disabled).
-            sindy_reconditioning_epochs: Pure SINDy SGD epochs after ridge recalibration to warm-start the optimizer (0 = disable).
             verbose: Print training progress.
             keep_log: Keep full training log (vs. live terminal update).
             save_path_spice: File path (.pkl) to auto-save SPICE model after training.
             compiled_forward: Use @torch.compile for forward loops.
-            kwargs_rnn_class: Extra keyword arguments forwarded to spice_class.__init__().
+            kwargs_spice_class: Extra keyword arguments forwarded to spice_class.__init__().
         """
-        
+
         super(BaseEstimator, self).__init__()
-        
+
         # Training parameters
         self.epochs = epochs
         self.warmup_steps = warmup_steps
@@ -134,27 +125,23 @@ class SpiceEstimator(BaseEstimator):
         # Save parameters
         self.save_path_model = save_path_spice
 
-        # SINDy training parameters
-        self.sindy_weight = sindy_weight
-        self.sindy_alpha = sindy_alpha
+        # Pruning parameters
         self.sindy_library_polynomial_degree = sindy_library_polynomial_degree
         self.sindy_pruning_frequency = sindy_pruning_frequency
         self.sindy_threshold_pruning = sindy_threshold_pruning
         self.sindy_population_pruning = sindy_population_pruning
         self.sindy_ensemble_pruning = sindy_ensemble_pruning
-        self.sindy_reconditioning_epochs = sindy_reconditioning_epochs
-        self.sindy_refit = sindy_refit
-        
+
         # Data parameters
         self.n_actions = n_actions
         self.n_items = n_items
         self.n_reward_features = n_reward_features
         self.n_participants = n_participants
         self.n_experiments = n_experiments
-        
+
         # RNN parameters
         self.dropout = dropout
-        
+
         # SPICE attributes
         self.spice_config = spice_config
         self.spice_class = spice_class
@@ -166,33 +153,21 @@ class SpiceEstimator(BaseEstimator):
             dropout=dropout,
             spice_config=spice_config,
             sindy_polynomial_degree=sindy_library_polynomial_degree,
-            sindy_alpha=sindy_alpha,
             ensemble_size=ensemble_size,
             embedding_size=embedding_size,
             n_items=n_items,
             n_reward_features=n_reward_features,
             device=device,
             compiled_forward=compiled_forward,
-            fit_sindy=sindy_weight > 0,
             **kwargs_spice_class,
         ).to(device)
 
-        self.use_sindy(use_sindy)
-        
-        sindy_params = []
-        rnn_params = []
-        for name, param in self.model.named_parameters():
-            if 'sindy' in name:
-                sindy_params.append(param)
-            else:
-                rnn_params.append(param)
-        # Separate optimizer param groups: SINDy coefficients get fixed lr, RNN params get configurable lr + weight decay
+        # Single optimizer: L2 weight decay via AdamW handles regularization
         self.rnn_optimizer = torch.optim.AdamW(
-            [
-            {'params': sindy_params, 'weight_decay': 0, 'lr': 0.01},
-            {'params': rnn_params, 'weight_decay': l2_rnn, 'lr': learning_rate},
-            ],
-            )
+            self.model.parameters(),
+            lr=learning_rate,
+            weight_decay=l2_rnn,
+        )
         
     def fit(self, data: np.ndarray, targets: np.ndarray, data_test: np.ndarray = None, target_test: np.ndarray = None):
         """
@@ -226,15 +201,11 @@ class SpiceEstimator(BaseEstimator):
             convergence_threshold=self.convergence_threshold,
             loss_fn=self.loss_fn,
 
-            sindy_weight=self.sindy_weight,
-            sindy_alpha=self.sindy_alpha,
             sindy_pruning_frequency=self.sindy_pruning_frequency,
             sindy_threshold_pruning=self.sindy_threshold_pruning,
             sindy_ensemble_pruning=self.sindy_ensemble_pruning,
             sindy_population_pruning=self.sindy_population_pruning,
-            sindy_reconditioning_epochs=self.sindy_reconditioning_epochs,
-            sindy_refit=self.sindy_refit,
-            
+
             verbose=self.verbose,
             keep_log=self.keep_log,
             path_save_checkpoints=None,
@@ -306,15 +277,10 @@ class SpiceEstimator(BaseEstimator):
         return self.model.get_candidate_terms(key_module=key_module)
         
     def load_spice(self, path_model: str, deterministic: bool = True):
-        
-        # LOAD RNN MODEL AND OPTIMIZER
-                
-        # load trained parameters
+        """Load a saved SPICE model (RNN weights + polynomial presence masks)."""
+
         loaded_parameters = torch.load(path_model, map_location=torch.device('cpu'))
-        
-        # Infer ensemble_size from saved coefficient shape: (E, P, X, terms)
-        self.model.ensemble_size = loaded_parameters['model']['sindy_coefficients.'+next(iter(self.model.submodules_rnn))].shape[0]
-        
+
         self.model = self.spice_class(
             spice_config=self.spice_config,
             n_actions=self.model.n_actions,
@@ -324,60 +290,38 @@ class SpiceEstimator(BaseEstimator):
             n_experiments=self.model.n_experiments,
             sindy_polynomial_degree=self.model.sindy_polynomial_degree,
             ensemble_size=self.model.ensemble_size,
-            use_sindy=True,
             device=self.model.device,
-            )
-        
-        for module in self.get_modules():
-            self.model.setup_sindy_coefficients(key_module=module, polynomial_degree=self.model.sindy_specs[module]['polynomial_degree'])
-        self.model.sindy_coefficients_presence = loaded_parameters['sindy_coefficients_presence']
+        )
 
         self.model.load_state_dict(loaded_parameters['model'])
+        self.model.sindy_coefficients_presence = loaded_parameters['sindy_coefficients_presence']
         self.model.init_state(batch_size=self.model.n_participants)
 
         self.model = self.model.to(self.model.device)
         self.model.eval()
-            
-    def save_spice(self, path_rnn: str):
-        """
-        Save the SPICE model (RNN weights, optimizer state, and SINDy coefficient masks) to a .pkl file.
 
-        Args:
-            path_rnn: File path to save the model.
-        """
-        
-        # Save RNN model
+    def save_spice(self, path_rnn: str):
+        """Save the SPICE model (RNN weights, optimizer state, and polynomial presence masks)."""
+
         state_dict = {
-            'model': self.model.state_dict(), 
-            'optimizer': self.rnn_optimizer.state_dict(), 
+            'model': self.model.state_dict(),
+            'optimizer': self.rnn_optimizer.state_dict(),
             'sindy_coefficients_presence': self.model.sindy_coefficients_presence,
-            }
+        }
         torch.save(state_dict, path_rnn)
         
     def set_device(self, device: torch.device):
         self.model.to(device)
         self.device = device
     
-    def use_sindy(self, mode: bool = True):
-        self._use_sindy = mode
-        self.model.use_sindy = mode
-        
     def aggregate(self, mode: bool = True):
         self.model.aggregate = mode
-    
-    def aggregate_coefficients(self):
-        for module in self.get_modules():
-            self.model.sindy_coefficients[module] = self.model.sindy_coefficients[module].mean(dim=0, keepdim=True).expand(self.ensemble_size, -1, -1, -1)
-            self.model.sindy_coefficients_presence[module] = self.model.sindy_coefficients[module].abs() >= self.sindy_threshold_pruning
-        # self.model.aggregate = True
-    
-    def eval(self, use_sindy: bool = True, aggregate: bool =True):
-        self.model.eval(use_sindy=use_sindy, aggregate=aggregate)
-        self.use_sindy(mode=use_sindy)
-        
-    def train(self, mode: bool = True, use_sindy: bool = False):
-        self.model.train(mode=mode, use_sindy=use_sindy)
-        self.use_sindy(mode=self.use_sindy)
+
+    def eval(self, aggregate: bool = True):
+        self.model.eval(aggregate=aggregate)
+
+    def train(self, mode: bool = True):
+        self.model.train(mode=mode)
     
     def __call__(self, conditions: torch.Tensor, state: torch.Tensor = None) -> torch.Tensor:
         return self.model(conditions, state)

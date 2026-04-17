@@ -116,6 +116,58 @@ def get_library_term_degrees(library_names: List[str]) -> List[int]:
     return [get_polynomial_degree_from_term(term) for term in library_names]
 
 
+def build_library_structure(n_features: int, degree: int) -> dict:
+    """Build multiplication table for recursive polynomial expansion.
+
+    Generates the term structure used for unfolding polynomial layer weights
+    into monomial-basis coefficients. Term ordering matches
+    ``combinations_with_replacement`` (same as ``get_library_feature_names``).
+
+    Args:
+        n_features: Number of input features (state + controls)
+        degree: Maximum polynomial degree
+
+    Returns:
+        dict with keys:
+            terms: list of tuples (sorted feature index multisets)
+            mult_table: (n_terms, n_features) long tensor — maps
+                (term, feature) to product term index (-1 if exceeds degree)
+            linear_indices: (n_features,) long tensor — indices of degree-1 terms
+            bias_index: int — index of the constant term
+            n_terms: int — total number of library terms
+    """
+    terms = []
+    for d in range(degree + 1):
+        for combo in combinations_with_replacement(range(n_features), d):
+            terms.append(combo)
+
+    term_to_idx = {term: idx for idx, term in enumerate(terms)}
+    n_terms = len(terms)
+
+    # Build multiplication table: mult_table[t, f] = index of (term_t * x_f)
+    # -1 means the product exceeds the maximum degree
+    mult_table = torch.full((n_terms, n_features), -1, dtype=torch.long)
+    for t_idx, term in enumerate(terms):
+        if len(term) < degree:
+            for f in range(n_features):
+                product = tuple(sorted(term + (f,)))
+                if product in term_to_idx:
+                    mult_table[t_idx, f] = term_to_idx[product]
+
+    bias_index = term_to_idx[()]
+    linear_indices = torch.tensor(
+        [term_to_idx[(f,)] for f in range(n_features)], dtype=torch.long
+    )
+
+    return {
+        'terms': terms,
+        'mult_table': mult_table,
+        'linear_indices': linear_indices,
+        'bias_index': bias_index,
+        'n_terms': n_terms,
+    }
+
+
 def precompute_library_structure(
     feature_names: List[str],
     library: List[str],
