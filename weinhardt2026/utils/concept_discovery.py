@@ -66,7 +66,7 @@ if use_real:
         n_actions=n_actions,
         n_participants=n_participants,
         n_experiments=n_experiments,
-        sindy_library_polynomial_degree=2,
+        polynomial_degree=2,
     )
     estimator.load_spice(path_model=path_model)
     model = estimator.model

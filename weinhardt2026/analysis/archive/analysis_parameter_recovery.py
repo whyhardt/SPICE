@@ -232,7 +232,7 @@ for index_sess, sess in enumerate(n_sessions):
             spice_config=spice_class.CONFIG, 
             n_actions=n_actions,
             n_participants=len(participant_ids),
-            sindy_library_polynomial_degree=2,
+            polynomial_degree=2,
             )
         spice_esimator.load_spice(path_spice)
         spice_model = spice_esimator.spice_agent.model

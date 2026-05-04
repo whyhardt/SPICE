@@ -50,16 +50,17 @@ class SpiceEstimator(BaseEstimator):
         scheduler: Optional[bool] = False,
         ensemble_size: Optional[int] = 1,
         embedding_size: Optional[int] = 32,
-        l2_rnn: Optional[float] = 0,
+        l2_coefficient: Optional[float] = 0,
         dropout: Optional[float] = 0.,
         loss_fn: Optional[callable] = cross_entropy_loss,
 
         # Polynomial pruning parameters
-        sindy_library_polynomial_degree: Optional[int] = 1,
-        sindy_pruning_frequency: Optional[int] = 1,
-        sindy_threshold_pruning: Optional[float] = None,
-        sindy_ensemble_pruning: Optional[float] = None,
-        sindy_population_pruning: Optional[float] = None,
+        polynomial_degree: Optional[int] = 1,
+        pruning_frequency: Optional[int] = 1,
+        pruning_threshold: Optional[float] = None,
+        pruning_ensemble: Optional[float] = None,
+        pruning_population: Optional[float] = None,
+        pruning_n_terms: Optional[int] = None,
 
         verbose: Optional[bool] = False,
         keep_log: Optional[bool] = False,
@@ -87,13 +88,13 @@ class SpiceEstimator(BaseEstimator):
             device: Compute device (default: 'cpu').
             scheduler: Enable ReduceOnPlateauWithRestarts LR scheduler.
             ensemble_size: Number of independent RNN ensemble members.
-            l2_rnn: L2 weight decay (applied via AdamW — implicitly penalizes higher-degree polynomial terms more).
+            l2_coefficient: L2 penalty on unfolded effective polynomial coefficients (penalizes actual equation term magnitudes).
             dropout: Dropout rate in RNN modules.
             loss_fn: Behavioral loss function (prediction, target) -> scalar.
             sindy_library_polynomial_degree: Max polynomial degree.
             sindy_pruning_frequency: Epochs between pruning events.
-            sindy_threshold_pruning: Minimum effect size delta for CI test (None = disabled).
-            sindy_ensemble_pruning: Confidence level for ensemble CI test (primary pruning mechanism).
+            sindy_threshold_pruning: Minimum effect size delta for majority vote (None = disabled).
+            sindy_ensemble_pruning: Required fraction of ensemble members voting nonzero, e.g. 0.5 for majority (None = disabled).
             sindy_population_pruning: Cross-participant presence threshold 0-1 (None = disabled).
             verbose: Print training progress.
             keep_log: Keep full training log (vs. live terminal update).
@@ -106,7 +107,6 @@ class SpiceEstimator(BaseEstimator):
 
         # Training parameters
         self.epochs = epochs
-        self.warmup_steps = warmup_steps
         self.n_steps_per_call = n_steps_per_call
         self.batch_size = batch_size
         self.learning_rate = learning_rate
@@ -116,31 +116,33 @@ class SpiceEstimator(BaseEstimator):
         self.verbose = verbose
         self.keep_log = keep_log
         self.deterministic = False
-        self.ensemble_size = ensemble_size
-        self.embedding_size = embedding_size
-        self.l2_rnn = l2_rnn
         self.loss_fn = loss_fn
         self.compiled_forward = compiled_forward
+        self.dropout = dropout
+
+        # Model parameters
+        self.ensemble_size = ensemble_size
+        self.embedding_size = embedding_size
+        self.polynomial_degree = polynomial_degree
+
+        # Pruning parameters
+        self.warmup_steps = warmup_steps
+        self.l2_coefficient = l2_coefficient
+        self.pruning_frequency = pruning_frequency
+        self.pruning_threshold = pruning_threshold
+        self.pruning_population = pruning_population
+        self.pruning_ensemble = pruning_ensemble
+        self.pruning_n_terms = pruning_n_terms
 
         # Save parameters
         self.save_path_model = save_path_spice
-
-        # Pruning parameters
-        self.sindy_library_polynomial_degree = sindy_library_polynomial_degree
-        self.sindy_pruning_frequency = sindy_pruning_frequency
-        self.sindy_threshold_pruning = sindy_threshold_pruning
-        self.sindy_population_pruning = sindy_population_pruning
-        self.sindy_ensemble_pruning = sindy_ensemble_pruning
-
+        
         # Data parameters
         self.n_actions = n_actions
         self.n_items = n_items
         self.n_reward_features = n_reward_features
         self.n_participants = n_participants
         self.n_experiments = n_experiments
-
-        # RNN parameters
-        self.dropout = dropout
 
         # SPICE attributes
         self.spice_config = spice_config
@@ -152,7 +154,7 @@ class SpiceEstimator(BaseEstimator):
             n_experiments=n_experiments,
             dropout=dropout,
             spice_config=spice_config,
-            sindy_polynomial_degree=sindy_library_polynomial_degree,
+            sindy_polynomial_degree=polynomial_degree,
             ensemble_size=ensemble_size,
             embedding_size=embedding_size,
             n_items=n_items,
@@ -162,11 +164,11 @@ class SpiceEstimator(BaseEstimator):
             **kwargs_spice_class,
         ).to(device)
 
-        # Single optimizer: L2 weight decay via AdamW handles regularization
-        self.rnn_optimizer = torch.optim.AdamW(
+        # Single optimizer (no weight decay — L2 regularization on polynomial coefficients instead)
+        self.spice_optimizer = torch.optim.AdamW(
             self.model.parameters(),
             lr=learning_rate,
-            weight_decay=l2_rnn,
+            weight_decay=0.0001,
         )
         
     def fit(self, data: np.ndarray, targets: np.ndarray, data_test: np.ndarray = None, target_test: np.ndarray = None):
@@ -189,7 +191,7 @@ class SpiceEstimator(BaseEstimator):
         
         rnn_model, rnn_optimizer = fit_spice(
             model=self.model,
-            optimizer=self.rnn_optimizer,
+            optimizer=self.spice_optimizer,
             dataset_train=dataset,
             dataset_test=dataset_test,
 
@@ -200,11 +202,13 @@ class SpiceEstimator(BaseEstimator):
             n_steps=self.n_steps_per_call,
             convergence_threshold=self.convergence_threshold,
             loss_fn=self.loss_fn,
+            l2_coefficient=self.l2_coefficient,
 
-            sindy_pruning_frequency=self.sindy_pruning_frequency,
-            sindy_threshold_pruning=self.sindy_threshold_pruning,
-            sindy_ensemble_pruning=self.sindy_ensemble_pruning,
-            sindy_population_pruning=self.sindy_population_pruning,
+            sindy_pruning_frequency=self.pruning_frequency,
+            sindy_threshold_pruning=self.pruning_threshold,
+            sindy_ensemble_pruning=self.pruning_ensemble,
+            sindy_population_pruning=self.pruning_population,
+            sindy_n_terms_pruning=self.pruning_n_terms,
 
             verbose=self.verbose,
             keep_log=self.keep_log,
@@ -212,7 +216,7 @@ class SpiceEstimator(BaseEstimator):
         )
 
         self.model = rnn_model
-        self.rnn_optimizer = rnn_optimizer
+        self.spice_optimizer = rnn_optimizer
         
         if self.verbose:
             print('\nRNN training finished.')
@@ -305,7 +309,7 @@ class SpiceEstimator(BaseEstimator):
 
         state_dict = {
             'model': self.model.state_dict(),
-            'optimizer': self.rnn_optimizer.state_dict(),
+            'optimizer': self.spice_optimizer.state_dict(),
             'sindy_coefficients_presence': self.model.sindy_coefficients_presence,
         }
         torch.save(state_dict, path_rnn)

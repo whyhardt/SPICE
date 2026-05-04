@@ -173,7 +173,7 @@ estimator = SpiceEstimator(
     spice_config=sindy_config,
     n_actions=n_actions,
     n_participants=n_participants,
-    sindy_library_polynomial_degree=2,
+    polynomial_degree=2,
     use_sindy=True,
 )
 

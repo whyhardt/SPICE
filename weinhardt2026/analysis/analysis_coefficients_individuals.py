@@ -143,7 +143,7 @@ def prepare(criterion_col, data_path: str, dataset_kwargs: dict = {}, spice_mode
             spice_config=spice_config,
             n_actions=n_actions,
             n_participants=n_participants,
-            sindy_library_polynomial_degree=2,
+            polynomial_degree=2,
             ensemble_size=ensemble_size,
             use_sindy=True,
         )

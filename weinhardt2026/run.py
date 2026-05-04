@@ -73,9 +73,9 @@ if __name__=='__main__':
     # args.test_sessions = "2"
     # args.results = True
     
-    args.model = "weinhardt2026/studies/dezfouli2019/params/spice_dezfouli2019_test.pkl"
-    args.data = "weinhardt2026/studies/dezfouli2019/data/dezfouli2019.csv"
-    args.test_sessions = "3,6,9"
+    # args.model = "weinhardt2026/studies/dezfouli2019/params/spice_dezfouli2019_test.pkl"
+    # args.data = "weinhardt2026/studies/dezfouli2019/data/dezfouli2019.csv"
+    # args.test_sessions = "3,6,9"
     
     # args.data="weinhardt2026/data/sugawara2021/sugawara2021.csv" 
     # args.model="weinhardt2026/params/sugawara2021/spice_sugawara2021.pkl" 
@@ -159,18 +159,18 @@ if __name__=='__main__':
         learning_rate=args.lr,
         warmup_steps=args.epochs_warmup,
         ensemble_size=args.ensemble,
-        l2_rnn=args.l2,
+        l2_coefficient=args.l2,
         scheduler=False,
         batch_size=None,
         
         # sindy fitting parameters
         # sindy_weight=args.sindy_weight,
         # sindy_alpha=args.sindy_alpha,
-        sindy_library_polynomial_degree=2,
-        sindy_pruning_frequency=args.pruning_frequency,
-        sindy_threshold_pruning=args.pruning_threshold,
-        sindy_ensemble_pruning=args.pruning_ensemble,
-        sindy_population_pruning=args.pruning_population,
+        polynomial_degree=2,
+        pruning_frequency=args.pruning_frequency,
+        pruning_threshold=args.pruning_threshold,
+        pruning_ensemble=args.pruning_ensemble,
+        pruning_population=args.pruning_population,
 
         # other parameters
         verbose=True,

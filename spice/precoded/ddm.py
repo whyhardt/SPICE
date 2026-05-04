@@ -324,7 +324,7 @@ if __name__=='__main__':
         
         sindy_weight=0.00001,
         sindy_alpha=0.0001,
-        sindy_library_polynomial_degree=2,
+        polynomial_degree=2,
         
         # save_path_spice='spice_ddm.pkl',
         verbose=True,

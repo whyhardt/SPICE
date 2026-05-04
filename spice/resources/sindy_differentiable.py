@@ -159,12 +159,21 @@ def build_library_structure(n_features: int, degree: int) -> dict:
         [term_to_idx[(f,)] for f in range(n_features)], dtype=torch.long
     )
 
+    # Compute index ranges for each degree (for per-degree unfolding)
+    degree_ranges = {}
+    offset = 0
+    for d in range(degree + 1):
+        count = len(list(combinations_with_replacement(range(n_features), d)))
+        degree_ranges[d] = (offset, offset + count)
+        offset += count
+
     return {
         'terms': terms,
         'mult_table': mult_table,
         'linear_indices': linear_indices,
         'bias_index': bias_index,
         'n_terms': n_terms,
+        'degree_ranges': degree_ranges,
     }
 
 

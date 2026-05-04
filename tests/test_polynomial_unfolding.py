@@ -3,8 +3,6 @@ Tests for polynomial unfolding correctness.
 
 Verifies that for random weights at degree 1, 2, 3:
   library @ unfold() matches W_out @ polynomial_layer(x) + b_out
-
-Also verifies that forward_polynomial() matches the standard forward().
 """
 
 import torch
@@ -30,6 +28,9 @@ def test_build_library_structure_degree1():
     assert mt[0, 1].item() == 2
     # Degree-1 terms: multiplying exceeds degree
     assert (mt[1:] == -1).all()
+
+    # Check degree_ranges
+    assert lib['degree_ranges'] == {0: (0, 1), 1: (1, 3)}
 
 
 def test_build_library_structure_degree2():
@@ -57,12 +58,18 @@ def test_build_library_structure_degree2():
     # Degree-2 terms: multiplication exceeds degree
     assert (mt[3:] == -1).all()
 
+    # Check degree_ranges
+    assert lib['degree_ranges'] == {0: (0, 1), 1: (1, 3), 2: (3, 6)}
+
 
 def test_build_library_structure_degree3():
     """Degree 3 with 2 features should have 10 terms."""
     lib = build_library_structure(n_features=2, degree=3)
     # C(2+0-1,0) + C(2+1-1,1) + C(2+2-1,2) + C(2+3-1,3) = 1+2+3+4 = 10
     assert lib['n_terms'] == 10
+
+    # Check degree_ranges
+    assert lib['degree_ranges'] == {0: (0, 1), 1: (1, 3), 2: (3, 6), 3: (6, 10)}
 
 
 # --------------------------------------------------------------------------
@@ -87,7 +94,7 @@ def _verify_unfolding(module, input_size, degree, atol=1e-5):
     """Verify that library @ unfold() matches the direct polynomial computation.
 
     For random input x, computes:
-    1. Direct: w_out @ [Π_d (W_d @ x + b_d) / sqrt(D)] + b_out
+    1. Direct: w_out @ [sum_d prod_k(W_{d,k} @ x)] + b_out
     2. Unfolded: Σ_t θ_t * monomial_t(x)
 
     Checks they match to atol.
@@ -100,7 +107,7 @@ def _verify_unfolding(module, input_size, degree, atol=1e-5):
     x = torch.randn(E, B, n_features) * 0.5
 
     # --- Direct computation ---
-    # Polynomial projection
+    # Polynomial projection (disentangled: sum of per-degree products)
     gi = module.projection(x)  # (E, B, proj_size)
     # Output projection: n = w_out @ gi + b_out
     direct = torch.einsum('ego,ebo->ebg', module.weight_n, gi) + module.bias_n.unsqueeze(1)
@@ -132,49 +139,55 @@ def test_unfolding_correctness(input_size, degree):
 
 
 # --------------------------------------------------------------------------
-# Test forward_polynomial matches standard forward (no mask)
+# Test degree purity (disentangled property)
 # --------------------------------------------------------------------------
 
-def _verify_forward_match(input_size, degree, within_ts=1, atol=1e-4):
-    """Verify that forward_polynomial without mask matches standard forward."""
+@pytest.mark.parametrize("input_size,degree", [
+    (1, 2), (2, 2),
+    (1, 3), (2, 3),
+])
+def test_degree_purity(input_size, degree):
+    """Each degree group should only produce coefficients at its own degree indices."""
     module = _make_rnn_module(input_size, degree)
-    E = module.ensemble_size
-    B = 3
-    I = 2
-    W = within_ts
-    F = input_size
+    n_features = input_size + 1
+    lib = build_library_structure(n_features, degree)
+    degree_ranges = lib['degree_ranges']
+    n_terms = lib['n_terms']
 
-    inputs = torch.randn(W, E, B, I, F) * 0.3
-    state = torch.randn(W, E, B, I) * 0.1
+    W_groups, w_out, b_out = module._get_effective_params()
+    hidden_per_degree = module.hidden_per_degree
 
-    # Standard forward
-    out_standard = module._uncompiled_forward(inputs, state)
+    w_out_offset = 0
+    for d_idx, W_list_d in enumerate(W_groups):
+        d = d_idx + 1
 
-    # Polynomial forward (no mask)
-    out_polynomial = module._uncompiled_forward_polynomial(inputs, state)
+        # Unfold this degree group only (mimic per-degree step from unfold_polynomial_coefficients)
+        coeffs = torch.zeros(module.ensemble_size, hidden_per_degree, n_terms)
+        coeffs[..., module._linear_indices] = W_list_d[0]
+        for k in range(1, d):
+            new_coeffs = torch.zeros_like(coeffs)
+            for f in range(n_features):
+                targets = module._mult_table[:, f]
+                valid = targets >= 0
+                src_idx = torch.where(valid)[0]
+                tgt_idx = targets[src_idx]
+                new_coeffs[..., tgt_idx] = new_coeffs[..., tgt_idx] + coeffs[..., src_idx] * W_list_d[k][..., f:f+1]
+            coeffs = new_coeffs
 
-    assert torch.allclose(out_standard, out_polynomial, atol=atol), (
-        f"Forward mismatch for degree={degree}, input_size={input_size}, W={within_ts}.\n"
-        f"Max abs diff: {(out_standard - out_polynomial).abs().max().item():.2e}"
-    )
+        # Contract with w_out segment
+        w_seg = w_out[..., w_out_offset:w_out_offset + hidden_per_degree]
+        theta_d = torch.einsum('...o,...ot->...t', w_seg, coeffs)
+        w_out_offset += hidden_per_degree
 
-
-@pytest.mark.parametrize("input_size,degree", [
-    (1, 1), (2, 1),
-    (1, 2), (2, 2),
-    (1, 3),
-])
-def test_forward_polynomial_matches_standard(input_size, degree):
-    """forward_polynomial without mask should match standard forward."""
-    _verify_forward_match(input_size, degree, within_ts=1)
-
-
-@pytest.mark.parametrize("input_size,degree", [
-    (1, 2), (2, 2),
-])
-def test_forward_polynomial_matches_standard_multi_step(input_size, degree):
-    """forward_polynomial should match standard forward for multiple within-trial steps."""
-    _verify_forward_match(input_size, degree, within_ts=3)
+        # Only degree-d indices should be non-zero
+        start, end = degree_ranges[d]
+        for other_d, (s, e) in degree_ranges.items():
+            if other_d == d:
+                continue
+            assert theta_d[..., s:e].abs().max() < 1e-10, (
+                f"Degree-{d} group has non-zero coefficients at degree-{other_d} indices.\n"
+                f"Max value: {theta_d[..., s:e].abs().max().item():.2e}"
+            )
 
 
 # --------------------------------------------------------------------------
@@ -189,8 +202,9 @@ def test_masked_coefficient_zero_contribution():
 
     # Set larger weights so masking has a visible effect
     with torch.no_grad():
-        for w in module.projection.weights:
-            w.normal_(0, 0.5)
+        for group in module.projection.degree_groups:
+            for w in group:
+                w.normal_(0, 0.5)
         module.weight_n.normal_(0, 0.5)
 
     inputs = torch.randn(1, E, 3, 2, 1) * 0.5
@@ -198,12 +212,12 @@ def test_masked_coefficient_zero_contribution():
 
     # Full mask (no masking)
     mask_full = torch.ones(E, n_terms)
-    out_full = module._uncompiled_forward_polynomial(inputs, state, mask=mask_full)
+    out_full = module._forward_impl(inputs, state, mask=mask_full)
 
     # Mask out all terms except bias
     mask_bias_only = torch.zeros(E, n_terms)
     mask_bias_only[:, module._bias_index] = 1.0
-    out_bias_only = module._uncompiled_forward_polynomial(inputs, state, mask=mask_bias_only)
+    out_bias_only = module._forward_impl(inputs, state, mask=mask_bias_only)
 
     # With only bias active, the update is state-independent → outputs should differ
     assert not torch.allclose(out_full, out_bias_only, atol=1e-3), (
@@ -219,16 +233,15 @@ def test_gradient_flows_through_unfolding():
     inputs = torch.randn(1, E, 2, 2, 1) * 0.3
     state = torch.randn(1, E, 2, 2) * 0.1
 
-    out = module._uncompiled_forward_polynomial(inputs, state)
+    out = module._forward_impl(inputs, state)
     loss = out.sum()
     loss.backward()
 
-    # Check gradients exist for all projection weights
-    for w in module.projection.weights:
-        assert w.grad is not None, "No gradient for projection weight"
-        assert w.grad.abs().sum() > 0, "Zero gradient for projection weight"
-    for b in module.projection.biases:
-        assert b.grad is not None, "No gradient for projection bias"
+    # Check gradients exist for all projection weights across all degree groups
+    for d_idx, group in enumerate(module.projection.degree_groups):
+        for k, w in enumerate(group):
+            assert w.grad is not None, f"No gradient for degree_groups[{d_idx}][{k}]"
+            assert w.grad.abs().sum() > 0, f"Zero gradient for degree_groups[{d_idx}][{k}]"
     assert module.weight_n.grad is not None, "No gradient for output weight"
     assert module.bias_n.grad is not None, "No gradient for output bias"
 
@@ -272,39 +285,54 @@ def test_per_participant_unfolding():
     )
 
 
-def test_forward_polynomial_with_offsets():
-    """forward_polynomial should work with hypernetwork offsets."""
-    torch.manual_seed(42)
-    module = EnsembleRNNModule(
-        ensemble_size=2,
-        input_size=1,
-        embedding_size=8,
-        dropout=0.,
-        compiled_forward=False,
-        polynomial_degree=2,
+# --------------------------------------------------------------------------
+# Test L2 coefficient penalty
+# --------------------------------------------------------------------------
+
+def test_coefficient_l2_differentiable():
+    """_compute_coefficient_l2 should return a differentiable scalar."""
+    from spice.resources.spice_training import _compute_coefficient_l2
+    from spice.resources.model import BaseModel
+    from spice.resources.spice_utils import SpiceConfig
+
+    config = SpiceConfig(
+        library_setup={'value': ('reward',)},
+        memory_state={'value': 0.0},
     )
 
-    E = 2
-    B = 3
-    I = 2
-    W = 1
-    F = 1
+    class SimpleModel(BaseModel):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self.setup_module(key_module='value', input_size=1)
 
-    inputs = torch.randn(W, E, B, I, F) * 0.3
-    state = torch.randn(W, E, B, I) * 0.1
-    embedding = torch.randn(E, B, 8) * 0.5
-    offsets = module.precompute_offsets(embedding, n_items=I)
+        def forward(self, inputs, prev_state=None):
+            spice_signals = self.init_forward_pass(inputs, prev_state)
+            for t in spice_signals.trials:
+                self.call_module(
+                    key_module='value', key_state='value',
+                    inputs=spice_signals.rewards[t, 0],
+                    action_mask=spice_signals.actions[t, 0],
+                )
+                spice_signals.logits[t] = self.state['value']
+            spice_signals = self.post_forward_pass(spice_signals)
+            return spice_signals.logits, self.get_state()
 
-    # Standard forward with offsets
-    out_standard = module._uncompiled_forward(inputs, state, precomputed_offsets=offsets)
-
-    # Polynomial forward with offsets (no mask)
-    out_polynomial = module._uncompiled_forward_polynomial(inputs, state, precomputed_offsets=offsets)
-
-    assert torch.allclose(out_standard, out_polynomial, atol=1e-4), (
-        f"Forward with offsets mismatch.\n"
-        f"Max abs diff: {(out_standard - out_polynomial).abs().max().item():.2e}"
+    model = SimpleModel(
+        n_actions=2, n_participants=1, n_experiments=1,
+        spice_config=config, sindy_polynomial_degree=1,
+        ensemble_size=2, compiled_forward=False,
     )
+
+    penalty = _compute_coefficient_l2(model)
+    assert penalty.dim() == 0, "L2 penalty should be a scalar"
+    assert penalty.requires_grad, "L2 penalty should be differentiable"
+    penalty.backward()
+
+    # Check gradients reached the RNN weights
+    rnn = model.submodules_rnn['value']
+    for group in rnn.projection.degree_groups:
+        for w in group:
+            assert w.grad is not None, "L2 penalty should produce gradients for RNN weights"
 
 
 if __name__ == '__main__':

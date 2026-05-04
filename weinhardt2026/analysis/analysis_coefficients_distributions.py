@@ -122,7 +122,7 @@ def prepare_spice(
         n_actions=n_actions,
         n_participants=n_participants,
         n_reward_features=n_reward_features,
-        sindy_library_polynomial_degree=2,
+        polynomial_degree=2,
         ensemble_size=ensemble_size,
         use_sindy=True,
     )

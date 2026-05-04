@@ -9,7 +9,6 @@ from torch.utils.data import DataLoader, RandomSampler
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from typing import Tuple, Union, Optional
 import shutil
-from scipy.stats import t as t_dist
 from .model import BaseModel
 from .spice_utils import SpiceDataset
 from .sindy_differentiable import get_library_term_degrees
@@ -288,87 +287,85 @@ def cross_entropy_loss(prediction: torch.Tensor, target: torch.Tensor) -> torch.
 # PRUNING FUNCTIONS
 # -----------------------------------------------------------------------------------------
 
-def _ensemble_pruning(
+def _compute_test_failures(
     model: BaseModel,
-    sindy_ensemble_pruning: float,
-    sindy_threshold_pruning: float,
-    verbose: bool,
-):
+    sindy_ensemble_pruning: float = None,
+    sindy_threshold_pruning: float = None,
+) -> dict:
+    """Compute per-module test failure masks for pruning patience.
 
-    pruned = False
+    Returns ``{module: (P, X, terms) bool}`` — True where the term failed the test.
 
-    # Unified minimum-effect CI test: threshold serves as delta
-    confidence_masks = _compute_pruning_masks(
-        model,
-        ensemble_alpha=sindy_ensemble_pruning,
-        ensemble_delta=sindy_threshold_pruning or 0.0,
-        participant_threshold=None,
-        verbose=verbose,
-    )
-    for module in model.submodules_rnn:
-        mask = confidence_masks[module].to(model.device)  # (P, X, terms)
-        still_active = model.sindy_coefficients_presence[module].any(dim=0)  # (P, X, terms)
-        failed = ~mask & still_active
+    - **Ensemble** (E > 1, ``sindy_ensemble_pruning`` set): majority-vote test.
+      A term fails if fewer than ``sindy_ensemble_pruning`` fraction of ensemble
+      members have ``|coeff| > sindy_threshold_pruning``.
+    - **Single/threshold**: a term fails if ``|coeff| < sindy_threshold_pruning``
+      (collapsed across E via all-members-below).
+    """
+    failed = {}
 
-        # Update patience: increment on failure, reset on success
-        counters = model.sindy_pruning_patience_counters[module]
-        failed_e = failed.unsqueeze(0).expand_as(counters)
-        counters.data = torch.where(failed_e, counters + 1, torch.zeros_like(counters))
+    if sindy_ensemble_pruning is not None and model.ensemble_size > 1:
+        # Ensemble: majority-vote test
+        masks = _compute_pruning_masks(
+            model,
+            ensemble_vote_threshold=sindy_ensemble_pruning,
+            ensemble_delta=sindy_threshold_pruning or 0.0,
+            participant_threshold=None,
+            verbose=False,
+        )
+        for module in model.submodules_rnn:
+            mask = masks[module].to(model.device)  # (P, X, terms)
+            still_active = model.sindy_coefficients_presence[module].any(dim=0)  # (P, X, terms)
+            failed[module] = ~mask & still_active
 
-        # Prune terms that failed 2+ consecutive pruning events
-        prune = (counters[0] >= 2)  # (P, X, terms)
-        if prune.any():
-            prune_e = prune.unsqueeze(0).expand(model.ensemble_size, -1, -1, -1)
-            model.sindy_coefficients_presence[module] &= ~prune_e
-            counters.data *= (~prune_e).int()
-            pruned = True
+    elif sindy_threshold_pruning is not None:
+        # Single-member threshold test
+        unfolded = model._get_unfolded_coefficients_for_pruning()
+        for module in model.submodules_rnn:
+            coeffs = unfolded[module]  # (E, P, X, n_terms)
+            presence = model.sindy_coefficients_presence[module]
+            below = (coeffs.abs() < sindy_threshold_pruning) & presence
+            # Collapse E: term fails if ALL ensemble members are below threshold
+            failed[module] = below.all(dim=0)  # (P, X, terms)
 
-    return model, pruned
+    return failed
 
 
-def _minimum_effect_ci_test(
+def _majority_vote_test(
     coefficients: torch.Tensor,
     presence: torch.Tensor,
-    alpha: float = 0.05,
     delta: float = 0.0,
+    vote_threshold: float = 0.5,
 ) -> torch.Tensor:
     """
-    Minimum-effect confidence interval test across ensemble members.
+    Majority-vote test across ensemble members.
 
-    Tests whether the confidence interval for the ensemble mean coefficient
-    lies entirely outside the negligible zone [-delta, delta]. A term
-    survives iff: |mean| - t_crit * SE > delta.
+    A term survives iff at least ``vote_threshold`` fraction of active
+    ensemble members have ``|coeff| > delta``.  This acts as a majority
+    vote — robust to outliers and bimodal coefficient distributions that
+    arise from structural ambiguity in early training.
 
-    When delta=0, equivalent to a standard two-tailed t-test for non-zero mean.
-
-    Pruned coefficients are treated as zero estimates, so terms only found by
-    a few ensemble members are naturally penalized.
+    Pruned ensemble members (``presence == False``) are excluded from
+    both the numerator and the denominator.
 
     Args:
-        coefficients: [E, P, X, terms] raw coefficient values
+        coefficients: [E, P, X, terms] effective coefficient values
         presence: [E, P, X, terms] boolean presence mask
-        alpha: confidence level (default: 0.05)
-        delta: minimum effect size threshold (default: 0.0)
+        delta: minimum effect size (|coeff| <= delta counts as a zero-vote)
+        vote_threshold: required fraction of active members voting nonzero (default: 0.5)
 
     Returns:
-        [P, X, terms] boolean mask — True where term passes the CI test
+        [P, X, terms] boolean mask — True where term passes the vote
     """
-
     effective_coeffs = (coefficients * presence.float()).detach()
-    E = effective_coeffs.shape[0]
 
-    mean = effective_coeffs.mean(dim=0)                # [P, X, terms]
-    std = effective_coeffs.std(dim=0, correction=1)    # [P, X, terms]
-    se = std / (E ** 0.5)
+    n_active = presence.float().sum(dim=0)                                       # [P, X, terms]
+    n_voting_nonzero = ((effective_coeffs.abs() > delta) & presence).float().sum(dim=0)
 
-    t_critical = t_dist.ppf(1 - alpha / 2, df=E - 1)
-
-    # CI lower bound for |mean| must exceed delta
-    ci_lower = mean.abs() - t_critical * se
-    significant = ci_lower > delta
+    fraction = n_voting_nonzero / n_active.clamp(min=1)
+    significant = fraction >= vote_threshold
 
     # Require at least 2 active ensemble members for a valid test
-    n_active = presence.float().sum(dim=0)
     significant = significant & (n_active >= 2)
 
     return significant
@@ -376,7 +373,7 @@ def _minimum_effect_ci_test(
 
 def _compute_ensemble_masks(
     model: BaseModel,
-    test_fn: callable = _minimum_effect_ci_test,
+    test_fn: callable = _majority_vote_test,
     verbose: bool = True,
     **test_fn_kwargs,
 ) -> dict:
@@ -465,10 +462,10 @@ def _compute_participant_masks(
 
 def _compute_pruning_masks(
     model: BaseModel,
-    ensemble_alpha: float = None,
+    ensemble_vote_threshold: float = None,
     ensemble_delta: float = 0.0,
     participant_threshold: float = None,
-    ensemble_test_fn: callable = _minimum_effect_ci_test,
+    ensemble_test_fn: callable = _majority_vote_test,
     verbose: bool = True,
 ) -> dict:
     """
@@ -476,8 +473,8 @@ def _compute_pruning_masks(
 
     Args:
         model: trained model with SINDy coefficients
-        ensemble_alpha: confidence level for ensemble CI test (None to skip)
-        ensemble_delta: minimum effect size for ensemble CI test (default: 0.0)
+        ensemble_vote_threshold: required fraction of ensemble members voting nonzero (None to skip)
+        ensemble_delta: minimum effect size for ensemble vote (default: 0.0)
         participant_threshold: required fraction of (P * X) slots (None to skip)
         ensemble_test_fn: statistical test function for ensemble filtering
         verbose: print filtering results
@@ -486,10 +483,10 @@ def _compute_pruning_masks(
         Dict mapping module names to [P, X, terms] boolean masks
     """
     # Step 1: Ensemble filtering (per participant)
-    if ensemble_alpha is not None:
+    if ensemble_vote_threshold is not None:
         ensemble_masks = _compute_ensemble_masks(
             model, test_fn=ensemble_test_fn, verbose=verbose,
-            alpha=ensemble_alpha, delta=ensemble_delta,
+            vote_threshold=ensemble_vote_threshold, delta=ensemble_delta,
         )
     else:
         # No ensemble filtering — term is present for (P, X) if any ensemble member has it
@@ -515,6 +512,30 @@ def _compute_pruning_masks(
 # CORE TRAINING FUNCTIONS
 # -----------------------------------------------------------------------------------------
 
+def _compute_coefficient_l2(model: BaseModel) -> torch.Tensor:
+    """Compute mean squared effective polynomial coefficients across all modules.
+
+    Penalizes ``α_n * θ_raw`` (the effective contribution of each term to the
+    state update), excluding already-pruned terms.
+
+    Returns:
+        Scalar tensor (differentiable).
+    """
+    penalty = torch.tensor(0.0, device=model.device)
+    n_terms_total = 0
+    for key, rnn in model.submodules_rnn.items():
+        if rnn is None:
+            continue
+        theta = rnn.unfold_polynomial_coefficients()  # (E, n_terms) — group-level
+        theta_eff = theta * rnn.alpha_n
+        # Apply presence mask (don't penalize pruned terms)
+        presence = model.sindy_coefficients_presence[key].any(dim=(1, 2))  # (E, n_terms)
+        theta_eff = theta_eff * presence.float()
+        penalty = penalty + theta_eff.pow(2).sum()
+        n_terms_total += presence.float().sum().item()
+    return penalty / max(n_terms_total, 1)
+
+
 def _run_batch_training(
     model: BaseModel,
     xs: torch.Tensor,
@@ -522,6 +543,7 @@ def _run_batch_training(
     optimizer: torch.optim.Optimizer = None,
     n_steps: int = None,
     loss_fn: callable = cross_entropy_loss,
+    l2_coefficient: float = 0,
     ):
 
     """
@@ -556,6 +578,10 @@ def _run_batch_training(
 
         loss_step = loss_fn(ys_pred, ys_step)
 
+        # L2 penalty on effective polynomial coefficients
+        if l2_coefficient > 0:
+            loss_step = loss_step + l2_coefficient * _compute_coefficient_l2(model)
+
         if torch.is_grad_enabled():
             optimizer.zero_grad()
             loss_step.backward()
@@ -581,11 +607,13 @@ def _run_joint_training(
     n_steps: int = None,
     use_scheduler: bool = False,
     loss_fn: callable = cross_entropy_loss,
+    l2_coefficient: float = 0,
 
     sindy_pruning_frequency: int = None,
     sindy_threshold_pruning: float = None,
     sindy_ensemble_pruning: float = None,
     sindy_population_pruning: float = None,
+    sindy_n_terms_pruning: int = None,
 
     convergence_threshold: float = 0,
     verbose: bool = False,
@@ -654,6 +682,7 @@ def _run_joint_training(
                         optimizer=optimizer,
                         n_steps=n_steps,
                         loss_fn=loss_fn,
+                        l2_coefficient=l2_coefficient,
                     )
                     loss_train += loss_i
 
@@ -675,19 +704,14 @@ def _run_joint_training(
             # Pruning on unfolded polynomial coefficients
             if use_pruning and n_calls_to_train_model >= n_warmup_steps:
 
-                if (sindy_ensemble_pruning is None or model.ensemble_size == 1) and sindy_threshold_pruning is not None:
-                    model.sindy_coefficient_patience(threshold=sindy_threshold_pruning)
+                # Every epoch: run test and update patience
+                failed = _compute_test_failures(model, sindy_ensemble_pruning, sindy_threshold_pruning)
+                if failed:
+                    model.update_pruning_patience(failed)
 
+                # Every pruning_frequency epochs: prune terms that failed consistently
                 if n_calls_to_train_model % sindy_pruning_frequency == 0:
-                    if sindy_ensemble_pruning is not None and model.ensemble_size > 1:
-                        model, pruned = _ensemble_pruning(
-                            model=model,
-                            sindy_ensemble_pruning=sindy_ensemble_pruning,
-                            sindy_threshold_pruning=sindy_threshold_pruning,
-                            verbose=verbose,
-                        )
-                    elif sindy_threshold_pruning is not None and sindy_threshold_pruning > 0:
-                        model.sindy_coefficient_pruning(patience=sindy_pruning_frequency)
+                    model.prune_by_patience(patience_threshold=sindy_pruning_frequency, n_terms=sindy_n_terms_pruning)
 
             # Check convergence
             dloss = last_loss - (loss_test if dataloader_test is not None else loss_train)
@@ -745,11 +769,13 @@ def fit_spice(
     n_steps: int = None,
     convergence_threshold: float = 1e-7,
     loss_fn: callable = cross_entropy_loss,
+    l2_coefficient: float = 0,
 
     sindy_pruning_frequency: int = 1,
     sindy_threshold_pruning: float = None,
     sindy_ensemble_pruning: float = None,
     sindy_population_pruning: float = None,
+    sindy_n_terms_pruning: int = None,
 
     verbose: bool = True,
     keep_log: bool = False,
@@ -757,11 +783,11 @@ def fit_spice(
     path_save_checkpoints: str = None,
 ) -> Tuple[BaseModel, torch.optim.Optimizer, float]:
     """
-    SPICE training pipeline: behavioral loss + L2 weight decay + polynomial pruning.
+    SPICE training pipeline: behavioral loss + L2 coefficient decay + polynomial pruning.
 
     Trains the polynomial RNN on behavioral prediction loss (cross-entropy by
-    default). Regularization comes from AdamW's L2 weight decay which implicitly
-    penalizes higher-degree polynomial terms more. Periodic pruning applies
+    default). Regularization comes from L2 penalty on unfolded effective
+    polynomial coefficients (``l2_coefficient``). Periodic pruning applies
     minimum-effect CI tests on unfolded polynomial coefficients.
 
     Args:
@@ -803,7 +829,7 @@ def fit_spice(
         print(f"\tRNN training: [{'x' if epochs > 0 else ' '}]")
         pruning_details = []
         if sindy_ensemble_pruning is not None:
-            pruning_details.append(f"CI test alpha={sindy_ensemble_pruning}")
+            pruning_details.append(f"majority vote={sindy_ensemble_pruning}")
             if sindy_threshold_pruning is not None and sindy_threshold_pruning > 0:
                 pruning_details.append(f"delta={sindy_threshold_pruning}")
         elif sindy_threshold_pruning is not None and sindy_threshold_pruning > 0:
@@ -856,11 +882,13 @@ def fit_spice(
                     batch_size=batch_size,
                     convergence_threshold=convergence_threshold,
                     loss_fn=loss_fn,
+                    l2_coefficient=l2_coefficient,
 
                     sindy_threshold_pruning=sindy_threshold_pruning,
                     sindy_pruning_frequency=sindy_pruning_frequency,
                     sindy_ensemble_pruning=sindy_ensemble_pruning,
                     sindy_population_pruning=sindy_population_pruning,
+                    sindy_n_terms_pruning=sindy_n_terms_pruning,
 
                     verbose=verbose,
                     keep_log=keep_log,

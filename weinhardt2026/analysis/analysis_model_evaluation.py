@@ -110,16 +110,16 @@ def analysis_model_evaluation(
         
         # use spice
         print("Computing choice probabilities with SPICE model...")
-        spice_model.eval(use_sindy=True, aggregate=False)
+        spice_model.eval(aggregate=False)
         
         spice_predictions, _ = spice_model(dataset.xs.to(spice_model.device))           
         spice_choice_probs = get_choice_probs(spice_predictions.mean(dim=0)).detach().cpu()
         
-        spice_model.use_sindy(False)
+        # spice_model.use_sindy(False)
         spice_model.model.init_state(batch_size=dataset.xs.shape[0])
         spice_rnn_predictions, _ = spice_model(dataset.xs.to(spice_model.device))           
         spice_rnn_choice_probs = get_choice_probs(spice_rnn_predictions.mean(dim=0)).detach().cpu()
-        spice_model.use_sindy(True)
+        # spice_model.use_sindy(True)
     else:
         spice_parameters = torch.nan
         spice_rnn_parameters = torch.nan

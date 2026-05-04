@@ -43,7 +43,7 @@ sample_model = SpiceEstimator(
     spice_config=spice_model.CONFIG,
     n_actions=sample_dataset.ys.shape[-1],
     n_participants=1,
-    sindy_library_polynomial_degree=2,
+    polynomial_degree=2,
 )
 n_coefficients_fitted_model = sum(
     sample_model.model.sindy_coefficients[m].shape[-1]
@@ -96,7 +96,7 @@ for index_par, par in enumerate(participants):
             spice_config=spice_model.CONFIG,
             n_actions=n_actions,
             n_participants=par,
-            sindy_library_polynomial_degree=2,
+            polynomial_degree=2,
             ensemble_size=ensemble_size,
         )
         fitted_model.load_spice(path_model=path_model.replace('PAR', str(par)).replace('IT', str(it)))

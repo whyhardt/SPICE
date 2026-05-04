@@ -66,17 +66,19 @@ class EnsembleEmbedding(nn.Module):
 
     
 class EnsemblePolynomialLayer(nn.Module):
-    """Polynomial projection: element-wise product of ``degree`` independent linear projections.
-    
-    For degree=1: linear (no non-linearity)
-    For degree=2: bilinear — (W1 x + b1) * (W2 x + b2), exactly degree-2 polynomial
-    For degree=3: trilinear, exactly degree-3 polynomial
-    ...and so on.
+    """Disentangled polynomial projection: sum of per-degree multilinear products.
 
-    The output is an exact degree-N polynomial in the input, which aligns
-    perfectly with a SINDy polynomial library of the same degree.
+    Each degree d has its own independent set of d linear projections (without biases).
+    The output is the sum across all degrees:
 
-    Parameters per projection: (ensemble_size, output_size, input_size)
+        y = Σ_{d=1}^{D} Π_{k=1}^{d} (W_{d,k} @ x)
+
+    This keeps degrees disentangled — degree-d terms come exclusively from the
+    degree-d group, with no cross-degree contamination. The constant (degree-0)
+    term is handled externally by the output bias in ``EnsembleRNNModule``.
+
+    Parameters per degree d: d weight matrices of shape (ensemble_size, output_size, input_size)
+    Total weights: D*(D+1)/2 matrices.
     Input:  (E, B, F)
     Output: (E, B, O)
     """
@@ -84,45 +86,52 @@ class EnsemblePolynomialLayer(nn.Module):
         super().__init__()
         assert degree >= 1, f"degree must be >= 1, got {degree}"
         self.degree = degree
+        self.ensemble_size = ensemble_size
+        self.input_size = input_size
+        self.output_size = output_size
 
-        self.weights = nn.ParameterList([
-            nn.Parameter(torch.empty(ensemble_size, output_size, input_size))
-            for _ in range(degree)
-        ])
-        self.biases = nn.ParameterList([
-            nn.Parameter(torch.zeros(ensemble_size, output_size))
-            for _ in range(degree)
-        ])
-        for w in self.weights:
-            nn.init.xavier_normal_(w, gain=0.01)# ** 0.5)
-            
-    def forward(self, x, weight_offsets=None, bias_offsets=None):
-        """Forward pass through multilinear projection.
+        # degree_groups[d_idx] = ParameterList of (d_idx+1) weight matrices for degree (d_idx+1)
+        # No biases inside forms — each degree-d product produces exactly degree-d monomials.
+        base_gain = 0.01
+        self.degree_groups = nn.ModuleList()
+        for d in range(1, degree + 1):
+            gain_d = base_gain ** (1.0 / d)
+            group = nn.ParameterList([
+                nn.Parameter(torch.empty(ensemble_size, output_size, input_size))
+                for _ in range(d)
+            ])
+            for w in group:
+                nn.init.xavier_normal_(w, gain=gain_d)
+            self.degree_groups.append(group)
+
+    def forward(self, x, weight_offsets=None):
+        """Forward pass through disentangled polynomial projection.
 
         Args:
             x: (E, B, F) input tensor
-            weight_offsets: Optional list of (E, B, O, I) per-batch weight offsets (one per degree).
-                When provided, effective weights are group + offset per batch element.
-            bias_offsets: Optional list of (E, B, O) per-batch bias offsets (one per degree).
+            weight_offsets: Optional nested list of per-batch weight offsets.
+                Structure: weight_offsets[d_idx][k] has shape (E, B, O, I) for
+                degree group d_idx, form k within that group.
         """
-        # x: (E, B, F) -> (E, B, O)
-        if weight_offsets is None:
-            # Original path: shared weights across batch
-            result = torch.einsum('eoi,ebi->ebo', self.weights[0], x) + self.biases[0].unsqueeze(1)
-            for w, b in zip(self.weights[1:], self.biases[1:]):
-                result = result * (torch.einsum('eoi,ebi->ebo', w, x) + b.unsqueeze(1))
-        else:
-            # Per-batch path: group weights + per-participant offsets
-            w_eff = self.weights[0].unsqueeze(1) + weight_offsets[0]  # (E,1,O,I) + (E,B,O,I)
-            b_eff = self.biases[0].unsqueeze(1) + bias_offsets[0]     # (E,1,O) + (E,B,O)
-            result = torch.einsum('eboi,ebi->ebo', w_eff, x) + b_eff
-            for k in range(1, self.degree):
-                w_eff = self.weights[k].unsqueeze(1) + weight_offsets[k]
-                b_eff = self.biases[k].unsqueeze(1) + bias_offsets[k]
-                result = result * (torch.einsum('eboi,ebi->ebo', w_eff, x) + b_eff)
-        if self.degree > 1:
-            result = result * (1.0 / self.degree ** 0.5)
-        return result
+        E, B, F = x.shape
+        parts = []
+
+        for d_idx, group in enumerate(self.degree_groups):
+            if weight_offsets is None:
+                # Group-level: shared weights across batch
+                product = torch.einsum('eoi,ebi->ebo', group[0], x)
+                for w in group[1:]:
+                    product = product * torch.einsum('eoi,ebi->ebo', w, x)
+            else:
+                # Per-participant: group weights + offsets
+                w_eff = group[0].unsqueeze(1) + weight_offsets[d_idx][0]
+                product = torch.einsum('eboi,ebi->ebo', w_eff, x)
+                for k in range(1, len(group)):
+                    w_eff = group[k].unsqueeze(1) + weight_offsets[d_idx][k]
+                    product = product * torch.einsum('eboi,ebi->ebo', w_eff, x)
+            parts.append(product)
+
+        return torch.cat(parts, dim=-1)  # (E, B, D * output_size)
 
 
 class EnsembleRNNModule(nn.Module):
@@ -148,42 +157,41 @@ class EnsembleRNNModule(nn.Module):
         self.embedding_size = embedding_size
         self.max_offset_ratio = max_offset_ratio
 
-        proj_size = max(input_size, 1) * polynomial_degree + 1
+        n_features = input_size + 1  # +1 for hidden state
+        hidden_per_degree = max(n_features, 2) * 2
+        proj_size = polynomial_degree * hidden_per_degree
         hidden_size = 1
 
-        # Multilinear projection: degree-N polynomial non-linearity
+        # Disentangled polynomial projection: sum of per-degree multilinear products
         self.projection = EnsemblePolynomialLayer(
             ensemble_size=ensemble_size,
-            input_size=input_size + 1,  # +1 for hidden state
-            output_size=proj_size,
+            input_size=n_features,
+            output_size=hidden_per_degree,
             degree=polynomial_degree,
         )
 
-        # Output projection
+        # Output projection (combines all degree groups via concatenated hidden dims)
         self.weight_n = nn.Parameter(torch.empty(ensemble_size, 1, proj_size))
         self.bias_n = nn.Parameter(torch.zeros(ensemble_size, 1))
         nn.init.xavier_uniform_(self.weight_n.view(ensemble_size, 1, proj_size))
 
         # Linear damping (scalar, shared across ensemble and participants)
-        self.damping_coefficient = nn.Parameter(torch.tensor(-3.0))
-        # When True, candidate is scaled by alpha: h = (1-α)*h + α*n
-        # When False, candidate is unscaled:       h = (1-α)*h + n
-        self.scale_candidate = True
+        self.scale_state = nn.Parameter(torch.tensor(-3.0))
 
         self.dropout = nn.Dropout(p=dropout)
         self.hidden_size = hidden_size
+        self.hidden_per_degree = hidden_per_degree
         self.ensemble_size = ensemble_size
 
         # Hypernetwork: embedding -> per-participant weight offsets
         # Two-layer MLP with GELU non-linearity. The final layer is zero-initialized
         # so the model starts as a pure group model (zero offsets).
         if embedding_size > 0:
-            # Compute split sizes for each weight/bias matrix
+            # Compute split sizes: one entry per weight matrix across all degree groups
             self._offset_split_sizes = []
-            for w in self.projection.weights:
-                self._offset_split_sizes.append(w.shape[1] * w.shape[2])  # O * I_in
-            for b in self.projection.biases:
-                self._offset_split_sizes.append(b.shape[1])  # O
+            for group in self.projection.degree_groups:
+                for w in group:
+                    self._offset_split_sizes.append(w.shape[1] * w.shape[2])  # O * I_in
             self._offset_split_sizes.append(self.weight_n.shape[1] * self.weight_n.shape[2])  # 1 * proj_size
             self._offset_split_sizes.append(self.bias_n.shape[1])  # 1
 
@@ -196,16 +204,34 @@ class EnsembleRNNModule(nn.Module):
             nn.init.zeros_(self.hypernet_out.bias)
 
         # Precompute library structure for polynomial unfolding
-        n_features = self.projection.weights[0].shape[2]  # I_in = input_size + 1
         lib = build_library_structure(n_features, polynomial_degree)
         self._library_terms = lib['terms']
         self._n_library_terms = lib['n_terms']
         self._bias_index = lib['bias_index']
+        self._degree_ranges = lib['degree_ranges']
         self.register_buffer('_mult_table', lib['mult_table'])
         self.register_buffer('_linear_indices', lib['linear_indices'])
 
         if compiled_forward:
-            self._compiled_forward = torch.compile(self._uncompiled_forward, dynamic=True)
+            self._compiled_forward = torch.compile(self._forward_impl, dynamic=True)
+
+    @property
+    def alpha(self):
+        """State damping factor for gated polynomial update.
+
+        Controls how much of the previous state is retained:
+        ``h[t+1] = (1-α)*h[t] + α_n * n``
+        """
+        return torch.sigmoid(self.scale_state)
+
+    @property
+    def alpha_n(self):
+        """Candidate scaling factor for gated polynomial update.
+
+        Controls how much the polynomial candidate contributes:
+        ``h[t+1] = (1-α)*h[t] + α_n * n``
+        """
+        return 1.0  # torch.sigmoid(self.scale_candidate) for learnable scaling
 
     @staticmethod
     def _constrain_offset(offset, reference, max_ratio):
@@ -242,8 +268,8 @@ class EnsembleRNNModule(nn.Module):
             embedding: (E, B, emb_dim) — B already includes item expansion if needed.
 
         Returns:
-            proj_w_offsets: list of (E, B, O, I_in) per degree
-            proj_b_offsets: list of (E, B, O) per degree
+            proj_w_offsets: nested list matching degree_groups structure —
+                proj_w_offsets[d_idx][k] has shape (E, B, O, I_in)
             out_w_offset: (E, B, 1, proj_size)
             out_b_offset: (E, B, 1)
         """
@@ -258,21 +284,17 @@ class EnsembleRNNModule(nn.Module):
 
         parts = offsets.split(self._offset_split_sizes, dim=-1)
 
-        # Projection weight offsets (constrained relative to group weights)
+        # Projection weight offsets organized by degree group
         idx = 0
         proj_w_offsets = []
-        for w in self.projection.weights:
-            O, I_in = w.shape[1], w.shape[2]
-            offset = self._constrain_offset(parts[idx].reshape(E, B, O, I_in), w, self.max_offset_ratio)
-            proj_w_offsets.append(offset)
-            idx += 1
-
-        # Projection bias offsets
-        proj_b_offsets = []
-        for b in self.projection.biases:
-            offset = self._constrain_offset(parts[idx], b, self.max_offset_ratio)
-            proj_b_offsets.append(offset)
-            idx += 1
+        for group in self.projection.degree_groups:
+            group_offsets = []
+            for w in group:
+                O, I_in = w.shape[1], w.shape[2]
+                offset = self._constrain_offset(parts[idx].reshape(E, B, O, I_in), w, self.max_offset_ratio)
+                group_offsets.append(offset)
+                idx += 1
+            proj_w_offsets.append(group_offsets)
 
         # Output weight offset
         out_w_offset = self._constrain_offset(
@@ -283,8 +305,8 @@ class EnsembleRNNModule(nn.Module):
 
         # Output bias offset
         out_b_offset = self._constrain_offset(parts[idx], self.bias_n, self.max_offset_ratio)
-        
-        return proj_w_offsets, proj_b_offsets, out_w_offset, out_b_offset
+
+        return proj_w_offsets, out_w_offset, out_b_offset
 
     def precompute_offsets(self, embedding, n_items):
         """Pre-compute per-participant weight offsets from embedding.
@@ -296,7 +318,7 @@ class EnsembleRNNModule(nn.Module):
             n_items: number of items (I) for expansion
 
         Returns:
-            Tuple of (proj_w_offsets, proj_b_offsets, out_w_offset, out_b_offset)
+            Tuple of (proj_w_offsets, out_w_offset, out_b_offset)
         """
         # Expand embedding for items: (E, B, D) -> (E, B*I, D)
         emb_expanded = embedding.unsqueeze(2).expand(-1, -1, n_items, -1).reshape(
@@ -304,76 +326,93 @@ class EnsembleRNNModule(nn.Module):
         )
         return self._generate_weight_offsets(emb_expanded)
 
-    def _get_effective_params(self, precomputed_offsets=None):
+    def _get_effective_params(self, individual_offsets=None):
         """Extract effective (group + offset) parameters for polynomial unfolding.
 
         Returns:
-            W_list: list of weight tensors, each (..., O, I_in)
-            b_list: list of bias tensors, each (..., O)
-            w_out: (..., O) output projection weights (hidden_size dim squeezed)
+            W_groups: list of lists — W_groups[d_idx][k] is the effective weight
+                tensor for degree group d_idx, form k. Shape (..., O, I_in).
+            w_out: (..., proj_size) output projection weights (hidden_size dim squeezed)
             b_out: (...,) output projection bias (hidden_size dim squeezed)
         """
-        if precomputed_offsets is not None:
-            proj_w_offsets, proj_b_offsets, out_w_offset, out_b_offset = precomputed_offsets
-            W_list = [w.unsqueeze(1) + off for w, off in zip(self.projection.weights, proj_w_offsets)]
-            b_list = [b.unsqueeze(1) + off for b, off in zip(self.projection.biases, proj_b_offsets)]
+        if individual_offsets is not None:
+            proj_w_offsets, out_w_offset, out_b_offset = individual_offsets
+            W_groups = []
+            for d_idx, group in enumerate(self.projection.degree_groups):
+                W_groups.append([
+                    w.unsqueeze(1) + proj_w_offsets[d_idx][k]
+                    for k, w in enumerate(group)
+                ])
             w_out = (self.weight_n.unsqueeze(1) + out_w_offset).squeeze(-2)
             b_out = (self.bias_n.unsqueeze(1) + out_b_offset).squeeze(-1)
         else:
-            W_list = list(self.projection.weights)
-            b_list = list(self.projection.biases)
+            W_groups = [list(group) for group in self.projection.degree_groups]
             w_out = self.weight_n.squeeze(-2)
             b_out = self.bias_n.squeeze(-1)
-        return W_list, b_list, w_out, b_out
+        return W_groups, w_out, b_out
 
-    def unfold_polynomial_coefficients(self, precomputed_offsets=None):
-        """Unfold weight matrices into polynomial coefficients via recursive multiplication.
+    def unfold_polynomial_coefficients(self, individual_offsets=None):
+        """Unfold weight matrices into polynomial coefficients via per-degree recursive expansion.
 
-        Expands the product of D independent linear projections
-        ``Π_{d=0}^{D-1} (W_d @ x + b_d) / sqrt(D)``
-        into the monomial basis, then contracts with the output projection
-        ``w_out`` to get final polynomial coefficients.
+        For each degree d, expands the product of d linear projections (without biases)
+        ``Π_{k=1}^{d} (W_{d,k} @ x)`` into degree-d monomial coefficients, then
+        contracts with the corresponding segment of the output projection ``w_out``.
+
+        Since degrees are disentangled, each degree group produces coefficients
+        for exactly its own degree — no cross-degree contamination.
 
         Works for arbitrary polynomial degree. Fully differentiable.
 
         Args:
-            precomputed_offsets: Hypernetwork offsets tuple or None.
-                Without offsets: returns group-level coefficients (E, n_terms).
+            individual_offsets: Hypernetwork offsets tuple or None.
+                Without offsets: returns group-level coefficients (B, n_terms).
                 With offsets: returns per-participant coefficients (E, B, n_terms).
 
         Returns:
             theta: Polynomial coefficients in monomial basis.
         """
-        W_list, b_list, w_out, b_out = self._get_effective_params(precomputed_offsets)
+        W_groups, w_out, b_out = self._get_effective_params(individual_offsets)
         degree = self.projection.degree
         n_terms = self._n_library_terms
         n_features = self._mult_table.shape[1]
+        hidden_per_degree = self.hidden_per_degree
 
-        # Initialize with first linear form (d=0):
-        # coeffs[..., j, t] is the monomial-t coefficient for hidden unit j
-        coeffs = torch.zeros(*W_list[0].shape[:-1], n_terms, device=W_list[0].device, dtype=W_list[0].dtype)
-        coeffs[..., self._linear_indices] = W_list[0]
-        coeffs[..., self._bias_index] = b_list[0]
+        # Determine leading shape: (E,) for group or (E, B*I) for per-participant
+        ref_w = W_groups[0][0]
+        leading_shape = ref_w.shape[:-2]  # everything before (O, I_in)
+        device = ref_w.device
+        dtype = ref_w.dtype
 
-        # Recursively multiply by remaining linear forms (d=1 to D-1)
-        for d in range(1, degree):
-            # Multiply all existing terms by the bias of the d-th linear form
-            new_coeffs = coeffs * b_list[d].unsqueeze(-1)
-            # For each feature, multiply existing terms and accumulate into product terms
-            for f in range(n_features):
-                targets = self._mult_table[:, f]
-                valid = targets >= 0
-                src_idx = torch.where(valid)[0]
-                tgt_idx = targets[src_idx]
-                new_coeffs[..., tgt_idx] = new_coeffs[..., tgt_idx] + coeffs[..., src_idx] * W_list[d][..., f:f+1]
-            coeffs = new_coeffs
+        # Accumulate coefficients across all degree groups
+        theta = torch.zeros(*leading_shape, n_terms, device=device, dtype=dtype)
 
-        # Apply degree scaling (matches EnsemblePolynomialLayer)
-        if degree > 1:
-            coeffs = coeffs * (1.0 / degree ** 0.5)
+        w_out_offset = 0
+        for d_idx, W_list_d in enumerate(W_groups):
+            d = d_idx + 1  # degree = 1, 2, 3, ...
 
-        # Contract with output projection: θ_t = Σ_j w_out_j * coeffs_j_t + b_out
-        theta = torch.einsum('...o,...ot->...t', w_out, coeffs)
+            # Initialize with first linear form: only degree-1 (linear) terms
+            # coeffs shape: (..., O, n_terms) where O = hidden_per_degree
+            coeffs = torch.zeros(*leading_shape, hidden_per_degree, n_terms, device=device, dtype=dtype)
+            coeffs[..., self._linear_indices] = W_list_d[0]  # (..., O, n_features)
+
+            # Recursively multiply by remaining forms (k=1 to d-1)
+            # No bias propagation — only feature multiplication
+            for k in range(1, d):
+                new_coeffs = torch.zeros_like(coeffs)
+                for f in range(n_features):
+                    targets = self._mult_table[:, f]
+                    valid = targets >= 0
+                    src_idx = torch.where(valid)[0]
+                    tgt_idx = targets[src_idx]
+                    new_coeffs[..., tgt_idx] = new_coeffs[..., tgt_idx] + coeffs[..., src_idx] * W_list_d[k][..., f:f+1]
+                coeffs = new_coeffs
+
+            # Contract with the w_out segment for this degree group
+            w_out_segment = w_out[..., w_out_offset:w_out_offset + hidden_per_degree]  # (..., O)
+            theta = theta + torch.einsum('...o,...ot->...t', w_out_segment, coeffs)
+            w_out_offset += hidden_per_degree
+
+        # Add output bias as the constant (degree-0) term
         theta[..., self._bias_index] = theta[..., self._bias_index] + b_out
 
         return theta
@@ -403,45 +442,7 @@ class EnsembleRNNModule(nn.Module):
 
         return library
 
-    def _uncompiled_forward(self, inputs, state, precomputed_offsets=None):
-        # inputs: (W, E, B, I, F) — control signals only (no embeddings)
-        # state:  (W, E, B, I) — last row is current hidden state
-        # precomputed_offsets: tuple from precompute_offsets() or None
-        W, E, B, I, F = inputs.shape
-
-        x = inputs.reshape(W, E, B * I, F)                          # (W, E, B*I, F)
-        h = state[-1].contiguous().reshape(E, B * I, 1) if state is not None else torch.zeros(E, B * I, 1, device=inputs.device)
-
-        if precomputed_offsets is not None:
-            proj_w_offsets, proj_b_offsets, out_w_offset, out_b_offset = precomputed_offsets
-        else:
-            proj_w_offsets = proj_b_offsets = None
-            out_w_offset = out_b_offset = None
-
-        outputs = []
-        for t in range(W):
-            x_t = torch.concat((h, x[t]), dim=-1)
-            gi = self.projection(x_t, weight_offsets=proj_w_offsets, bias_offsets=proj_b_offsets)
-
-            # Candidate: per-participant output weights if hypernetwork active
-            if out_w_offset is not None:
-                wn_eff = self.weight_n.unsqueeze(1) + out_w_offset    # (E,1,1,O) + (E,B,1,O) -> (E,B,1,O)
-                bn_eff = self.bias_n.unsqueeze(1) + out_b_offset      # (E,1,1) + (E,B,1) -> (E,B,1)
-                n = torch.einsum('ebgo,ebo->ebg', wn_eff, gi) + bn_eff
-            else:
-                n = torch.einsum('ego,ebo->ebg', self.weight_n, gi) + self.bias_n.unsqueeze(1)     # (E, B*I, 1)
-
-            # Gated update: h = (1-α)*h + α_n*n
-            alpha = torch.sigmoid(self.damping_coefficient)
-            alpha_n = alpha if self.scale_candidate else 1.0
-            h = (1 - alpha) * h + alpha_n * n                                                         # (E, B*I, 1)
-
-            outputs.append(h)
-
-        output = torch.stack(outputs)              # (W, E, B*I, H)
-        return output.reshape(W, E, B, I, 1)
-
-    def _uncompiled_forward_polynomial(self, inputs, state, precomputed_offsets=None, mask=None):
+    def _forward_impl(self, inputs, state, individual_offsets=None, mask=None):
         """Forward pass using unfolded polynomial coefficients with sparsity mask.
 
         Computes the same function as the standard forward but via the
@@ -450,7 +451,7 @@ class EnsembleRNNModule(nn.Module):
         Args:
             inputs: (W, E, B, I, F) control signals
             state: (W, E, B, I) previous hidden state
-            precomputed_offsets: Hypernetwork offsets tuple or None
+            individual_offsets: Hypernetwork offsets tuple or None
             mask: (E, n_terms) or (E, B*I, n_terms) sparsity mask, or None
 
         Returns:
@@ -462,14 +463,16 @@ class EnsembleRNNModule(nn.Module):
         h = state[-1].contiguous().reshape(E, B * I, 1) if state is not None else torch.zeros(E, B * I, 1, device=inputs.device)
 
         # Unfold RNN weights into polynomial coefficients (constant across timesteps)
-        theta = self.unfold_polynomial_coefficients(precomputed_offsets)
+        theta = self.unfold_polynomial_coefficients(individual_offsets)
 
         if mask is not None:
+            if theta.dim() < mask.dim():
+                theta = theta.unsqueeze(1)  # (E, 1, n_terms) broadcasts with (E, B*I, n_terms)
             theta = theta * mask.float()
 
         # Gated update: h = (1-α)*h + α_n*n
-        alpha = torch.sigmoid(self.damping_coefficient)
-        alpha_n = alpha if self.scale_candidate else 1.0
+        alpha = self.alpha
+        alpha_n = self.alpha_n
 
         outputs = []
         for t in range(W):
@@ -493,18 +496,16 @@ class EnsembleRNNModule(nn.Module):
         output = torch.stack(outputs)  # (W, E, B*I, 1)
         return output.reshape(W, E, B, I, 1)
 
-    def forward(self, inputs, state, precomputed_offsets=None):
-        if self._compile:
-            return self._compiled_forward(inputs, state, precomputed_offsets)
-        else:
-            return self._uncompiled_forward(inputs, state, precomputed_offsets)
+    def forward(self, inputs, state, precomputed_offsets=None, mask=None):
+        """Forward pass using unfolded polynomial coefficients with sparsity mask.
 
-    def forward_polynomial(self, inputs, state, precomputed_offsets=None, mask=None):
-        """Forward pass using unfolded polynomial coefficients.
-
-        See ``_uncompiled_forward_polynomial`` for details.
+        Uses the compiled variant when ``compiled_forward=True`` was set at
+        construction time, otherwise falls back to the uncompiled path.
         """
-        return self._uncompiled_forward_polynomial(inputs, state, precomputed_offsets, mask)
+        if self._compile:
+            return self._compiled_forward(inputs, state, precomputed_offsets, mask)
+        else:
+            return self._forward_impl(inputs, state, precomputed_offsets, mask)
 
         
 class BaseModel(nn.Module):
@@ -842,7 +843,7 @@ class BaseModel(nn.Module):
             mask = self._get_participant_mask(key_module, participant_index, experiment_index)  # (E, B, n_terms)
             if I > 1:
                 mask = mask.unsqueeze(2).expand(-1, -1, I, -1).reshape(E, B * I, -1)
-            next_value = rnn.forward_polynomial(inputs, state=value, precomputed_offsets=offsets, mask=mask).squeeze(-1)
+            next_value = rnn.forward(inputs, state=value, precomputed_offsets=offsets, mask=mask).squeeze(-1)
 
         elif key_module in self.submodules_eq.keys():
             # hard-coded equation — operates on last within-trial step
@@ -921,79 +922,99 @@ class BaseModel(nn.Module):
         """Unfold effective polynomial coefficients for all modules, shaped ``(E, P, X, T)``.
 
         Returns coefficients scaled by α_n so pruning operates on effective magnitudes.
-        Group-level models replicate the ``(E, T)`` result across P and X.
+        The state self-term deliberately excludes ``(1-α)`` — pruning targets only the
+        learnable component ``α_n * θ``, not the fixed damping contribution.
+        When a hypernetwork is active, unfolds per-participant coefficients so pruning
+        sees the actual per-participant magnitudes (averaged over items).
         """
         result = {}
         with torch.no_grad():
             for module in self.submodules_rnn:
                 rnn = self.submodules_rnn[module]
-                alpha = torch.sigmoid(rnn.damping_coefficient).item()
-                alpha_n = alpha if rnn.scale_candidate else 1.0
-                theta = rnn.unfold_polynomial_coefficients() * alpha_n  # (E, n_terms)
-                # Replicate to (E, P, X, n_terms) for uniform pruning interface
-                result[module] = theta.unsqueeze(1).unsqueeze(2).expand(
-                    -1, self.n_participants, self.n_experiments, -1
-                ).clone()
+                if rnn.embedding_size > 0 and hasattr(self, 'participant_embedding'):
+                    # Per-participant unfolding via hypernetwork
+                    P = self.n_participants
+                    X = self.n_experiments
+                    E = self.ensemble_size
+                    coeffs_list = []
+                    for p_id in range(P):
+                        p_idx = torch.full((E, 1), p_id, dtype=torch.int, device=self.device)
+                        emb = self.participant_embedding(p_idx)  # (E, 1, emb_dim)
+                        offsets = rnn.precompute_offsets(emb, self.n_items)
+                        theta = rnn.unfold_polynomial_coefficients(offsets)  # (E, 1*I, n_terms)
+                        # Average over items → (E, 1, n_terms)
+                        theta = theta.reshape(E, 1, self.n_items, -1).mean(dim=2)
+                        coeffs_list.append(theta)
+                    # Stack → (E, P, n_terms), expand to (E, P, X, n_terms)
+                    theta = torch.cat(coeffs_list, dim=1).unsqueeze(2).expand(-1, -1, X, -1)
+                else:
+                    # Group-level unfolding, replicate across P and X
+                    theta = rnn.unfold_polynomial_coefficients()  # (E, n_terms)
+                    theta = theta.unsqueeze(1).unsqueeze(2).expand(
+                        -1, self.n_participants, self.n_experiments, -1
+                    )
+                result[module] = (theta * rnn.alpha_n).clone()
         return result
 
-    def sindy_coefficient_pruning(self, patience: int = 1, n_terms_pruning: int = None):
-        """Prune polynomial terms that have exceeded the patience counter.
+    def update_pruning_patience(self, failed: dict):
+        """Update patience counters: +1 where failed, reset to 0 where passed.
 
-        Uses unfolded polynomial coefficients (from the RNN weights) rather than
-        separate SINDy parameters.
+        Args:
+            failed: ``{module: (P, X, terms) bool}`` — True where the test failed.
         """
-        module_list = list(self.submodules_rnn.keys())
-        unfolded = self._get_unfolded_coefficients_for_pruning()
-
-        all_coeffs_abs = torch.cat([unfolded[m].abs() for m in module_list], dim=-1)
-        all_masks = torch.cat([self.sindy_coefficients_presence[m] for m in module_list], dim=-1)
-        all_patience = torch.cat([self.sindy_pruning_patience_counters[m] for m in module_list], dim=-1)
-
-        is_candidate = (all_patience >= patience) & (all_masks == 1)
-
-        temp_coeffs = all_coeffs_abs.clone()
-        temp_coeffs[~is_candidate] = torch.inf
-
-        n_terms_pruning = all_coeffs_abs.shape[-1] if n_terms_pruning is None else n_terms_pruning
-        n_to_prune = min(n_terms_pruning, is_candidate.sum().item())
-        if n_to_prune == 0:
-            return
-        _, indices = torch.topk(temp_coeffs, n_to_prune, dim=-1, largest=False)
-
-        pruning_mask = torch.zeros_like(all_coeffs_abs, dtype=torch.bool)
-        pruning_mask.scatter_(dim=-1, index=indices, src=torch.ones_like(indices, dtype=torch.bool))
-        pruning_mask &= is_candidate
-
-        start_idx = 0
         with torch.no_grad():
+            for module in self.submodules_rnn:
+                counters = self.sindy_pruning_patience_counters[module]
+                failed_e = failed[module].unsqueeze(0).expand_as(counters)
+                counters.data = torch.where(failed_e, counters + 1, torch.zeros_like(counters))
+
+    def prune_by_patience(self, patience_threshold: int, n_terms: int = None):
+        """Prune terms where patience counter >= threshold.
+
+        When ``n_terms`` is set, only the ``n_terms`` smallest-magnitude
+        candidates (across all modules) are pruned per event, preventing
+        overly disruptive pruning steps.
+
+        Args:
+            patience_threshold: minimum consecutive failures before pruning.
+            n_terms: max terms to prune per event (``None`` = prune all eligible).
+        """
+        with torch.no_grad():
+            # Collect candidates across all modules
+            unfolded = self._get_unfolded_coefficients_for_pruning()
+            module_list = list(self.submodules_rnn.keys())
+
+            all_counters = torch.cat([self.sindy_pruning_patience_counters[m] for m in module_list], dim=-1)
+            all_coeffs = torch.cat([unfolded[m].abs() for m in module_list], dim=-1)
+
+            eligible = all_counters[0] >= patience_threshold  # (P, X, total_terms)
+            if not eligible.any():
+                return
+
+            if n_terms is not None:
+                # Rank by magnitude (mean across E), prune smallest n_terms
+                mean_coeffs = all_coeffs.mean(dim=0)  # (P, X, total_terms)
+                mean_coeffs[~eligible] = torch.inf
+                n_to_prune = min(n_terms, eligible.sum().item())
+                if n_to_prune == 0:
+                    return
+                _, indices = torch.topk(mean_coeffs.reshape(-1), n_to_prune, largest=False)
+                prune_flat = torch.zeros(mean_coeffs.numel(), dtype=torch.bool, device=mean_coeffs.device)
+                prune_flat[indices] = True
+                prune = prune_flat.reshape(mean_coeffs.shape) & eligible
+            else:
+                prune = eligible
+
+            # Apply pruning per module
+            start_idx = 0
             for module in module_list:
-                n_terms = self.sindy_coefficients_presence[module].shape[-1]
-                keep_mask = ~pruning_mask[..., start_idx:start_idx + n_terms]
-                self.sindy_coefficients_presence[module] &= keep_mask
-                self.sindy_pruning_patience_counters[module] *= keep_mask.int()
-                start_idx += n_terms
-
-    def sindy_coefficient_patience(self, threshold: float):
-        """Update patience counters based on unfolded polynomial coefficient magnitudes."""
-        module_list = list(self.submodules_rnn.keys())
-        unfolded = self._get_unfolded_coefficients_for_pruning()
-
-        all_coeffs_abs = torch.cat([unfolded[m].abs() for m in module_list], dim=-1)
-        all_masks = torch.cat([self.sindy_coefficients_presence[m] for m in module_list], dim=-1)
-        all_patience = torch.cat([self.sindy_pruning_patience_counters[m] for m in module_list], dim=-1)
-
-        below_threshold = (all_coeffs_abs < threshold) & (all_masks == 1)
-        all_patience = torch.where(
-            below_threshold,
-            all_patience + 1,
-            torch.zeros_like(all_patience)
-        )
-
-        start_idx = 0
-        for module in module_list:
-            n_terms = self.sindy_coefficients_presence[module].shape[-1]
-            self.sindy_pruning_patience_counters[module] = all_patience[..., start_idx:start_idx + n_terms]
-            start_idx += n_terms
+                n_mod_terms = self.sindy_coefficients_presence[module].shape[-1]
+                prune_mod = prune[..., start_idx:start_idx + n_mod_terms]
+                if prune_mod.any():
+                    prune_e = prune_mod.unsqueeze(0).expand_as(self.sindy_pruning_patience_counters[module])
+                    self.sindy_coefficients_presence[module] &= ~prune_e
+                    self.sindy_pruning_patience_counters[module].data *= (~prune_e).int()
+                start_idx += n_mod_terms
     def count_sindy_coefficients(self) -> torch.Tensor:
         """Returns count of active (non-zero) coefficients per (participant, experiment)."""
         coefficients = torch.zeros(self.n_participants, self.n_experiments, device=self.device)
@@ -1087,8 +1108,8 @@ class BaseModel(nn.Module):
             presence = self.sindy_coefficients_presence[module].float()  # (E, P, X, T)
 
             # Compute gate values (scalar, shared across ensemble)
-            alpha = torch.sigmoid(rnn.damping_coefficient).item()
-            alpha_n = alpha if rnn.scale_candidate else 1.0
+            alpha = rnn.alpha.item()
+            alpha_n = rnn.alpha_n
             state_linear_idx = rnn._linear_indices[0].item()  # state is feature 0
 
             with torch.no_grad():
