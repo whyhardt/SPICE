@@ -38,8 +38,8 @@ if __name__=='__main__':
     
     # pruning parameters
     parser.add_argument('--pruning_frequency', type=int, default=100, help='Epochs between pruning events')
-    parser.add_argument('--pruning_threshold', type=float, default=0.01, help='Threshold value for cutting off sindy terms (lowered for delta-form coefficients)')
-    parser.add_argument('--pruning_ensemble', type=float, default=0.05, help='t-test threshold for ensemble-based pruning')
+    parser.add_argument('--pruning_threshold', type=float, default=0.05, help='Threshold value for cutting off sindy terms (lowered for delta-form coefficients)')
+    parser.add_argument('--pruning_ensemble', type=float, default=0.6, help='t-test threshold for ensemble-based pruning')
     
     # Data setup parameters
     parser.add_argument('--train_ratio_time', type=float, default=None, help='Ratio of data used for training. Split along time dimension. Not combinable with test_sessions')
@@ -151,7 +151,6 @@ if __name__=='__main__':
         pruning_frequency=args.pruning_frequency,
         pruning_threshold=args.pruning_threshold,
         pruning_ensemble=args.pruning_ensemble,
-        pruning_population=args.pruning_population,
 
         # other parameters
         verbose=True,
