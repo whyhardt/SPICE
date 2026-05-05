@@ -533,9 +533,9 @@ def _compute_coefficient_penalty(model: BaseModel, norm: int = 1) -> torch.Tenso
         presence = model.sindy_coefficients_presence[key].any(dim=(1, 2))  # (E, n_terms)
         theta_eff = theta_eff * presence.float()
         if norm == 2:
-            penalty = penalty + theta_eff.pow(2).sum()
+            penalty = penalty + theta_eff.pow(2).sum() / model.ensemble_size
         elif norm == 1:
-            penalty = penalty + theta_eff.abs().sum()
+            penalty = penalty + theta_eff.abs().sum() / model.ensemble_size
         else:
             raise ValueError(f"norm has to be either 1 or 2 but was {norm}.")
         n_terms_total += presence.float().sum().item()
@@ -549,7 +549,7 @@ def _run_batch_training(
     optimizer: torch.optim.Optimizer = None,
     n_steps: int = None,
     loss_fn: callable = cross_entropy_loss,
-    lambda_coefficient: float = 0,
+    alpha_coefficient: float = 0,
     ):
 
     """
@@ -585,8 +585,8 @@ def _run_batch_training(
         loss_step = loss_fn(ys_pred, ys_step)
 
         # L2 penalty on effective polynomial coefficients
-        if lambda_coefficient > 0:
-            loss_step = loss_step + lambda_coefficient * _compute_coefficient_penalty(model, norm=1)
+        if alpha_coefficient > 0:
+            loss_step = loss_step + alpha_coefficient * _compute_coefficient_penalty(model, norm=1)
 
         if torch.is_grad_enabled():
             optimizer.zero_grad()
@@ -613,7 +613,7 @@ def _run_joint_training(
     n_steps: int = None,
     use_scheduler: bool = False,
     loss_fn: callable = cross_entropy_loss,
-    lambda_coefficient: float = 0,
+    alpha_coefficient: float = 0,
 
     pruning_frequency: int = None,
     pruning_threshold: float = None,
@@ -695,7 +695,7 @@ def _run_joint_training(
                         optimizer=optimizer,
                         n_steps=n_steps,
                         loss_fn=loss_fn,
-                        lambda_coefficient=lambda_coefficient,
+                        alpha_coefficient=alpha_coefficient,
                     )
                     loss_train += loss_i
 
@@ -710,7 +710,12 @@ def _run_joint_training(
                     if xs.device != model.device:
                         xs = xs.to(model.device)
                         ys = ys.to(model.device)
-                    _, _, loss_test = _run_batch_training(model=model, xs=xs.unsqueeze(0).repeat(model.ensemble_size, 1, 1, 1, 1), ys=ys.unsqueeze(0).repeat(model.ensemble_size, 1, 1, 1, 1), loss_fn=loss_fn)
+                    _, _, loss_test = _run_batch_training(
+                        model=model, 
+                        xs=xs.unsqueeze(0).repeat(model.ensemble_size, 1, 1, 1, 1), 
+                        ys=ys.unsqueeze(0).repeat(model.ensemble_size, 1, 1, 1, 1), 
+                        loss_fn=loss_fn,
+                        )
 
                 model = model.train()
 
@@ -725,7 +730,7 @@ def _run_joint_training(
 
                 # Every pruning_frequency epochs: prune terms that failed consistently
                 if n_calls_to_train_model % pruning_frequency == 0:
-                    model.prune_by_patience(patience_threshold=pruning_frequency, n_terms=pruning_n_terms)
+                    model.prune_by_patience(patience_threshold=pruning_frequency//2, n_terms=pruning_n_terms)
 
                 model.train()
 
@@ -785,7 +790,7 @@ def fit_spice(
     n_steps: int = None,
     convergence_threshold: float = 1e-7,
     loss_fn: callable = cross_entropy_loss,
-    lambda_coefficient: float = 0,
+    alpha_coefficient: float = 0,
 
     pruning_frequency: int = 1,
     pruning_threshold: float = None,
@@ -898,7 +903,7 @@ def fit_spice(
                     batch_size=batch_size,
                     convergence_threshold=convergence_threshold,
                     loss_fn=loss_fn,
-                    lambda_coefficient=lambda_coefficient,
+                    alpha_coefficient=alpha_coefficient,
 
                     pruning_threshold=pruning_threshold,
                     pruning_frequency=pruning_frequency,

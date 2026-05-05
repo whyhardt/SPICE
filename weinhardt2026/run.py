@@ -30,19 +30,16 @@ if __name__=='__main__':
 
     # RNN training parameters
     parser.add_argument('--epochs', type=int, default=1000, help='Number of training epochs')
-    parser.add_argument('--epochs_warmup', type=int, default=200, help='Number of training epochs for warmup (exp increase of sindy-weight; no pruning)')
+    parser.add_argument('--epochs_warmup', type=int, default=0, help='Number of training epochs for warmup (exp increase of sindy-weight; no pruning)')
     parser.add_argument('--lr', type=float, default=0.01, help='Learning rate')
-    parser.add_argument('--l2', type=float, default=0., help='L2 Reg of the RNN parameters')
+    parser.add_argument('--alpha', type=float, default=0.0001, help='L2 Reg of the RNN parameters')
     parser.add_argument('--ensemble', type=int, default=10, help='Number of independent members in the ensemble setup')
+    parser.add_argument('--embedding', type=int, default=16, help='Number of independent members in the ensemble setup')
     
-    # SINDy training parameters
-    parser.add_argument('--sindy_skip_refit', action='store_false', help='Refits the SINDy coefficients in Stage 2 training (default: True)')
-    parser.add_argument('--sindy_weight', type=float, default=0.1, help='Weight for SINDy regularization during RNN training')
-    parser.add_argument('--sindy_alpha', type=float, default=0.0001, help='Degree-weighted coefficient penalty strength (ridge alpha)')
+    # pruning parameters
     parser.add_argument('--pruning_frequency', type=int, default=100, help='Epochs between pruning events')
     parser.add_argument('--pruning_threshold', type=float, default=0.01, help='Threshold value for cutting off sindy terms (lowered for delta-form coefficients)')
     parser.add_argument('--pruning_ensemble', type=float, default=0.05, help='t-test threshold for ensemble-based pruning')
-    parser.add_argument('--pruning_population', type=float, default=None, help='Percentage of participants which have to have a term active in order to keep it.')
     
     # Data setup parameters
     parser.add_argument('--train_ratio_time', type=float, default=None, help='Ratio of data used for training. Split along time dimension. Not combinable with test_sessions')
@@ -142,11 +139,12 @@ if __name__=='__main__':
         kwargs_spice_class=args.model_kwargs,
         polynomial_degree=2,
         ensemble_size=args.ensemble,
+        embedding_size=args.embedding,
         
         # training parameters
         epochs=args.epochs,
         warmup_steps=args.epochs_warmup,
-        lambda_coefficient=args.l2,
+        alpha_coefficient=args.alpha,
         learning_rate=args.lr,
         
         # pruning parameters

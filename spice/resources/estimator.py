@@ -50,7 +50,7 @@ class SpiceEstimator(BaseEstimator):
         scheduler: Optional[bool] = False,
         ensemble_size: Optional[int] = 1,
         embedding_size: Optional[int] = 32,
-        lambda_coefficient: Optional[float] = 0,
+        alpha_coefficient: Optional[float] = 0,
         dropout: Optional[float] = 0.,
         loss_fn: Optional[callable] = cross_entropy_loss,
 
@@ -127,7 +127,7 @@ class SpiceEstimator(BaseEstimator):
 
         # Pruning parameters
         self.warmup_steps = warmup_steps
-        self.lambda_coefficient = lambda_coefficient
+        self.alpha_coefficient = alpha_coefficient
         self.pruning_frequency = pruning_frequency
         self.pruning_threshold = pruning_threshold
         self.pruning_population = pruning_population
@@ -202,7 +202,7 @@ class SpiceEstimator(BaseEstimator):
             n_steps=self.n_steps_per_call,
             convergence_threshold=self.convergence_threshold,
             loss_fn=self.loss_fn,
-            lambda_coefficient=self.lambda_coefficient,
+            alpha_coefficient=self.alpha_coefficient,
 
             pruning_frequency=self.pruning_frequency,
             pruning_threshold=self.pruning_threshold,
