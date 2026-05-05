@@ -291,7 +291,7 @@ def test_per_participant_unfolding():
 
 def test_coefficient_l2_differentiable():
     """_compute_coefficient_l2 should return a differentiable scalar."""
-    from spice.resources.spice_training import _compute_coefficient_l2
+    from spice.resources.spice_training import _compute_coefficient_penalty
     from spice.resources.model import BaseModel
     from spice.resources.spice_utils import SpiceConfig
 
@@ -323,7 +323,7 @@ def test_coefficient_l2_differentiable():
         ensemble_size=2, compiled_forward=False,
     )
 
-    penalty = _compute_coefficient_l2(model)
+    penalty = _compute_coefficient_penalty(model)
     assert penalty.dim() == 0, "L2 penalty should be a scalar"
     assert penalty.requires_grad, "L2 penalty should be differentiable"
     penalty.backward()

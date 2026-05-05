@@ -89,7 +89,7 @@ class EnsemblePolynomialLayer(nn.Module):
         self.ensemble_size = ensemble_size
         self.input_size = input_size
         self.output_size = output_size
-
+        
         # degree_groups[d_idx] = ParameterList of (d_idx+1) weight matrices for degree (d_idx+1)
         # No biases inside forms — each degree-d product produces exactly degree-d monomials.
         base_gain = 0.01
@@ -113,7 +113,6 @@ class EnsemblePolynomialLayer(nn.Module):
                 Structure: weight_offsets[d_idx][k] has shape (E, B, O, I) for
                 degree group d_idx, form k within that group.
         """
-        E, B, F = x.shape
         parts = []
 
         for d_idx, group in enumerate(self.degree_groups):
@@ -150,7 +149,7 @@ class EnsembleRNNModule(nn.Module):
     Input:  (within_ts, ensemble, batch, n_items, features)
     Output: (within_ts, ensemble, batch, n_items, 1)
     """
-    def __init__(self, ensemble_size, input_size, embedding_size=0, dropout=0., compiled_forward=True, polynomial_degree=2, max_offset_ratio=0.5, **kwargs):
+    def __init__(self, ensemble_size, input_size, embedding_size=0, dropout=0., compiled_forward=True, polynomial_degree=2, max_offset_ratio=1.0, **kwargs):
         super().__init__()
 
         self._compile = compiled_forward
@@ -177,6 +176,7 @@ class EnsembleRNNModule(nn.Module):
 
         # Linear damping (scalar, shared across ensemble and participants)
         self.scale_state = nn.Parameter(torch.tensor(-3.0))
+        self.scale_candidate = nn.Parameter(torch.tensor(-3.0))
 
         self.dropout = nn.Dropout(p=dropout)
         self.hidden_size = hidden_size
@@ -231,8 +231,9 @@ class EnsembleRNNModule(nn.Module):
         Controls how much the polynomial candidate contributes:
         ``h[t+1] = (1-α)*h[t] + α_n * n``
         """
-        return 1.0  # torch.sigmoid(self.scale_candidate) for learnable scaling
-
+        return torch.sigmoid(self.scale_candidate)
+        # return self.alpha
+    
     @staticmethod
     def _constrain_offset(offset, reference, max_ratio):
         """Scale offset so its norm doesn't exceed max_ratio * reference norm.
@@ -291,21 +292,24 @@ class EnsembleRNNModule(nn.Module):
             group_offsets = []
             for w in group:
                 O, I_in = w.shape[1], w.shape[2]
-                offset = self._constrain_offset(parts[idx].reshape(E, B, O, I_in), w, self.max_offset_ratio)
+                # offset = self._constrain_offset(parts[idx].reshape(E, B, O, I_in), w, self.max_offset_ratio)
+                offset = parts[idx].reshape(E, B, O, I_in)
                 group_offsets.append(offset)
                 idx += 1
             proj_w_offsets.append(group_offsets)
 
         # Output weight offset
-        out_w_offset = self._constrain_offset(
-            parts[idx].reshape(E, B, self.weight_n.shape[1], self.weight_n.shape[2]),
-            self.weight_n, self.max_offset_ratio,
-        )
+        # out_w_offset = self._constrain_offset(
+        #     parts[idx].reshape(E, B, self.weight_n.shape[1], self.weight_n.shape[2]),
+        #     self.weight_n, self.max_offset_ratio,
+        # )
+        out_w_offset = parts[idx].reshape(E, B, self.weight_n.shape[1], self.weight_n.shape[2])
         idx += 1
 
         # Output bias offset
-        out_b_offset = self._constrain_offset(parts[idx], self.bias_n, self.max_offset_ratio)
-
+        # out_b_offset = self._constrain_offset(parts[idx], self.bias_n, self.max_offset_ratio)
+        out_b_offset = parts[idx]
+        
         return proj_w_offsets, out_w_offset, out_b_offset
 
     def precompute_offsets(self, embedding, n_items):
@@ -470,10 +474,6 @@ class EnsembleRNNModule(nn.Module):
                 theta = theta.unsqueeze(1)  # (E, 1, n_terms) broadcasts with (E, B*I, n_terms)
             theta = theta * mask.float()
 
-        # Gated update: h = (1-α)*h + α_n*n
-        alpha = self.alpha
-        alpha_n = self.alpha_n
-
         outputs = []
         for t in range(W):
             # Build features: [state, controls]
@@ -490,7 +490,7 @@ class EnsembleRNNModule(nn.Module):
                 # Per-participant: theta is (E, B*I, n_terms)
                 n = (library * theta).sum(dim=-1, keepdim=True)
 
-            h = (1 - alpha) * h + alpha_n * n
+            h = (1 - self.alpha) * h + self.alpha_n * n
             outputs.append(h)
 
         output = torch.stack(outputs)  # (W, E, B*I, 1)
@@ -922,8 +922,9 @@ class BaseModel(nn.Module):
         """Unfold effective polynomial coefficients for all modules, shaped ``(E, P, X, T)``.
 
         Returns coefficients scaled by α_n so pruning operates on effective magnitudes.
-        The state self-term deliberately excludes ``(1-α)`` — pruning targets only the
-        learnable component ``α_n * θ``, not the fixed damping contribution.
+        For the state self-term, returns ``α_n * θ - α`` (deviation from identity) so
+        the pruning test checks whether the total state coefficient meaningfully differs
+        from 1.0, accounting for the gate's inherent ``(1-α)`` decay.
         When a hypernetwork is active, unfolds per-participant coefficients so pruning
         sees the actual per-participant magnitudes (averaged over items).
         """
@@ -953,7 +954,12 @@ class BaseModel(nn.Module):
                     theta = theta.unsqueeze(1).unsqueeze(2).expand(
                         -1, self.n_participants, self.n_experiments, -1
                     )
-                result[module] = (theta * rnn.alpha_n).clone()
+                coeffs = (theta * rnn.alpha_n).clone()
+                # State self-term: use α_n*θ - α (deviation from identity) so pruning
+                # tests whether (1+c)*h ≈ h, i.e. the state coefficient ≈ 1.0
+                state_idx = rnn._linear_indices[0].item()
+                coeffs[..., state_idx] = coeffs[..., state_idx] - rnn.alpha.item()
+                result[module] = coeffs
         return result
 
     def update_pruning_patience(self, failed: dict):
@@ -992,16 +998,18 @@ class BaseModel(nn.Module):
                 return
 
             if n_terms is not None:
-                # Rank by magnitude (mean across E), prune smallest n_terms
+                # Per (P, X) model: prune the n_terms smallest-magnitude eligible terms
                 mean_coeffs = all_coeffs.mean(dim=0)  # (P, X, total_terms)
                 mean_coeffs[~eligible] = torch.inf
-                n_to_prune = min(n_terms, eligible.sum().item())
+
+                n_to_prune = min(n_terms, mean_coeffs.shape[-1])
                 if n_to_prune == 0:
                     return
-                _, indices = torch.topk(mean_coeffs.reshape(-1), n_to_prune, largest=False)
-                prune_flat = torch.zeros(mean_coeffs.numel(), dtype=torch.bool, device=mean_coeffs.device)
-                prune_flat[indices] = True
-                prune = prune_flat.reshape(mean_coeffs.shape) & eligible
+
+                _, topk_indices = torch.topk(mean_coeffs, n_to_prune, dim=-1, largest=False)
+                prune = torch.zeros_like(eligible)
+                prune.scatter_(-1, topk_indices, True)
+                prune &= eligible
             else:
                 prune = eligible
 

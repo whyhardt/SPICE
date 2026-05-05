@@ -50,7 +50,7 @@ class SpiceEstimator(BaseEstimator):
         scheduler: Optional[bool] = False,
         ensemble_size: Optional[int] = 1,
         embedding_size: Optional[int] = 32,
-        l2_coefficient: Optional[float] = 0,
+        lambda_coefficient: Optional[float] = 0,
         dropout: Optional[float] = 0.,
         loss_fn: Optional[callable] = cross_entropy_loss,
 
@@ -127,7 +127,7 @@ class SpiceEstimator(BaseEstimator):
 
         # Pruning parameters
         self.warmup_steps = warmup_steps
-        self.l2_coefficient = l2_coefficient
+        self.lambda_coefficient = lambda_coefficient
         self.pruning_frequency = pruning_frequency
         self.pruning_threshold = pruning_threshold
         self.pruning_population = pruning_population
@@ -168,7 +168,7 @@ class SpiceEstimator(BaseEstimator):
         self.spice_optimizer = torch.optim.AdamW(
             self.model.parameters(),
             lr=learning_rate,
-            weight_decay=0.0001,
+            weight_decay=1e-3,
         )
         
     def fit(self, data: np.ndarray, targets: np.ndarray, data_test: np.ndarray = None, target_test: np.ndarray = None):
@@ -202,13 +202,13 @@ class SpiceEstimator(BaseEstimator):
             n_steps=self.n_steps_per_call,
             convergence_threshold=self.convergence_threshold,
             loss_fn=self.loss_fn,
-            l2_coefficient=self.l2_coefficient,
+            lambda_coefficient=self.lambda_coefficient,
 
-            sindy_pruning_frequency=self.pruning_frequency,
-            sindy_threshold_pruning=self.pruning_threshold,
-            sindy_ensemble_pruning=self.pruning_ensemble,
-            sindy_population_pruning=self.pruning_population,
-            sindy_n_terms_pruning=self.pruning_n_terms,
+            pruning_frequency=self.pruning_frequency,
+            pruning_threshold=self.pruning_threshold,
+            pruning_ensemble=self.pruning_ensemble,
+            pruning_population=self.pruning_population,
+            pruning_n_terms=self.pruning_n_terms,
 
             verbose=self.verbose,
             keep_log=self.keep_log,

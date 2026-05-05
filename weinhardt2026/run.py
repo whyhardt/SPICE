@@ -115,11 +115,7 @@ if __name__=='__main__':
     else:
         print("Training/test split: None")
         dataset_train, dataset_test = dataset, dataset
-    
-    # if args.sindy_weight > 0:
-    #     dataset_tuple = dataset_train.xs, dataset_train.ys, dataset_train.xs, dataset_train.ys
-    # else:
-    #     dataset_tuple = dataset_train.xs, dataset_train.ys, None, None
+        
     dataset_tuple = dataset_train.xs, dataset_train.ys, dataset_test.xs, dataset_test.ys
     
     n_actions = dataset_train.ys.shape[-1]
@@ -127,15 +123,6 @@ if __name__=='__main__':
     n_experiments = len(dataset_train.xs[..., -2].unique())
     n_items = args.n_items if args.n_items else n_actions
     n_sessions = dataset.xs.shape[0]
-    
-    # if n_items == n_actions:
-    #     if ((dataset.xs[..., n_actions:n_actions*2].nan_to_num(0) == 1).int() + (dataset.xs[..., n_actions:n_actions*2].nan_to_num(0) == 0).int()).sum() == dataset.xs.shape[0]*dataset.xs.shape[1]*n_actions:
-    #         # binary rewards
-    #         spice_model = workingmemory_rewardbinary
-    #     else:
-    #         spice_model = workingmemory
-    # else:
-    #     spice_model = workingmemory_multiitem
     
     spice_module = importlib.import_module(args.module)
     spice_model = spice_module.SpiceModel
@@ -153,20 +140,16 @@ if __name__=='__main__':
         n_actions=n_actions,
         n_items=n_items,
         kwargs_spice_class=args.model_kwargs,
-        
-        # rnn training parameters
-        epochs=args.epochs,
-        learning_rate=args.lr,
-        warmup_steps=args.epochs_warmup,
-        ensemble_size=args.ensemble,
-        l2_coefficient=args.l2,
-        scheduler=False,
-        batch_size=None,
-        
-        # sindy fitting parameters
-        # sindy_weight=args.sindy_weight,
-        # sindy_alpha=args.sindy_alpha,
         polynomial_degree=2,
+        ensemble_size=args.ensemble,
+        
+        # training parameters
+        epochs=args.epochs,
+        warmup_steps=args.epochs_warmup,
+        lambda_coefficient=args.l2,
+        learning_rate=args.lr,
+        
+        # pruning parameters
         pruning_frequency=args.pruning_frequency,
         pruning_threshold=args.pruning_threshold,
         pruning_ensemble=args.pruning_ensemble,
@@ -180,13 +163,11 @@ if __name__=='__main__':
     
     if args.epochs == 0:
         estimator.load_spice(args.model)
-    # estimator.sindy_refit = ~args.sindy_skip_refit
     
-    if estimator.epochs > 0:# or estimator.sindy_refit:
+    if estimator.epochs > 0:
         training_device_str = "CUDA" if estimator.device == torch.device('cuda') else "CPU"
         print("Training device:", training_device_str)
         print("="*_get_terminal_width())
-        # if args.epochs > 0:
         estimator.fit(*dataset_tuple)
         
         print("\nTraining complete!")
@@ -195,8 +176,9 @@ if __name__=='__main__':
     
     if args.results:
         
+        print("Evaluation on test data:")
         print(analysis_model_evaluation(
-            dataset=dataset_test,
+            dataset=dataset_train,
             spice_model=estimator,
         ))
         

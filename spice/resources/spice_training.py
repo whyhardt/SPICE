@@ -1,4 +1,5 @@
 
+import math
 import os
 import time
 import numpy as np
@@ -512,7 +513,7 @@ def _compute_pruning_masks(
 # CORE TRAINING FUNCTIONS
 # -----------------------------------------------------------------------------------------
 
-def _compute_coefficient_l2(model: BaseModel) -> torch.Tensor:
+def _compute_coefficient_penalty(model: BaseModel, norm: int = 1) -> torch.Tensor:
     """Compute mean squared effective polynomial coefficients across all modules.
 
     Penalizes ``α_n * θ_raw`` (the effective contribution of each term to the
@@ -531,7 +532,12 @@ def _compute_coefficient_l2(model: BaseModel) -> torch.Tensor:
         # Apply presence mask (don't penalize pruned terms)
         presence = model.sindy_coefficients_presence[key].any(dim=(1, 2))  # (E, n_terms)
         theta_eff = theta_eff * presence.float()
-        penalty = penalty + theta_eff.pow(2).sum()
+        if norm == 2:
+            penalty = penalty + theta_eff.pow(2).sum()
+        elif norm == 1:
+            penalty = penalty + theta_eff.abs().sum()
+        else:
+            raise ValueError(f"norm has to be either 1 or 2 but was {norm}.")
         n_terms_total += presence.float().sum().item()
     return penalty / max(n_terms_total, 1)
 
@@ -543,7 +549,7 @@ def _run_batch_training(
     optimizer: torch.optim.Optimizer = None,
     n_steps: int = None,
     loss_fn: callable = cross_entropy_loss,
-    l2_coefficient: float = 0,
+    lambda_coefficient: float = 0,
     ):
 
     """
@@ -579,8 +585,8 @@ def _run_batch_training(
         loss_step = loss_fn(ys_pred, ys_step)
 
         # L2 penalty on effective polynomial coefficients
-        if l2_coefficient > 0:
-            loss_step = loss_step + l2_coefficient * _compute_coefficient_l2(model)
+        if lambda_coefficient > 0:
+            loss_step = loss_step + lambda_coefficient * _compute_coefficient_penalty(model, norm=1)
 
         if torch.is_grad_enabled():
             optimizer.zero_grad()
@@ -607,13 +613,13 @@ def _run_joint_training(
     n_steps: int = None,
     use_scheduler: bool = False,
     loss_fn: callable = cross_entropy_loss,
-    l2_coefficient: float = 0,
+    lambda_coefficient: float = 0,
 
-    sindy_pruning_frequency: int = None,
-    sindy_threshold_pruning: float = None,
-    sindy_ensemble_pruning: float = None,
-    sindy_population_pruning: float = None,
-    sindy_n_terms_pruning: int = None,
+    pruning_frequency: int = None,
+    pruning_threshold: float = None,
+    pruning_ensemble: float = None,
+    pruning_population: float = None,
+    pruning_n_terms: int = None,
 
     convergence_threshold: float = 0,
     verbose: bool = False,
@@ -651,7 +657,14 @@ def _run_joint_training(
     t_start_total = time.time()
     loss_train = 0
     loss_test = None
-    use_pruning = sindy_pruning_frequency is not None and (sindy_ensemble_pruning is not None or sindy_threshold_pruning is not None)
+    use_pruning = pruning_frequency is not None and (pruning_ensemble is not None or pruning_threshold is not None)
+
+    # Auto-compute n_terms_pruning so the model can reach 0 coefficients
+    if use_pruning and pruning_n_terms is None:
+        n_pruning_events = max(1, (epochs - n_warmup_steps) // pruning_frequency)
+        total_terms = sum(m.shape[-1] for m in model.sindy_coefficients_presence.values())
+        pruning_n_terms = math.ceil(total_terms / n_pruning_events)
+
     is_notebook = _is_notebook()
 
     # Main training loop
@@ -682,7 +695,7 @@ def _run_joint_training(
                         optimizer=optimizer,
                         n_steps=n_steps,
                         loss_fn=loss_fn,
-                        l2_coefficient=l2_coefficient,
+                        lambda_coefficient=lambda_coefficient,
                     )
                     loss_train += loss_i
 
@@ -701,17 +714,20 @@ def _run_joint_training(
 
                 model = model.train()
 
-            # Pruning on unfolded polynomial coefficients
+            # Pruning on unfolded polynomial coefficients (eval mode to disable dropout)
             if use_pruning and n_calls_to_train_model >= n_warmup_steps:
+                model.eval()
 
                 # Every epoch: run test and update patience
-                failed = _compute_test_failures(model, sindy_ensemble_pruning, sindy_threshold_pruning)
+                failed = _compute_test_failures(model, pruning_ensemble, pruning_threshold)
                 if failed:
                     model.update_pruning_patience(failed)
 
                 # Every pruning_frequency epochs: prune terms that failed consistently
-                if n_calls_to_train_model % sindy_pruning_frequency == 0:
-                    model.prune_by_patience(patience_threshold=sindy_pruning_frequency, n_terms=sindy_n_terms_pruning)
+                if n_calls_to_train_model % pruning_frequency == 0:
+                    model.prune_by_patience(patience_threshold=pruning_frequency, n_terms=pruning_n_terms)
+
+                model.train()
 
             # Check convergence
             dloss = last_loss - (loss_test if dataloader_test is not None else loss_train)
@@ -769,14 +785,14 @@ def fit_spice(
     n_steps: int = None,
     convergence_threshold: float = 1e-7,
     loss_fn: callable = cross_entropy_loss,
-    l2_coefficient: float = 0,
+    lambda_coefficient: float = 0,
 
-    sindy_pruning_frequency: int = 1,
-    sindy_threshold_pruning: float = None,
-    sindy_ensemble_pruning: float = None,
-    sindy_population_pruning: float = None,
-    sindy_n_terms_pruning: int = None,
-
+    pruning_frequency: int = 1,
+    pruning_threshold: float = None,
+    pruning_ensemble: float = None,
+    pruning_population: float = None,
+    pruning_n_terms: int = None,
+    
     verbose: bool = True,
     keep_log: bool = False,
     n_warmup_steps: int = 0,
@@ -820,7 +836,7 @@ def fit_spice(
         else:
             n_warmup_steps = 0
 
-    use_pruning = sindy_pruning_frequency is not None and (sindy_ensemble_pruning is not None or sindy_threshold_pruning is not None)
+    use_pruning = pruning_frequency is not None and (pruning_ensemble is not None or pruning_threshold is not None)
 
     if verbose:
         status_lines = "=" * _get_terminal_width()
@@ -828,16 +844,16 @@ def fit_spice(
         print("SPICE Training Configuration:")
         print(f"\tRNN training: [{'x' if epochs > 0 else ' '}]")
         pruning_details = []
-        if sindy_ensemble_pruning is not None:
-            pruning_details.append(f"majority vote={sindy_ensemble_pruning}")
-            if sindy_threshold_pruning is not None and sindy_threshold_pruning > 0:
-                pruning_details.append(f"delta={sindy_threshold_pruning}")
-        elif sindy_threshold_pruning is not None and sindy_threshold_pruning > 0:
-            pruning_details.append(f"threshold={sindy_threshold_pruning} (per-member)")
-        if sindy_population_pruning is not None and sindy_population_pruning > 0:
-            pruning_details.append(f"participant threshold={sindy_population_pruning}")
+        if pruning_ensemble is not None:
+            pruning_details.append(f"majority vote={pruning_ensemble}")
+            if pruning_threshold is not None and pruning_threshold > 0:
+                pruning_details.append(f"delta={pruning_threshold}")
+        elif pruning_threshold is not None and pruning_threshold > 0:
+            pruning_details.append(f"threshold={pruning_threshold} (per-member)")
+        if pruning_population is not None and pruning_population > 0:
+            pruning_details.append(f"participant threshold={pruning_population}")
         if pruning_details:
-            print(f"\tPruning (every {sindy_pruning_frequency} epochs): {', '.join(pruning_details)}")
+            print(f"\tPruning (every {pruning_frequency} epochs): {', '.join(pruning_details)}")
         else:
             print("\tPruning: [ ]")
         print(status_lines)
@@ -882,13 +898,13 @@ def fit_spice(
                     batch_size=batch_size,
                     convergence_threshold=convergence_threshold,
                     loss_fn=loss_fn,
-                    l2_coefficient=l2_coefficient,
+                    lambda_coefficient=lambda_coefficient,
 
-                    sindy_threshold_pruning=sindy_threshold_pruning,
-                    sindy_pruning_frequency=sindy_pruning_frequency,
-                    sindy_ensemble_pruning=sindy_ensemble_pruning,
-                    sindy_population_pruning=sindy_population_pruning,
-                    sindy_n_terms_pruning=sindy_n_terms_pruning,
+                    pruning_threshold=pruning_threshold,
+                    pruning_frequency=pruning_frequency,
+                    pruning_ensemble=pruning_ensemble,
+                    pruning_population=pruning_population,
+                    pruning_n_terms=pruning_n_terms,
 
                     verbose=verbose,
                     keep_log=keep_log,
@@ -934,10 +950,10 @@ def fit_spice(
                     use_scheduler=False,
                     loss_fn=loss_fn,
 
-                    sindy_threshold_pruning=None,
-                    sindy_pruning_frequency=None,
-                    sindy_ensemble_pruning=None,
-                    sindy_population_pruning=None,
+                    pruning_threshold=None,
+                    pruning_frequency=None,
+                    pruning_ensemble=None,
+                    pruning_population=None,
 
                     verbose=False,
                     keep_log=False,

@@ -82,7 +82,8 @@ def analysis_model_evaluation(
     # ------------------------------------------------------------
     
     if benchmark_model is not None:
-        print("Computing choice probabilities with benchmark model...")
+        if verbose:
+            print("Computing choice probabilities with benchmark model...")
         benchmark_parameters = benchmark_model.count_parameters() if hasattr(benchmark_model, 'count_parameters') else len([p for p in benchmark_model.parameters()])
         benchmark_predictions, _ = benchmark_model(dataset.xs)
         benchmark_choice_probs = get_choice_probs(benchmark_predictions).detach().cpu()
@@ -91,7 +92,8 @@ def analysis_model_evaluation(
         
     # setup GRU model
     if gru_model is not None:
-        print("Computing choice probabilities with GRU model...")
+        if verbose:
+            print("Computing choice probabilities with GRU model...")
         gru_model.eval()
         gru_parameters = sum(p.numel() for p in gru_model.parameters())
         gru_predictions, _ = gru_model(dataset.xs)
@@ -109,7 +111,8 @@ def analysis_model_evaluation(
         spice_rnn_parameters += spice_model.model.embedding_size
         
         # use spice
-        print("Computing choice probabilities with SPICE model...")
+        if verbose:
+            print("Computing choice probabilities with SPICE model...")
         spice_model.eval(aggregate=False)
         
         spice_predictions, _ = spice_model(dataset.xs.to(spice_model.device))           
