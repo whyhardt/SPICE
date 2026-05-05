@@ -507,7 +507,207 @@ class EnsembleRNNModule(nn.Module):
         else:
             return self._forward_impl(inputs, state, precomputed_offsets, mask)
 
-        
+
+class EnsembleDirectPolynomialModule(nn.Module):
+    """Polynomial RNN module with disentangled coefficients.
+
+    Each monomial term has a direct scalar coefficient — no weight sharing
+    between terms. This eliminates the entanglement from the multilinear
+    product architecture, making L2 regularization and pruning operate
+    directly on individual polynomial coefficients.
+
+    A hypernetwork maps participant embeddings to full polynomial coefficients:
+    ``theta_participant = hypernet(embedding_participant)``.
+    There are no separate group-level coefficients — the hypernetwork bias
+    implicitly serves as the group mean.
+
+    Input:  (within_ts, ensemble, batch, n_items, features)
+    Output: (within_ts, ensemble, batch, n_items, 1)
+    """
+
+    def __init__(self, ensemble_size, input_size, embedding_size=0, dropout=0.,
+                 compiled_forward=True, polynomial_degree=2, **kwargs):
+        super().__init__()
+
+        self._compile = compiled_forward
+        self.embedding_size = embedding_size
+
+        n_features = input_size + 1  # +1 for hidden state
+
+        # Precompute library structure (identical to EnsembleRNNModule)
+        lib = build_library_structure(n_features, polynomial_degree)
+        self._library_terms = lib['terms']
+        self._n_library_terms = lib['n_terms']
+        self._bias_index = lib['bias_index']
+        self._degree_ranges = lib['degree_ranges']
+        self.register_buffer('_mult_table', lib['mult_table'])
+        self.register_buffer('_linear_indices', lib['linear_indices'])
+
+        # Linear damping (scalar, shared across ensemble and participants)
+        self.scale_state = nn.Parameter(torch.tensor(-3.0))
+        self.scale_candidate = nn.Parameter(torch.tensor(-3.0))
+
+        self.dropout = nn.Dropout(p=dropout)
+        self.hidden_size = 1
+        self.ensemble_size = ensemble_size
+
+        # Hypernetwork: embedding -> per-participant polynomial coefficients
+        # Two-layer MLP with GELU. Zero-initialized so the model starts
+        # with all-zero coefficients (pure exponential decay).
+        assert embedding_size > 0, "EnsembleDirectPolynomialModule requires embedding_size > 0"
+        hypernet_hidden = embedding_size
+        self.hypernet_in = EnsembleLinear(ensemble_size, embedding_size, hypernet_hidden)
+        self.hypernet_out = EnsembleLinear(ensemble_size, hypernet_hidden, self._n_library_terms)
+        nn.init.zeros_(self.hypernet_out.weight)
+        nn.init.zeros_(self.hypernet_out.bias)
+
+        if compiled_forward:
+            self._compiled_forward = torch.compile(self._forward_impl, dynamic=True)
+
+    @property
+    def alpha(self):
+        """State damping factor: h[t+1] = (1-α)*h[t] + α_n * n"""
+        return torch.sigmoid(self.scale_state)
+
+    @property
+    def alpha_n(self):
+        """Candidate scaling factor: h[t+1] = (1-α)*h[t] + α_n * n"""
+        return torch.sigmoid(self.scale_candidate)
+
+    def _compute_coefficients(self, embedding):
+        """Compute polynomial coefficients from embedding via hypernetwork.
+
+        Args:
+            embedding: (B, E, emb_dim) — EnsembleLinear convention
+
+        Returns:
+            coefficients: (E, B, n_terms)
+        """
+        coeffs = self.hypernet_out(
+            self.dropout(torch.nn.functional.gelu(
+                self.hypernet_in(self.dropout(embedding))
+            ))
+        )
+        return coeffs.transpose(0, 1)  # (B, E, n_terms) -> (E, B, n_terms)
+
+    def precompute_offsets(self, embedding, n_items):
+        """Compute per-participant polynomial coefficients from embedding.
+
+        Args:
+            embedding: (E, B, emb_dim)
+            n_items: number of items (I) for expansion
+
+        Returns:
+            coefficients: (E, B*I, n_terms) tensor of polynomial coefficients
+        """
+        # Expand embedding for items: (E, B, D) -> (E, B*I, D)
+        emb_expanded = embedding.unsqueeze(2).expand(-1, -1, n_items, -1).reshape(
+            embedding.shape[0], embedding.shape[1] * n_items, embedding.shape[2]
+        )
+        # EnsembleLinear expects ensemble dim second-to-last: (B, E, emb)
+        emb_t = emb_expanded.transpose(0, 1)
+        return self._compute_coefficients(emb_t)
+
+    def unfold_polynomial_coefficients(self, individual_offsets=None):
+        """Return polynomial coefficients in monomial basis.
+
+        Args:
+            individual_offsets: (E, B*I, n_terms) coefficients from hypernetwork, or None.
+                When None, returns group-level coefficients (hypernetwork at zero input).
+
+        Returns:
+            theta: (E, n_terms) or (E, B*I, n_terms)
+        """
+        if individual_offsets is not None:
+            return individual_offsets
+        # Group-level: hypernetwork output at zero embedding (differentiable)
+        zero_emb = torch.zeros(1, self.ensemble_size, self.embedding_size, device=self._linear_indices.device)
+        return self._compute_coefficients(zero_emb).squeeze(1)  # (E, n_terms)
+
+    def _compute_library(self, features):
+        """Compute polynomial library values for all monomial terms.
+
+        Args:
+            features: (..., n_features) tensor of [state, controls]
+
+        Returns:
+            library: (..., n_terms) tensor of monomial values
+        """
+        n_terms = self._n_library_terms
+        library = torch.ones(*features.shape[:-1], n_terms, device=features.device, dtype=features.dtype)
+
+        # Linear terms: direct gather
+        library[..., self._linear_indices] = features
+
+        # Higher-degree terms: products of features
+        for t_idx, term in enumerate(self._library_terms):
+            if len(term) >= 2:
+                val = features[..., term[0]]
+                for f_idx in term[1:]:
+                    val = val * features[..., f_idx]
+                library[..., t_idx] = val
+
+        return library
+
+    def _forward_impl(self, inputs, state, individual_offsets=None, mask=None):
+        """Forward pass with direct polynomial coefficients and sparsity mask.
+
+        Args:
+            inputs: (W, E, B, I, F) control signals
+            state: (W, E, B, I) previous hidden state
+            individual_offsets: (E, B*I, n_terms) coefficient offsets or None
+            mask: (E, n_terms) or (E, B*I, n_terms) sparsity mask, or None
+
+        Returns:
+            output: (W, E, B, I, 1) updated states
+        """
+        W, E, B, I, F = inputs.shape
+
+        x = inputs.reshape(W, E, B * I, F)
+        h = state[-1].contiguous().reshape(E, B * I, 1) if state is not None else torch.zeros(E, B * I, 1, device=inputs.device)
+
+        # Get coefficients (direct — no unfolding needed)
+        theta = self.unfold_polynomial_coefficients(individual_offsets)
+
+        if mask is not None:
+            if theta.dim() < mask.dim():
+                theta = theta.unsqueeze(1)  # (E, 1, n_terms) broadcasts with (E, B*I, n_terms)
+            theta = theta * mask.float()
+
+        outputs = []
+        for t in range(W):
+            # Build features: [state, controls]
+            features = torch.cat([h, x[t]], dim=-1)  # (E, B*I, n_features)
+
+            # Compute library values
+            library = self._compute_library(features)  # (E, B*I, n_terms)
+
+            # Compute update: n = library @ theta
+            if theta.dim() == 2:
+                # Group-level: theta is (E, n_terms)
+                n = torch.einsum('ebt,et->eb', library, theta).unsqueeze(-1)
+            else:
+                # Per-participant: theta is (E, B*I, n_terms)
+                n = (library * theta).sum(dim=-1, keepdim=True)
+
+            h = (1 - self.alpha) * h + self.alpha_n * n
+            outputs.append(h)
+
+        output = torch.stack(outputs)  # (W, E, B*I, 1)
+        return output.reshape(W, E, B, I, 1)
+
+    def forward(self, inputs, state, precomputed_offsets=None, mask=None):
+        """Forward pass with direct polynomial coefficients.
+
+        Uses the compiled variant when ``compiled_forward=True`` was set at
+        construction time, otherwise falls back to the uncompiled path.
+        """
+        if self._compile:
+            return self._compiled_forward(inputs, state, precomputed_offsets, mask)
+        else:
+            return self._forward_impl(inputs, state, precomputed_offsets, mask)
+
+
 class BaseModel(nn.Module):
     
     def __init__(
@@ -525,6 +725,7 @@ class BaseModel(nn.Module):
         dropout: float = 0.,
 
         sindy_polynomial_degree: int = 1,
+        direct_polynomial: bool = False,
 
         device=torch.device('cpu'),
         compiled_forward=True,
@@ -560,6 +761,7 @@ class BaseModel(nn.Module):
         self.n_items = n_items if n_items is not None else n_actions
         self.ensemble_size = ensemble_size
         self.compiled_forward = compiled_forward
+        self.direct_polynomial = direct_polynomial
 
         self.submodules_rnn = nn.ModuleDict()
         self.submodules_eq = dict()
@@ -719,14 +921,24 @@ class BaseModel(nn.Module):
         if polynomial_degree is None:
             polynomial_degree = self.sindy_polynomial_degree
 
-        self.submodules_rnn[key_module] = EnsembleRNNModule(
-            ensemble_size=self.ensemble_size,
-            input_size=input_size,
-            embedding_size=embedding_size,
-            dropout=dropout,
-            compiled_forward=self.compiled_forward,
-            polynomial_degree=polynomial_degree,
-            max_offset_ratio=max_offset_ratio,
+        if self.direct_polynomial:
+            self.submodules_rnn[key_module] = EnsembleDirectPolynomialModule(
+                ensemble_size=self.ensemble_size,
+                input_size=input_size,
+                embedding_size=embedding_size,
+                dropout=dropout,
+                compiled_forward=self.compiled_forward,
+                polynomial_degree=polynomial_degree,
+            )
+        else:
+            self.submodules_rnn[key_module] = EnsembleRNNModule(
+                ensemble_size=self.ensemble_size,
+                input_size=input_size,
+                embedding_size=embedding_size,
+                dropout=dropout,
+                compiled_forward=self.compiled_forward,
+                polynomial_degree=polynomial_degree,
+                max_offset_ratio=max_offset_ratio,
             )
         self.sindy_specs[key_module] = {}
         self.sindy_specs[key_module]['include_bias'] = include_bias

@@ -56,6 +56,7 @@ class SpiceEstimator(BaseEstimator):
 
         # Polynomial pruning parameters
         polynomial_degree: Optional[int] = 1,
+        direct_polynomial: Optional[bool] = False,
         pruning_frequency: Optional[int] = 1,
         pruning_threshold: Optional[float] = None,
         pruning_ensemble: Optional[float] = None,
@@ -124,6 +125,7 @@ class SpiceEstimator(BaseEstimator):
         self.ensemble_size = ensemble_size
         self.embedding_size = embedding_size
         self.polynomial_degree = polynomial_degree
+        self.direct_polynomial = direct_polynomial
 
         # Pruning parameters
         self.warmup_steps = warmup_steps
@@ -155,6 +157,7 @@ class SpiceEstimator(BaseEstimator):
             dropout=dropout,
             spice_config=spice_config,
             sindy_polynomial_degree=polynomial_degree,
+            direct_polynomial=direct_polynomial,
             ensemble_size=ensemble_size,
             embedding_size=embedding_size,
             n_items=n_items,
@@ -168,7 +171,7 @@ class SpiceEstimator(BaseEstimator):
         self.spice_optimizer = torch.optim.AdamW(
             self.model.parameters(),
             lr=learning_rate,
-            weight_decay=1e-3,
+            # weight_decay=1e-3,
         )
         
     def fit(self, data: np.ndarray, targets: np.ndarray, data_test: np.ndarray = None, target_test: np.ndarray = None):
@@ -293,6 +296,7 @@ class SpiceEstimator(BaseEstimator):
             n_participants=self.model.n_participants,
             n_experiments=self.model.n_experiments,
             sindy_polynomial_degree=self.model.sindy_polynomial_degree,
+            direct_polynomial=self.model.direct_polynomial,
             ensemble_size=self.model.ensemble_size,
             device=self.model.device,
         )

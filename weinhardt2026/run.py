@@ -22,26 +22,29 @@ if __name__=='__main__':
 
     parser = argparse.ArgumentParser(description='Trains a SPICE-RNN with end-to-end differentiable SINDy on behavioral data.')
     
-    # necessary parameters
+    # SPICE and Data parameters
     parser.add_argument('--module', type=str, default='spice.precoded.workingmemory', help='Module which holds the SPICE model and configuration')
     parser.add_argument('--model', type=str, default=None, help='Model name to load from and/or save to parameters of RNN')
     parser.add_argument('--data', type=str, default=None, help='Path to dataset')
     parser.add_argument('--model_kwargs', type=json.loads, default='{}', help='Additional kwargs for the SPICE model in JSON format, e.g. \'{"kwarg1": value1, "kwarg2": true}\'')
 
-    # RNN training parameters
+    # Training parameters
     parser.add_argument('--epochs', type=int, default=1000, help='Number of training epochs')
-    parser.add_argument('--epochs_warmup', type=int, default=0, help='Number of training epochs for warmup (exp increase of sindy-weight; no pruning)')
+    parser.add_argument('--warmup', type=int, default=0, help='Number of training epochs for warmup (exp increase of sindy-weight; no pruning)')
     parser.add_argument('--lr', type=float, default=0.01, help='Learning rate')
-    parser.add_argument('--alpha', type=float, default=0.0001, help='L2 Reg of the RNN parameters')
+    
+    # Model parameters
+    parser.add_argument('--direct', action='store_true', help='If True: Fit coefficients direclty; Else: Fit Polynomial RNN;')
+    parser.add_argument('--alpha', type=float, default=0.05, help='L2 Reg of the RNN parameters')
     parser.add_argument('--ensemble', type=int, default=10, help='Number of independent members in the ensemble setup')
     parser.add_argument('--embedding', type=int, default=16, help='Number of independent members in the ensemble setup')
     
-    # pruning parameters
+    # Pruning parameters
     parser.add_argument('--pruning_frequency', type=int, default=100, help='Epochs between pruning events')
-    parser.add_argument('--pruning_threshold', type=float, default=0.01, help='Threshold value for cutting off sindy terms (lowered for delta-form coefficients)')
-    parser.add_argument('--pruning_ensemble', type=float, default=0.05, help='t-test threshold for ensemble-based pruning')
+    parser.add_argument('--pruning_threshold', type=float, default=0.05, help='Threshold value for cutting off sindy terms (lowered for delta-form coefficients)')
+    parser.add_argument('--pruning_ensemble', type=float, default=0.6, help='t-test threshold for ensemble-based pruning')
     
-    # Data setup parameters
+    # Data Setup parameters
     parser.add_argument('--train_ratio_time', type=float, default=None, help='Ratio of data used for training. Split along time dimension. Not combinable with test_sessions')
     parser.add_argument('--test_sessions', type=str, default=None, help='Comma-separated list of integeres which indicate test sessions. Not combinable with train_ratio_time')
     parser.add_argument('--n_items', type=int, default=None, help='Number of items in dataset; Default None: As many items as actions (automatically detected from dataset);')
@@ -140,10 +143,11 @@ if __name__=='__main__':
         polynomial_degree=2,
         ensemble_size=args.ensemble,
         embedding_size=args.embedding,
+        direct_polynomial=args.direct,
         
         # training parameters
         epochs=args.epochs,
-        warmup_steps=args.epochs_warmup,
+        warmup_steps=args.warmup,
         alpha_coefficient=args.alpha,
         learning_rate=args.lr,
         
@@ -151,7 +155,7 @@ if __name__=='__main__':
         pruning_frequency=args.pruning_frequency,
         pruning_threshold=args.pruning_threshold,
         pruning_ensemble=args.pruning_ensemble,
-        pruning_population=args.pruning_population,
+        pruning_n_terms=60,
 
         # other parameters
         verbose=True,

@@ -586,7 +586,7 @@ def _run_batch_training(
 
         # L2 penalty on effective polynomial coefficients
         if alpha_coefficient > 0:
-            loss_step = loss_step + alpha_coefficient * _compute_coefficient_penalty(model, norm=1)
+            loss_step = loss_step + alpha_coefficient * _compute_coefficient_penalty(model, norm=2)
 
         if torch.is_grad_enabled():
             optimizer.zero_grad()
