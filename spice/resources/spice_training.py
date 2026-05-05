@@ -437,15 +437,31 @@ def _ensemble_pruning(
     sindy_ensemble_pruning: float,
     sindy_threshold_pruning: float,
     verbose: bool,
+    sindy_ensemble_pruning_mode: str = 'ci',
 ):
-    
+
     pruned = False
-    
-    # Unified minimum-effect CI test: threshold serves as delta
+
+    if sindy_ensemble_pruning_mode == 'ratio':
+        # Ratio test: prune if fewer than sindy_ensemble_pruning fraction of
+        # ensemble members have |coeff| > sindy_threshold_pruning
+        ensemble_test_fn = _ensemble_ratio_test
+        ensemble_test_kwargs = dict(
+            threshold=sindy_threshold_pruning or 0.0,
+            ratio=sindy_ensemble_pruning,
+        )
+    else:
+        # Default: minimum-effect CI test
+        ensemble_test_fn = _minimum_effect_ci_test
+        ensemble_test_kwargs = dict(
+            alpha=sindy_ensemble_pruning,
+            delta=sindy_threshold_pruning or 0.0,
+        )
+
     confidence_masks = _compute_pruning_masks(
         model,
-        ensemble_alpha=sindy_ensemble_pruning,
-        ensemble_delta=sindy_threshold_pruning or 0.0,
+        ensemble_test_fn=ensemble_test_fn,
+        ensemble_test_kwargs=ensemble_test_kwargs,
         participant_threshold=None,
         verbose=verbose,
     )
@@ -617,29 +633,46 @@ def _run_sindy_training(
     sindy_alpha: float = None,
     sindy_pruning_frequency: int = None,
     sindy_ensemble_pruning: float = None,
+    sindy_ensemble_pruning_mode: str = 'ci',
     sindy_threshold_pruning: float = None,
     verbose: bool = True,
+    reset_presence_masks: bool = False,
+    state_buffers: tuple = None,
     ):
-    
+
     """
-    Final SINDy refit: freeze RNN weights and refit SINDy coefficients
-    on the trained RNN hidden states via batched MSE 
-    old: via ridge solve → prune → refit.
+    SINDy refit: freeze RNN weights and fit SINDy coefficients
+    on the trained RNN hidden states via batched MSE.
 
     Args:
         model (BaseModel): Trained RNN model with SINDy coefficients
-        dataset_train: Training dataset (4D)
+        xs_train: Training inputs 5D (E, B, T, W, F)
+        ys_train: Training targets 5D (E, B, T, W, F)
         epochs (int): Number of epochs
-        batch_size (int): Batch size for training
+        n_warmup_steps (int): Epochs before pruning begins
+        sindy_alpha (float): L1 penalty strength (None = disabled)
+        sindy_pruning_frequency (int): Epochs between pruning events
+        sindy_ensemble_pruning (float): CI test alpha level
+        sindy_ensemble_pruning_mode (str): 'ci' or 'ratio'
+        sindy_threshold_pruning (float): Minimum effect size delta
         verbose (bool): Print progress
+        reset_presence_masks (bool): Reset all presence masks to True (full exploration)
+        state_buffers (tuple): Pre-computed (input_state_buffer, target_state_buffer, xs_flat)
+            to skip re-vectorization. If None, vectorizes from xs_train/ys_train.
 
     Returns:
-        BaseModel: Model with refitted SINDy coefficients
+        tuple: (model, state_buffers) where state_buffers = (input_state_buffer, target_state_buffer, xs_flat)
     """
-    
+
     criterion = nn.MSELoss()
 
-    # re-initialize sindy coefficients with fitted presence mask
+    # Reset presence masks if requested (full exploration from scratch)
+    if reset_presence_masks:
+        for module in model.get_modules():
+            model.sindy_coefficients_presence[module].fill_(True)
+            model.sindy_pruning_patience_counters[module].zero_()
+
+    # Re-initialize sindy coefficients with (potentially reset) presence mask
     for module in model.get_modules():
         model.sindy_coefficients[module].data = torch.randn_like(model.sindy_coefficients[module].data) * 0.001 * model.sindy_coefficients_presence[module]
 
@@ -650,9 +683,13 @@ def _run_sindy_training(
             sindy_parameters.append(p)
     optimizer = torch.optim.AdamW(sindy_parameters, lr=0.01, weight_decay=0)
 
-    # Vectorize training data using shared helper
-    model.eval(use_sindy=False, aggregate=False)
-    input_state_buffer_train, target_state_buffer_train, xs_flat, _ = _vectorize_state(model, xs_train, ys_train, verbose=verbose)
+    # Vectorize training data or reuse provided buffers
+    if state_buffers is not None:
+        input_state_buffer_train, target_state_buffer_train, xs_flat = state_buffers
+    else:
+        model.eval(use_sindy=False, aggregate=False)
+        input_state_buffer_train, target_state_buffer_train, xs_flat, _ = _vectorize_state(model, xs_train, ys_train, verbose=verbose)
+
     model.fit_sindy = False  # disable internal sindy_loss accumulation
     model.train(use_sindy=True)
     for rnn_module in model.submodules_rnn.values():
@@ -739,6 +776,7 @@ def _run_sindy_training(
                                     sindy_ensemble_pruning=sindy_ensemble_pruning,
                                     sindy_threshold_pruning=sindy_threshold_pruning,
                                     verbose=verbose,
+                                    sindy_ensemble_pruning_mode=sindy_ensemble_pruning_mode,
                                     )
 
                             elif sindy_threshold_pruning is not None and sindy_threshold_pruning > 0:
@@ -760,10 +798,10 @@ def _run_sindy_training(
             batch_size = max(1, batch_size // 2)
             
     model.fit_sindy = True
-    return model
+    return model, (input_state_buffer_train, target_state_buffer_train, xs_flat)
 
-    # old version: RIDGE SOLVE -> was very unstable; unpredictable singular matrix + worse accuracy + small residual terms 
-    
+    # old version: RIDGE SOLVE -> was very unstable; unpredictable singular matrix + worse accuracy + small residual terms
+
     # Disable dropout in RNN submodules so the solve target is deterministic
     # for rnn_module in model.submodules_rnn.values():
     #     rnn_module.eval()
@@ -842,6 +880,7 @@ def _run_joint_training(
     sindy_pruning_frequency: int = None,
     sindy_threshold_pruning: float = None,
     sindy_ensemble_pruning: float = None,
+    sindy_ensemble_pruning_mode: str = 'ci',
     sindy_population_pruning: float = None,
     sindy_reconditioning_epochs: int = 3,
 
@@ -995,6 +1034,7 @@ def _run_joint_training(
                                 sindy_ensemble_pruning=sindy_ensemble_pruning,
                                 sindy_threshold_pruning=sindy_threshold_pruning,
                                 verbose=verbose,
+                                sindy_ensemble_pruning_mode=sindy_ensemble_pruning_mode,
                                 )
 
                         elif sindy_threshold_pruning is not None and sindy_threshold_pruning > 0:
@@ -1100,6 +1140,39 @@ def _minimum_effect_ci_test(
     return significant
 
 
+def _ensemble_ratio_test(
+    coefficients: torch.Tensor,
+    presence: torch.Tensor,
+    threshold: float = 0.0,
+    ratio: float = 0.6,
+) -> torch.Tensor:
+    """
+    Ensemble ratio test: a term survives iff a sufficient fraction of
+    ensemble members have |coefficient| > threshold.
+
+    Args:
+        coefficients: [E, P, X, terms] raw coefficient values
+        presence: [E, P, X, terms] boolean presence mask
+        threshold: minimum absolute coefficient value for a member to
+                   count as supporting the term (default: 0.0)
+        ratio: minimum fraction of ensemble members that must exceed
+               the threshold for the term to survive (default: 0.6)
+
+    Returns:
+        [P, X, terms] boolean mask — True where term passes the ratio test
+    """
+    effective_coeffs = (coefficients * presence.float()).detach()
+    E = effective_coeffs.shape[0]
+
+    # Count how many ensemble members exceed threshold per (P, X, term)
+    n_above = (effective_coeffs.abs() > threshold).float().sum(dim=0)  # [P, X, terms]
+
+    # Term survives if ratio of members above threshold >= required ratio
+    significant = (n_above / E) >= ratio
+
+    return significant
+
+
 def _compute_ensemble_masks(
     model: BaseModel,
     test_fn: callable = _minimum_effect_ci_test,
@@ -1194,6 +1267,7 @@ def _compute_pruning_masks(
     ensemble_delta: float = 0.0,
     participant_threshold: float = None,
     ensemble_test_fn: callable = _minimum_effect_ci_test,
+    ensemble_test_kwargs: dict = None,
     verbose: bool = True,
 ) -> dict:
     """
@@ -1205,16 +1279,21 @@ def _compute_pruning_masks(
         ensemble_delta: minimum effect size for ensemble CI test (default: 0.0)
         participant_threshold: required fraction of (P * X) slots (None to skip)
         ensemble_test_fn: statistical test function for ensemble filtering
+        ensemble_test_kwargs: keyword arguments passed to the test function.
+            If None, defaults to {'alpha': ensemble_alpha, 'delta': ensemble_delta}
+            for backward compatibility with the CI test.
         verbose: print filtering results
 
     Returns:
         Dict mapping module names to [P, X, terms] boolean masks
     """
     # Step 1: Ensemble filtering (per participant)
-    if ensemble_alpha is not None:
+    if ensemble_alpha is not None or ensemble_test_kwargs is not None:
+        if ensemble_test_kwargs is None:
+            ensemble_test_kwargs = dict(alpha=ensemble_alpha, delta=ensemble_delta)
         ensemble_masks = _compute_ensemble_masks(
             model, test_fn=ensemble_test_fn, verbose=verbose,
-            alpha=ensemble_alpha, delta=ensemble_delta,
+            **ensemble_test_kwargs,
         )
     else:
         # No ensemble filtering — term is present for (P, X) if any ensemble member has it
@@ -1254,10 +1333,11 @@ def fit_spice(
     sindy_pruning_frequency: int = 1,
     sindy_threshold_pruning: float = None,
     sindy_ensemble_pruning: float = None,
+    sindy_ensemble_pruning_mode: str = 'ci',
     sindy_population_pruning: float = None,
     sindy_reconditioning_epochs: int = 3,
     sindy_refit: bool = True,
-    
+
     verbose: bool = True,
     keep_log: bool = False,
     n_warmup_steps: int = 0,
@@ -1298,8 +1378,13 @@ def fit_spice(
             When sindy_ensemble_pruning is None, falls back to per-member hard
             thresholding. (None or 0 to disable; default: None)
         sindy_pruning_frequency: Epochs between pruning events
-        sindy_ensemble_pruning: Confidence level for ensemble CI test (e.g. 0.05).
+        sindy_ensemble_pruning: Confidence level for ensemble CI test (e.g. 0.05),
+            or minimum ensemble ratio for ratio test (e.g. 0.6).
             Primary pruning mechanism. None to disable.
+        sindy_ensemble_pruning_mode: Ensemble pruning strategy. 'ci' for
+            minimum-effect CI test (default), 'ratio' for ensemble ratio test
+            (prune if fewer than sindy_ensemble_pruning fraction of members
+            have |coeff| > sindy_threshold_pruning).
         sindy_population_pruning: Optional participant presence threshold (0-1).
             None to disable.
         sindy_reconditioning_epochs: Number of pure SINDy SGD epochs after each
@@ -1425,33 +1510,59 @@ def fit_spice(
     # STAGE 2: Final SINDy Refit
     # ══════════════════════════════════════════════════════════════════════════
     if sindy_refit:
-        # try:
+        cpu_xs = xs_train_5d.to(torch.device('cpu'))
+        cpu_ys = ys_train_5d.to(torch.device('cpu'))
+
+        has_sparsity = (sindy_ensemble_pruning is not None
+                        or sindy_threshold_pruning is not None
+                        or sindy_alpha is not None)
+
+        if has_sparsity:
+            # Stage 2.1: Reset masks entirely and rediscover sparsity on clean hidden states
+            if verbose:
+                terminal_width = _get_terminal_width()
+                print("\n" + "=" * terminal_width)
+                print("Stage 2.1: SINDy sparsity discovery")
+                print("=" * terminal_width)
+
+            _, state_buffers = _run_sindy_training(
+                model=model,
+                xs_train=cpu_xs,
+                ys_train=cpu_ys,
+                epochs=1000,
+                n_warmup_steps=n_warmup_steps,
+                sindy_pruning_frequency=sindy_pruning_frequency,
+                sindy_threshold_pruning=sindy_threshold_pruning,
+                sindy_ensemble_pruning=sindy_ensemble_pruning,
+                sindy_ensemble_pruning_mode=sindy_ensemble_pruning_mode,
+                sindy_alpha=sindy_alpha,
+                verbose=verbose,
+                reset_presence_masks=True,
+            )
+        else:
+            state_buffers = None
+
+        # Stage 2.2: Unpenalized coefficient estimation within discovered support
         if verbose:
             terminal_width = _get_terminal_width()
             print("\n" + "=" * terminal_width)
-            print("Stage 2: SINDy refit")
+            print("Stage 2.2: SINDy coefficient estimation (unpenalized)")
             print("=" * terminal_width)
 
         _run_sindy_training(
             model=model,
-            xs_train=xs_train_5d.to(torch.device('cpu')),
-            ys_train=ys_train_5d.to(torch.device('cpu')),
+            xs_train=cpu_xs,
+            ys_train=cpu_ys,
             epochs=1000,
-            n_warmup_steps=n_warmup_steps,
-            sindy_pruning_frequency=sindy_pruning_frequency,
-            sindy_threshold_pruning=sindy_threshold_pruning,
-            sindy_ensemble_pruning=sindy_ensemble_pruning,
-            sindy_alpha=sindy_alpha,
+            n_warmup_steps=0,
+            sindy_pruning_frequency=None,
+            sindy_threshold_pruning=None,
+            sindy_ensemble_pruning=None,
+            sindy_alpha=None,
             verbose=verbose,
+            reset_presence_masks=False,
+            state_buffers=state_buffers,
         )
-        # for rnn_module in model.submodules_rnn.values():
-        #     rnn_module._compile = True
-            
-        # except torch._C._LinAlgError as e:
-        #     model.to(original_device)
-        #     for rnn_module in model.submodules_rnn.values():
-        #         rnn_module._compile = True
-        #     print('Stage 2: Ridge solve is not possible because a singular candidate term matrix was found. SPICE will omit a ridge solve and return Stage 1 SINDy coefficients instead. No worries---the SPICE model is still great!')
         
         
     # ══════════════════════════════════════════════════════════════════════════

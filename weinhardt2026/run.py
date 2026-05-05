@@ -32,17 +32,17 @@ if __name__=='__main__':
     parser.add_argument('--epochs', type=int, default=1000, help='Number of training epochs')
     parser.add_argument('--epochs_warmup', type=int, default=200, help='Number of training epochs for warmup (exp increase of sindy-weight; no pruning)')
     parser.add_argument('--lr', type=float, default=0.01, help='Learning rate')
-    parser.add_argument('--rnn_l2_lambda', type=float, default=0., help='L2 Reg of the RNN parameters')
+    parser.add_argument('--rnn_alpha', type=float, default=0., help='L2 Reg of the RNN parameters')
     parser.add_argument('--ensemble', type=int, default=10, help='Number of independent members in the ensemble setup')
     
     # SINDy training parameters
-    parser.add_argument('--sindy_skip_refit', action='store_false', help='Refits the SINDy coefficients in Stage 2 training (default: True)')
     parser.add_argument('--sindy_weight', type=float, default=0.1, help='Weight for SINDy regularization during RNN training')
     parser.add_argument('--sindy_alpha', type=float, default=0.0001, help='Degree-weighted coefficient penalty strength (ridge alpha)')
     parser.add_argument('--pruning_frequency', type=int, default=100, help='Epochs between pruning events')
-    parser.add_argument('--pruning_threshold', type=float, default=0.01, help='Threshold value for cutting off sindy terms (lowered for delta-form coefficients)')
-    parser.add_argument('--pruning_ensemble', type=float, default=0.05, help='t-test threshold for ensemble-based pruning')
+    parser.add_argument('--pruning_threshold', type=float, default=0.05, help='Threshold value for cutting off sindy terms (lowered for delta-form coefficients)')
+    parser.add_argument('--pruning_ensemble', type=float, default=0.5, help='t-test threshold for ensemble-based pruning')
     parser.add_argument('--pruning_population', type=float, default=None, help='Percentage of participants which have to have a term active in order to keep it.')
+    parser.add_argument('--sindy_skip_refit', action='store_false', help='Refits the SINDy coefficients in Stage 2 training (default: True)')
     
     # Data setup parameters
     parser.add_argument('--train_ratio_time', type=float, default=None, help='Ratio of data used for training. Split along time dimension. Not combinable with test_sessions')
@@ -116,10 +116,6 @@ if __name__=='__main__':
         print("Training/test split: None")
         dataset_train, dataset_test = dataset, dataset
     
-    # if args.sindy_weight > 0:
-    #     dataset_tuple = dataset_train.xs, dataset_train.ys, dataset_train.xs, dataset_train.ys
-    # else:
-    #     dataset_tuple = dataset_train.xs, dataset_train.ys, None, None
     dataset_tuple = dataset_train.xs, dataset_train.ys, dataset_test.xs, dataset_test.ys
     
     n_actions = dataset_train.ys.shape[-1]
@@ -127,15 +123,6 @@ if __name__=='__main__':
     n_experiments = len(dataset_train.xs[..., -2].unique())
     n_items = args.n_items if args.n_items else n_actions
     n_sessions = dataset.xs.shape[0]
-    
-    # if n_items == n_actions:
-    #     if ((dataset.xs[..., n_actions:n_actions*2].nan_to_num(0) == 1).int() + (dataset.xs[..., n_actions:n_actions*2].nan_to_num(0) == 0).int()).sum() == dataset.xs.shape[0]*dataset.xs.shape[1]*n_actions:
-    #         # binary rewards
-    #         spice_model = workingmemory_rewardbinary
-    #     else:
-    #         spice_model = workingmemory
-    # else:
-    #     spice_model = workingmemory_multiitem
     
     spice_module = importlib.import_module(args.module)
     spice_model = spice_module.SpiceModel
@@ -154,16 +141,17 @@ if __name__=='__main__':
         n_items=n_items,
         kwargs_spice_class=args.model_kwargs,
         
-        # rnn training parameters
+        # rnn parameters
         epochs=args.epochs,
         learning_rate=args.lr,
         warmup_steps=args.epochs_warmup,
         ensemble_size=args.ensemble,
-        l2_rnn=args.rnn_l2_lambda,
+        l2_rnn=args.rnn_alpha,
         scheduler=False,
         batch_size=None,
-
-        # sindy fitting parameters
+        sindy_ensemble_pruning_mode='ratio',
+        
+        # sindy parameters
         sindy_weight=args.sindy_weight,
         sindy_alpha=args.sindy_alpha,
         sindy_library_polynomial_degree=2,

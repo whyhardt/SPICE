@@ -61,6 +61,7 @@ class SpiceEstimator(BaseEstimator):
         sindy_pruning_frequency: Optional[int] = 1,  # Epochs between pruning events
         sindy_threshold_pruning: Optional[float] = None,  # Optional per-member threshold pruning (None to disable)
         sindy_ensemble_pruning: Optional[float] = None,  # Ensemble t-test significance level (primary pruning mechanism)
+        sindy_ensemble_pruning_mode: Optional[str] = 'ci',  # 'ci' for CI test, 'ratio' for ensemble ratio test
         sindy_population_pruning: Optional[float] = None,  # Optional cross-participant filter (0-1)
         sindy_reconditioning_epochs: Optional[int] = 3,  # Pure SINDy SGD epochs after ridge recalibration
         sindy_refit: Optional[bool] = True,  # Enable Stage 2 Training (SINDy refit on frozen RNN parameters) 
@@ -101,6 +102,9 @@ class SpiceEstimator(BaseEstimator):
             sindy_pruning_frequency: Epochs between pruning events.
             sindy_threshold_pruning: Minimum effect size delta for CI test (None = disabled).
             sindy_ensemble_pruning: Confidence level for ensemble CI test (primary pruning mechanism).
+            sindy_ensemble_pruning_mode: Ensemble pruning strategy. 'ci' for minimum-effect CI
+                test (default), 'ratio' for ensemble ratio test (prune if fewer than
+                sindy_ensemble_pruning fraction of members have |coeff| > sindy_threshold_pruning).
             sindy_population_pruning: Cross-participant presence threshold 0-1 (None = disabled).
             sindy_reconditioning_epochs: Pure SINDy SGD epochs after ridge recalibration to warm-start the optimizer (0 = disable).
             verbose: Print training progress.
@@ -140,6 +144,7 @@ class SpiceEstimator(BaseEstimator):
         self.sindy_threshold_pruning = sindy_threshold_pruning
         self.sindy_population_pruning = sindy_population_pruning
         self.sindy_ensemble_pruning = sindy_ensemble_pruning
+        self.sindy_ensemble_pruning_mode = sindy_ensemble_pruning_mode
         self.sindy_reconditioning_epochs = sindy_reconditioning_epochs
         self.sindy_refit = sindy_refit
         
@@ -228,6 +233,7 @@ class SpiceEstimator(BaseEstimator):
             sindy_pruning_frequency=self.sindy_pruning_frequency,
             sindy_threshold_pruning=self.sindy_threshold_pruning,
             sindy_ensemble_pruning=self.sindy_ensemble_pruning,
+            sindy_ensemble_pruning_mode=self.sindy_ensemble_pruning_mode,
             sindy_population_pruning=self.sindy_population_pruning,
             sindy_reconditioning_epochs=self.sindy_reconditioning_epochs,
             sindy_refit=self.sindy_refit,
