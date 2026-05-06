@@ -22,35 +22,36 @@ if __name__=='__main__':
 
     parser = argparse.ArgumentParser(description='Trains a SPICE-RNN with end-to-end differentiable SINDy on behavioral data.')
     
-    # necessary parameters
+    # SPICE parameters
     parser.add_argument('--module', type=str, default='spice.precoded.workingmemory', help='Module which holds the SPICE model and configuration')
     parser.add_argument('--model', type=str, default=None, help='Model name to load from and/or save to parameters of RNN')
-    parser.add_argument('--data', type=str, default=None, help='Path to dataset')
     parser.add_argument('--model_kwargs', type=json.loads, default='{}', help='Additional kwargs for the SPICE model in JSON format, e.g. \'{"kwarg1": value1, "kwarg2": true}\'')
-
-    # RNN training parameters
+    
+    # Training parameters
     parser.add_argument('--epochs', type=int, default=1000, help='Number of training epochs')
     parser.add_argument('--epochs_warmup', type=int, default=200, help='Number of training epochs for warmup (exp increase of sindy-weight; no pruning)')
     parser.add_argument('--lr', type=float, default=0.01, help='Learning rate')
-    parser.add_argument('--rnn_alpha', type=float, default=0., help='L2 Reg of the RNN parameters')
-    parser.add_argument('--ensemble', type=int, default=10, help='Number of independent members in the ensemble setup')
     
-    # SINDy training parameters
+    # RNN parameters
+    parser.add_argument('--ensemble', type=int, default=10, help='Number of independent members in the ensemble setup')
+    parser.add_argument('--rnn_alpha', type=float, default=0.001, help='L2 Reg of the RNN parameters')
     parser.add_argument('--sindy_weight', type=float, default=0.1, help='Weight for SINDy regularization during RNN training')
     parser.add_argument('--sindy_alpha', type=float, default=0.0001, help='Degree-weighted coefficient penalty strength (ridge alpha)')
+    
+    # Pruning parameters
     parser.add_argument('--pruning_frequency', type=int, default=100, help='Epochs between pruning events')
     parser.add_argument('--pruning_threshold', type=float, default=0.05, help='Threshold value for cutting off sindy terms (lowered for delta-form coefficients)')
-    parser.add_argument('--pruning_ensemble', type=float, default=0.5, help='t-test threshold for ensemble-based pruning')
-    parser.add_argument('--pruning_population', type=float, default=None, help='Percentage of participants which have to have a term active in order to keep it.')
-    parser.add_argument('--sindy_skip_refit', action='store_false', help='Refits the SINDy coefficients in Stage 2 training (default: True)')
+    parser.add_argument('--pruning_ensemble', type=float, default=0.8, help='t-test threshold for ensemble-based pruning')
     
-    # Data setup parameters
+    # Data parameters
+    parser.add_argument('--data', type=str, default=None, help='Path to dataset')
     parser.add_argument('--train_ratio_time', type=float, default=None, help='Ratio of data used for training. Split along time dimension. Not combinable with test_sessions')
     parser.add_argument('--test_sessions', type=str, default=None, help='Comma-separated list of integeres which indicate test sessions. Not combinable with train_ratio_time')
     parser.add_argument('--n_items', type=int, default=None, help='Number of items in dataset; Default None: As many items as actions (automatically detected from dataset);')
     parser.add_argument('--additional_columns', type=str, default=None, help='Comma-separated list of columns which are added to the dataset.')
     parser.add_argument('--timeshift_additional_columns', action='store_true', help='Shifts additional columns (defined by the kwarg "additional_columns") [t]->[t-1]; Necessary for e.g. predictor stimuli which are usually listed in the trial of which SPICE has to predict the action.')
 
+    parser.add_argument('--sindy_skip_refit', action='store_false', help='Refits the SINDy coefficients in Stage 2 training (default: True)')
     parser.add_argument('--results', action='store_true', help='Shows the results using a fitted SPICE model. The results are value-dynamics-over-time plot, a parameter distribution histogram, and the corresponding symbolic SPICE model.')
     
     args = parser.parse_args()
@@ -147,8 +148,6 @@ if __name__=='__main__':
         warmup_steps=args.epochs_warmup,
         ensemble_size=args.ensemble,
         l2_rnn=args.rnn_alpha,
-        scheduler=False,
-        batch_size=None,
         sindy_ensemble_pruning_mode='ratio',
         
         # sindy parameters
@@ -158,8 +157,7 @@ if __name__=='__main__':
         sindy_pruning_frequency=args.pruning_frequency,
         sindy_threshold_pruning=args.pruning_threshold,
         sindy_ensemble_pruning=args.pruning_ensemble,
-        sindy_population_pruning=args.pruning_population,
-
+        
         # other parameters
         verbose=True,
         device=torch.device('cuda' if torch.cuda.is_available() else 'cpu'),

@@ -10,8 +10,8 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '.
 from weinhardt2026.studies.synthetic.benchmarking_qlearning import QLearning
 
 
-path_data = 'weinhardt2026/data/synthetic/synthetic_PARp_IT_0.csv'
-path_model = 'weinhardt2026/params/synthetic/spice_synthetic_PARp_IT_0_loose2.pkl'
+path_data = 'weinhardt2026/studies/synthetic/data/synthetic_PARp_IT_0.csv'
+path_model = 'weinhardt2026/studies/synthetic/params/spice_synthetic_PARp_IT_0.pkl'
 
 spice_model = workingmemory#_counterfactual
 rl_parameters = ['beta_reward', 'beta_choice', 'alpha_reward', 'alpha_penalty', 'alpha_choice', 'forget_rate']
