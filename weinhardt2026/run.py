@@ -36,7 +36,7 @@ if __name__=='__main__':
     parser.add_argument('--ensemble', type=int, default=10, help='Number of independent members in the ensemble setup')
     parser.add_argument('--rnn_alpha', type=float, default=0.0001, help='L2 Reg of the RNN parameters')
     parser.add_argument('--sindy_weight', type=float, default=0.1, help='Weight for SINDy regularization during RNN training')
-    parser.add_argument('--sindy_alpha', type=float, default=0.05, help='Degree-weighted coefficient penalty strength (ridge alpha)')
+    parser.add_argument('--sindy_alpha', type=float, default=0.0001, help='Degree-weighted coefficient penalty strength (ridge alpha)')
     
     # Pruning parameters
     parser.add_argument('--pruning_frequency', type=int, default=100, help='Epochs between pruning events')

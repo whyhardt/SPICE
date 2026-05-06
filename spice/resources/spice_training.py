@@ -640,12 +640,12 @@ def _run_sindy_training(
                 # Unified pruning event with ridge recalibration
                 if (
                     sindy_pruning_frequency is not None
-                    # and n_calls_to_train_model >= n_warmup_steps
                     ):
 
                     if (sindy_ensemble_pruning is None 
                         and sindy_threshold_pruning is not None
                         and epoch >= n_warmup_steps
+                        and epoch > 0
                         ):
                         # Fallback: per-epoch patience tracking for per-member threshold pruning
                         model.sindy_coefficient_patience(threshold=sindy_threshold_pruning)
