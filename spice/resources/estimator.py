@@ -1,6 +1,7 @@
 """
 SPICE training pipeline as a scikit-learn estimator
 """
+import math
 import warnings
 import time
 import torch
@@ -64,7 +65,8 @@ class SpiceEstimator(BaseEstimator):
         sindy_ensemble_pruning_mode: Optional[str] = 'ci',  # 'ci' for CI test, 'ratio' for ensemble ratio test
         sindy_population_pruning: Optional[float] = None,  # Optional cross-participant filter (0-1)
         sindy_reconditioning_epochs: Optional[int] = 3,  # Pure SINDy SGD epochs after ridge recalibration
-        sindy_refit: Optional[bool] = True,  # Enable Stage 2 Training (SINDy refit on frozen RNN parameters) 
+        sindy_refit: Optional[bool] = True,  # Enable Stage 2 Training (SINDy refit on frozen RNN parameters)
+        sindy_max_pruned_terms: Optional[int] = None,  # Max terms prunable per pruning event (None = auto-compute)
 
         verbose: Optional[bool] = False,
         keep_log: Optional[bool] = False,
@@ -107,6 +109,9 @@ class SpiceEstimator(BaseEstimator):
                 sindy_ensemble_pruning fraction of members have |coeff| > sindy_threshold_pruning).
             sindy_population_pruning: Cross-participant presence threshold 0-1 (None = disabled).
             sindy_reconditioning_epochs: Pure SINDy SGD epochs after ridge recalibration to warm-start the optimizer (0 = disable).
+            sindy_max_pruned_terms: Maximum number of terms that can be pruned per pruning event
+                per (participant, experiment). If None (default), auto-computed so that the model
+                can reach 0 coefficients within (epochs - warmup_steps) epochs.
             verbose: Print training progress.
             keep_log: Keep full training log (vs. live terminal update).
             save_path_spice: File path (.pkl) to auto-save SPICE model after training.
@@ -147,6 +152,7 @@ class SpiceEstimator(BaseEstimator):
         self.sindy_ensemble_pruning_mode = sindy_ensemble_pruning_mode
         self.sindy_reconditioning_epochs = sindy_reconditioning_epochs
         self.sindy_refit = sindy_refit
+        self.sindy_max_pruned_terms = sindy_max_pruned_terms
         
         # Data parameters
         self.n_actions = n_actions
@@ -180,7 +186,15 @@ class SpiceEstimator(BaseEstimator):
         ).to(device)
 
         self.use_sindy(use_sindy)
-        
+
+        # Auto-compute sindy_max_pruned_terms if None: distribute total terms
+        # evenly across available pruning events so the model can reach 0
+        # coefficients within (epochs - warmup_steps) epochs.
+        if self.sindy_max_pruned_terms is None and sindy_weight > 0 and sindy_pruning_frequency is not None:
+            total_terms = sum(self.model.sindy_coefficients[m].shape[-1] for m in self.model.submodules_rnn)
+            n_pruning_events = max(1, (epochs - warmup_steps) // max(1, sindy_pruning_frequency))
+            self.sindy_max_pruned_terms = math.ceil(total_terms / n_pruning_events)
+
         sindy_params = []
         rnn_params = []
         for name, param in self.model.named_parameters():
@@ -191,7 +205,7 @@ class SpiceEstimator(BaseEstimator):
         # Separate optimizer param groups: SINDy coefficients get fixed lr, RNN params get configurable lr + weight decay
         self.rnn_optimizer = torch.optim.AdamW(
             [
-            {'params': sindy_params, 'weight_decay': 0, 'lr': 0.01},
+            {'params': sindy_params, 'weight_decay': sindy_alpha, 'lr': 0.001},
             {'params': rnn_params, 'weight_decay': l2_rnn, 'lr': learning_rate},
             ],
             )
@@ -237,6 +251,7 @@ class SpiceEstimator(BaseEstimator):
             sindy_population_pruning=self.sindy_population_pruning,
             sindy_reconditioning_epochs=self.sindy_reconditioning_epochs,
             sindy_refit=self.sindy_refit,
+            sindy_max_pruned_terms=self.sindy_max_pruned_terms,
             
             verbose=self.verbose,
             keep_log=self.keep_log,

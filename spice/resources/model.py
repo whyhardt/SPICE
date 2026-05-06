@@ -158,6 +158,7 @@ class BaseModel(nn.Module):
         sindy_polynomial_degree: int = 1,
         sindy_alpha: float = 1e-4,
         fit_sindy: bool = True,
+        dropout: float = 0.,
         
         device=torch.device('cpu'),
         compiled_forward=True,
@@ -195,7 +196,8 @@ class BaseModel(nn.Module):
         self.ensemble_size = ensemble_size
         self.compiled_forward = compiled_forward
         self.fit_sindy = fit_sindy
-
+        self.dropout = dropout
+        
         # session recording; used for sindy training; training variables start with 'x' and control parameters with 'c'
         self.recording = {}
         self.submodules_rnn = nn.ModuleDict()

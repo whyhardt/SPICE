@@ -34,9 +34,9 @@ if __name__=='__main__':
     
     # RNN parameters
     parser.add_argument('--ensemble', type=int, default=10, help='Number of independent members in the ensemble setup')
-    parser.add_argument('--rnn_alpha', type=float, default=0.001, help='L2 Reg of the RNN parameters')
+    parser.add_argument('--rnn_alpha', type=float, default=0.0001, help='L2 Reg of the RNN parameters')
     parser.add_argument('--sindy_weight', type=float, default=0.1, help='Weight for SINDy regularization during RNN training')
-    parser.add_argument('--sindy_alpha', type=float, default=0.0001, help='Degree-weighted coefficient penalty strength (ridge alpha)')
+    parser.add_argument('--sindy_alpha', type=float, default=0.05, help='Degree-weighted coefficient penalty strength (ridge alpha)')
     
     # Pruning parameters
     parser.add_argument('--pruning_frequency', type=int, default=100, help='Epochs between pruning events')
@@ -149,6 +149,7 @@ if __name__=='__main__':
         ensemble_size=args.ensemble,
         l2_rnn=args.rnn_alpha,
         sindy_ensemble_pruning_mode='ratio',
+        dropout=0.1,
         
         # sindy parameters
         sindy_weight=args.sindy_weight,
@@ -157,6 +158,7 @@ if __name__=='__main__':
         sindy_pruning_frequency=args.pruning_frequency,
         sindy_threshold_pruning=args.pruning_threshold,
         sindy_ensemble_pruning=args.pruning_ensemble,
+        sindy_max_pruned_terms=None,
         
         # other parameters
         verbose=True,
