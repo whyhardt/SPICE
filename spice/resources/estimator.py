@@ -67,6 +67,7 @@ class SpiceEstimator(BaseEstimator):
         sindy_reconditioning_epochs: Optional[int] = 3,  # Pure SINDy SGD epochs after ridge recalibration
         sindy_refit: Optional[bool] = True,  # Enable Stage 2 Training (SINDy refit on frozen RNN parameters)
         sindy_max_pruned_terms: Optional[int] = None,  # Max terms prunable per pruning event (None = auto-compute)
+        sindy_shooting_steps: Optional[int] = 1,  # Multi-step shooting horizon for Stage 2.2 (1 = one-step-ahead)
 
         verbose: Optional[bool] = False,
         keep_log: Optional[bool] = False,
@@ -153,6 +154,7 @@ class SpiceEstimator(BaseEstimator):
         self.sindy_reconditioning_epochs = sindy_reconditioning_epochs
         self.sindy_refit = sindy_refit
         self.sindy_max_pruned_terms = sindy_max_pruned_terms
+        self.sindy_shooting_steps = sindy_shooting_steps
         
         # Data parameters
         self.n_actions = n_actions
@@ -252,7 +254,8 @@ class SpiceEstimator(BaseEstimator):
             sindy_reconditioning_epochs=self.sindy_reconditioning_epochs,
             sindy_refit=self.sindy_refit,
             sindy_max_pruned_terms=self.sindy_max_pruned_terms,
-            
+            sindy_shooting_steps=self.sindy_shooting_steps,
+
             verbose=self.verbose,
             keep_log=self.keep_log,
             path_save_checkpoints=None,

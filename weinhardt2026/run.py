@@ -159,6 +159,7 @@ if __name__=='__main__':
         sindy_threshold_pruning=args.pruning_threshold,
         sindy_ensemble_pruning=args.pruning_ensemble,
         sindy_max_pruned_terms=None,
+        sindy_shooting_steps=100,
         
         # other parameters
         verbose=True,
