@@ -30,7 +30,7 @@ if __name__=='__main__':
     # Training parameters
     parser.add_argument('--epochs', type=int, default=1000, help='Number of training epochs')
     parser.add_argument('--epochs_warmup', type=int, default=200, help='Number of training epochs for warmup (exp increase of sindy-weight; no pruning)')
-    parser.add_argument('--lr', type=float, default=0.01, help='Learning rate')
+    parser.add_argument('--lr', type=float, default=0.001, help='Learning rate')
     
     # RNN parameters
     parser.add_argument('--ensemble', type=int, default=10, help='Number of independent members in the ensemble setup')
@@ -158,7 +158,7 @@ if __name__=='__main__':
         sindy_pruning_frequency=args.pruning_frequency,
         sindy_threshold_pruning=args.pruning_threshold,
         sindy_ensemble_pruning=args.pruning_ensemble,
-        sindy_max_pruned_terms=None,
+        sindy_max_pruned_terms=60,
         sindy_shooting_steps=1,
         
         # other parameters

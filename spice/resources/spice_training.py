@@ -1,6 +1,7 @@
 
 import os
 import time
+import math
 import numpy as np
 import torch
 import torch.nn as nn
@@ -260,7 +261,7 @@ def cross_entropy_loss(prediction: torch.Tensor, target: torch.Tensor) -> torch.
     prediction = prediction.reshape(-1, n_actions)
     target = torch.argmax(target.reshape(-1, n_actions), dim=1)
     
-    return torch.nn.functional.cross_entropy(prediction, target, label_smoothing=0.05)
+    return torch.nn.functional.cross_entropy(prediction, target, label_smoothing=0.01)
 
 
 def _setup_warmup_scaler(n_warmup_steps: int, exp_max: float = 1) -> torch.Tensor:
@@ -331,8 +332,8 @@ def _run_batch_training(
             if sindy_weight > 0 and model.sindy_loss != 0:
                 loss_step = loss_step + sindy_weight * model.sindy_loss
 
-            # if sindy_weight > 0 and sindy_alpha > 0:
-            #     loss_step = loss_step + model.compute_weighted_coefficient_penalty(sindy_alpha=sindy_alpha, norm=1)
+            if sindy_weight > 0 and sindy_alpha > 0:
+                loss_step = loss_step + model.compute_weighted_coefficient_penalty(sindy_alpha=sindy_alpha, norm=1)
 
             # backpropagation
             optimizer.zero_grad()
@@ -668,7 +669,7 @@ def _run_sindy_training(
     warmup_lr = base_lr * 10
     sindy_parameters = [p for name, p in model.named_parameters() if 'sindy' in name]
     initial_lr = warmup_lr if n_warmup_steps > 0 else base_lr
-    optimizer = torch.optim.AdamW(sindy_parameters, lr=initial_lr, weight_decay=sindy_alpha)
+    optimizer = torch.optim.AdamW(sindy_parameters, lr=initial_lr, weight_decay=0)
 
     # Collect RNN state trajectories or reuse provided buffers
     if state_buffers is not None:
@@ -764,6 +765,10 @@ def _run_sindy_training(
 
                         if n_valid_steps > 0:
                             loss_window = loss_window / n_valid_steps
+
+                            if sindy_alpha is not None and sindy_alpha > 0:
+                                loss_window = loss_window + model.compute_weighted_coefficient_penalty(sindy_alpha=sindy_alpha, norm=1)
+
                             loss_window.backward()
                             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                             optimizer.step()
@@ -971,6 +976,17 @@ def _run_joint_training(
     #         print('No training epochs specified. Model will not be trained.')
     #     return model, optimizer, 0., 0.
 
+    # LR schedule: high during warmup, drop after; SINDy also boosts after pruning
+    rnn_lr_given = optimizer.param_groups[1]['lr']
+    rnn_lr_warmup = rnn_lr_given * 10
+    if n_warmup_steps > 0:
+        optimizer.param_groups[1]['lr'] = rnn_lr_warmup
+
+    sindy_lr_warmup = 0.01
+    sindy_lr_base = 0.001
+    sindy_lr_boost_until = n_warmup_steps  # epoch until which warmup/boost lr is active
+    sindy_lr_boost_duration = max(1, int(0.1 * sindy_pruning_frequency)) if sindy_pruning_frequency else 0
+
     # Training state
     continue_training = True
     converged = False
@@ -1096,6 +1112,19 @@ def _run_joint_training(
                         # Reset coefficients + optimizer state, ridge solve + reconditioning
                         # if pruned:
                         #     _ridge_recalibrate_sindy(model, xs_train, ys_train, optimizer, n_reconditioning_epochs=sindy_reconditioning_epochs)
+
+                        # After pruning, boost SINDy lr for quick readjustment
+                        if pruned and sindy_lr_boost_duration > 0:
+                            sindy_lr_boost_until = n_calls_to_train_model + sindy_lr_boost_duration
+                            optimizer.param_groups[0]['lr'] = sindy_lr_warmup
+
+            # LR schedule: drop from warmup lr to base lr after warmup ends
+            if n_calls_to_train_model == n_warmup_steps and n_warmup_steps > 0:
+                optimizer.param_groups[1]['lr'] = rnn_lr_given
+
+            # SINDy LR schedule: warmup lr until boost expires, then base lr
+            if sindy_weight > 0 and n_calls_to_train_model >= sindy_lr_boost_until:
+                optimizer.param_groups[0]['lr'] = sindy_lr_base
 
             # Check convergence
             dloss = last_loss - (loss_test_rnn if dataloader_test is not None else loss_train)
@@ -1512,6 +1541,15 @@ def fit_spice(
     # STAGE 1: Joint RNN-SINDy Training with Fused Pruning
     # ══════════════════════════════════════════════════════════════════════════
     if epochs > 0:
+        
+        # Auto-compute sindy_max_pruned_terms if None: distribute total terms
+        # evenly across available pruning events so the model can reach 0
+        # coefficients within (epochs - warmup_steps) epochs.
+        if sindy_max_pruned_terms is None and sindy_weight > 0 and sindy_pruning_frequency is not None:
+            total_terms = sum(model.model.sindy_coefficients[m].shape[-1] for m in model.submodules_rnn)
+            n_pruning_events = max(1, (epochs - n_warmup_steps) // max(1, sindy_pruning_frequency))
+            sindy_max_pruned_terms = math.ceil(total_terms / n_pruning_events)
+            
         if verbose:
             terminal_width = _get_terminal_width()
             print("\n" + "=" * terminal_width)
@@ -1578,6 +1616,9 @@ def fit_spice(
                         or sindy_threshold_pruning is not None
                         or sindy_alpha is not None)
 
+        epochs = 100
+        epochs_warmup = 10
+        
         if has_sparsity:
             # Stage 2.1: Reset masks entirely and rediscover sparsity on clean hidden states
             if verbose:
@@ -1586,12 +1627,18 @@ def fit_spice(
                 print("Stage 2.1: SINDy sparsity discovery")
                 print("=" * terminal_width)
 
+            # Auto-compute sindy_max_pruned_terms if None
+            if sindy_max_pruned_terms is None and sindy_weight > 0 and sindy_pruning_frequency is not None:
+                total_terms = sum(model.sindy_coefficients[m].shape[-1] for m in model.submodules_rnn)
+                n_pruning_events = max(1, (epochs - epochs_warmup) // max(1, sindy_pruning_frequency))
+                sindy_max_pruned_terms = math.ceil(total_terms / n_pruning_events)
+            
             _, state_buffers = _run_sindy_training(
                 model=model,
                 xs_train=cpu_xs,
                 ys_train=cpu_ys,
-                epochs=100,
-                n_warmup_steps=10,
+                epochs=epochs,
+                n_warmup_steps=epochs_warmup,
                 sindy_pruning_frequency=20,#sindy_pruning_frequency,
                 sindy_threshold_pruning=sindy_threshold_pruning,
                 sindy_ensemble_pruning=sindy_ensemble_pruning,
@@ -1618,8 +1665,8 @@ def fit_spice(
             model=model,
             xs_train=cpu_xs,
             ys_train=cpu_ys,
-            epochs=100,
-            n_warmup_steps=50,
+            epochs=epochs,
+            n_warmup_steps=epochs_warmup,
             sindy_pruning_frequency=None,
             sindy_threshold_pruning=None,
             sindy_ensemble_pruning=None,

@@ -189,14 +189,6 @@ class SpiceEstimator(BaseEstimator):
 
         self.use_sindy(use_sindy)
 
-        # Auto-compute sindy_max_pruned_terms if None: distribute total terms
-        # evenly across available pruning events so the model can reach 0
-        # coefficients within (epochs - warmup_steps) epochs.
-        if self.sindy_max_pruned_terms is None and sindy_weight > 0 and sindy_pruning_frequency is not None:
-            total_terms = sum(self.model.sindy_coefficients[m].shape[-1] for m in self.model.submodules_rnn)
-            n_pruning_events = max(1, (epochs - warmup_steps) // max(1, sindy_pruning_frequency))
-            self.sindy_max_pruned_terms = math.ceil(total_terms / n_pruning_events)
-
         sindy_params = []
         rnn_params = []
         for name, param in self.model.named_parameters():
@@ -207,7 +199,7 @@ class SpiceEstimator(BaseEstimator):
         # Separate optimizer param groups: SINDy coefficients get fixed lr, RNN params get configurable lr + weight decay
         self.rnn_optimizer = torch.optim.AdamW(
             [
-            {'params': sindy_params, 'weight_decay': sindy_alpha, 'lr': 0.01},
+            {'params': sindy_params, 'weight_decay': 0, 'lr': 0.01},
             {'params': rnn_params, 'weight_decay': l2_rnn, 'lr': learning_rate},
             ],
             )
