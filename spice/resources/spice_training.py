@@ -260,7 +260,7 @@ def cross_entropy_loss(prediction: torch.Tensor, target: torch.Tensor) -> torch.
     prediction = prediction.reshape(-1, n_actions)
     target = torch.argmax(target.reshape(-1, n_actions), dim=1)
     
-    return torch.nn.functional.cross_entropy(prediction, target)
+    return torch.nn.functional.cross_entropy(prediction, target, label_smoothing=0.05)
 
 
 def _setup_warmup_scaler(n_warmup_steps: int, exp_max: float = 1) -> torch.Tensor:

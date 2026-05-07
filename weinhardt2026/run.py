@@ -34,14 +34,14 @@ if __name__=='__main__':
     
     # RNN parameters
     parser.add_argument('--ensemble', type=int, default=10, help='Number of independent members in the ensemble setup')
-    parser.add_argument('--rnn_alpha', type=float, default=0.0001, help='L2 Reg of the RNN parameters')
+    parser.add_argument('--rnn_alpha', type=float, default=0.000, help='L2 Reg of the RNN parameters')
     parser.add_argument('--sindy_weight', type=float, default=0.1, help='Weight for SINDy regularization during RNN training')
     parser.add_argument('--sindy_alpha', type=float, default=0.0001, help='Degree-weighted coefficient penalty strength (ridge alpha)')
     
     # Pruning parameters
     parser.add_argument('--pruning_frequency', type=int, default=100, help='Epochs between pruning events')
-    parser.add_argument('--pruning_threshold', type=float, default=0.05, help='Threshold value for cutting off sindy terms (lowered for delta-form coefficients)')
-    parser.add_argument('--pruning_ensemble', type=float, default=0.8, help='t-test threshold for ensemble-based pruning')
+    parser.add_argument('--pruning_threshold', type=float, default=0.01, help='Threshold value for cutting off sindy terms (lowered for delta-form coefficients)')
+    parser.add_argument('--pruning_ensemble', type=float, default=0.05, help='t-test threshold for ensemble-based pruning')
     
     # Data parameters
     parser.add_argument('--data', type=str, default=None, help='Path to dataset')
@@ -148,7 +148,7 @@ if __name__=='__main__':
         warmup_steps=args.epochs_warmup,
         ensemble_size=args.ensemble,
         l2_rnn=args.rnn_alpha,
-        sindy_ensemble_pruning_mode='ratio',
+        sindy_ensemble_pruning_mode='ci',
         dropout=0.1,
         
         # sindy parameters
@@ -159,7 +159,7 @@ if __name__=='__main__':
         sindy_threshold_pruning=args.pruning_threshold,
         sindy_ensemble_pruning=args.pruning_ensemble,
         sindy_max_pruned_terms=None,
-        sindy_shooting_steps=100,
+        sindy_shooting_steps=1,
         
         # other parameters
         verbose=True,

@@ -528,7 +528,7 @@ class BaseModel(nn.Module):
             )
 
         # clip next_value to a specific range
-        next_value = torch.clip(input=next_value, min=-100, max=100)
+        next_value = torch.clip(input=next_value, min=-10, max=10)
 
         # Apply action mask: store complete state, but return only masked update
         if action_mask is not None:

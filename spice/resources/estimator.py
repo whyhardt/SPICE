@@ -207,7 +207,7 @@ class SpiceEstimator(BaseEstimator):
         # Separate optimizer param groups: SINDy coefficients get fixed lr, RNN params get configurable lr + weight decay
         self.rnn_optimizer = torch.optim.AdamW(
             [
-            {'params': sindy_params, 'weight_decay': sindy_alpha, 'lr': 0.001},
+            {'params': sindy_params, 'weight_decay': sindy_alpha, 'lr': 0.01},
             {'params': rnn_params, 'weight_decay': l2_rnn, 'lr': learning_rate},
             ],
             )
