@@ -36,7 +36,7 @@ CONFIG = SpiceConfig(
             ],
     },
     memory_state={
-        # 'value_reward_env': 0.,
+        'value_reward_env': 0.,
         
         'value_reward': 0.,
         'value_choice': 0.,
