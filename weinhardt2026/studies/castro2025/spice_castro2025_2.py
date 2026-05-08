@@ -10,14 +10,14 @@ CONFIG = SpiceConfig(
         #     'reward[t]',
         # ],
         'value_reward_chosen': [
-            'reward_env',
-            'value_reward_mean'
+            # 'reward_env',
             'reward[t]',
+            'value_reward_mean',
             # 'reward[t-1]',
         ],
         'value_reward_not_chosen': [
-            'reward_env',
-            'value_reward_mean'
+            # 'reward_env',
+            'value_reward_mean',
             # 'reward[t-1]',
         ],
         'value_choice_chosen': [
@@ -99,7 +99,7 @@ class SpiceModel(BaseModel):
                 inputs=(
                     # value_reward_env,
                     spice_signals.rewards[trial],
-                    mean_value_reward
+                    mean_value_reward,
                 ),
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
