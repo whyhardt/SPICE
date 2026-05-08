@@ -6,9 +6,9 @@ from spice import SpiceConfig
 
 CONFIG = SpiceConfig(
     library_setup={
-        'value_reward_env': [
-            'reward[t]',
-        ],
+        # 'value_reward_env': [
+        #     'reward[t]',
+        # ],
         'value_reward_chosen': [
             'reward_env',
             'value_reward_mean'
@@ -34,7 +34,7 @@ CONFIG = SpiceConfig(
         'volatility_not_chosen': [],
     },
     memory_state={
-        'value_reward_env': 0.,
+        # 'value_reward_env': 0.,
         
         'value_reward': 0.,
         'value_choice': 0.,
@@ -64,13 +64,13 @@ class SpiceModel(BaseModel):
         
         self.participant_embedding = self.setup_embedding(self.n_participants, self.embedding_size, dropout=dropout)
         
-        self.setup_module(key_module='value_reward_env', input_size=1+self.embedding_size, dropout=dropout)
-        self.setup_module(key_module='value_reward_chosen', input_size=3+self.embedding_size, dropout=dropout)
-        self.setup_module(key_module='value_reward_not_chosen', input_size=2+self.embedding_size, dropout=dropout)
+        # self.setup_module(key_module='value_reward_env', input_size=1+self.embedding_size, dropout=dropout)
+        self.setup_module(key_module='value_reward_chosen', input_size=2+self.embedding_size, dropout=dropout)
+        self.setup_module(key_module='value_reward_not_chosen', input_size=1+self.embedding_size, dropout=dropout)
         self.setup_module(key_module='value_choice_chosen', input_size=1+self.embedding_size, dropout=dropout)
         self.setup_module(key_module='value_choice_not_chosen', input_size=1+self.embedding_size, dropout=dropout)
         self.setup_module(key_module='volatility_chosen', input_size=1+self.embedding_size, dropout=dropout)
-        self.setup_module(key_module='volatility_not_chosen', input_size=self.embedding_size, dropout=dropout)
+        self.setup_module(key_module='volatility_not_chosen', input_size=1+self.embedding_size, dropout=dropout)
         
     def forward(self, inputs, state=None):
         spice_signals = self.init_forward_pass(inputs, state)
@@ -82,18 +82,14 @@ class SpiceModel(BaseModel):
         for trial in spice_signals.trials:
             
             # REWARD VALUE UPDATES
-            value_reward_env = self.call_module(
-                key_module='value_reward_env',
-                key_state='value_reward_env',
-                inputs=reward_full[trial],
-                participant_index=spice_signals.participant_ids,
-                participant_embedding=participant_embedding,
-            )
+            # value_reward_env = self.call_module(
+            #     key_module='value_reward_env',
+            #     key_state='value_reward_env',
+            #     inputs=reward_full[trial],
+            #     participant_index=spice_signals.participant_ids,
+            #     participant_embedding=participant_embedding,
+            # )
             
-            # Detach coupled signals to break cross-module SINDy gradient feedback.
-            # The main BPTT gradient still flows through the state path.
-            # value_reward_env_detached = value_reward_env.detach()
-
             mean_value_reward = self.state['value_reward'].mean(dim=-1, keepdim=True).expand_as(self.state['value_reward']).detach()
             
             self.call_module(
@@ -101,10 +97,9 @@ class SpiceModel(BaseModel):
                 key_state='value_reward',
                 action_mask=spice_signals.actions[trial],
                 inputs=(
-                    value_reward_env,
+                    # value_reward_env,
                     spice_signals.rewards[trial],
                     mean_value_reward
-                    # self.state['reward[t-1]'],
                 ),
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
@@ -115,9 +110,8 @@ class SpiceModel(BaseModel):
                 key_state='value_reward',
                 action_mask=1-spice_signals.actions[trial],
                 inputs=(
-                    value_reward_env,
+                    # value_reward_env,
                     mean_value_reward,
-                    # self.state['reward[t-1]'],
                 ),
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
@@ -150,13 +144,15 @@ class SpiceModel(BaseModel):
             )
 
             # VOLATILITY UPDATES
-            dvalue = (self.state['value_reward'] - self.state['value_reward[t-1]'])#.detach()
+            dvalue = (self.state['value_reward'] - self.state['value_reward[t-1]']).detach()
             
             self.call_module(
                 key_module='volatility_chosen',
                 key_state='volatility',
                 action_mask=spice_signals.actions[trial],
-                inputs=(dvalue,),
+                inputs=(
+                    dvalue,
+                    ),
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
             )
@@ -164,13 +160,15 @@ class SpiceModel(BaseModel):
             self.call_module(
                 key_module='volatility_not_chosen',
                 key_state='volatility',
+                inputs=(
+                    dvalue,
+                    ),
                 action_mask=1-spice_signals.actions[trial],
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
             )
 
             # BUFFER UPDATES
-            # self.state['action[t-1]'] = spice_signals.actions[trial]
             self.state['value_reward[t-1]'] = self.state['value_reward']
             
             # Logits
