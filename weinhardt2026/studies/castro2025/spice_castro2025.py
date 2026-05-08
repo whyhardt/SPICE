@@ -92,15 +92,22 @@ class SpiceModel(BaseModel):
                 participant_embedding=participant_embedding,
             )
             
+            # Detach coupled signals to break cross-module SINDy gradient feedback.
+            # The main BPTT gradient still flows through the state path (value_reward, value_choice).
+            dvalue_reward = self.state['dvalue_reward'].detach()
+            d2value_reward = self.state['d²value_reward'].detach()
+            dvalue_choice = self.state['dvalue_choice'].detach()
+            d2value_choice = self.state['d²value_choice'].detach()
+
             self.call_module(
                 key_module='value_reward_chosen',
                 key_state='value_reward',
                 action_mask=spice_signals.actions[trial],
                 inputs=(
-                    value_reward_env,
+                    value_reward_env.detach(),
                     spice_signals.rewards[trial],
-                    self.state['dvalue_reward'],
-                    self.state['d²value_reward'],
+                    dvalue_reward,
+                    d2value_reward,
                 ),
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
@@ -111,9 +118,9 @@ class SpiceModel(BaseModel):
                 key_state='value_reward',
                 action_mask=1-spice_signals.actions[trial],
                 inputs=(
-                    value_reward_env,
-                    self.state['dvalue_reward'],
-                    self.state['d²value_reward'],
+                    value_reward_env.detach(),
+                    dvalue_reward,
+                    d2value_reward,
                 ),
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
@@ -125,20 +132,20 @@ class SpiceModel(BaseModel):
                 key_state='value_choice',
                 action_mask=spice_signals.actions[trial],
                 inputs=(
-                    self.state['dvalue_choice'],
-                    self.state['d²value_choice'],
+                    dvalue_choice,
+                    d2value_choice,
                 ),
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
             )
-            
+
             self.call_module(
                 key_module='value_choice_not_chosen',
                 key_state='value_choice',
                 action_mask=1-spice_signals.actions[trial],
                 inputs=(
-                    self.state['dvalue_choice'],
-                    self.state['d²value_choice'],
+                    dvalue_choice,
+                    d2value_choice,
                 ),
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
