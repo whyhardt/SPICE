@@ -505,7 +505,7 @@ class BaseModel(nn.Module):
                     module_name=key_module,
                     h_current=torch.concat((value_0, next_value[:-1])),
                     h_next_rnn=next_value,
-                    controls=inputs,
+                    controls=inputs.detach(),
                     action_mask=action_mask_2d,
                     participant_ids=participant_index,
                     experiment_ids=experiment_index,
