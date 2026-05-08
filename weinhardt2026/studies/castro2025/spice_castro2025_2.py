@@ -11,17 +11,21 @@ CONFIG = SpiceConfig(
         ],
         'value_reward_chosen': [
             'reward_env',
+            'value_reward_mean'
             'reward[t]',
             # 'reward[t-1]',
         ],
         'value_reward_not_chosen': [
             'reward_env',
+            'value_reward_mean'
             # 'reward[t-1]',
         ],
         'value_choice_chosen': [
+            'value_choice_mean',
             # 'action[t-1]',
         ],
         'value_choice_not_chosen': [
+            'value_choice_mean',
             # 'action[t-1]',
         ],
         'volatility_chosen': [
@@ -90,6 +94,8 @@ class SpiceModel(BaseModel):
             # The main BPTT gradient still flows through the state path.
             # value_reward_env_detached = value_reward_env.detach()
 
+            mean_value_reward = self.state['value_reward'].mean(dim=-1, keepdim=True).expand_as(self.state['value_reward']).detach()
+            
             self.call_module(
                 key_module='value_reward_chosen',
                 key_state='value_reward',
@@ -97,6 +103,7 @@ class SpiceModel(BaseModel):
                 inputs=(
                     value_reward_env,
                     spice_signals.rewards[trial],
+                    mean_value_reward
                     # self.state['reward[t-1]'],
                 ),
                 participant_index=spice_signals.participant_ids,
@@ -109,6 +116,7 @@ class SpiceModel(BaseModel):
                 action_mask=1-spice_signals.actions[trial],
                 inputs=(
                     value_reward_env,
+                    mean_value_reward,
                     # self.state['reward[t-1]'],
                 ),
                 participant_index=spice_signals.participant_ids,
@@ -116,11 +124,16 @@ class SpiceModel(BaseModel):
             )
 
             # CHOICE VALUE UPDATES
+            
+            mean_value_choice = self.state['value_choice'].mean(dim=-1, keepdim=True).expand_as(self.state['value_choice']).detach()
+
             self.call_module(
                 key_module='value_choice_chosen',
                 key_state='value_choice',
                 action_mask=spice_signals.actions[trial],
-                # inputs=(self.state['action[t-1]'],),
+                inputs=(
+                    mean_value_choice,
+                    ),
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
             )
@@ -129,7 +142,9 @@ class SpiceModel(BaseModel):
                 key_module='value_choice_not_chosen',
                 key_state='value_choice',
                 action_mask=1-spice_signals.actions[trial],
-                # inputs=(self.state['action[t-1]'],),
+                inputs=(
+                    mean_value_choice,
+                    ),
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
             )

@@ -94,17 +94,17 @@ class SpiceModel(BaseModel):
             
             # Detach coupled signals to break cross-module SINDy gradient feedback.
             # The main BPTT gradient still flows through the state path (value_reward, value_choice).
-            dvalue_reward = self.state['dvalue_reward'].detach()
-            d2value_reward = self.state['d²value_reward'].detach()
-            dvalue_choice = self.state['dvalue_choice'].detach()
-            d2value_choice = self.state['d²value_choice'].detach()
+            dvalue_reward = self.state['dvalue_reward']
+            d2value_reward = self.state['d²value_reward']
+            dvalue_choice = self.state['dvalue_choice']
+            d2value_choice = self.state['d²value_choice']
 
             self.call_module(
                 key_module='value_reward_chosen',
                 key_state='value_reward',
                 action_mask=spice_signals.actions[trial],
                 inputs=(
-                    value_reward_env.detach(),
+                    value_reward_env,
                     spice_signals.rewards[trial],
                     dvalue_reward,
                     d2value_reward,
@@ -118,7 +118,7 @@ class SpiceModel(BaseModel):
                 key_state='value_reward',
                 action_mask=1-spice_signals.actions[trial],
                 inputs=(
-                    value_reward_env.detach(),
+                    value_reward_env,
                     dvalue_reward,
                     d2value_reward,
                 ),
