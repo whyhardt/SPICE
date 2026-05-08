@@ -65,10 +65,10 @@ class SpiceModel(BaseModel):
         self.participant_embedding = self.setup_embedding(self.n_participants, self.embedding_size, dropout=dropout)
         
         self.setup_module(key_module='value_reward_env', input_size=1+self.embedding_size, dropout=dropout)
-        self.setup_module(key_module='value_reward_chosen', input_size=2+self.embedding_size, dropout=dropout)
-        self.setup_module(key_module='value_reward_not_chosen', input_size=1+self.embedding_size, dropout=dropout)
-        self.setup_module(key_module='value_choice_chosen', input_size=0+self.embedding_size, dropout=dropout)
-        self.setup_module(key_module='value_choice_not_chosen', input_size=0+self.embedding_size, dropout=dropout)
+        self.setup_module(key_module='value_reward_chosen', input_size=3+self.embedding_size, dropout=dropout)
+        self.setup_module(key_module='value_reward_not_chosen', input_size=2+self.embedding_size, dropout=dropout)
+        self.setup_module(key_module='value_choice_chosen', input_size=1+self.embedding_size, dropout=dropout)
+        self.setup_module(key_module='value_choice_not_chosen', input_size=1+self.embedding_size, dropout=dropout)
         self.setup_module(key_module='volatility_chosen', input_size=1+self.embedding_size, dropout=dropout)
         self.setup_module(key_module='volatility_not_chosen', input_size=self.embedding_size, dropout=dropout)
         
