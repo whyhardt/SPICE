@@ -52,6 +52,7 @@ class SpiceEstimator(BaseEstimator):
         l2_rnn: Optional[float] = 0,
         dropout: Optional[float] = 0.,
         loss_fn: Optional[callable] = cross_entropy_loss,
+        loss_fn_kwargs: Optional[dict] = {},
 
         # SPICE training parameters
         use_sindy: Optional[bool] = False,
@@ -127,6 +128,7 @@ class SpiceEstimator(BaseEstimator):
         self.ensemble_size = ensemble_size
         self.l2_rnn = l2_rnn
         self.loss_fn = loss_fn
+        self.loss_fn_kwargs = loss_fn_kwargs
         self.compiled_forward = compiled_forward
 
         # Save parameters
@@ -222,6 +224,7 @@ class SpiceEstimator(BaseEstimator):
             n_steps=self.n_steps_per_call,
             convergence_threshold=self.convergence_threshold,
             loss_fn=self.loss_fn,
+            loss_fn_kwargs = self.loss_fn_kwargs,
 
             sindy_weight=self.sindy_weight,
             sindy_alpha=self.sindy_alpha,

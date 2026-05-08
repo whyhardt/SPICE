@@ -159,9 +159,8 @@ if __name__=='__main__':
         warmup_steps=args.epochs_warmup,
         ensemble_size=args.ensemble,
         l2_rnn=args.rnn_l2_lambda,
-        scheduler=False,
-        batch_size=None,
-
+        loss_fn_kwargs= {'label_smoothing': 0.05},
+        
         # sindy fitting parameters
         sindy_weight=args.sindy_weight,
         sindy_alpha=args.sindy_alpha,

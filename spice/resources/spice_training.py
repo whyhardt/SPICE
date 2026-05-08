@@ -253,14 +253,14 @@ class ReduceOnPlateauWithRestarts:
         return [group['lr'] for group in self.optimizer.param_groups]
 
 
-def cross_entropy_loss(prediction: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+def cross_entropy_loss(prediction: torch.Tensor, target: torch.Tensor, label_smoothing=0.) -> torch.Tensor:
     """Wrapper for torch's cross entropy loss which does all the reshaping when getting SpiceDataset.ys tensors as predicitons and targets."""
     n_actions = target.shape[-1]
     
     prediction = prediction.reshape(-1, n_actions)
     target = torch.argmax(target.reshape(-1, n_actions), dim=1)
     
-    return torch.nn.functional.cross_entropy(prediction, target, label_smoothing=0.01)
+    return torch.nn.functional.cross_entropy(prediction, target, label_smoothing=label_smoothing)
 
 
 def _setup_warmup_scaler(n_warmup_steps: int, exp_max: float = 1) -> torch.Tensor:
@@ -292,6 +292,7 @@ def _run_batch_training(
     sindy_alpha: float = 0.,
     n_steps: int = None,
     loss_fn: callable = cross_entropy_loss,
+    loss_fn_kwargs: dict = {},
     ):
 
     """
@@ -324,7 +325,7 @@ def _run_batch_training(
         ys_pred = ys_pred[mask]
         ys_step = ys_step[mask]
 
-        loss_step = loss_fn(ys_pred, ys_step)
+        loss_step = loss_fn(ys_pred, ys_step, **loss_fn_kwargs)
 
         if torch.is_grad_enabled():
             # Add SINDy regularization loss
@@ -836,6 +837,7 @@ def _run_joint_training(
     n_steps: int = None,
     use_scheduler: bool = False,
     loss_fn: callable = cross_entropy_loss,
+    loss_fn_kwargs: dict = {},
 
     sindy_weight: float = 0,
     sindy_alpha: float = 0,
@@ -933,6 +935,7 @@ def _run_joint_training(
                         sindy_weight=sindy_weight_epoch,
                         sindy_alpha=sindy_alpha,
                         loss_fn=loss_fn,
+                        loss_fn_kwargs=loss_fn_kwargs,
                     )
                     loss_train += loss_i
 
@@ -947,7 +950,7 @@ def _run_joint_training(
                     if xs.device != model.device:
                         xs = xs.to(model.device)
                         ys = ys.to(model.device)
-                    _, _, loss_test_rnn = _run_batch_training(model=model, xs=xs.unsqueeze(0).repeat(model.ensemble_size, 1, 1, 1, 1), ys=ys.unsqueeze(0).repeat(model.ensemble_size, 1, 1, 1, 1), loss_fn=loss_fn)
+                    _, _, loss_test_rnn = _run_batch_training(model=model, xs=xs.unsqueeze(0).repeat(model.ensemble_size, 1, 1, 1, 1), ys=ys.unsqueeze(0).repeat(model.ensemble_size, 1, 1, 1, 1), loss_fn=loss_fn, loss_fn_kwargs=loss_fn_kwargs)
                     
                 if sindy_weight > 0:
                     model = model.eval(use_sindy=True)
@@ -956,7 +959,7 @@ def _run_joint_training(
                         if xs.device != model.device:
                             xs = xs.to(model.device)
                             ys = ys.to(model.device)
-                        _, _, loss_test_sindy = _run_batch_training(model=model, xs=xs.unsqueeze(0).repeat(model.ensemble_size, 1, 1, 1, 1), ys=ys.unsqueeze(0).repeat(model.ensemble_size, 1, 1, 1, 1), loss_fn=loss_fn)
+                        _, _, loss_test_sindy = _run_batch_training(model=model, xs=xs.unsqueeze(0).repeat(model.ensemble_size, 1, 1, 1, 1), ys=ys.unsqueeze(0).repeat(model.ensemble_size, 1, 1, 1, 1), loss_fn=loss_fn, loss_fn_kwargs=loss_fn_kwargs)
 
                 model = model.train()
             
@@ -1248,7 +1251,8 @@ def fit_spice(
     n_steps: int = None,
     convergence_threshold: float = 1e-7,
     loss_fn: callable = cross_entropy_loss,
-
+    loss_fn_kwargs: dict = {},
+    
     sindy_weight: float = 0.,
     sindy_alpha: float = 0.,
     sindy_pruning_frequency: int = 1,
@@ -1395,6 +1399,7 @@ def fit_spice(
                     batch_size=batch_size,
                     convergence_threshold=convergence_threshold,
                     loss_fn=loss_fn,
+                    loss_fn_kwargs=loss_fn_kwargs,
                     
                     sindy_weight=sindy_weight,
                     sindy_alpha=sindy_alpha,
@@ -1485,6 +1490,7 @@ def fit_spice(
                     n_steps=n_steps,
                     use_scheduler=False,
                     loss_fn=loss_fn,
+                    loss_fn_kwargs=loss_fn_kwargs,
 
                     sindy_weight=sindy_weight,
                     sindy_alpha=0,
