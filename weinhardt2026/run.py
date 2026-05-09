@@ -37,6 +37,7 @@ if __name__=='__main__':
     
     # SINDy training parameters
     parser.add_argument('--sindy_skip_refit', action='store_false', help='Refits the SINDy coefficients in Stage 2 training (default: True)')
+    parser.add_argument('--shooting_steps', type=int, default=20, help='Multi-step shooting horizon for Stage 2 SINDy refit (1=one-step-ahead, default: 20)')
     parser.add_argument('--sindy_weight', type=float, default=0.1, help='Weight for SINDy regularization during RNN training')
     parser.add_argument('--sindy_alpha', type=float, default=0.0001, help='Degree-weighted coefficient penalty strength (ridge alpha)')
     parser.add_argument('--pruning_frequency', type=int, default=100, help='Epochs between pruning events')
@@ -113,12 +114,8 @@ if __name__=='__main__':
         dataset_train, dataset_test = split_data_along_sessiondim(dataset, args.test_sessions)
     else:
         print("Training/test split: None")
-        dataset_train, dataset_test = dataset, dataset
+        dataset_train, dataset_test = dataset, dataset    
     
-    # if args.sindy_weight > 0:
-    #     dataset_tuple = dataset_train.xs, dataset_train.ys, dataset_train.xs, dataset_train.ys
-    # else:
-    #     dataset_tuple = dataset_train.xs, dataset_train.ys, None, None
     dataset_tuple = dataset_train.xs, dataset_train.ys, dataset_test.xs, dataset_test.ys
     
     n_actions = dataset_train.ys.shape[-1]
@@ -126,15 +123,6 @@ if __name__=='__main__':
     n_experiments = len(dataset_train.xs[..., -2].unique())
     n_items = args.n_items if args.n_items else n_actions
     n_sessions = dataset.xs.shape[0]
-    
-    # if n_items == n_actions:
-    #     if ((dataset.xs[..., n_actions:n_actions*2].nan_to_num(0) == 1).int() + (dataset.xs[..., n_actions:n_actions*2].nan_to_num(0) == 0).int()).sum() == dataset.xs.shape[0]*dataset.xs.shape[1]*n_actions:
-    #         # binary rewards
-    #         spice_model = workingmemory_rewardbinary
-    #     else:
-    #         spice_model = workingmemory
-    # else:
-    #     spice_model = workingmemory_multiitem
     
     spice_module = importlib.import_module(args.module)
     spice_model = spice_module.SpiceModel
@@ -169,6 +157,7 @@ if __name__=='__main__':
         sindy_threshold_pruning=args.pruning_threshold,
         sindy_ensemble_pruning=args.pruning_ensemble,
         sindy_population_pruning=args.pruning_population,
+        sindy_shooting_steps=args.shooting_steps,
 
         # other parameters
         verbose=True,

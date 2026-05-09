@@ -64,7 +64,8 @@ class SpiceEstimator(BaseEstimator):
         sindy_ensemble_pruning: Optional[float] = None,  # Ensemble t-test significance level (primary pruning mechanism)
         sindy_population_pruning: Optional[float] = None,  # Optional cross-participant filter (0-1)
         sindy_reconditioning_epochs: Optional[int] = 3,  # Pure SINDy SGD epochs after ridge recalibration
-        sindy_refit: Optional[bool] = True,  # Enable Stage 2 Training (SINDy refit on frozen RNN parameters) 
+        sindy_refit: Optional[bool] = True,  # Enable Stage 2 Training (SINDy refit on frozen RNN parameters)
+        sindy_shooting_steps: Optional[int] = 20,  # Multi-step shooting horizon for Stage 2 (1 = one-step-ahead)
 
         verbose: Optional[bool] = False,
         keep_log: Optional[bool] = False,
@@ -104,6 +105,8 @@ class SpiceEstimator(BaseEstimator):
             sindy_ensemble_pruning: Confidence level for ensemble CI test (primary pruning mechanism).
             sindy_population_pruning: Cross-participant presence threshold 0-1 (None = disabled).
             sindy_reconditioning_epochs: Pure SINDy SGD epochs after ridge recalibration to warm-start the optimizer (0 = disable).
+            sindy_shooting_steps: Multi-step shooting horizon for Stage 2 SINDy refit.
+                1 = one-step-ahead. Values > 1 roll out K steps to penalize compounding error. (default: 20)
             verbose: Print training progress.
             keep_log: Keep full training log (vs. live terminal update).
             save_path_spice: File path (.pkl) to auto-save SPICE model after training.
@@ -144,6 +147,7 @@ class SpiceEstimator(BaseEstimator):
         self.sindy_ensemble_pruning = sindy_ensemble_pruning
         self.sindy_reconditioning_epochs = sindy_reconditioning_epochs
         self.sindy_refit = sindy_refit
+        self.sindy_shooting_steps = sindy_shooting_steps
         
         # Data parameters
         self.n_actions = n_actions
@@ -234,10 +238,11 @@ class SpiceEstimator(BaseEstimator):
             sindy_population_pruning=self.sindy_population_pruning,
             sindy_reconditioning_epochs=self.sindy_reconditioning_epochs,
             sindy_refit=self.sindy_refit,
-            
+            sindy_shooting_steps=self.sindy_shooting_steps,
+
             verbose=self.verbose,
             keep_log=self.keep_log,
-            path_save_checkpoints=None,
+            path_save_checkpoints=self.save_path_model,
         )
 
         self.model = rnn_model
