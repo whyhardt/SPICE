@@ -384,8 +384,19 @@ def _vectorize_state(
 
     # Per-session hidden state carried across timesteps: (W, E, B, n_items)
     session_states = {s: torch.full((W, E, B, model.n_items),
-                                    fill_value=model.spice_config.memory_state[s],
+                                    fill_value=model.spice_config.memory_state[s] if model.spice_config.memory_state[s] is not None else 0.,
                                     dtype=torch.float32, device=model.device) for s in state_keys}
+
+    # Apply learnable per-participant initial values
+    if hasattr(model, 'learnable_initial_values') and model.learnable_initial_values:
+        participant_ids = xs_train[0, :, 0, 0, -1].long().to(model.device)
+        E_idx = torch.arange(E, device=model.device).unsqueeze(1)
+        for key, param in model.learnable_initial_values.items():
+            init_val = param[E_idx, participant_ids]  # [E, B]
+            session_states[key] = init_val.unsqueeze(0).unsqueeze(-1).expand(
+                W, -1, -1, model.n_items,
+            ).clone().detach()
+
     batch_size_fwd = B
     with torch.no_grad():
         for t in range(T):
@@ -690,11 +701,21 @@ def _vectorize_state_sequential(
     session_states = {
         s: torch.full(
             (W, E, B, model.n_items),
-            fill_value=model.spice_config.memory_state[s],
+            fill_value=model.spice_config.memory_state[s] if model.spice_config.memory_state[s] is not None else 0.,
             dtype=torch.float32, device=model.device,
         )
         for s in state_keys
     }
+
+    # Apply learnable per-participant initial values
+    if hasattr(model, 'learnable_initial_values') and model.learnable_initial_values:
+        participant_ids = xs_train[0, :, 0, 0, -1].long().to(model.device)
+        E_idx = torch.arange(E, device=model.device).unsqueeze(1)
+        for key, param in model.learnable_initial_values.items():
+            init_val = param[E_idx, participant_ids]  # [E, B]
+            session_states[key] = init_val.unsqueeze(0).unsqueeze(-1).expand(
+                W, -1, -1, model.n_items,
+            ).clone().detach()
 
     # Record initial state at t=0
     for s in state_keys:
