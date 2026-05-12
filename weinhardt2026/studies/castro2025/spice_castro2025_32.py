@@ -24,8 +24,6 @@ CONFIG = SpiceConfig(
             'dvalue_neg',
         ],
         'value_exploration_not_chosen': [
-            'dvalue_pos',
-            'dvalue_neg',
         ],
     },
     memory_state={
@@ -65,7 +63,7 @@ class SpiceModel(BaseModel):
         self.setup_module(key_module='value_choice_chosen', input_size=1, dropout=self.dropout)
         self.setup_module(key_module='value_choice_not_chosen', input_size=1, dropout=self.dropout)
         self.setup_module(key_module='value_exploration_chosen', input_size=2, dropout=self.dropout)
-        self.setup_module(key_module='value_exploration_not_chosen', input_size=2, dropout=self.dropout)
+        self.setup_module(key_module='value_exploration_not_chosen', input_size=0, dropout=self.dropout)
 
     def forward(self, inputs, state=None):
         spice_signals = self.init_forward_pass(inputs, state)
@@ -134,7 +132,10 @@ class SpiceModel(BaseModel):
                 key_module='value_exploration_chosen',
                 key_state='value_exploration',
                 action_mask=spice_signals.actions[trial],
-                inputs=(dvalue_pos, dvalue_neg),
+                inputs=(
+                    dvalue_pos, 
+                    dvalue_neg,
+                    ),
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
             )
@@ -143,7 +144,6 @@ class SpiceModel(BaseModel):
                 key_module='value_exploration_not_chosen',
                 key_state='value_exploration',
                 action_mask=1 - spice_signals.actions[trial],
-                inputs=(dvalue_pos, dvalue_neg),
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
             )
