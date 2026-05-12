@@ -83,20 +83,20 @@ class SpiceModel(BaseModel):
         self.participant_embedding = self.setup_embedding(self.n_participants, self.embedding_size, dropout=dropout)
 
         # Fast reward value modules
-        self.setup_module(key_module='value_reward_chosen', input_size=1+self.embedding_size, dropout=dropout)
-        self.setup_module(key_module='value_reward_not_chosen', input_size=0+self.embedding_size, dropout=dropout)
+        self.setup_module(key_module='value_reward_chosen', input_size=1, dropout=dropout)
+        self.setup_module(key_module='value_reward_not_chosen', input_size=0, dropout=dropout)
 
         # Slow (WM) reward value modules — integrate over recent value_reward history
-        self.setup_module(key_module='value_wm_reward_chosen', input_size=3+self.embedding_size, dropout=dropout)
-        self.setup_module(key_module='value_wm_reward_not_chosen', input_size=3+self.embedding_size, dropout=dropout)
+        self.setup_module(key_module='value_wm_reward_chosen', input_size=3, dropout=dropout)
+        self.setup_module(key_module='value_wm_reward_not_chosen', input_size=3, dropout=dropout)
 
         # Fast choice value modules
-        self.setup_module(key_module='value_choice_chosen', input_size=1+self.embedding_size, dropout=dropout)
-        self.setup_module(key_module='value_choice_not_chosen', input_size=0+self.embedding_size, dropout=dropout)
+        self.setup_module(key_module='value_choice_chosen', input_size=1, dropout=dropout)
+        self.setup_module(key_module='value_choice_not_chosen', input_size=0, dropout=dropout)
 
         # Slow (WM) choice value modules — integrate over recent value_choice history
-        self.setup_module(key_module='value_wm_choice_chosen', input_size=3+self.embedding_size, dropout=dropout)
-        self.setup_module(key_module='value_wm_choice_not_chosen', input_size=3+self.embedding_size, dropout=dropout)
+        self.setup_module(key_module='value_wm_choice_chosen', input_size=3, dropout=dropout)
+        self.setup_module(key_module='value_wm_choice_not_chosen', input_size=3, dropout=dropout)
 
         self.preprocess_coefficients(reward_binary=reward_binary)
 

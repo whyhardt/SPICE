@@ -53,6 +53,7 @@ class SpiceEstimator(BaseEstimator):
         dropout: Optional[float] = 0.,
         loss_fn: Optional[callable] = cross_entropy_loss,
         loss_fn_kwargs: Optional[dict] = {},
+        embedding_size: Optional[int] = 32,
 
         # SPICE training parameters
         use_sindy: Optional[bool] = False,
@@ -129,8 +130,6 @@ class SpiceEstimator(BaseEstimator):
         self.verbose = verbose
         self.keep_log = keep_log
         self.deterministic = False
-        self.ensemble_size = ensemble_size
-        self.l2_rnn = l2_rnn
         self.loss_fn = loss_fn
         self.loss_fn_kwargs = loss_fn_kwargs
         self.compiled_forward = compiled_forward
@@ -159,7 +158,10 @@ class SpiceEstimator(BaseEstimator):
         self.n_experiments = n_experiments
         
         # RNN parameters
+        self.l2_rnn = l2_rnn
         self.dropout = dropout
+        self.ensemble_size = ensemble_size
+        self.embedding_size = embedding_size
         
         # SPICE attributes
         self.spice_config = spice_config
@@ -174,6 +176,8 @@ class SpiceEstimator(BaseEstimator):
             sindy_polynomial_degree=sindy_library_polynomial_degree,
             sindy_alpha=sindy_alpha,
             ensemble_size=ensemble_size,
+            embedding_size=embedding_size,
+            dropout=dropout,
             n_items=n_items,
             n_reward_features=n_reward_features,
             device=device,

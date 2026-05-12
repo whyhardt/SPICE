@@ -65,19 +65,18 @@ class EnsembleRNNModule(nn.Module):
     Input:  (within_ts, ensemble, batch, n_items, features)
     Output: (within_ts, ensemble, batch, n_items, 1)
     """
-    def __init__(self, ensemble_size, input_size, dropout=0., compiled_forward=True, **kwargs):
+    def __init__(self, ensemble_size, input_size, embedding_size, dropout=0., compiled_forward=True, **kwargs):
         super().__init__()
-        
+ 
+        proj_size = 8 + input_size + embedding_size
+       
         self._compile = compiled_forward
-        
-        proj_size = 8 + input_size
-        hidden_size = 1
-        input_size = input_size if input_size > 0 else 1
-        
+        self.dropout = nn.Dropout(p=dropout)
+
         # Linear projection: (E, proj_size, input_size)
-        self.weight_linear = nn.Parameter(torch.empty(ensemble_size, proj_size, input_size+1))
+        self.weight_linear = nn.Parameter(torch.empty(ensemble_size, proj_size, input_size+embedding_size+1))
         self.bias_linear = nn.Parameter(torch.zeros(ensemble_size, proj_size))
-        nn.init.xavier_uniform_(self.weight_linear.view(ensemble_size, proj_size, input_size+1))
+        nn.init.xavier_uniform_(self.weight_linear.view(ensemble_size, proj_size, input_size+embedding_size+1))
         
         # GRU cell parameters: 3 gates (reset, update, new) x hidden_size
         self.weight_n = nn.Parameter(torch.empty(ensemble_size, 1, proj_size))
@@ -88,9 +87,6 @@ class EnsembleRNNModule(nn.Module):
         # Shape: (E, 1, 1) - learnable scale per ensemble member
         self.weight_out_scale = nn.Parameter(torch.ones(ensemble_size, 1, 1))
 
-        self.dropout = nn.Dropout(p=dropout)
-        self.hidden_size = hidden_size
-        self.ensemble_size = ensemble_size
 
         if compiled_forward:
             self._compiled_forward = torch.compile(self._uncompiled_forward, dynamic=True)
@@ -336,7 +332,8 @@ class BaseModel(nn.Module):
     def setup_module(
         self, 
         key_module: str, 
-        input_size: int, 
+        input_size: int,
+        embedding_size: int = None,
         dropout: float = 0., 
         polynomial_degree: int = None, 
         include_bias = True, 
@@ -357,7 +354,10 @@ class BaseModel(nn.Module):
         if polynomial_degree is None:
             polynomial_degree = self.sindy_polynomial_degree
         
-        self.submodules_rnn[key_module] = EnsembleRNNModule(ensemble_size=self.ensemble_size, input_size=input_size, dropout=dropout, compiled_forward=self.compiled_forward)
+        if embedding_size is None:
+            embedding_size = self.embedding_size
+            
+        self.submodules_rnn[key_module] = EnsembleRNNModule(ensemble_size=self.ensemble_size, input_size=input_size, embedding_size=embedding_size, dropout=dropout, compiled_forward=self.compiled_forward)
         self.sindy_specs[key_module] = {}
         self.sindy_specs[key_module]['include_bias'] = include_bias
         self.sindy_specs[key_module]['interaction_only'] = interaction_only
@@ -845,6 +845,7 @@ class BaseModel(nn.Module):
         for module in module_list:
             n_terms = self.sindy_coefficients[module].shape[-1]
             self.sindy_pruning_patience_counters[module] = all_patience[..., start_idx:start_idx + n_terms]
+            start_idx += n_terms
             
     def count_sindy_coefficients(self) -> torch.Tensor:
         """Returns count of active coefficients per (ensemble, participant, experiment)."""

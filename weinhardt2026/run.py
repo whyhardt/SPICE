@@ -31,9 +31,10 @@ if __name__=='__main__':
     # RNN training parameters
     parser.add_argument('--epochs', type=int, default=1000, help='Number of training epochs')
     parser.add_argument('--epochs_warmup', type=int, default=200, help='Number of training epochs for warmup (exp increase of sindy-weight; no pruning)')
-    parser.add_argument('--lr', type=float, default=0.01, help='Learning rate')
+    parser.add_argument('--lr', type=float, default=0.001, help='Learning rate')
     parser.add_argument('--rnn_l2_lambda', type=float, default=0., help='L2 Reg of the RNN parameters')
     parser.add_argument('--ensemble', type=int, default=10, help='Number of independent members in the ensemble setup')
+    parser.add_argument('--embedding', type=int, default=32, help='Embedding size of participants')
     
     # SINDy training parameters
     parser.add_argument('--sindy_skip_refit', action='store_false', help='Refits the SINDy coefficients in Stage 2 training (default: True)')
@@ -117,6 +118,23 @@ if __name__=='__main__':
         print("Training/test split: None")
         dataset_train, dataset_test = dataset, dataset    
     
+    # from spice import SpiceDataset
+
+    # # keep only 100 timesteps
+    # dataset_train = SpiceDataset(dataset_train.xs[:, :100], dataset_train.ys[:, :100])
+
+    # # keep only 100 participants for rapid prototyping
+    # keep_participants = torch.arange(0, 50)
+
+    # def keep_subset(dataset, subset):
+    #     participant_ids = dataset.xs[:, 0, 0, -1]
+    #     mask = torch.isin(participant_ids, subset)
+    #     return SpiceDataset(dataset.xs[mask], dataset.ys[mask])
+
+    # dataset_train = keep_subset(dataset_train, keep_participants)
+    # dataset_test = keep_subset(dataset_test, keep_participants)    
+
+    
     dataset_tuple = dataset_train.xs, dataset_train.ys, dataset_test.xs, dataset_test.ys
     
     n_actions = dataset_train.ys.shape[-1]
@@ -149,6 +167,8 @@ if __name__=='__main__':
         ensemble_size=args.ensemble,
         l2_rnn=args.rnn_l2_lambda,
         loss_fn_kwargs= {'label_smoothing': 0.01},
+        dropout=0.1,
+        embedding_size=args.embedding,
 
         # sindy fitting parameters
         sindy_weight=args.sindy_weight,

@@ -62,17 +62,15 @@ class SpiceModel(BaseModel):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         
-        dropout = 0.1
+        self.participant_embedding = self.setup_embedding(self.n_participants, self.embedding_size, dropout=self.dropout)
         
-        self.participant_embedding = self.setup_embedding(self.n_participants, self.embedding_size, dropout=dropout)
-        
-        self.setup_module(key_module='value_reward_env', input_size=1+self.embedding_size, dropout=dropout)
-        self.setup_module(key_module='value_reward_chosen', input_size=3+self.embedding_size, dropout=dropout)
-        self.setup_module(key_module='value_reward_not_chosen', input_size=2+self.embedding_size, dropout=dropout)
-        self.setup_module(key_module='value_choice_chosen', input_size=1+self.embedding_size, dropout=dropout)
-        self.setup_module(key_module='value_choice_not_chosen', input_size=1+self.embedding_size, dropout=dropout)
-        self.setup_module(key_module='volatility_chosen', input_size=1+self.embedding_size, dropout=dropout)
-        self.setup_module(key_module='volatility_not_chosen', input_size=1+self.embedding_size, dropout=dropout)
+        self.setup_module(key_module='value_reward_env', input_size=1, dropout=self.dropout)
+        self.setup_module(key_module='value_reward_chosen', input_size=3, dropout=self.dropout)
+        self.setup_module(key_module='value_reward_not_chosen', input_size=2, dropout=self.dropout)
+        self.setup_module(key_module='value_choice_chosen', input_size=1, dropout=self.dropout)
+        self.setup_module(key_module='value_choice_not_chosen', input_size=1, dropout=self.dropout)
+        self.setup_module(key_module='volatility_chosen', input_size=1, dropout=self.dropout)
+        self.setup_module(key_module='volatility_not_chosen', input_size=1, dropout=self.dropout)
         
     def forward(self, inputs, state=None):
         spice_signals = self.init_forward_pass(inputs, state)

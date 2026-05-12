@@ -30,8 +30,8 @@ class SpiceModel(BaseModel):
         super().__init__(**kwargs)
         
         # set up the submodules
-        self.setup_module(key_module='learning_rate_reward', input_size=2)
-        self.setup_module(key_module='value_reward_not_chosen', input_size=0)
+        self.setup_module(key_module='learning_rate_reward', input_size=2, embedding_size=0)
+        self.setup_module(key_module='value_reward_not_chosen', input_size=0, embedding_size=0)
 
         # set up hard-coded equations
         # add here a RNN-module in the form of an hard-coded equation to compute the update for the chosen reward-based value

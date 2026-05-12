@@ -52,9 +52,9 @@ class QLearning(BaseModel):
         
         # basic SPICE stuff
         self.rnn_training_finished = True  # rnn not necessary here
-        self.setup_module(key_module='value_reward_chosen', input_size=1)
-        self.setup_module(key_module='value_reward_not_chosen', input_size=0)
-        self.setup_module(key_module='value_choice', input_size=1)
+        self.setup_module(key_module='value_reward_chosen', input_size=1, embedding_size=0)
+        self.setup_module(key_module='value_reward_not_chosen', input_size=0, embedding_size=0)
+        self.setup_module(key_module='value_choice', input_size=1, embedding_size=0)
         # self.setup_module(key_module='value_choice_chosen', input_size=0)
         # self.setup_module(key_module='value_choice_not_chosen', input_size=0)
         
