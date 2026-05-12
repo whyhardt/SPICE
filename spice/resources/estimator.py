@@ -337,6 +337,7 @@ class SpiceEstimator(BaseEstimator):
             ensemble_size=self.model.ensemble_size,
             use_sindy=True,
             device=self.model.device,
+            embedding_size=self.model.embedding_size,
             )
         
         for module in self.get_modules():

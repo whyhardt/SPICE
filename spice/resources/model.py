@@ -212,6 +212,15 @@ class BaseModel(nn.Module):
         self.sindy_specs = {}  # sindy-specific specifications for each module (e.g. include_bias, interaction_only, ...)
         self.sindy_alpha = sindy_alpha
         
+        # Learnable initial state values: for memory_state entries set to None,
+        # create per-participant learnable parameters instead of fixed scalars.
+        self.learnable_initial_values = nn.ParameterDict()
+        for key, val in self.spice_config.memory_state.items():
+            if val is None:
+                self.learnable_initial_values[key] = nn.Parameter(
+                    torch.zeros(self.ensemble_size, self.n_participants)
+                )
+
         # Setup initial values of RNN
         self.aggregate = False
         self.sindy_loss = torch.tensor(0, requires_grad=True, device=device, dtype=torch.float32)
@@ -266,6 +275,16 @@ class BaseModel(nn.Module):
         else:
             self.init_state(batch_size=inputs.shape[3], within_ts=inputs.shape[1])
 
+            # Override learnable initial states with per-participant values
+            if self.learnable_initial_values:
+                W = inputs.shape[1]
+                E_idx = torch.arange(self.ensemble_size, device=self.device).unsqueeze(1)
+                for key, param in self.learnable_initial_values.items():
+                    init_val = param[E_idx, spice_signals.participant_ids]  # [E, B]
+                    self.state[key] = init_val.unsqueeze(0).unsqueeze(-1).expand(
+                        W, -1, -1, self.n_items,
+                    ).clone()
+
         # output signals
         spice_signals.trials = torch.arange(inputs.shape[0], device=self.device)
         spice_signals.logits = torch.zeros((inputs.shape[0], 1, self.ensemble_size, inputs.shape[3], self.n_actions), device=self.device)
@@ -281,9 +300,20 @@ class BaseModel(nn.Module):
         return spice_signals
     
     def init_state(self, batch_size=1, within_ts=1):
-        """Initialize the hidden state with shape (within_ts, ensemble, batch, n_items)."""
+        """Initialize the hidden state with shape (within_ts, ensemble, batch, n_items).
 
-        state = {key: torch.full(size=[within_ts, self.ensemble_size, batch_size, self.n_items], fill_value=self.spice_config.memory_state[key], dtype=torch.float32, device=self.device) for key in self.spice_config.memory_state}
+        States with None initial value in the config use 0. as placeholder;
+        they are overridden with learnable per-participant values in init_forward_pass.
+        """
+
+        state = {
+            key: torch.full(
+                size=[within_ts, self.ensemble_size, batch_size, self.n_items],
+                fill_value=val if val is not None else 0.,
+                dtype=torch.float32, device=self.device,
+            )
+            for key, val in self.spice_config.memory_state.items()
+        }
 
         self.set_state(state)
         return self.get_state()
@@ -329,7 +359,9 @@ class BaseModel(nn.Module):
         else:
             return ParameterModule(self.ensemble_size)
 
-    def setup_embedding(self, num_embeddings: int, embedding_size: int, leaky_relu: float = 0.01, dropout: float = 0.):
+    def setup_embedding(self, num_embeddings: int, embedding_size: int = None, leaky_relu: float = 0.01, dropout: float = 0.):
+        if embedding_size is None:
+            embedding_size = self.embedding_size
         return EnsembleEmbedding(self.ensemble_size, num_embeddings, embedding_size, dropout=dropout)
     
     def setup_module(
