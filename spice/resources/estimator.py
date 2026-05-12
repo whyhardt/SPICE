@@ -177,7 +177,6 @@ class SpiceEstimator(BaseEstimator):
             sindy_alpha=sindy_alpha,
             ensemble_size=ensemble_size,
             embedding_size=embedding_size,
-            dropout=dropout,
             n_items=n_items,
             n_reward_features=n_reward_features,
             device=device,
