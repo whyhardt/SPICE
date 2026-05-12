@@ -63,6 +63,7 @@ class SpiceEstimator(BaseEstimator):
         sindy_threshold_pruning: Optional[float] = None,  # Optional per-member threshold pruning (None to disable)
         sindy_ensemble_pruning: Optional[float] = None,  # Ensemble t-test significance level (primary pruning mechanism)
         sindy_population_pruning: Optional[float] = None,  # Optional cross-participant filter (0-1)
+        sindy_pruning_terms: Optional[int] = None, # Number of pruned terms per pruning event (Defaults to None: Computed automatically such that n_coefficients can reach 0 within 'epochs-epochs_warmup' epochs)
         sindy_reconditioning_epochs: Optional[int] = 3,  # Pure SINDy SGD epochs after ridge recalibration
         sindy_refit: Optional[bool] = True,  # Enable Stage 2 Training (SINDy refit on frozen RNN parameters)
         sindy_shooting_steps: Optional[int] = 20,  # Multi-step shooting horizon for Stage 2 (1 = one-step-ahead)
@@ -145,6 +146,7 @@ class SpiceEstimator(BaseEstimator):
         self.sindy_threshold_pruning = sindy_threshold_pruning
         self.sindy_population_pruning = sindy_population_pruning
         self.sindy_ensemble_pruning = sindy_ensemble_pruning
+        self.sindy_pruning_terms = sindy_pruning_terms
         self.sindy_reconditioning_epochs = sindy_reconditioning_epochs
         self.sindy_refit = sindy_refit
         self.sindy_shooting_steps = sindy_shooting_steps
@@ -236,6 +238,7 @@ class SpiceEstimator(BaseEstimator):
             sindy_threshold_pruning=self.sindy_threshold_pruning,
             sindy_ensemble_pruning=self.sindy_ensemble_pruning,
             sindy_population_pruning=self.sindy_population_pruning,
+            sindy_pruning_terms=self.sindy_pruning_terms,
             sindy_reconditioning_epochs=self.sindy_reconditioning_epochs,
             sindy_refit=self.sindy_refit,
             sindy_shooting_steps=self.sindy_shooting_steps,

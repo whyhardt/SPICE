@@ -44,6 +44,7 @@ if __name__=='__main__':
     parser.add_argument('--pruning_threshold', type=float, default=0.01, help='Threshold value for cutting off sindy terms (lowered for delta-form coefficients)')
     parser.add_argument('--pruning_ensemble', type=float, default=0.05, help='t-test threshold for ensemble-based pruning')
     parser.add_argument('--pruning_population', type=float, default=None, help='Percentage of participants which have to have a term active in order to keep it.')
+    parser.add_argument('--pruning_terms', type=int, default=None, help='Max terms pruned per event. None=auto-compute so coefficients can reach 0 within training.')
     
     # Data setup parameters
     parser.add_argument('--train_ratio_time', type=float, default=None, help='Ratio of data used for training. Split along time dimension. Not combinable with test_sessions')
@@ -157,6 +158,7 @@ if __name__=='__main__':
         sindy_threshold_pruning=args.pruning_threshold,
         sindy_ensemble_pruning=args.pruning_ensemble,
         sindy_population_pruning=args.pruning_population,
+        sindy_pruning_terms=args.pruning_terms,
         sindy_shooting_steps=args.shooting_steps,
 
         # other parameters
@@ -167,7 +169,7 @@ if __name__=='__main__':
     
     if args.epochs == 0:
         estimator.load_spice(args.model)
-    estimator.sindy_refit = ~args.sindy_skip_refit
+    estimator.sindy_refit = args.sindy_skip_refit
     
     if estimator.epochs > 0 or estimator.sindy_refit:
         training_device_str = "CUDA" if estimator.device == torch.device('cuda') else "CPU"
@@ -182,6 +184,12 @@ if __name__=='__main__':
     
     if args.results:
         
+        print("\nEvaluation on train data:")
+        print(analysis_model_evaluation(
+            dataset=dataset_train,
+            spice_model=estimator,
+        ))
+        print("\nEvaluation on test data:")
         print(analysis_model_evaluation(
             dataset=dataset_test,
             spice_model=estimator,

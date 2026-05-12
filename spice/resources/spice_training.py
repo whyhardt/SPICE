@@ -1,5 +1,6 @@
 
 import os
+import math
 import time
 import numpy as np
 import torch
@@ -438,10 +439,18 @@ def _ensemble_pruning(
     sindy_ensemble_pruning: float,
     sindy_threshold_pruning: float,
     verbose: bool,
+    n_terms_pruning: int = None,
 ):
-    
+    """Ensemble-based pruning with optional rate limiting.
+
+    Args:
+        n_terms_pruning: Max terms to prune per event (across all modules).
+            When set, only the smallest-magnitude candidates are pruned.
+            None = no limit (prune all that fail the test).
+    """
     pruned = False
-    
+    module_list = list(model.submodules_rnn.keys())
+
     # Unified minimum-effect CI test: threshold serves as delta
     confidence_masks = _compute_pruning_masks(
         model,
@@ -450,24 +459,54 @@ def _ensemble_pruning(
         participant_threshold=None,
         verbose=verbose,
     )
-    for module in model.submodules_rnn:
+
+    # Update patience counters for all modules
+    for module in module_list:
         mask = confidence_masks[module].to(model.device)  # (P, X, terms)
         still_active = model.sindy_coefficients_presence[module].any(dim=0)  # (P, X, terms)
         failed = ~mask & still_active
 
-        # Update patience: increment on failure, reset on success
         counters = model.sindy_pruning_patience_counters[module]
         failed_e = failed.unsqueeze(0).expand_as(counters)
         counters.data = torch.where(failed_e, counters + 1, torch.zeros_like(counters))
 
-        # Prune terms that failed 2+ consecutive pruning events
-        prune = (counters[0] >= 2)  # (P, X, terms)
-        if prune.any():
-            prune_e = prune.unsqueeze(0).expand(model.ensemble_size, -1, -1, -1)
-            model.sindy_coefficients_presence[module].data &= ~prune_e
-            model.sindy_coefficients[module].data *= model.sindy_coefficients_presence[module].float()
-            counters.data *= (~prune_e).int()
-            pruned = True
+    # Collect candidates across all modules: terms with counters >= 2
+    all_prune_candidates = torch.cat(
+        [model.sindy_pruning_patience_counters[m][0] >= 2 for m in module_list], dim=-1
+    )  # (P, X, total_terms)
+
+    if all_prune_candidates.any():
+        # Rate-limit: only prune the n_terms_pruning smallest-magnitude candidates
+        if n_terms_pruning is not None:
+            all_coeffs_abs = torch.cat([
+                (model.sindy_coefficients[m] * model.sindy_coefficients_presence[m].float())
+                .detach().abs().mean(dim=0)
+                for m in module_list
+            ], dim=-1)  # (P, X, total_terms)
+
+            # Set non-candidates to inf so they won't be selected
+            temp_coeffs = all_coeffs_abs.clone()
+            temp_coeffs[~all_prune_candidates] = torch.inf
+
+            k = min(n_terms_pruning, all_prune_candidates.sum(dim=-1).max().item())
+            if k > 0:
+                _, indices = torch.topk(temp_coeffs, k, dim=-1, largest=False)
+                limited_mask = torch.zeros_like(all_prune_candidates)
+                limited_mask.scatter_(dim=-1, index=indices, src=torch.ones_like(indices, dtype=torch.bool))
+                all_prune_candidates = all_prune_candidates & limited_mask
+
+        # Split back to modules and apply pruning
+        start_idx = 0
+        for module in module_list:
+            n_terms = model.sindy_coefficients[module].shape[-1]
+            prune = all_prune_candidates[..., start_idx:start_idx + n_terms]  # (P, X, terms)
+            if prune.any():
+                prune_e = prune.unsqueeze(0).expand(model.ensemble_size, -1, -1, -1)
+                model.sindy_coefficients_presence[module].data &= ~prune_e
+                model.sindy_coefficients[module].data *= model.sindy_coefficients_presence[module].float()
+                model.sindy_pruning_patience_counters[module].data *= (~prune_e).int()
+                pruned = True
+            start_idx += n_terms
 
     return model, pruned
 
@@ -777,6 +816,7 @@ def _run_sindy_training(
     sindy_pruning_frequency: int = None,
     sindy_ensemble_pruning: float = None,
     sindy_threshold_pruning: float = None,
+    sindy_pruning_terms: int = None,
     shooting_steps: int = 20,
     verbose: bool = True,
     ):
@@ -918,10 +958,11 @@ def _run_sindy_training(
                                     model=model,
                                     sindy_ensemble_pruning=sindy_ensemble_pruning,
                                     sindy_threshold_pruning=sindy_threshold_pruning,
+                                    n_terms_pruning=sindy_pruning_terms,
                                     verbose=verbose,
                                 )
                             elif sindy_threshold_pruning is not None and sindy_threshold_pruning > 0:
-                                model.sindy_coefficient_pruning(patience=sindy_pruning_frequency)
+                                model.sindy_coefficient_pruning(patience=sindy_pruning_frequency, n_terms_pruning=sindy_pruning_terms)
                                 pruned = True
 
                             if pruned and pruning_boost_duration > 0:
@@ -1063,6 +1104,7 @@ def _run_joint_training(
     sindy_threshold_pruning: float = None,
     sindy_ensemble_pruning: float = None,
     sindy_population_pruning: float = None,
+    sindy_pruning_terms: int = None,
     sindy_reconditioning_epochs: int = 3,
 
     convergence_threshold: float = 0,
@@ -1234,12 +1276,13 @@ def _run_joint_training(
                                 model=model,
                                 sindy_ensemble_pruning=sindy_ensemble_pruning,
                                 sindy_threshold_pruning=sindy_threshold_pruning,
+                                n_terms_pruning=sindy_pruning_terms,
                                 verbose=verbose,
                                 )
 
                         elif sindy_threshold_pruning is not None and sindy_threshold_pruning > 0:
                             # Fallback: per-member threshold pruning only (no ensemble test)
-                            model.sindy_coefficient_pruning(patience=sindy_pruning_frequency)
+                            model.sindy_coefficient_pruning(patience=sindy_pruning_frequency, n_terms_pruning=sindy_pruning_terms)
                             pruned = True
 
                         # Reset coefficients + optimizer state, ridge solve + reconditioning
@@ -1501,6 +1544,7 @@ def fit_spice(
     sindy_threshold_pruning: float = None,
     sindy_ensemble_pruning: float = None,
     sindy_population_pruning: float = None,
+    sindy_pruning_terms: int = None,
     sindy_reconditioning_epochs: int = 3,
     sindy_refit: bool = True,
     sindy_shooting_steps: int = 20,
@@ -1615,6 +1659,14 @@ def fit_spice(
         xs_train_5d = dataset_train.xs.unsqueeze(0)
         ys_train_5d = dataset_train.ys.unsqueeze(0)
 
+    # Auto-compute sindy_pruning_terms: distribute total terms evenly across
+    # available pruning events so the model can reach 0 coefficients within
+    # (epochs - warmup) epochs.
+    if sindy_pruning_terms is None and sindy_weight > 0 and sindy_pruning_frequency is not None:
+        total_terms = sum(model.sindy_coefficients[m].shape[-1] for m in model.submodules_rnn)
+        n_pruning_events = max(1, (epochs - n_warmup_steps) // max(1, sindy_pruning_frequency))
+        sindy_pruning_terms = math.ceil(total_terms / n_pruning_events)
+
     # ══════════════════════════════════════════════════════════════════════════
     # STAGE 1: Joint RNN-SINDy Training with Fused Pruning
     # ══════════════════════════════════════════════════════════════════════════
@@ -1654,6 +1706,7 @@ def fit_spice(
                     sindy_threshold_pruning=sindy_threshold_pruning,
                     sindy_pruning_frequency=sindy_pruning_frequency,
                     sindy_ensemble_pruning=sindy_ensemble_pruning,
+                    sindy_pruning_terms=sindy_pruning_terms,
                     sindy_population_pruning=sindy_population_pruning,
                     sindy_reconditioning_epochs=sindy_reconditioning_epochs,
 
@@ -1705,6 +1758,7 @@ def fit_spice(
             sindy_pruning_frequency=sindy_pruning_frequency,
             sindy_ensemble_pruning=sindy_ensemble_pruning,
             sindy_threshold_pruning=sindy_threshold_pruning,
+            sindy_pruning_terms=sindy_pruning_terms,
             shooting_steps=sindy_shooting_steps,
             verbose=verbose,
         )
