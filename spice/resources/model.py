@@ -152,6 +152,8 @@ class BaseModel(nn.Module):
         ensemble_size: int = 1,
         embedding_size: int = 32,
         
+        dropout: float = 0.,
+        
         use_sindy: bool = False,
         sindy_polynomial_degree: int = 1,
         sindy_alpha: float = 1e-4,
@@ -193,6 +195,7 @@ class BaseModel(nn.Module):
         self.ensemble_size = ensemble_size
         self.compiled_forward = compiled_forward
         self.fit_sindy = fit_sindy
+        self.dropout = dropout
 
         # session recording; used for sindy training; training variables start with 'x' and control parameters with 'c'
         self.recording = {}
