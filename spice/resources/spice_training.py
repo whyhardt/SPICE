@@ -7,7 +7,6 @@ import torch
 import torch.nn as nn
 from tqdm import tqdm
 from torch.utils.data import DataLoader, RandomSampler
-from torch.optim.lr_scheduler import ReduceLROnPlateau
 from typing import Tuple, Union, Optional
 import shutil
 from scipy.stats import t as t_dist
@@ -78,9 +77,6 @@ def _print_training_status(
         postfix_parts['Conv'] = f'{convergence_value:.2e}'
     if scheduler is not None:
         postfix_parts['LR'] = f'{scheduler.get_last_lr()[-1]:.2e}'
-        if isinstance(scheduler, (ReduceLROnPlateau, ReduceOnPlateauWithRestarts)):
-            postfix_parts['Metric'] = f'{scheduler.best:.7f}'
-            postfix_parts['BadEp'] = f'{scheduler.num_bad_epochs}/{scheduler.patience}'
 
     postfix_str = ', '.join(f'{k}={v}' for k, v in postfix_parts.items())
     bar_str = tqdm.format_meter(
@@ -169,88 +165,96 @@ def _print_training_status(
     return current_line_count
 
 
-class ReduceOnPlateauWithRestarts:
+class SpiceLRScheduler:
     """
-    Plateau-based LR scheduler with restarts for RNN parameters only.
+    Unified LR scheduler for SPICE training with warmup and post-pruning boosts.
 
-    When the learning rate hits min_lr and stays there for patience
-    epochs without improvement, it resets to the base learning rate.
-    SINDy coefficients (param_groups[0]) are not affected.
+    Manages separate schedules for RNN (param_groups[1]) and SINDy (param_groups[0]):
+
+    - Warmup: RNN LR starts at warmup_factor * base_lr, linearly decays to base_lr
+      over n_warmup_steps. SINDy LR is unchanged during warmup.
+    - Post-pruning boost: After a pruning event, RNN and SINDy LRs are temporarily
+      multiplied by their respective boost factors for boost_duration epochs,
+      then return to their base rates.
+
+    Args:
+        optimizer: Optimizer with param_groups[0]=SINDy, param_groups[1]=RNN.
+        n_warmup_steps: Number of warmup epochs for RNN LR ramp-down.
+        warmup_factor: RNN LR multiplier at start (linearly decays to 1.0).
+            Set to 1.0 to disable warmup.
+        boost_factor_rnn: RNN LR multiplier after pruning (1.0 = no boost).
+        boost_factor_sindy: SINDy LR multiplier after pruning (default 10.0:
+            0.001 -> 0.01, matching previous hardcoded behavior).
+        boost_duration_frac: Fraction of sindy_pruning_frequency for boost
+            duration (default 0.1).
+        sindy_pruning_frequency: Epochs between pruning events (used to
+            compute boost duration).
     """
-    def __init__(self, optimizer, min_lr, factor, patience, restart: bool):
-        """
-        Parameters:
-        - optimizer: Optimizer instance.
-        - min_lr: The minimum learning rate after reductions.
-        - factor: Multiplicative factor to reduce the LR on plateau.
-        - patience: Number of epochs with no improvement before reducing/restarting LR.
-        """
+    def __init__(self, optimizer, n_warmup_steps=0, warmup_factor=10.,
+                 boost_factor_rnn=1., boost_factor_sindy=10.,
+                 boost_duration_frac=0.1, sindy_pruning_frequency=100):
         self.optimizer = optimizer
-        self.min_lr = min_lr
-        self.base_lr_rnn = optimizer.param_groups[1]['lr'] if len(optimizer.param_groups) > 1 else optimizer.param_groups[0]['lr']
-        self.factor = factor
-        self.patience = patience
-        self.restart = restart
-        
-        self.best = float('inf')
-        self.num_bad_epochs = 0
-        self.num_cycles_completed = 0
-        self.increase_lr = False
+        self.n_warmup_steps = n_warmup_steps
+        self.warmup_factor = warmup_factor
+        self.boost_factor_rnn = boost_factor_rnn
+        self.boost_factor_sindy = boost_factor_sindy
+        self.boost_duration = max(1, int(boost_duration_frac * sindy_pruning_frequency))
 
-    def step(self, metrics):
-        """
-        Update the learning rate based on the validation loss.
-        Only affects RNN parameters (param_groups[1]).
-        """
-        if metrics < self.best:
-            self.best = metrics
-            self.num_bad_epochs = 0
-            self.increase_lr = False
+        # Store base LRs
+        self._has_sindy = len(optimizer.param_groups) > 1
+        if self._has_sindy:
+            self.base_lr_sindy = optimizer.param_groups[0]['lr']
+            self.base_lr_rnn = optimizer.param_groups[1]['lr']
         else:
-            self.num_bad_epochs += 1
-        
-        if self.num_bad_epochs > self.patience:
-            current_lr = self._get_rnn_lr()
-            if current_lr <= self.min_lr and self.restart:
-                self.increase_lr = True
-            elif current_lr >= self.base_lr_rnn and self.increase_lr:
-                self.increase_lr = False
-            self._adjust_lr()
-            self.num_bad_epochs = 0
+            self.base_lr_rnn = optimizer.param_groups[0]['lr']
+            self.base_lr_sindy = None
 
-    def _get_rnn_lr(self):
-        """Get current RNN learning rate."""
-        if len(self.optimizer.param_groups) > 1:
-            return self.optimizer.param_groups[1]['lr']
-        return self.optimizer.param_groups[0]['lr']
+        # Apply initial warmup LR
+        if n_warmup_steps > 0 and warmup_factor != 1.:
+            self._rnn_pg['lr'] = self.base_lr_rnn * warmup_factor
 
-    def _adjust_lr(self):
-        """Adjust the learning rate for RNN parameters only (param_groups[1])."""
-        if len(self.optimizer.param_groups) > 1:
-            param_group = self.optimizer.param_groups[1]
-        else:
-            param_group = self.optimizer.param_groups[0]
+        # Boost state
+        self._boost_end = 0
 
-        old_lr = param_group['lr']
-        # determine whether to increase or decrease lr
-        factor = 1/self.factor if self.increase_lr else self.factor
-        new_lr = max(old_lr * factor, self.min_lr)
-        param_group['lr'] = new_lr
+    @property
+    def _rnn_pg(self):
+        return self.optimizer.param_groups[1] if self._has_sindy else self.optimizer.param_groups[0]
 
-    def _restart_lr(self):
-        """Restart the learning rate for RNN parameters back to base LR."""
-        if len(self.optimizer.param_groups) > 1:
-            self.optimizer.param_groups[1]['lr'] = self.base_lr_rnn
-        else:
-            self.optimizer.param_groups[0]['lr'] = self.base_lr_rnn
-        self.num_cycles_completed += 1
+    @property
+    def _sindy_pg(self):
+        return self.optimizer.param_groups[0] if self._has_sindy else None
+
+    def step(self, epoch):
+        """Update LRs for the current epoch (warmup interpolation + boost expiry)."""
+        # Warmup: linearly interpolate RNN LR from warmup_factor*base to base
+        if epoch < self.n_warmup_steps and self.warmup_factor != 1.:
+            frac = epoch / max(1, self.n_warmup_steps)
+            factor = self.warmup_factor + (1. - self.warmup_factor) * frac
+            self._rnn_pg['lr'] = self.base_lr_rnn * factor
+        elif epoch == self.n_warmup_steps and self.warmup_factor != 1.:
+            self._rnn_pg['lr'] = self.base_lr_rnn
+
+        # Boost expiry
+        if self._boost_end > 0 and epoch >= self._boost_end:
+            self._rnn_pg['lr'] = self.base_lr_rnn
+            if self._sindy_pg is not None:
+                self._sindy_pg['lr'] = self.base_lr_sindy
+            self._boost_end = 0
+
+    def notify_pruning(self, epoch):
+        """Activate post-pruning LR boost for both param groups."""
+        if self.boost_factor_rnn != 1.:
+            self._rnn_pg['lr'] = self.base_lr_rnn * self.boost_factor_rnn
+        if self._sindy_pg is not None and self.boost_factor_sindy != 1.:
+            self._sindy_pg['lr'] = self.base_lr_sindy * self.boost_factor_sindy
+        self._boost_end = epoch + self.boost_duration
 
     def get_lr(self):
-        """Retrieve the current learning rates for all parameter groups."""
+        """Retrieve current learning rates for all parameter groups."""
         return [group['lr'] for group in self.optimizer.param_groups]
 
     def get_last_lr(self):
-        """Retrieve the last computed learning rates for all parameter groups."""
+        """Retrieve current learning rates for all parameter groups."""
         return [group['lr'] for group in self.optimizer.param_groups]
 
 
@@ -273,16 +277,6 @@ def _setup_warmup_scaler(n_warmup_steps: int, exp_max: float = 1) -> torch.Tenso
     return warmup_scaler
 
 
-def _setup_lr_scheduler(optimizer: torch.optim.Optimizer):
-    # Initialize learning rate scheduler
-    return ReduceOnPlateauWithRestarts(
-        optimizer=optimizer,
-        min_lr=1e-5,
-        factor=0.1,
-        patience=100,
-        restart=True,
-    )
-    
 
 def _run_batch_training(
     model: BaseModel,
@@ -451,6 +445,7 @@ def _ensemble_pruning(
     sindy_threshold_pruning: float,
     verbose: bool,
     n_terms_pruning: int = None,
+    sindy_ensemble_pruning_mode: str = 'ci',
 ):
     """Ensemble-based pruning with optional rate limiting.
 
@@ -458,15 +453,29 @@ def _ensemble_pruning(
         n_terms_pruning: Max terms to prune per event (across all modules).
             When set, only the smallest-magnitude candidates are pruned.
             None = no limit (prune all that fail the test).
+        sindy_ensemble_pruning_mode: 'ci' for minimum-effect CI test (default),
+            'ratio' for ensemble ratio test.
     """
     pruned = False
     module_list = list(model.submodules_rnn.keys())
 
-    # Unified minimum-effect CI test: threshold serves as delta
+    if sindy_ensemble_pruning_mode == 'ratio':
+        ensemble_test_fn = _ensemble_ratio_test
+        ensemble_test_kwargs = dict(
+            threshold=sindy_threshold_pruning or 0.0,
+            ratio=sindy_ensemble_pruning,
+        )
+    else:
+        ensemble_test_fn = _minimum_effect_ci_test
+        ensemble_test_kwargs = dict(
+            alpha=sindy_ensemble_pruning,
+            delta=sindy_threshold_pruning or 0.0,
+        )
+
     confidence_masks = _compute_pruning_masks(
         model,
-        ensemble_alpha=sindy_ensemble_pruning,
-        ensemble_delta=sindy_threshold_pruning or 0.0,
+        ensemble_test_fn=ensemble_test_fn,
+        ensemble_test_kwargs=ensemble_test_kwargs,
         participant_threshold=None,
         verbose=verbose,
     )
@@ -836,6 +845,7 @@ def _run_sindy_training(
     sindy_alpha: float = None,
     sindy_pruning_frequency: int = None,
     sindy_ensemble_pruning: float = None,
+    sindy_ensemble_pruning_mode: str = 'ci',
     sindy_threshold_pruning: float = None,
     sindy_pruning_terms: int = None,
     shooting_steps: int = 20,
@@ -981,6 +991,7 @@ def _run_sindy_training(
                                     sindy_threshold_pruning=sindy_threshold_pruning,
                                     n_terms_pruning=sindy_pruning_terms,
                                     verbose=verbose,
+                                    sindy_ensemble_pruning_mode=sindy_ensemble_pruning_mode,
                                 )
                             elif sindy_threshold_pruning is not None and sindy_threshold_pruning > 0:
                                 model.sindy_coefficient_pruning(patience=sindy_pruning_frequency, n_terms_pruning=sindy_pruning_terms)
@@ -1115,15 +1126,20 @@ def _run_joint_training(
     batch_size: int = None,
     n_warmup_steps: int = 0,
     n_steps: int = None,
-    use_scheduler: bool = False,
     loss_fn: callable = cross_entropy_loss,
     loss_fn_kwargs: dict = {},
+
+    lr_warmup_factor: float = 10.,
+    lr_boost_factor_rnn: float = 1.,
+    lr_boost_factor_sindy: float = 10.,
+    lr_boost_duration_frac: float = 0.1,
 
     sindy_weight: float = 0,
     sindy_alpha: float = 0,
     sindy_pruning_frequency: int = None,
     sindy_threshold_pruning: float = None,
     sindy_ensemble_pruning: float = None,
+    sindy_ensemble_pruning_mode: str = 'ci',
     sindy_population_pruning: float = None,
     sindy_pruning_terms: int = None,
     sindy_reconditioning_epochs: int = 3,
@@ -1157,16 +1173,15 @@ def _run_joint_training(
         dataloader_test = DataLoader(dataset_test, batch_size=len(dataset_test))
 
     warmup_scaler_sindy_weight = _setup_warmup_scaler(n_warmup_steps=n_warmup_steps, exp_max=5)
-    lr_scheduler = _setup_lr_scheduler(optimizer=optimizer) if use_scheduler else None
-
-    # RNN learning rate warmup: start at 10*lr, drop to lr at n_warmup_steps//2
-    rnn_pg = optimizer.param_groups[1] if len(optimizer.param_groups) > 1 else optimizer.param_groups[0]
-    base_lr_rnn = rnn_pg['lr']
-    if n_warmup_steps > 0:
-        rnn_pg['lr'] = base_lr_rnn * 10
-
-    # SINDy LR post-pruning boost tracker (epoch at which boost expires; 0 = no active boost)
-    sindy_lr_boost_end = 0
+    lr_scheduler = SpiceLRScheduler(
+        optimizer=optimizer,
+        n_warmup_steps=n_warmup_steps,
+        warmup_factor=lr_warmup_factor,
+        boost_factor_rnn=lr_boost_factor_rnn,
+        boost_factor_sindy=lr_boost_factor_sindy,
+        boost_duration_frac=lr_boost_duration_frac,
+        sindy_pruning_frequency=sindy_pruning_frequency if sindy_pruning_frequency else 100,
+    )
 
     # Handle zero epochs case
     # if epochs == 0:
@@ -1192,14 +1207,7 @@ def _run_joint_training(
     while continue_training:
         try:  # try because of possibility for manual early stopping via keyboard interrupt
             # --- Learning rate adaptation ---
-            # RNN LR warmup: drop from 10*lr to lr at warmup midpoint
-            if n_warmup_steps > 0 and n_calls_to_train_model == n_warmup_steps // 2:
-                rnn_pg['lr'] = base_lr_rnn
-
-            # SINDy LR: end boost period, return to resting rate
-            if sindy_lr_boost_end > 0 and n_calls_to_train_model >= sindy_lr_boost_end:
-                optimizer.param_groups[0]['lr'] = 0.001
-                sindy_lr_boost_end = 0
+            lr_scheduler.step(n_calls_to_train_model)
 
             if epochs > 0:
                 loss_train = 0
@@ -1299,6 +1307,7 @@ def _run_joint_training(
                                 sindy_threshold_pruning=sindy_threshold_pruning,
                                 n_terms_pruning=sindy_pruning_terms,
                                 verbose=verbose,
+                                sindy_ensemble_pruning_mode=sindy_ensemble_pruning_mode,
                                 )
 
                         elif sindy_threshold_pruning is not None and sindy_threshold_pruning > 0:
@@ -1310,10 +1319,9 @@ def _run_joint_training(
                         # if pruned:
                         #     _ridge_recalibrate_sindy(model, xs_train, ys_train, optimizer, n_reconditioning_epochs=sindy_reconditioning_epochs)
 
-                        # SINDy LR boost after pruning event
+                        # LR boost after pruning event
                         if pruned:
-                            optimizer.param_groups[0]['lr'] = 0.01
-                            sindy_lr_boost_end = n_calls_to_train_model + max(1, int(0.1 * sindy_pruning_frequency))
+                            lr_scheduler.notify_pruning(n_calls_to_train_model)
 
             # Check convergence
             dloss = last_loss - (loss_test_rnn if dataloader_test is not None else loss_train)
@@ -1321,11 +1329,6 @@ def _run_joint_training(
             converged = convergence_value < convergence_threshold
             continue_training = not converged and n_calls_to_train_model < epochs
             last_loss = loss_test_rnn if dataloader_test is not None else loss_train
-
-            # Update learning rate scheduler
-            if lr_scheduler is not None and n_calls_to_train_model >= n_warmup_steps:
-                metric = loss_test_rnn if dataloader_test is not None else loss_train
-                lr_scheduler.step(metric)
 
             # Save checkpoint
             # if path_save_checkpoints and n_calls_to_train_model == save_at_epoch:
@@ -1368,13 +1371,15 @@ def _minimum_effect_ci_test(
     delta: float = 0.0,
 ) -> torch.Tensor:
     """
-    Minimum-effect confidence interval test across ensemble members.
+    Minimum-effect confidence interval test on absolute coefficient values.
 
-    Tests whether the confidence interval for the ensemble mean coefficient
-    lies entirely outside the negligible zone [-delta, delta]. A term
-    survives iff: |mean| - t_crit * SE > delta.
+    Tests whether the ensemble mean of |coefficient| is confidently above
+    delta: mean(|coeff|) - t_crit * SE(|coeff|) > delta.
 
-    When delta=0, equivalent to a standard two-tailed t-test for non-zero mean.
+    Operating on absolute values makes the test sign-agnostic: a term where
+    half the ensemble learns +0.3 and half learns -0.3 will survive (all
+    members agree the magnitude is non-zero), whereas testing raw values
+    would cancel them out and incorrectly prune the term.
 
     Pruned coefficients are treated as zero estimates, so terms only found by
     a few ensemble members are naturally penalized.
@@ -1389,7 +1394,7 @@ def _minimum_effect_ci_test(
         [P, X, terms] boolean mask — True where term passes the CI test
     """
 
-    effective_coeffs = (coefficients * presence.float()).detach()
+    effective_coeffs = (coefficients * presence.float()).detach().abs()
     E = effective_coeffs.shape[0]
 
     mean = effective_coeffs.mean(dim=0)                # [P, X, terms]
@@ -1398,13 +1403,46 @@ def _minimum_effect_ci_test(
 
     t_critical = t_dist.ppf(1 - alpha / 2, df=E - 1)
 
-    # CI lower bound for |mean| must exceed delta
-    ci_lower = mean.abs() - t_critical * se
+    # CI lower bound for mean(|coeff|) must exceed delta
+    ci_lower = mean - t_critical * se
     significant = ci_lower > delta
 
     # Require at least 2 active ensemble members for a valid test
     n_active = presence.float().sum(dim=0)
     significant = significant & (n_active >= 2)
+
+    return significant
+
+
+def _ensemble_ratio_test(
+    coefficients: torch.Tensor,
+    presence: torch.Tensor,
+    threshold: float = 0.0,
+    ratio: float = 0.6,
+) -> torch.Tensor:
+    """
+    Ensemble ratio test: a term survives iff a sufficient fraction of
+    ensemble members have |coefficient| > threshold.
+
+    Args:
+        coefficients: [E, P, X, terms] raw coefficient values
+        presence: [E, P, X, terms] boolean presence mask
+        threshold: minimum absolute coefficient value for a member to
+                   count as supporting the term (default: 0.0)
+        ratio: minimum fraction of ensemble members that must exceed
+               the threshold for the term to survive (default: 0.6)
+
+    Returns:
+        [P, X, terms] boolean mask — True where term passes the ratio test
+    """
+    effective_coeffs = (coefficients * presence.float()).detach()
+    E = effective_coeffs.shape[0]
+
+    # Count how many ensemble members exceed threshold per (P, X, term)
+    n_above = (effective_coeffs.abs() > threshold).float().sum(dim=0)  # [P, X, terms]
+
+    # Term survives if ratio of members above threshold >= required ratio
+    significant = (n_above / E) >= ratio
 
     return significant
 
@@ -1503,6 +1541,7 @@ def _compute_pruning_masks(
     ensemble_delta: float = 0.0,
     participant_threshold: float = None,
     ensemble_test_fn: callable = _minimum_effect_ci_test,
+    ensemble_test_kwargs: dict = None,
     verbose: bool = True,
 ) -> dict:
     """
@@ -1514,16 +1553,21 @@ def _compute_pruning_masks(
         ensemble_delta: minimum effect size for ensemble CI test (default: 0.0)
         participant_threshold: required fraction of (P * X) slots (None to skip)
         ensemble_test_fn: statistical test function for ensemble filtering
+        ensemble_test_kwargs: keyword arguments passed to the test function.
+            If None, defaults to {'alpha': ensemble_alpha, 'delta': ensemble_delta}
+            for backward compatibility with the CI test.
         verbose: print filtering results
 
     Returns:
         Dict mapping module names to [P, X, terms] boolean masks
     """
     # Step 1: Ensemble filtering (per participant)
-    if ensemble_alpha is not None:
+    if ensemble_alpha is not None or ensemble_test_kwargs is not None:
+        if ensemble_test_kwargs is None:
+            ensemble_test_kwargs = dict(alpha=ensemble_alpha, delta=ensemble_delta)
         ensemble_masks = _compute_ensemble_masks(
             model, test_fn=ensemble_test_fn, verbose=verbose,
-            alpha=ensemble_alpha, delta=ensemble_delta,
+            **ensemble_test_kwargs,
         )
     else:
         # No ensemble filtering — term is present for (P, X) if any ensemble member has it
@@ -1553,17 +1597,22 @@ def fit_spice(
 
     epochs: int = 1,
     batch_size: int = None,
-    scheduler: bool = False,
     n_steps: int = None,
     convergence_threshold: float = 1e-7,
     loss_fn: callable = cross_entropy_loss,
     loss_fn_kwargs: dict = {},
+
+    lr_warmup_factor: float = 10.,
+    lr_boost_factor_rnn: float = 1.,
+    lr_boost_factor_sindy: float = 10.,
+    lr_boost_duration_frac: float = 0.1,
     
     sindy_weight: float = 0.,
     sindy_alpha: float = 0.,
     sindy_pruning_frequency: int = 1,
     sindy_threshold_pruning: float = None,
     sindy_ensemble_pruning: float = None,
+    sindy_ensemble_pruning_mode: str = 'ci',
     sindy_population_pruning: float = None,
     sindy_pruning_terms: int = None,
     sindy_reconditioning_epochs: int = 3,
@@ -1599,10 +1648,16 @@ def fit_spice(
         optimizer: PyTorch optimizer
         epochs: Total training epochs
         batch_size: Training batch size (None = auto-detect max via GPU probing, int = fixed)
-        scheduler: Enable learning rate scheduler
         n_steps: BPTT truncation length
         convergence_threshold: Early stopping threshold
         loss_fn: Loss function for behavioral prediction
+        lr_warmup_factor: RNN LR multiplier at start of training (default 10).
+            LR linearly decays from warmup_factor * base_lr to base_lr over
+            n_warmup_steps. Set to 1.0 to disable warmup.
+        lr_boost_factor_rnn: RNN LR multiplier after pruning (default 1.0 = no boost)
+        lr_boost_factor_sindy: SINDy LR multiplier after pruning (default 10.0)
+        lr_boost_duration_frac: Fraction of sindy_pruning_frequency for boost
+            duration (default 0.1)
         sindy_weight: λ_sindy regularization strength
         sindy_alpha: Degree-weighted L1 penalty strength
         sindy_threshold_pruning: Minimum effect size (delta) for the CI test.
@@ -1610,8 +1665,13 @@ def fit_spice(
             When sindy_ensemble_pruning is None, falls back to per-member hard
             thresholding. (None or 0 to disable; default: None)
         sindy_pruning_frequency: Epochs between pruning events
-        sindy_ensemble_pruning: Confidence level for ensemble CI test (e.g. 0.05).
+        sindy_ensemble_pruning: Confidence level for ensemble CI test (e.g. 0.05),
+            or minimum ensemble ratio for ratio test (e.g. 0.6).
             Primary pruning mechanism. None to disable.
+        sindy_ensemble_pruning_mode: Ensemble pruning strategy. 'ci' for
+            minimum-effect CI test (default), 'ratio' for ensemble ratio test
+            (prune if fewer than sindy_ensemble_pruning fraction of members
+            have |coeff| > sindy_threshold_pruning).
         sindy_population_pruning: Optional participant presence threshold (0-1).
             None to disable.
         sindy_reconditioning_epochs: Number of pure SINDy SGD epochs after each
@@ -1652,7 +1712,10 @@ def fit_spice(
         # Pruning details
         pruning_details = []
         if sindy_ensemble_pruning is not None:
-            pruning_details.append(f"CI test alpha={sindy_ensemble_pruning}")
+            if sindy_ensemble_pruning_mode == 'ratio':
+                pruning_details.append(f"ratio test ratio={sindy_ensemble_pruning}")
+            else:
+                pruning_details.append(f"CI test alpha={sindy_ensemble_pruning}")
             if sindy_threshold_pruning is not None and sindy_threshold_pruning > 0:
                 pruning_details.append(f"delta={sindy_threshold_pruning}")
         elif sindy_threshold_pruning is not None and sindy_threshold_pruning > 0:
@@ -1716,17 +1779,22 @@ def fit_spice(
                     epochs=epochs,
                     n_warmup_steps=n_warmup_steps,
                     n_steps=n_steps,
-                    use_scheduler=scheduler,
                     batch_size=batch_size,
                     convergence_threshold=convergence_threshold,
                     loss_fn=loss_fn,
                     loss_fn_kwargs=loss_fn_kwargs,
+
+                    lr_warmup_factor=lr_warmup_factor,
+                    lr_boost_factor_rnn=lr_boost_factor_rnn,
+                    lr_boost_factor_sindy=lr_boost_factor_sindy,
+                    lr_boost_duration_frac=lr_boost_duration_frac,
                     
                     sindy_weight=sindy_weight,
                     sindy_alpha=sindy_alpha,
                     sindy_threshold_pruning=sindy_threshold_pruning,
                     sindy_pruning_frequency=sindy_pruning_frequency,
                     sindy_ensemble_pruning=sindy_ensemble_pruning,
+                    sindy_ensemble_pruning_mode=sindy_ensemble_pruning_mode,
                     sindy_pruning_terms=sindy_pruning_terms,
                     sindy_population_pruning=sindy_population_pruning,
                     sindy_reconditioning_epochs=sindy_reconditioning_epochs,
@@ -1778,6 +1846,7 @@ def fit_spice(
             sindy_alpha=sindy_alpha,
             sindy_pruning_frequency=sindy_pruning_frequency,
             sindy_ensemble_pruning=sindy_ensemble_pruning,
+            sindy_ensemble_pruning_mode=sindy_ensemble_pruning_mode,
             sindy_threshold_pruning=sindy_threshold_pruning,
             sindy_pruning_terms=sindy_pruning_terms,
             shooting_steps=sindy_shooting_steps,
@@ -1814,7 +1883,6 @@ def fit_spice(
                     batch_size=batch_size,
                     convergence_threshold=0,
                     n_steps=n_steps,
-                    use_scheduler=False,
                     loss_fn=loss_fn,
                     loss_fn_kwargs=loss_fn_kwargs,
 

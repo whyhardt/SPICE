@@ -27,24 +27,29 @@ if __name__=='__main__':
     parser.add_argument('--model', type=str, default=None, help='Model name to load from and/or save to parameters of RNN')
     parser.add_argument('--data', type=str, default=None, help='Path to dataset')
     parser.add_argument('--model_kwargs', type=json.loads, default='{}', help='Additional kwargs for the SPICE model in JSON format, e.g. \'{"kwarg1": value1, "kwarg2": true}\'')
-    
+
     # RNN training parameters
     parser.add_argument('--epochs', type=int, default=1000, help='Number of training epochs')
-    parser.add_argument('--epochs_warmup', type=int, default=200, help='Number of training epochs for warmup (exp increase of sindy-weight; no pruning)')
+    parser.add_argument('--epochs_warmup', type=int, default=500, help='Number of training epochs for warmup (exp increase of sindy-weight; no pruning)')
     parser.add_argument('--lr', type=float, default=0.001, help='Learning rate')
     parser.add_argument('--rnn_l2_lambda', type=float, default=0., help='L2 Reg of the RNN parameters')
-    parser.add_argument('--loss_kwargs', type=json.loads, default='{"label_smoothing": 0.}', help='Learning rate')
+    parser.add_argument('--loss_kwargs', type=json.loads, default='{"label_smoothing": 0.001}', help='Learning rate')
     parser.add_argument('--ensemble', type=int, default=10, help='Number of independent members in the ensemble setup')
     parser.add_argument('--embedding', type=int, default=32, help='Embedding size of participants')
-    
+    parser.add_argument('--lr_warmup_factor', type=float, default=10., help='RNN LR multiplier at start of training (1.0 = no warmup)')
+    parser.add_argument('--lr_boost_rnn', type=float, default=1., help='RNN LR multiplier after pruning (1.0 = no boost)')
+    parser.add_argument('--lr_boost_sindy', type=float, default=10., help='SINDy LR multiplier after pruning')
+    parser.add_argument('--lr_boost_duration', type=float, default=0.1, help='Fraction of pruning_frequency for boost duration')
+
     # SINDy training parameters
     parser.add_argument('--sindy_skip_refit', action='store_false', help='Refits the SINDy coefficients in Stage 2 training (default: True)')
     parser.add_argument('--shooting_steps', type=int, default=20, help='Multi-step shooting horizon for Stage 2 SINDy refit (1=one-step-ahead, default: 20)')
     parser.add_argument('--sindy_weight', type=float, default=0.1, help='Weight for SINDy regularization during RNN training')
     parser.add_argument('--sindy_alpha', type=float, default=0.0001, help='Degree-weighted coefficient penalty strength (ridge alpha)')
+    parser.add_argument('--pruning_method', type=str, default='ci', help='Pruning method for ensemble pruning. Defaults to "ci". Alternatively "ratio".')
+    parser.add_argument('--pruning_test', type=float, default=0.05, help='Ensemble pruning test threshold (recommended: ci -> 0.05; ratio -> 0.7)')
+    parser.add_argument('--pruning_threshold', type=float, default=0.01, help='Significance threshold value for SINDy coefficients')
     parser.add_argument('--pruning_frequency', type=int, default=100, help='Epochs between pruning events')
-    parser.add_argument('--pruning_threshold', type=float, default=0.01, help='Threshold value for cutting off sindy terms (lowered for delta-form coefficients)')
-    parser.add_argument('--pruning_ensemble', type=float, default=0.05, help='t-test threshold for ensemble-based pruning')
     parser.add_argument('--pruning_population', type=float, default=None, help='Percentage of participants which have to have a term active in order to keep it.')
     parser.add_argument('--pruning_terms', type=int, default=None, help='Max terms pruned per event. None=auto-compute so coefficients can reach 0 within training.')
     
@@ -170,14 +175,19 @@ if __name__=='__main__':
         loss_fn_kwargs=args.loss_kwargs,
         dropout=0.1,
         embedding_size=args.embedding,
+        lr_warmup_factor=args.lr_warmup_factor,
+        lr_boost_factor_rnn=args.lr_boost_rnn,
+        lr_boost_factor_sindy=args.lr_boost_sindy,
+        lr_boost_duration_frac=args.lr_boost_duration,
 
         # sindy fitting parameters
         sindy_weight=args.sindy_weight,
         sindy_alpha=args.sindy_alpha,
         sindy_library_polynomial_degree=2,
+        sindy_ensemble_pruning_mode=args.pruning_method,
         sindy_pruning_frequency=args.pruning_frequency,
         sindy_threshold_pruning=args.pruning_threshold,
-        sindy_ensemble_pruning=args.pruning_ensemble,
+        sindy_ensemble_pruning=args.pruning_test,
         sindy_population_pruning=args.pruning_population,
         sindy_pruning_terms=args.pruning_terms,
         sindy_shooting_steps=args.shooting_steps,

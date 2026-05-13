@@ -70,7 +70,8 @@ def training(
     dataset_test: SpiceDataset = None, 
     epochs = 3000,
     batch_size = None,
-    criterion = cross_entropy_loss,
+    loss_fn = cross_entropy_loss,
+    loss_kwargs = {},
     device: torch.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu'),
     ):
     
@@ -103,7 +104,7 @@ def training(
             labels = ys[nan_mask]
             
             # Compute loss
-            loss = criterion(logits, labels)
+            loss = loss_fn(logits, labels, **loss_kwargs)
             
             # Backward pass
             loss.backward()
@@ -120,7 +121,7 @@ def training(
                 logits_test = logits_test[nan_mask].to(device)
                 # labels_test = torch.argmax(dataset_test.ys[..., :n_actions].to(device).reshape(-1, n_actions)[nan_mask], dim=-1).reshape(-1).long()
                 labels_test = dataset_test.ys[nan_mask].to(device)
-                loss_test = criterion(logits_test, labels_test)
+                loss_test = loss_fn(logits_test, labels_test)
             model.train()
             
             msg += f"; L(Test): {loss_test.item()}"
