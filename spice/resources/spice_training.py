@@ -26,7 +26,7 @@ def _get_terminal_width() -> int:
     try:
         terminal_width = shutil.get_terminal_size().columns
     except:
-        terminal_width = 80
+        terminal_width = 160
     return terminal_width
 
 def _check_cuda_oom(exception) -> bool:
