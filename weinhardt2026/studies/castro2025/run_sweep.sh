@@ -40,8 +40,9 @@ export TMPDIR=/share/users/staff/d/dweinhardt/tmp_${JOB_UID}
 mkdir -p $TORCHINDUCTOR_CACHE_DIR $TRITON_CACHE_DIR $TMPDIR
 
 # Job parameters indexed by SLURM_ARRAY_TASK_ID
-ENSEMBLES=(    1    1    1    1   10   10   10   10   10   10   10   10)
-SINDY_WEIGHTS=(0.01 0.1  0.01 0.1 0.01 0.1  0.01 0.1  0.01 0.1  0.01 0.1)
+ENSEMBLES=(    1     1    1     1   10    10   10    10   10    10   10    10)
+SINDY_WEIGHTS=(0.01  0.1  0.01  0.1 0.01  0.1  0.01  0.1  0.01  0.1  0.01  0.1)
+LRS=(          0.001 0.001 0.01 0.01 0.001 0.001 0.001 0.001 0.01 0.01 0.01  0.01)
 WARMUP_FACTORS=(10   10   1    1   10   10   10   10   1    1    1    1)
 BOOST_SINDYS=( 10   10   1    1   10   10   10   10   1    1    1    1)
 PRUNING_METHODS=(ci ci   ci   ci  ci   ci   ratio ratio ci  ci   ratio ratio)
@@ -74,7 +75,7 @@ python weinhardt2026/run.py \
     --sindy_weight ${SINDY_WEIGHTS[$ID]} \
     --epochs 1000 \
     --epochs_warmup 500 \
-    --lr 0.001 \
+    --lr ${LRS[$ID]} \
     --pruning_frequency 100 \
     --pruning_method ${PRUNING_METHODS[$ID]} \
     --pruning_test ${PRUNING_TESTS[$ID]} \
