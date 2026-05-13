@@ -27,12 +27,13 @@ if __name__=='__main__':
     parser.add_argument('--model', type=str, default=None, help='Model name to load from and/or save to parameters of RNN')
     parser.add_argument('--data', type=str, default=None, help='Path to dataset')
     parser.add_argument('--model_kwargs', type=json.loads, default='{}', help='Additional kwargs for the SPICE model in JSON format, e.g. \'{"kwarg1": value1, "kwarg2": true}\'')
-
+    
     # RNN training parameters
     parser.add_argument('--epochs', type=int, default=1000, help='Number of training epochs')
     parser.add_argument('--epochs_warmup', type=int, default=200, help='Number of training epochs for warmup (exp increase of sindy-weight; no pruning)')
     parser.add_argument('--lr', type=float, default=0.001, help='Learning rate')
     parser.add_argument('--rnn_l2_lambda', type=float, default=0., help='L2 Reg of the RNN parameters')
+    parser.add_argument('--loss_kwargs', type=json.loads, default='{"label_smoothing": 0.}', help='Learning rate')
     parser.add_argument('--ensemble', type=int, default=10, help='Number of independent members in the ensemble setup')
     parser.add_argument('--embedding', type=int, default=32, help='Embedding size of participants')
     
@@ -166,7 +167,7 @@ if __name__=='__main__':
         warmup_steps=args.epochs_warmup,
         ensemble_size=args.ensemble,
         l2_rnn=args.rnn_l2_lambda,
-        loss_fn_kwargs= {'label_smoothing': 0.01},
+        loss_fn_kwargs=args.loss_kwargs,
         dropout=0.1,
         embedding_size=args.embedding,
 
