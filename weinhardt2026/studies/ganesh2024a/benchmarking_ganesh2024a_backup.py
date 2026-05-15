@@ -52,10 +52,7 @@ def get_dataset(path_data: str = None, test_sessions: tuple[int] = None, verbose
 
     if test_sessions is None:
         test_sessions = (3, 6, 9)
-    if test_sessions:
-        dataset_train, dataset_test = split_data_along_sessiondim(dataset, test_sessions)
-    else:
-        dataset_train = dataset_test = dataset
+    dataset_train, dataset_test = split_data_along_sessiondim(dataset, test_sessions)
 
     info_dataset = {
         'n_participants': dataset.n_participants,
@@ -246,21 +243,16 @@ class BayesianModel(nn.Module):
 class EnvironmentGanesh2024a(Env):
     """Two-armed bandit with perceptual contrast stimuli (Ganesh et al., 2024).
 
-    On each trial the participant sees two Gabor patches with different contrasts
-    and chooses one. A latent state determined by the sign of the contrast
-    difference dictates which action is correct:
+    A latent state s in {0, 1} is determined by the sign of the contrast
+    difference between two Gabor patches:
+        s = 0  if contrast_diff <= 0  (left has lower contrast)
+        s = 1  if contrast_diff > 0   (left has higher contrast)
 
-        state = 1  if contrast_diff > 0  (left patch has higher contrast)
-        state = 0  otherwise
-
-    Rewards are binary Bernoulli samples:
+    Rewards are Bernoulli with probability depending on state-action match:
         P(r=1 | action matches state) = mu
-        P(r=1 | action mismatches)    = 1 - mu
+        P(r=1 | action does not match) = 1 - mu
 
-    Contrast differences are replayed from the original dataset (they are task
-    stimuli, not model-dependent).
-
-    Sessions are processed in parallel: one session per (participant, block) pair.
+    Contrast differences are replayed from the original dataset.
     """
 
     def __init__(
@@ -272,62 +264,51 @@ class EnvironmentGanesh2024a(Env):
         contrast_next: torch.Tensor,
         mu: float = 0.75,
     ):
-        """
-        Args:
-            n_actions: Number of actions (2).
-            n_participants: Number of participants.
-            n_blocks: Number of blocks per participant.
-            contrast_current: (n_sessions, n_trials) contrast difference on current trial.
-            contrast_next: (n_sessions, n_trials) contrast difference on next trial.
-            mu: True contingency parameter (reward probability for correct action).
-        """
         super().__init__(n_actions, n_participants, n_blocks)
         self.mu = mu
-        self.contrast_current = contrast_current
-        self.contrast_next = contrast_next
+        self.contrast_current = contrast_current  # (n_sessions, n_trials)
+        self.contrast_next = contrast_next        # (n_sessions, n_trials)
+        self.n_trials = contrast_current.shape[1]
         self.trial_counter = 0
 
-    def reset(self, block_ids: torch.Tensor = None, participant_ids: torch.Tensor = None) -> None:
+    def reset(self, block_ids: torch.Tensor, participant_ids: torch.Tensor = None) -> None:
         self.trial_counter = 0
 
     def step(self, action: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """Sample reward for the chosen arm based on contrast-state contingency.
-
-        Args:
-            action: (n_sessions,) integer action index (0 or 1) per session.
+        """Generate reward and return full observation.
 
         Returns:
-            observation: (n_sessions, 4) — [reward_0, reward_1, cd_current, cd_next].
-            terminated: (n_sessions,) always False.
+            observation: (n_sessions, 4) — [reward_0, reward_1, cd_current, cd_next]
+            terminated:  (n_sessions,) always False.
         """
         n_sessions = action.shape[0]
-        t = self.trial_counter
+        t = min(self.trial_counter, self.n_trials - 1)
 
-        cd_current = self.contrast_current[:n_sessions, t]
+        cd_curr = self.contrast_current[:n_sessions, t]
         cd_next = self.contrast_next[:n_sessions, t]
 
-        # True state: which side has higher contrast
-        state = (cd_current > 0).long()
+        # True state from contrast sign
+        state = (cd_curr > 0).long()
 
-        # Reward probability depends on whether action matches state
+        # Reward: match -> P(r=1) = mu, mismatch -> P(r=1) = 1 - mu
         matches = (action == state).float()
         probs = matches * self.mu + (1.0 - matches) * (1.0 - self.mu)
         reward = torch.bernoulli(probs)
 
-        # Partial feedback: only reveal reward for chosen action
+        # Partial-feedback reward columns (NaN for unchosen)
         reward_cols = torch.full((n_sessions, self.n_actions), float('nan'))
         reward_cols[torch.arange(n_sessions), action] = reward
 
         observation = torch.cat([
             reward_cols,
-            cd_current.unsqueeze(-1),
+            cd_curr.unsqueeze(-1),
             cd_next.unsqueeze(-1),
         ], dim=-1)
 
-        terminated = torch.zeros(n_sessions, dtype=torch.bool)
         self.trial_counter += 1
-
+        terminated = torch.zeros(n_sessions, dtype=torch.bool)
         return observation, terminated
+
 
 def generate_behavior(
     model: Union[SpiceEstimator, torch.nn.Module],
@@ -349,7 +330,7 @@ def generate_behavior(
         SpiceDataset with model-generated behavior.
     """
     if dataset is None:
-        dataset, _, _ = get_dataset(path_data=path_data, test_sessions=())
+        dataset, _, _ = get_dataset(path_data=path_data)
 
     n_actions = dataset.n_actions
     n_blocks = len(dataset.xs[:, 0, 0, -3].unique())
@@ -372,13 +353,6 @@ def generate_behavior(
         model=model,
         environment=environment,
         save_dataset=save_dataset,
-        kwargs_dataset=dict(
-            df_participant_id='subjID',
-            df_choice='choice',
-            df_feedback='reward',
-            df_block='blocks',
-            additional_inputs=['contrast_difference', 'contrast_difference_next'],
-        ),
     )
 
 

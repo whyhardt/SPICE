@@ -257,12 +257,15 @@ def dataset_to_csv(
     # Calculate number of additional inputs
     # n_features = n_actions + n_reward_cols + n_additional_inputs + 5 (time_trial, trials, block, experiment, participant)
     n_trailing = 5  # time_trial, trials, block, experiment, participant
-    remaining = n_features - n_actions - n_trailing
-    # If remaining >= n_actions, assume reward columns are present
-    if remaining >= n_actions:
-        n_reward_cols = n_actions
+    if hasattr(dataset, 'n_reward_features') and dataset.n_reward_features is not None:
+        n_reward_cols = dataset.n_reward_features
     else:
-        n_reward_cols = 0
+        remaining = n_features - n_actions - n_trailing
+        # If remaining >= n_actions, assume reward columns are present
+        if remaining >= n_actions:
+            n_reward_cols = n_actions
+        else:
+            n_reward_cols = 0
     n_additional_inputs = n_features - n_actions - n_reward_cols - n_trailing
 
     # Validate additional_inputs list length

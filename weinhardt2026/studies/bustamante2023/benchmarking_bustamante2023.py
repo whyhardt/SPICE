@@ -44,7 +44,10 @@ def get_dataset(path_data: str = None, test_sessions: tuple[int] = None, verbose
         
     if test_sessions is None:
         test_sessions = (3, 6)
-    dataset_train, dataset_test = split_data_along_sessiondim(dataset, test_sessions)  
+    if test_sessions:
+        dataset_train, dataset_test = split_data_along_sessiondim(dataset, test_sessions)
+    else:
+        dataset_train = dataset_test = dataset
     
     info_dataset = {
         'n_participants': n_participants,
@@ -294,46 +297,143 @@ class MarginalValueTheoremModel(torch.nn.Module):
     
 
 class EnvironmentBustamante2023(Env):
+    """Patch foraging environment with depleting rewards (Bustamante et al., 2023).
+
+    Each patch starts with an initial reward drawn from a clipped Gaussian.
+    Successive harvests deplete the reward via a Beta-distributed multiplicative
+    factor.  Exiting a patch yields no reward and resets to a fresh patch.
+
+    Reward generation:
+        R_0        ~ N(15, 1),  clipped to [0.5, 20]
+        depletion  ~ Beta(14.91, 2.03)            (mean ≈ 0.88)
+        R_{t+1}    = max(R_t * depletion, 0.5)
+
+    Actions:
+        0 = harvest  (stay in patch, receive reward, deplete)
+        1 = exit     (leave patch, no reward, new patch drawn)
+
+    Rewards are normalized to [0, 1] by dividing by the maximum possible
+    reward (20).  harvest_duration and travel_duration are fixed task
+    parameters (in seconds).
+
+    Sessions are processed in parallel: one session per (participant, block).
     """
-    A patch foraging environment with depleting rewards.
-    """
-    
-    def __init__(self, n_actions, n_participants, n_blocks):
+
+    RHO_M = 15.0            # mean of initial-reward Gaussian
+    RHO_SD = 1.0            # std  of initial-reward Gaussian
+    REWARD_MAX = 20.0       # ceiling (also used as normalization scale)
+    REWARD_CUTOFF = 0.5     # floor
+    DELTA_A = 14.90873      # Beta α for depletion factor
+    DELTA_B = 2.033008      # Beta β for depletion factor
+
+    def __init__(
+        self,
+        n_actions: int,
+        n_participants: int,
+        n_blocks: int,
+        harvest_duration: float = 2.0,
+        travel_duration: float = 8.333333333333334,
+    ):
+        """
+        Args:
+            n_actions: Number of actions (2: harvest / exit).
+            n_participants: Number of participants.
+            n_blocks: Number of blocks per participant.
+            harvest_duration: Time (seconds) for a harvest action.
+            travel_duration: Time (seconds) for travel to a new patch.
+        """
         super().__init__(n_actions, n_participants, n_blocks)
-        
-        
+        self.harvest_duration = harvest_duration
+        self.travel_duration = travel_duration
+
+    def _draw_initial_reward(self, n: int) -> torch.Tensor:
+        """Sample initial patch reward from clipped Gaussian."""
+        r = torch.normal(self.RHO_M, self.RHO_SD, size=(n,))
+        return torch.clamp(r, self.REWARD_CUTOFF, self.REWARD_MAX)
+
+    def reset(self, block_ids: torch.Tensor = None, participant_ids: torch.Tensor = None) -> None:
+        n = block_ids.shape[0] if block_ids is not None else self.n_participants * self.n_blocks
+        self.patch_reward = self._draw_initial_reward(n)
+
+    def step(self, action: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Process one foraging trial for all sessions.
+
+        Args:
+            action: (n_sessions,) — 0 = harvest, 1 = exit.
+
+        Returns:
+            observation: (n_sessions, 4) — [reward_harvest, reward_exit,
+                         harvest_duration, travel_duration].
+            terminated:  (n_sessions,) always False.
+        """
+        n = action.shape[0]
+
+        harvest = (action == 0)
+
+        # Reward: harvesters receive current patch reward; exiters get 0
+        reward_raw = torch.where(harvest, self.patch_reward, torch.zeros(n))
+        reward = torch.clamp(reward_raw / self.REWARD_MAX, 0.0, 1.0)
+
+        # Deplete patch for harvesters
+        depletion = torch.distributions.Beta(self.DELTA_A, self.DELTA_B).sample((n,))
+        depleted = torch.clamp(self.patch_reward * depletion, min=self.REWARD_CUTOFF)
+
+        # Exiters get a fresh patch
+        new_initial = self._draw_initial_reward(n)
+        self.patch_reward = torch.where(harvest, depleted, new_initial)
+
+        # Partial feedback: reward only in chosen action's column
+        reward_cols = torch.full((n, self.n_actions), float('nan'))
+        reward_cols[torch.arange(n), action] = reward
+
+        # Fixed task durations (constant across all trials)
+        h_dur = torch.full((n, 1), self.harvest_duration)
+        t_dur = torch.full((n, 1), self.travel_duration)
+
+        observation = torch.cat([reward_cols, h_dur, t_dur], dim=-1)
+
+        terminated = torch.zeros(n, dtype=torch.bool)
+        return observation, terminated
+
+
 def generate_behavior(
     model: Union[SpiceEstimator, torch.nn.Module],
     path_data: str = None,
     dataset: SpiceDataset = None,
     save_dataset: str = None,
-    ) -> SpiceDataset:
-    
-    assert path_data is not None or dataset is not None, "At least path_data or dataset have to be passed."
-    
-    if save_dataset is None:
-        save_dataset = 'data/bustamante2023_generated.csv'
-    
-    n_blocks = 8
-    dataset, _, _ = get_dataset(path_data=path_data)
-    
+) -> SpiceDataset:
+    """Generate synthetic behavior for the Bustamante 2023 foraging task.
+
+    Args:
+        model: Fitted model (SpiceEstimator or torch.nn.Module).
+        path_data: Path to the original CSV data file.
+        dataset: Pre-loaded SpiceDataset (used if provided, otherwise loaded from path_data).
+        save_dataset: Optional path to save the generated dataset as CSV.
+
+    Returns:
+        SpiceDataset with model-generated behavior.
+    """
+    if dataset is None:
+        dataset, _, _ = get_dataset(path_data=path_data, test_sessions=())
+
+    n_blocks = len(dataset.xs[:, 0, 0, -3].unique())
+
     environment = EnvironmentBustamante2023(
-        n_actions=dataset.n_actions, 
-        n_participants=dataset.n_participants, 
+        n_actions=dataset.n_actions,
+        n_participants=dataset.n_participants,
         n_blocks=n_blocks,
-        )
-    
-    dataset_gen = _generate_behavior(
+    )
+
+    return _generate_behavior(
         dataset=dataset,
         model=model,
         environment=environment,
         save_dataset=save_dataset,
+        kwargs_dataset=dict(
+            df_participant_id='subject_id',
+            df_choice='decision',
+            df_feedback='reward',
+            df_block='overall_round',
+            additional_inputs=['harvest_duration', 'travel_duration'],
+        ),
     )
-    
-    return dataset_gen
-    
-    
-
-        
-            
-        

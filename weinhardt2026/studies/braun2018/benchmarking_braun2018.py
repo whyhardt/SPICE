@@ -1,4 +1,50 @@
+import sys
+
 import torch
+from typing import Union
+
+from spice import SpiceEstimator, SpiceDataset, csv_to_dataset, split_data_along_sessiondim
+
+sys.path.append('../../..')
+from weinhardt2026.utils.task import Env, generate_behavior as _generate_behavior
+
+
+def get_dataset(path_data: str = None, test_sessions: tuple[int] = None, verbose: bool = False) -> tuple[SpiceDataset, SpiceDataset, dict]:
+
+    if path_data is None:
+        path_data = 'data/braun2018.csv'
+
+    dataset = csv_to_dataset(
+        file=path_data,
+        df_participant_id='subject',
+        df_choice='transcode',
+        df_feedback=None,
+        df_block='block',
+        additional_inputs=('difference', 'current', 'other'),
+        timeshift_additional_inputs=(-1, -1, -1),
+    )
+
+    n_participants = dataset.n_participants
+    n_actions = dataset.n_actions
+
+    if verbose:
+        print(f"Shape of dataset: {dataset.xs.shape}")
+        print(f"Number of participants: {n_participants}")
+        print(f"Number of actions in dataset: {n_actions}")
+
+    if test_sessions is None:
+        test_sessions = (3, 6, 9)
+    if test_sessions:
+        dataset_train, dataset_test = split_data_along_sessiondim(dataset, test_sessions)
+    else:
+        dataset_train = dataset_test = dataset
+
+    info_dataset = {
+        'n_participants': n_participants,
+        'n_actions': n_actions,
+    }
+
+    return dataset_train, dataset_test, info_dataset
 
 
 class ExpectedValueControl(torch.nn.Module):
@@ -166,3 +212,122 @@ class ExpectedValueControl(torch.nn.Module):
     def count_parameters(self):
         """Free parameters per participant: beta_reward, beta_cost, beta_fatigue, bias x n_actions."""
         return 3 + self.n_actions
+
+
+class EnvironmentBraun2018(Env):
+    """Reward-based voluntary task switching (rVTS, Braun & Arrington, 2018).
+
+    Two identification tasks, each with a point value (integer, 0-10).
+    Both values start at 5 at the beginning of each block.
+
+    After each task selection:
+        - Selected task's value:   P=0.5 decreases by 1 (clamped at 0)
+        - Unselected task's value: P=0.5 increases by 1 (clamped at 10)
+
+    Actions encode relative choice:
+        0 = repeat (perform the same task as the previous trial)
+        1 = switch (perform the other task)
+
+    Observation: [difference, current_decreased, other_increased].
+    Returns the raw observation from the current step (no buffering).
+    The timeshift is applied by get_dataset via timeshift_additional_inputs=(-1,-1,-1)
+    when loading the saved CSV.
+
+    Sessions are processed in parallel: one session per (participant, block).
+    """
+
+    def __init__(self, n_actions: int, n_participants: int, n_blocks: int):
+        super().__init__(n_actions, n_participants, n_blocks)
+
+    def reset(self, block_ids: torch.Tensor, participant_ids: torch.Tensor = None) -> None:
+        n = block_ids.shape[0]
+        # Absolute task values (A and B are arbitrary labels)
+        self.value_A = torch.full((n,), 5.0)
+        self.value_B = torch.full((n,), 5.0)
+        # Track which task is "current" (was last selected)
+        self.current_is_A = torch.ones(n, dtype=torch.bool)
+
+    def step(self, action: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Process one trial for all sessions.
+
+        Args:
+            action: (n_sessions,) — 0 = repeat, 1 = switch.
+
+        Returns:
+            observation: (n_sessions, 3) — [difference, current_decreased, other_increased]
+                         from the current step.
+            terminated:  (n_sessions,) always False.
+        """
+        n = action.shape[0]
+
+        # Update which task is "current" based on repeat/switch
+        switched = (action == 1)
+        self.current_is_A = torch.where(switched, ~self.current_is_A, self.current_is_A)
+
+        # Read current and other task values
+        current_val = torch.where(self.current_is_A, self.value_A, self.value_B)
+        other_val = torch.where(self.current_is_A, self.value_B, self.value_A)
+
+        # Probabilistic value changes (Bernoulli coin flips)
+        try_decrease = torch.bernoulli(torch.full((n,), 0.5))
+        try_increase = torch.bernoulli(torch.full((n,), 0.5))
+
+        new_current = torch.clamp(current_val - try_decrease, 0, 10)
+        new_other = torch.clamp(other_val + try_increase, 0, 10)
+
+        # Record whether a change actually occurred (boundary clamping may block it)
+        cur_decreased = (new_current < current_val).float()
+        oth_increased = (new_other > other_val).float()
+
+        # Write back to absolute task values
+        self.value_A = torch.where(self.current_is_A, new_current, new_other)
+        self.value_B = torch.where(self.current_is_A, new_other, new_current)
+
+        difference = new_other - new_current
+        observation = torch.stack([difference, cur_decreased, oth_increased], dim=-1)
+
+        terminated = torch.zeros(n, dtype=torch.bool)
+        return observation, terminated
+
+
+def generate_behavior(
+    model: Union[SpiceEstimator, torch.nn.Module],
+    path_data: str = None,
+    dataset: SpiceDataset = None,
+    save_dataset: str = None,
+) -> SpiceDataset:
+    """Generate synthetic behavior for the Braun 2018 rVTS task.
+
+    Args:
+        model: Fitted model (SpiceEstimator or torch.nn.Module).
+        path_data: Path to the original CSV data file.
+        dataset: Pre-loaded SpiceDataset (used if provided, otherwise loaded from path_data).
+        save_dataset: Optional path to save the generated dataset as CSV.
+
+    Returns:
+        SpiceDataset with model-generated behavior.
+    """
+    if dataset is None:
+        dataset, _, _ = get_dataset(path_data=path_data, test_sessions=())
+
+    n_blocks = len(dataset.xs[:, 0, 0, -3].unique())
+
+    environment = EnvironmentBraun2018(
+        n_actions=dataset.n_actions,
+        n_participants=dataset.n_participants,
+        n_blocks=n_blocks,
+    )
+
+    return _generate_behavior(
+        dataset=dataset,
+        model=model,
+        environment=environment,
+        save_dataset=save_dataset,
+        kwargs_dataset=dict(
+            df_participant_id='subject',
+            df_choice='transcode',
+            df_feedback='reward',
+            df_block='block',
+            additional_inputs=['difference', 'current', 'other'],
+        ),
+    )

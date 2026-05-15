@@ -34,14 +34,14 @@ CONFIG = SpiceConfig(
         ],
     },
     memory_state={
-        'value_reward_env': 0.,
+        'value_reward_env': None,
         'value_reward': None,  # learnable per-participant initial value
-        'value_choice': 0.,
-        'value_exploration': 0.,
-
+        'value_choice': None,
+        'value_exploration': None,
+        
         # Buffers (excluded from logits)
-        'value_reward[t-1]': 0.,
-        'action[t-1]': 0.,
+        'value_reward[t-1]': None,
+        'action[t-1]': 0,
     },
     states_in_logit=['value_reward', 'value_choice', 'value_exploration'],
 )

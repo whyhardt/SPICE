@@ -44,11 +44,11 @@ CONFIG = SpiceConfig(
     },
     
     memory_state = {
-        'value_reward': 0.,      # reward value (enables slow learning)
-        'value_choice': 0.,      # choice value (enables slow learning)
-        'buffer_reward_1': 0.,   # t-1 reward
-        'buffer_reward_2': 0.,   # t-2 reward
-        'buffer_reward_3': 0.,   # t-3 reward
+        'value_reward': None,      # reward value (enables slow learning)
+        'value_choice': None,      # choice value (enables slow learning)
+        'buffer_reward_1': None,   # t-1 reward
+        'buffer_reward_2': None,   # t-2 reward
+        'buffer_reward_3': None,   # t-3 reward
         'buffer_action_1': 0.,   # t-1 choice
         'buffer_action_2': 0.,   # t-2 choice
         'buffer_action_3': 0.,   # t-3 choice

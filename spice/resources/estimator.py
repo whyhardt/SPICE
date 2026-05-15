@@ -47,26 +47,26 @@ class SpiceEstimator(BaseEstimator):
         learning_rate: Optional[float] = 1e-2,
         convergence_threshold: Optional[float] = 0,
         device: Optional[torch.device] = torch.device('cpu'),
-        lr_warmup_factor: Optional[float] = 10.,
+        lr_warmup_factor: Optional[float] = 1.,
         lr_boost_factor_rnn: Optional[float] = 1.,
-        lr_boost_factor_sindy: Optional[float] = 10.,
+        lr_boost_factor_sindy: Optional[float] = 1.,
         lr_boost_duration_frac: Optional[float] = 0.1,
-        ensemble_size: Optional[int] = 1,
+        ensemble_size: Optional[int] = 10,
         l2_rnn: Optional[float] = 0,
-        dropout: Optional[float] = 0.,
+        dropout: Optional[float] = 0.1,
         loss_fn: Optional[callable] = cross_entropy_loss,
-        loss_fn_kwargs: Optional[dict] = {},
-        embedding_size: Optional[int] = 32,
+        loss_fn_kwargs: Optional[dict] = {'label_smoothing': 0.01},
+        embedding_size: Optional[int] = 8,
 
         # SPICE training parameters
         use_sindy: Optional[bool] = False,
         sindy_weight: Optional[float] = 0.1,  # Weight for SINDy regularization loss
         sindy_alpha: Optional[float] = 1e-4,  # Degree-weighted coefficient penalty strength (ridge alpha)
-        sindy_library_polynomial_degree: Optional[int] = 1,
-        sindy_pruning_frequency: Optional[int] = 1,  # Epochs between pruning events
-        sindy_threshold_pruning: Optional[float] = None,  # Optional per-member threshold pruning (None to disable)
-        sindy_ensemble_pruning: Optional[float] = None,  # Ensemble t-test significance level (primary pruning mechanism)
-        sindy_ensemble_pruning_mode: Optional[str] = 'ci',  # 'ci' for CI test, 'ratio' for ensemble ratio test
+        sindy_library_polynomial_degree: Optional[int] = 2,
+        sindy_pruning_frequency: Optional[int] = 100,  # Epochs between pruning events
+        sindy_threshold_pruning: Optional[float] = 0.01,  # Optional per-member threshold pruning (None to disable)
+        sindy_ensemble_pruning: Optional[float] = 0.7,  # Ensemble t-test significance level (primary pruning mechanism)
+        sindy_ensemble_pruning_mode: Optional[str] = 'ratio',  # 'ci' for CI test, 'ratio' for ensemble ratio test
         sindy_population_pruning: Optional[float] = None,  # Optional cross-participant filter (0-1)
         sindy_pruning_terms: Optional[int] = None, # Number of pruned terms per pruning event (Defaults to None: Computed automatically such that n_coefficients can reach 0 within 'epochs-epochs_warmup' epochs)
         sindy_reconditioning_epochs: Optional[int] = 3,  # Pure SINDy SGD epochs after ridge recalibration

@@ -3,7 +3,7 @@ import torch
 from spice import BaseModel, SpiceConfig
 
 
-spice_config = SpiceConfig(
+CONFIG = SpiceConfig(
     library_setup={
         'reward_environment': (
             'reward[t]',
@@ -42,11 +42,11 @@ spice_config = SpiceConfig(
         #     ),
     },
     memory_state={
-        'value_reward_environment': 0.5,
-        'value_reward_patch': 0.5,
-        'value_depletion_patch': 0,
-        'value_continuation_patch': 0,
-        'reward[t-1]': 1,
+        'value_reward_environment': None,
+        'value_reward_patch': None,
+        'value_depletion_patch': None,
+        'value_continuation_patch': None,
+        'reward[t-1]': None,
         'action[t-1]': 0,
     },
     states_in_logit=(
