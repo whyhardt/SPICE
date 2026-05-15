@@ -164,9 +164,9 @@ def analysis_generative_behavior(
     if path_data_gru is not None:
         datasets['gru'] = path_data_gru
     if path_data_spice_rnn is not None:
-        datasets['spice_rnn'] = path_data_spice
+        datasets['spice_rnn'] = path_data_spice_rnn
     if path_data_spice is not None:
-        datasets['spice'] = path_data_spice_rnn
+        datasets['spice'] = path_data_spice
         
     for name, path in datasets.items():
         print(f"Loading {name} from {path}...")
@@ -186,9 +186,40 @@ def analysis_generative_behavior(
             )
         rows.append(row)
 
-    df = pd.DataFrame(rows).set_index('Model')
-    print(df)
+    df_summary = pd.DataFrame(rows).set_index('Model')
+    print(df_summary)
 
     _plot_violins(all_metrics, output_dir)
 
-    return df
+    # Quantitative comparison: per-metric MAE and aggregate
+    df_comparison = None
+    if 'real' in all_metrics:
+        real_means = {}
+        real_stds = {}
+        for metric in METRIC_LABELS:
+            vals = all_metrics['real'][metric]
+            vals = vals[~np.isnan(vals)]
+            real_means[metric] = vals.mean()
+            real_stds[metric] = vals.std()
+
+        comp_rows = []
+        for name in all_metrics:
+            if name == 'real':
+                continue
+            row = {'Model': name}
+            norm_errors = []
+            for metric in METRIC_LABELS:
+                vals = all_metrics[name][metric]
+                vals = vals[~np.isnan(vals)]
+                mae = abs(vals.mean() - real_means[metric])
+                nmae = mae / real_stds[metric] if real_stds[metric] > 0 else 0.0
+                row[METRIC_LABELS[metric]] = f"{nmae:.4f}"
+                norm_errors.append(nmae)
+            row['Aggregate NMAE'] = f"{np.mean(norm_errors):.4f} +/- {np.std(norm_errors):.4f}"
+            comp_rows.append(row)
+
+        df_comparison = pd.DataFrame(comp_rows).set_index('Model')
+        print("\nNormalized MAE (|model_mean - real_mean| / real_std):")
+        print(df_comparison)
+
+    return df_summary, df_comparison

@@ -110,7 +110,7 @@ def analysis_model_evaluation(
         
         # use spice
         print("Computing choice probabilities with SPICE model...")
-        spice_model.eval(use_sindy=True, aggregate=False)
+        spice_model.eval(use_sindy=True)
         
         spice_predictions, _ = spice_model(dataset.xs.to(spice_model.device))           
         spice_choice_probs = get_choice_probs(spice_predictions.mean(dim=0)).detach().cpu()

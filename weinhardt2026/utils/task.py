@@ -67,7 +67,7 @@ def generate_behavior(
         SpiceDataset with generated behavior.
     """
     print("Generating behavior...")
-
+    
     n_sessions, n_trials, _, n_features = dataset.xs.shape
     n_actions = dataset.n_actions
     n_rewards = dataset.n_reward_features

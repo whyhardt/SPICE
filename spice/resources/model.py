@@ -222,7 +222,6 @@ class BaseModel(nn.Module):
                 )
 
         # Setup initial values of RNN
-        self.aggregate = False
         self.sindy_loss = torch.tensor(0, requires_grad=True, device=device, dtype=torch.float32)
         self.state = None
         self.init_state()  # initial memory state
@@ -1018,22 +1017,17 @@ class BaseModel(nn.Module):
             
         return sindy_coefficients
     
-    def eval(self, use_sindy=True, aggregate=True):
+    def eval(self, use_sindy=True):
         super().eval()
         self.use_sindy = use_sindy
-        self.aggregate = aggregate
         return self
         
     def train(self, mode=True, use_sindy=False):
         super().train(mode)
         # if training mode activate (mode=True) -> do not use sindy for forward pass (self.use_sindy=False)
         self.use_sindy = use_sindy
-        self.aggregate = False
         return self
     
     def __call__(self, *args, **kwargs):
         logits, state = super().__call__(*args, **kwargs)
-        if self.aggregate:
-            dim_ensemble = 0 if self.batch_first else 2
-            logits = logits.nanmean(dim=dim_ensemble)
         return logits, state

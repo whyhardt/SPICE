@@ -300,7 +300,6 @@ def _run_batch_training(
     if n_steps is None:
         n_steps = xs.shape[2]
 
-    model.aggregate = False
     model.init_state(batch_size=B, within_ts=xs.shape[3])
     state = model.get_state(detach=True)
 
@@ -547,7 +546,7 @@ def _ridge_solve_sindy(
     prev_use_sindy = model.use_sindy
     prev_rnn_training_finished = model.rnn_training_finished
 
-    model.eval(use_sindy=False, aggregate=False)
+    model.eval(use_sindy=False)
     input_state_buffer, _, xs_flat, _ = _vectorize_state(model, xs_train, ys_train)
 
     with torch.no_grad():
@@ -609,7 +608,7 @@ def _ridge_recalibrate_sindy(
     prev_rnn_training_finished = model.rnn_training_finished
     prev_fit_sindy = model.fit_sindy
 
-    model.eval(use_sindy=False, aggregate=False)
+    model.eval(use_sindy=False)
     input_state_buffer, target_state_buffer, xs_flat, _ = _vectorize_state(model, xs_train, ys_train)
 
     # Ridge solve (temporarily set rnn_training_finished=True to trigger lstsq path)
@@ -888,7 +887,7 @@ def _run_sindy_training(
     E = model.ensemble_size
 
     # Collect RNN state trajectories (shared across both stages)
-    model.eval(use_sindy=False, aggregate=False)
+    model.eval(use_sindy=False)
     state_trajectories, nan_mask = _vectorize_state_sequential(model, xs_train, ys_train, verbose=verbose)
 
     # LR constants (same schedule as Stage 1)

@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(do echo \"===== $study =====\" find \"/home/daniel/repositories/SPICE/weinhardt2026/studies/$study\" -maxdepth 1 -type d)"
+    ]
+  }
+}

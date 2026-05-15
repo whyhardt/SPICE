@@ -391,18 +391,9 @@ class SpiceEstimator(BaseEstimator):
     def use_sindy(self, mode: bool = True):
         self._use_sindy = mode
         self.model.use_sindy = mode
-        
-    def aggregate(self, mode: bool = True):
-        self.model.aggregate = mode
     
-    def aggregate_coefficients(self):
-        for module in self.get_modules():
-            self.model.sindy_coefficients[module] = self.model.sindy_coefficients[module].mean(dim=0, keepdim=True).expand(self.ensemble_size, -1, -1, -1)
-            self.model.sindy_coefficients_presence[module] = self.model.sindy_coefficients[module].abs() >= self.sindy_threshold_pruning
-        # self.model.aggregate = True
-    
-    def eval(self, use_sindy: bool = True, aggregate: bool =True):
-        self.model.eval(use_sindy=use_sindy, aggregate=aggregate)
+    def eval(self, use_sindy: bool = True):
+        self.model.eval(use_sindy=use_sindy)
         self.use_sindy(mode=use_sindy)
         
     def train(self, mode: bool = True, use_sindy: bool = False):

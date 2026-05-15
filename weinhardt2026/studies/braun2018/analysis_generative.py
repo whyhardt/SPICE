@@ -219,18 +219,19 @@ def analysis_generative_behavior(
             if name == 'real':
                 continue
             row = {'Model': name}
-            abs_errors = []
+            norm_errors = []
             for metric in METRIC_LABELS:
                 vals = all_metrics[name][metric]
                 vals = vals[~np.isnan(vals)]
                 mae = abs(vals.mean() - real_means[metric])
-                row[METRIC_LABELS[metric]] = f"{mae:.4f}"
-                abs_errors.append(mae)
-            row['Aggregate MAE'] = f"{np.mean(abs_errors):.4f} +/- {np.std(abs_errors):.4f}"
+                nmae = mae / real_stds[metric] if real_stds[metric] > 0 else 0.0
+                row[METRIC_LABELS[metric]] = f"{nmae:.4f}"
+                norm_errors.append(nmae)
+            row['Aggregate NMAE'] = f"{np.mean(norm_errors):.4f} +/- {np.std(norm_errors):.4f}"
             comp_rows.append(row)
 
         df_comparison = pd.DataFrame(comp_rows).set_index('Model')
-        print("\nPer-metric MAE (|model_mean - real_mean|):")
+        print("\nNormalized MAE (|model_mean - real_mean| / real_std):")
         print(df_comparison)
 
     return df_summary, df_comparison
