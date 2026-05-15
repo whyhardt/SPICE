@@ -27,18 +27,18 @@ if __name__=='__main__':
     parser.add_argument('--model', type=str, default=None, help='Model name to load from and/or save to parameters of RNN')
     parser.add_argument('--data', type=str, default=None, help='Path to dataset')
     parser.add_argument('--model_kwargs', type=json.loads, default='{}', help='Additional kwargs for the SPICE model in JSON format, e.g. \'{"kwarg1": value1, "kwarg2": true}\'')
-
+    
     # RNN training parameters
     parser.add_argument('--epochs', type=int, default=1000, help='Number of training epochs')
-    parser.add_argument('--epochs_warmup', type=int, default=500, help='Number of training epochs for warmup (exp increase of sindy-weight; no pruning)')
-    parser.add_argument('--lr', type=float, default=0.001, help='Learning rate')
+    parser.add_argument('--epochs_warmup', type=int, default=250, help='Number of training epochs for warmup (exp increase of sindy-weight; no pruning)')
+    parser.add_argument('--lr', type=float, default=0.01, help='Learning rate')
     parser.add_argument('--rnn_l2_lambda', type=float, default=0., help='L2 Reg of the RNN parameters')
-    parser.add_argument('--loss_kwargs', type=json.loads, default='{"label_smoothing": 0.001}', help='Learning rate')
+    parser.add_argument('--loss_kwargs', type=json.loads, default='{"label_smoothing": 0.01}', help='Learning rate')
     parser.add_argument('--ensemble', type=int, default=10, help='Number of independent members in the ensemble setup')
-    parser.add_argument('--embedding', type=int, default=32, help='Embedding size of participants')
-    parser.add_argument('--lr_warmup_factor', type=float, default=10., help='RNN LR multiplier at start of training (1.0 = no warmup)')
+    parser.add_argument('--embedding', type=int, default=8, help='Embedding size of participants')
+    parser.add_argument('--lr_warmup_factor', type=float, default=1., help='RNN LR multiplier at start of training (1.0 = no warmup)')
     parser.add_argument('--lr_boost_rnn', type=float, default=1., help='RNN LR multiplier after pruning (1.0 = no boost)')
-    parser.add_argument('--lr_boost_sindy', type=float, default=10., help='SINDy LR multiplier after pruning')
+    parser.add_argument('--lr_boost_sindy', type=float, default=1., help='SINDy LR multiplier after pruning')
     parser.add_argument('--lr_boost_duration', type=float, default=0.1, help='Fraction of pruning_frequency for boost duration')
 
     # SINDy training parameters
@@ -46,8 +46,8 @@ if __name__=='__main__':
     parser.add_argument('--shooting_steps', type=int, default=20, help='Multi-step shooting horizon for Stage 2 SINDy refit (1=one-step-ahead, default: 20)')
     parser.add_argument('--sindy_weight', type=float, default=0.1, help='Weight for SINDy regularization during RNN training')
     parser.add_argument('--sindy_alpha', type=float, default=0.0001, help='Degree-weighted coefficient penalty strength (ridge alpha)')
-    parser.add_argument('--pruning_method', type=str, default='ci', help='Pruning method for ensemble pruning. Defaults to "ci". Alternatively "ratio".')
-    parser.add_argument('--pruning_test', type=float, default=0.05, help='Ensemble pruning test threshold (recommended: ci -> 0.05; ratio -> 0.7)')
+    parser.add_argument('--pruning_method', type=str, default='ratio', help='Pruning method for ensemble pruning. Defaults to "ci". Alternatively "ratio".')
+    parser.add_argument('--pruning_test', type=float, default=0.7, help='Ensemble pruning test threshold (recommended: ci -> 0.05; ratio -> 0.7)')
     parser.add_argument('--pruning_threshold', type=float, default=0.01, help='Significance threshold value for SINDy coefficients')
     parser.add_argument('--pruning_frequency', type=int, default=100, help='Epochs between pruning events')
     parser.add_argument('--pruning_population', type=float, default=None, help='Percentage of participants which have to have a term active in order to keep it.')
