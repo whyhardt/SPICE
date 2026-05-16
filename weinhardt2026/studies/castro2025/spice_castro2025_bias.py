@@ -23,7 +23,6 @@ CONFIG = SpiceConfig(
         ],
         'value_choice_not_chosen': [
             'action[t-1]',
-            'switch_bias',
         ],
         'value_exploration_chosen': [
             'dvalue_pos',
@@ -75,7 +74,7 @@ class SpiceModel(BaseModel):
         self.setup_module(key_module='value_reward_chosen', input_size=3, dropout=self.dropout)
         self.setup_module(key_module='value_reward_not_chosen', input_size=2, dropout=self.dropout)
         self.setup_module(key_module='value_choice_chosen', input_size=1, dropout=self.dropout)
-        self.setup_module(key_module='value_choice_not_chosen', input_size=2, dropout=self.dropout)
+        self.setup_module(key_module='value_choice_not_chosen', input_size=1, dropout=self.dropout)
         self.setup_module(key_module='value_exploration_chosen', input_size=2, dropout=self.dropout)
         self.setup_module(key_module='value_exploration_not_chosen', input_size=2, dropout=self.dropout)
 
@@ -128,11 +127,6 @@ class SpiceModel(BaseModel):
 
             # --- CHOICE VALUE UPDATES ---
             
-            switch_bias = sum(
-                self.state[f'switch_bias_{i}'] * spice_signals.actions[trial][..., i:i+1]
-                for i in range(self.n_actions)
-            )  # → [W, E, B, I]
-            
             self.call_module(
                 key_module='value_choice_chosen',
                 key_state='value_choice',
@@ -150,7 +144,6 @@ class SpiceModel(BaseModel):
                 action_mask=1 - spice_signals.actions[trial],
                 inputs=(
                     self.state['action[t-1]'],
-                    switch_bias,
                 ),
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
@@ -185,6 +178,12 @@ class SpiceModel(BaseModel):
                 participant_embedding=participant_embedding,
             )
 
+            # --- SWITCH BIAS ---
+            spatial_switch_bias = sum(
+                self.state[f'switch_bias_{i}'] * spice_signals.actions[trial][..., i:i+1]
+                for i in range(self.n_actions)
+            )  # → [W, E, B, I]
+            
             # --- BUFFER UPDATES ---
             self.state['value_reward[t-1]'] = self.state['value_reward']
             self.state['action[t-1]'] = spice_signals.actions[trial]
@@ -194,6 +193,7 @@ class SpiceModel(BaseModel):
                 self.state['value_reward']
                 + self.state['value_choice']
                 + self.state['value_exploration']
+                + spatial_switch_bias
             )
 
         spice_signals = self.post_forward_pass(spice_signals)
