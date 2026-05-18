@@ -40,10 +40,10 @@ CONFIG = SpiceConfig(
         'value_exploration': None,
         
         # switching biases:
-        'switch_bias_0': None,
-        'switch_bias_1': None,
-        'switch_bias_2': None,
-        'switch_bias_3': None,
+        # 'switch_bias_0': None,
+        # 'switch_bias_1': None,
+        # 'switch_bias_2': None,
+        # 'switch_bias_3': None,
 
         # Buffers (excluded from logits)
         'value_reward[t-1]': None,
@@ -78,6 +78,12 @@ class SpiceModel(BaseModel):
         self.setup_module(key_module='value_exploration_chosen', input_size=2, dropout=self.dropout)
         self.setup_module(key_module='value_exploration_not_chosen', input_size=2, dropout=self.dropout)
 
+        self.switch_bias = torch.nn.ParameterDict()
+        for n in range(self.n_actions):
+            self.switch_bias[str(n)] = torch.nn.Parameter(
+                torch.zeros(self.ensemble_size, self.n_participants, self.n_experiments, self.n_actions)
+            )
+        
     def forward(self, inputs, state=None):
         spice_signals = self.init_forward_pass(inputs, state)
 
@@ -126,7 +132,6 @@ class SpiceModel(BaseModel):
             )
 
             # --- CHOICE VALUE UPDATES ---
-            
             self.call_module(
                 key_module='value_choice_chosen',
                 key_state='value_choice',
@@ -179,8 +184,10 @@ class SpiceModel(BaseModel):
             )
 
             # --- SWITCH BIAS ---
+            E_idx = torch.arange(self.ensemble_size, device=self.device).unsqueeze(1)  # (E, 1)
             spatial_switch_bias = sum(
-                self.state[f'switch_bias_{i}'] * spice_signals.actions[trial][..., i:i+1]
+                self.switch_bias[str(i)][E_idx, spice_signals.participant_ids, spice_signals.experiment_ids].unsqueeze(0)
+                * spice_signals.actions[trial][..., i:i+1]
                 for i in range(self.n_actions)
             )  # → [W, E, B, I]
             

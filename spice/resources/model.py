@@ -129,9 +129,9 @@ class EnsembleRNNModule(nn.Module):
            
             
 class ParameterModule(nn.Module):
-    def __init__(self, ensemble_size=1):
+    def __init__(self, n_ensemble, n_participants, n_experiments):
         super().__init__()
-        self.parameter = nn.Parameter(torch.ones(ensemble_size))
+        self.parameter = nn.Parameter(torch.ones((n_ensemble, n_participants, n_experiments)))
 
     def forward(self, *args, **kwargs):
         return self.parameter
@@ -352,12 +352,10 @@ class BaseModel(nn.Module):
 
         return self
         
-    def setup_constant(self, embedding_size: int = None, activation: nn.Module = torch.nn.LeakyReLU, kwargs_activation = {'negative_slope': 0.01}):
-        if embedding_size is not None:
-            return nn.Sequential(EnsembleLinear(self.ensemble_size, embedding_size, 1), activation(**kwargs_activation))
-        else:
-            return ParameterModule(self.ensemble_size)
-
+    def setup_constant(self, n_ensemble, n_participants, n_experiments):
+        # return ParameterModule(n_ensemble, n_participants, n_experiments)
+        return nn.Parameter(torch.zeros((n_ensemble, n_participants, n_experiments)))
+    
     def setup_embedding(self, num_embeddings: int, embedding_size: int = None, leaky_relu: float = 0.01, dropout: float = 0.):
         if embedding_size is None:
             embedding_size = self.embedding_size
