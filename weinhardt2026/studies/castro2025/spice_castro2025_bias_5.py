@@ -214,7 +214,7 @@ class SpiceModel(BaseModel):
                 + self.state['value_attention']
             )
             
-            self.state['value_attention'] = 0
+            self.state['value_attention'] = torch.zeros_like(self.state['value_attention'])
 
         spice_signals = self.post_forward_pass(spice_signals)
         return spice_signals.logits, self.get_state()
