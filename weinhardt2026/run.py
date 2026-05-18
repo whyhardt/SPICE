@@ -193,7 +193,7 @@ if __name__=='__main__':
         sindy_shooting_steps=args.shooting_steps,
 
         # other parameters
-        compiled_forward=False,
+        # compiled_forward=False,
         verbose=True,
         device=torch.device('cuda' if torch.cuda.is_available() else 'cpu'),
         save_path_spice=args.model,

@@ -78,9 +78,9 @@ class SpiceModel(BaseModel):
         self.setup_module(key_module='value_exploration_chosen', input_size=2, dropout=self.dropout)
         self.setup_module(key_module='value_exploration_not_chosen', input_size=2, dropout=self.dropout)
 
-        self.switch_bias = torch.nn.ParameterDict()
+        self.constants = torch.nn.ParameterDict()
         for n in range(self.n_actions):
-            self.switch_bias[str(n)] = torch.nn.Parameter(
+            self.constants[str(n)] = torch.nn.Parameter(
                 torch.zeros(self.ensemble_size, self.n_participants, self.n_experiments, self.n_actions)
             )
         
@@ -186,7 +186,7 @@ class SpiceModel(BaseModel):
             # --- SWITCH BIAS ---
             E_idx = torch.arange(self.ensemble_size, device=self.device).unsqueeze(1)  # (E, 1)
             spatial_switch_bias = sum(
-                self.switch_bias[str(i)][E_idx, spice_signals.participant_ids, spice_signals.experiment_ids].unsqueeze(0)
+                self.constants[str(i)][E_idx, spice_signals.participant_ids, spice_signals.experiment_ids].unsqueeze(0)
                 * spice_signals.actions[trial][..., i:i+1]
                 for i in range(self.n_actions)
             )  # → [W, E, B, I]

@@ -936,6 +936,14 @@ class BaseModel(nn.Module):
 
             penalty += weighted_penalty
 
+        # Penalize any learnable constants (e.g. switch biases) with unweighted L1/L2
+        if hasattr(self, 'constants') and isinstance(self.constants, torch.nn.ParameterDict):
+            for param in self.constants.values():
+                if norm == 2:
+                    penalty += (param ** 2).mean()
+                else:
+                    penalty += param.abs().mean()
+
         return penalty * sindy_alpha
                     
     def get_spice_model_string(self, participant_id: int = 0, experiment_id: int = 0) -> str:
