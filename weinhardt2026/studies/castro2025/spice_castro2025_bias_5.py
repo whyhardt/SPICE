@@ -32,11 +32,9 @@ CONFIG = SpiceConfig(
             'dvalue_pos',
             'dvalue_neg',
         ],
-        'value_attention_chosen': [
-            'circular_distance',
-        ],
         'value_attention_not_chosen': [
-            'circular_distance',
+            'is_adjacent',
+            'is_opposite',
         ],
     },
     memory_state={
@@ -56,12 +54,13 @@ CONFIG = SpiceConfig(
 
 class SpiceModel(BaseModel):
     """
-    v5.2 + attention modules: distance-based positional attention via SINDy.
+    v5.2 + attention modules with binary distance flags.
 
-    Adds a circular_distance signal (normalized to [0, 1]) encoding each item's
-    distance from the current action. With polynomial_degree=2, the quadratic
-    term lets SINDy discover per-participant preference for adjacent (dist=0.5)
-    vs opposite (dist=1.0) items.
+    Each item receives two binary signals: is_adjacent (circular distance == 1)
+    and is_opposite (circular distance == n_actions/2). For the chosen item both
+    are 0. With d=1, SINDy gets independent coefficients for each flag,
+    allowing distinct biases for adjacent vs opposite without polynomial
+    interpolation.
 
     9 modules, 4 logit states.
     """
@@ -80,8 +79,7 @@ class SpiceModel(BaseModel):
         self.setup_module(key_module='value_choice_not_chosen', input_size=1, dropout=self.dropout)
         self.setup_module(key_module='value_exploration_chosen', input_size=2, dropout=self.dropout)
         self.setup_module(key_module='value_exploration_not_chosen', input_size=2, dropout=self.dropout)
-        self.setup_module(key_module='value_attention_chosen', input_size=1, dropout=self.dropout)
-        self.setup_module(key_module='value_attention_not_chosen', input_size=1, dropout=self.dropout)
+        self.setup_module(key_module='value_attention_not_chosen', input_size=2, dropout=self.dropout, polynomial_degree=1, include_bias=False, include_state=False)
 
     def forward(self, inputs, state=None):
         spice_signals = self.init_forward_pass(inputs, state)
@@ -89,7 +87,7 @@ class SpiceModel(BaseModel):
         reward_full = spice_signals.rewards.sum(dim=-1, keepdim=True).expand_as(spice_signals.actions)
         participant_embedding = self.participant_embedding(spice_signals.participant_ids)
 
-        # Precompute item indices for circular distance (constant across trials)
+        # Precompute item indices for distance flags (constant across trials)
         item_indices = torch.arange(self.n_actions, device=self.device)
 
         for trial in spice_signals.trials:
@@ -185,27 +183,21 @@ class SpiceModel(BaseModel):
                 participant_embedding=participant_embedding,
             )
 
-            # --- ATTENTION VALUE UPDATES (distance-based) ---
+            # --- ATTENTION VALUE UPDATES (binary distance flags) ---
             chosen_idx = spice_signals.actions[trial].argmax(dim=-1, keepdim=True)  # [W,E,B,1]
             items = item_indices.expand_as(spice_signals.actions[trial])             # [W,E,B,I]
             raw_dist = torch.abs(items - chosen_idx)
-            circular_distance = torch.min(raw_dist, self.n_actions - raw_dist).float()
-            circular_distance = circular_distance / (self.n_actions / 2)             # [0, 1]
+            circ_dist = torch.min(raw_dist, self.n_actions - raw_dist)
 
-            self.call_module(
-                key_module='value_attention_chosen',
-                key_state='value_attention',
-                action_mask=spice_signals.actions[trial],
-                inputs=(circular_distance,),
-                participant_index=spice_signals.participant_ids,
-                participant_embedding=participant_embedding,
-            )
+            is_adjacent = (circ_dist == 1).float()                                   # [W,E,B,I]
+            is_opposite = (circ_dist == (self.n_actions // 2)).float()                # [W,E,B,I]
 
+            self.state['value_attention'] = self.state['value_attention'] * (1 - spice_signals.actions[trial])
             self.call_module(
                 key_module='value_attention_not_chosen',
                 key_state='value_attention',
                 action_mask=1 - spice_signals.actions[trial],
-                inputs=(circular_distance,),
+                inputs=(is_adjacent, is_opposite),
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
             )
@@ -221,6 +213,8 @@ class SpiceModel(BaseModel):
                 + self.state['value_exploration']
                 + self.state['value_attention']
             )
+            
+            self.state['value_attention'] = 0
 
         spice_signals = self.post_forward_pass(spice_signals)
         return spice_signals.logits, self.get_state()
