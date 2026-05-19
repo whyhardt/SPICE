@@ -481,24 +481,26 @@ class BaseModel(nn.Module):
         inputs = torch.nan_to_num(inputs, nan=0.0)
         
         if key_module in self.submodules_rnn.keys():
-            if (not self.use_sindy  # RNN mode 
-                # or (self.use_sindy and self.training and self.rnn_training_finished)  # SINDy LSTSQ-solve
+            if (not self.use_sindy  # RNN mode
+                or (self.use_sindy and self.training and self.rnn_training_finished)  # SINDy ridge-solve
                 ):
                 # Get RNN module prediction
                 inputs_rnn = torch.cat((inputs, embedding), dim=-1)  # [W, E, B, I, feat+emb]
                 next_value = self.submodules_rnn[key_module](inputs_rnn, state=value).squeeze(-1)  # [W, E, B, I]
                 if activation_rnn is not None:
                     next_value = activation_rnn(next_value)
-                # if self.use_sindy:
-                #     # direct lstsq solve for sindy coefficients
-                #     self.sindy_ridge_solve(
-                #         key_module=key_module, 
-                #         participant_ids=participant_index,
-                #         experiment_ids=experiment_index,
-                #         h_next=next_value,
-                #         h_current=value,
-                #         controls=inputs,
-                #     )
+                if self.use_sindy and self.rnn_training_finished:
+                    # direct ridge solve for sindy coefficients
+                    success = self.sindy_ridge_solve(
+                        key_module=key_module,
+                        participant_ids=participant_index,
+                        experiment_ids=experiment_index,
+                        h_next=next_value,
+                        h_current=value,
+                        controls=inputs,
+                    )
+                    if not success:
+                        self._ridge_solve_success = False
             
             if self.use_sindy:
                 # Get SINDy module prediction — operates per within-trial step
@@ -727,15 +729,35 @@ class BaseModel(nn.Module):
 
         return sindy_loss
     
-    def sindy_ridge_solve(self, key_module: str, participant_ids: torch.Tensor, experiment_ids: torch.Tensor, h_next: torch.Tensor, h_current: torch.Tensor, controls: torch.Tensor):
+    def sindy_ridge_solve(self, key_module: str, participant_ids: torch.Tensor, experiment_ids: torch.Tensor,
+                          h_next: torch.Tensor, h_current: torch.Tensor, controls: torch.Tensor,
+                          ridge_alpha: float = None) -> bool:
+        """Ridge-solve SINDy coefficients for one module using accumulated normal equations.
+
+        Builds the polynomial library from (h_current, controls), accumulates A^T A and A^T b
+        per (participant, experiment) group via scatter, adds a ridge penalty, and solves.
+
+        Args:
+            key_module: Module name (key in sindy_coefficients).
+            participant_ids: (E, B) participant indices.
+            experiment_ids: (E, B) experiment indices.
+            h_next: (W, E, B, I) RNN target states.
+            h_current: (W, E, B, I) current states (or None → zeros).
+            controls: (W, E, B, I, n_controls) control signals.
+            ridge_alpha: Ridge penalty strength. Defaults to self.sindy_alpha.
+
+        Returns:
+            True if the solve succeeded, False if it failed (e.g. singular matrix).
+        """
         W, E, B, I = h_next.shape
         P = self.n_participants
         X = self.n_experiments
         T = self.sindy_coefficients[key_module].shape[-1]
+        alpha = ridge_alpha if ridge_alpha is not None else self.sindy_alpha
 
         if h_current is None:
             h_current = torch.zeros_like(h_next)
-        
+
         library = compute_polynomial_library(
             h_current.reshape(W, B*E, I),
             controls.reshape(W, B*E, I, -1),
@@ -786,19 +808,27 @@ class BaseModel(nn.Module):
         AtA_accum = AtA_accum.reshape(E, P, X, T, T)
         Atb_accum = Atb_accum.reshape(E, P, X, T, 1)
         has_data = sample_count.reshape(E, P, X) > 0  # (E, P, X)
-        
-        # Add ridge penalty: lambda * diag(degree_weights) + eps*I for numerical stability
-        penalty_diag = torch.diag(self.sindy_alpha * self.sindy_degree_weights[key_module])  # (T, T)
+
+        # Add ridge penalty: alpha * diag(degree_weights) + eps*I for numerical stability
+        penalty_diag = torch.diag(alpha * self.sindy_degree_weights[key_module])  # (T, T)
         penalty_diag += 1e-4 * torch.eye(T, device=library.device, dtype=library.dtype)
         AtA_accum = AtA_accum + penalty_diag  # broadcasts over (E, P, X)
 
-        # Only solve for groups that have data; keep existing coefficients for empty groups
-        if has_data.all():
-            coefficients = torch.linalg.solve(AtA_accum, Atb_accum).squeeze(-1)
-            self.sindy_coefficients[key_module].data.copy_(coefficients)
-        else:
-            coefficients = torch.linalg.solve(AtA_accum[has_data], Atb_accum[has_data]).squeeze(-1)
-            self.sindy_coefficients[key_module].data[has_data] = coefficients
+        # Solve; return False on failure (singular matrix, etc.)
+        try:
+            if has_data.all():
+                coefficients = torch.linalg.solve(AtA_accum, Atb_accum).squeeze(-1)
+                self.sindy_coefficients[key_module].data.copy_(coefficients)
+            else:
+                coefficients = torch.linalg.solve(AtA_accum[has_data], Atb_accum[has_data]).squeeze(-1)
+                self.sindy_coefficients[key_module].data[has_data] = coefficients
+        except torch.linalg.LinAlgError:
+            return False
+
+        # Zero out pruned coefficients explicitly
+        self.sindy_coefficients[key_module].data *= self.sindy_coefficients_presence[key_module].float()
+
+        return True
         
     def sindy_coefficient_pruning(self, patience: int = 1, n_terms_pruning: int = None):
         """

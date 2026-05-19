@@ -197,6 +197,7 @@ if __name__=='__main__':
         sindy_population_pruning=args.pruning_population,
         sindy_pruning_terms=args.pruning_terms,
         sindy_shooting_steps=args.shooting_steps,
+        sindy_ridge=True,
 
         # other parameters
         # compiled_forward=False,

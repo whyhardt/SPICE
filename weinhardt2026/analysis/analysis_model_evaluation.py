@@ -136,19 +136,25 @@ def analysis_model_evaluation(
     
     # SPICE model
     if spice_model is not None:
-        participant_ids = dataset.xs[:, 0, 0, -1].cpu().numpy()
-        experiment_ids = dataset.xs[:, 0, 0, -2].cpu().numpy()
+        participant_ids = dataset.xs[:, 0, 0, -1].long().cpu()
+        experiment_ids = dataset.xs[:, 0, 0, -2].long().cpu()
 
-        scores_spice, nll_per_sample = get_scores(targets=dataset.ys, probs=spice_choice_probs, n_parameters=spice_parameters[participant_ids, experiment_ids].mean().item())
+        # Compute parameter stats over unique (participant, experiment) pairs, not sessions
+        unique_pairs = torch.unique(torch.stack([participant_ids, experiment_ids], dim=1), dim=0)
+        unique_param_counts = spice_parameters[unique_pairs[:, 0], unique_pairs[:, 1]]
+        spice_n_params_mean = unique_param_counts.mean().item()
+        spice_n_params_std = unique_param_counts.std().item() if len(unique_param_counts) > 1 else 0.0
+
+        scores_spice, nll_per_sample = get_scores(targets=dataset.ys, probs=spice_choice_probs, n_parameters=spice_n_params_mean)
         scores[3] += torch.tensor(scores_spice)
         metric_participant[3] = nll_per_sample.sum(dim=-1).nansum(dim=1)[..., 0]
-        parameters_participant = spice_parameters[participant_ids, experiment_ids].unsqueeze(0)
-        
+
         scores_spice_rnn, nll_per_sample = get_scores(targets=dataset.ys, probs=spice_rnn_choice_probs, n_parameters=spice_rnn_parameters)
         scores[2] += torch.tensor(scores_spice_rnn)
-        metric_participant[2] = nll_per_sample.sum(dim=-1).nansum(dim=1)[..., 0]     
+        metric_participant[2] = nll_per_sample.sum(dim=-1).nansum(dim=1)[..., 0]
     else:
-        parameters_participant = torch.zeros((1, len(dataset)))
+        spice_n_params_mean = torch.nan
+        spice_n_params_std = 0.0
         
     # Benchmark model
     if benchmark_model is not None:
@@ -172,20 +178,19 @@ def analysis_model_evaluation(
 
     avg_trial_likelihood_participant = np.exp(- metric_participant / considered_trials_participant)
     avg_trial_likelihood_participant_std = avg_trial_likelihood_participant.std(dim=1)
-    parameter_participant_std = parameters_participant.std(dim=1)[0]
 
     # compute average number of parameters
     n_parameters = torch.tensor([
-        benchmark_parameters, 
+        benchmark_parameters,
         gru_parameters,
-        spice_rnn_parameters, 
-        torch.mean(spice_parameters) if isinstance(spice_parameters, torch.Tensor) else spice_parameters,
+        spice_rnn_parameters,
+        spice_n_params_mean,
         ])
     n_parameters_std = torch.tensor([
         0,
         0,
         0,
-        parameter_participant_std,
+        spice_n_params_std,
     ])
 
     scores = torch.concatenate((

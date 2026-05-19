@@ -71,6 +71,7 @@ class SpiceEstimator(BaseEstimator):
         sindy_pruning_terms: Optional[int] = None, # Number of pruned terms per pruning event (Defaults to None: Computed automatically such that n_coefficients can reach 0 within 'epochs-epochs_warmup' epochs)
         sindy_reconditioning_epochs: Optional[int] = 3,  # Pure SINDy SGD epochs after ridge recalibration
         sindy_refit: Optional[bool] = True,  # Enable Stage 2 Training (SINDy refit on frozen RNN parameters)
+        sindy_ridge: Optional[bool] = True,  # Use ridge regression initialization in Stage 2.2 (falls back to SGD on failure)
         sindy_shooting_steps: Optional[int] = 20,  # Multi-step shooting horizon for Stage 2 (1 = one-step-ahead)
 
         verbose: Optional[bool] = False,
@@ -116,6 +117,8 @@ class SpiceEstimator(BaseEstimator):
             sindy_ensemble_pruning_mode: 'ci' for CI test (default), 'ratio' for ensemble ratio test.
             sindy_population_pruning: Cross-participant presence threshold 0-1 (None = disabled).
             sindy_reconditioning_epochs: Pure SINDy SGD epochs after ridge recalibration to warm-start the optimizer (0 = disable).
+            sindy_ridge: Use closed-form ridge regression to initialize SINDy coefficients in Stage 2.2.
+                Falls back to SGD on failure. Set False to use pure SGD. (default: True)
             sindy_shooting_steps: Multi-step shooting horizon for Stage 2 SINDy refit.
                 1 = one-step-ahead. Values > 1 roll out K steps to penalize compounding error. (default: 20)
             verbose: Print training progress.
@@ -161,6 +164,7 @@ class SpiceEstimator(BaseEstimator):
         self.sindy_pruning_terms = sindy_pruning_terms
         self.sindy_reconditioning_epochs = sindy_reconditioning_epochs
         self.sindy_refit = sindy_refit
+        self.sindy_ridge = sindy_ridge
         self.sindy_shooting_steps = sindy_shooting_steps
         
         # Data parameters
@@ -210,7 +214,7 @@ class SpiceEstimator(BaseEstimator):
         # Separate optimizer param groups: SINDy coefficients get fixed lr, RNN params get configurable lr + weight decay
         self.rnn_optimizer = torch.optim.AdamW(
             [
-            {'params': sindy_params, 'weight_decay': 0, 'lr': 0.01},
+            {'params': sindy_params, 'weight_decay': 0, 'lr': 0.001},
             {'params': rnn_params, 'weight_decay': l2_rnn, 'lr': learning_rate},
             ],
             )
@@ -262,6 +266,7 @@ class SpiceEstimator(BaseEstimator):
             sindy_pruning_terms=self.sindy_pruning_terms,
             sindy_reconditioning_epochs=self.sindy_reconditioning_epochs,
             sindy_refit=self.sindy_refit,
+            sindy_ridge=self.sindy_ridge,
             sindy_shooting_steps=self.sindy_shooting_steps,
 
             verbose=self.verbose,

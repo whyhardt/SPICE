@@ -534,13 +534,17 @@ def _ridge_solve_sindy(
     model: BaseModel,
     xs_train: torch.Tensor,
     ys_train: torch.Tensor,
-):
+) -> bool:
     """
     Lightweight ridge solve: snap SINDy coefficients to their MSE-optimal
     values without touching the optimizer state.
 
-    Used before pruning decisions so the CI test / threshold check evaluates
-    coefficients at their dynamics-optimal values rather than SGD-noisy ones.
+    Runs a frozen RNN forward pass over flattened (trial, session) pairs.
+    Inside each call_module(), sindy_ridge_solve() accumulates per-participant
+    normal equations and solves in closed form.
+
+    Returns:
+        True if the ridge solve succeeded for all modules, False otherwise.
     """
     was_training = model.training
     prev_use_sindy = model.use_sindy
@@ -549,19 +553,25 @@ def _ridge_solve_sindy(
     model.eval(use_sindy=False)
     input_state_buffer, _, xs_flat, _ = _vectorize_state(model, xs_train, ys_train)
 
+    model._ridge_solve_success = True
+
     with torch.no_grad():
         model.rnn_training_finished = True
         model.train(use_sindy=True)
         for rnn_module in model.submodules_rnn.values():
             rnn_module.eval()
-        prev_state_args = dict(prev_state={s: t.clone() for s, t in input_state_buffer.items()})
-        model(inputs=xs_flat.to(model.device), **prev_state_args)
+        initial_state = {s: t.clone() for s, t in input_state_buffer.items()}
+        model(xs_flat.to(model.device), initial_state)
+
+    success = model._ridge_solve_success
 
     model.rnn_training_finished = prev_rnn_training_finished
     if was_training:
         model.train(use_sindy=prev_use_sindy)
     else:
         model.eval(use_sindy=prev_use_sindy)
+
+    return success
 
 
 def _ridge_recalibrate_sindy(
@@ -617,8 +627,8 @@ def _ridge_recalibrate_sindy(
         model.train(use_sindy=True)
         for rnn_module in model.submodules_rnn.values():
             rnn_module.eval()
-        prev_state_args = dict(prev_state={s: t.clone() for s, t in input_state_buffer.items()})
-        model(inputs=xs_flat.to(model.device), **prev_state_args)
+        initial_state = {s: t.clone() for s, t in input_state_buffer.items()}
+        model(xs_flat.to(model.device), initial_state)
 
     # 4. SGD reconditioning: warm-start optimizer at the new coefficient landscape
     if n_reconditioning_epochs > 0:
@@ -835,6 +845,116 @@ def _run_shooting_epoch(
     return loss_epoch / max(n_batches, 1)
 
 
+def _run_shooting_epoch_vectorized(
+    model: BaseModel,
+    optimizer: torch.optim.Optimizer,
+    xs_train: torch.Tensor,
+    state_trajectories: dict,
+    nan_mask: torch.Tensor,
+    window_starts: list,
+    K: int,
+    batch_sessions: torch.Tensor,
+    sindy_alpha: float = None,
+) -> float:
+    """Vectorized shooting epoch: fold all windows into the batch dimension.
+
+    Instead of looping over windows one at a time (each with its own forward,
+    backward, and optimizer step), this function stacks all shooting windows
+    into the batch dimension and processes them in parallel.  For K=1 this
+    reduces T separate forward+backward passes to a single one; for K>1 it
+    reduces T/K × K passes to just K batched passes.  A single backward +
+    optimizer step is performed per call.
+
+    Args:
+        model: Model in SINDy training mode (use_sindy=True, RNN frozen)
+        optimizer: SINDy coefficient optimizer
+        xs_train: 5D training data (E, B, T, W, F)
+        state_trajectories: Dict[state_key -> (W, E, B, T+1, I)]
+        nan_mask: (B, T) boolean validity mask
+        window_starts: List of trial indices where shooting windows begin
+        K: Shooting window size
+        batch_sessions: Session indices for this batch (tensor)
+        sindy_alpha: L1 penalty strength (None or 0 = disabled)
+
+    Returns:
+        Mean loss over all valid steps
+    """
+    T = nan_mask.shape[1]
+    B_batch = len(batch_sessions)
+    n_windows = len(window_starts)
+    B_eff = B_batch * n_windows
+
+    if B_eff == 0:
+        return 0.0
+
+    # Build index arrays for all (window, session) pairs.
+    # Window-major ordering: [w0_s0, w0_s1, …, w0_sB, w1_s0, …]
+    ws = torch.tensor(window_starts, dtype=torch.long)
+    session_idx = batch_sessions.repeat(n_windows)                     # (B_eff,)
+    time_idx = ws.unsqueeze(1).expand(-1, B_batch).reshape(-1)         # (B_eff,)
+
+    # Gather initial states for every (window, session) pair
+    current_state = {
+        s: state_trajectories[s][:, :, session_idx, time_idx].to(model.device)
+        for s in state_trajectories
+    }  # each value: (W, E, B_eff, I)
+
+    model.zero_grad()
+    total_loss = torch.tensor(0.0, device=model.device)
+    n_valid_steps = 0
+
+    for k in range(K):
+        t_k = time_idx + k
+
+        # Validity: within temporal bounds AND not NaN-padded
+        in_bounds = t_k < T
+        if not in_bounds.any():
+            break
+        t_k_safe = torch.clamp(t_k, max=T - 1)       # safe index for gathering
+
+        valid = (nan_mask[session_idx, t_k_safe] & in_bounds).to(model.device)
+        if not valid.any():
+            continue
+
+        # Gather xs for this step: (E, B_eff, W, F) → insert T=1 → (E, B_eff, 1, W, F)
+        xs_step = xs_train[:, session_idx, t_k_safe].unsqueeze(2).to(model.device)
+
+        # Forward pass through full model in SINDy mode
+        _, next_state = model(xs_step, current_state)
+
+        # MSE against pre-recorded RNN states
+        step_loss = torch.tensor(0.0, device=model.device)
+        for s_key in model.spice_config.states_in_logit:
+            target = state_trajectories[s_key][:, :, session_idx, t_k_safe + 1].to(model.device)
+            pred = next_state[s_key]
+            mask = valid.view(1, 1, -1, 1).expand_as(pred)
+            diff = (pred - target) ** 2
+            step_loss = step_loss + (diff * mask).sum() / mask.sum().clamp(min=1)
+
+        total_loss = total_loss + step_loss
+        n_valid_steps += 1
+        current_state = next_state
+
+    if n_valid_steps > 0:
+        total_loss = total_loss / n_valid_steps
+
+        if optimizer is not None:
+            if sindy_alpha is not None and sindy_alpha > 0:
+                total_loss = total_loss + model.compute_weighted_coefficient_penalty(sindy_alpha=sindy_alpha, norm=1)
+
+            total_loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            optimizer.step()
+
+            with torch.no_grad():
+                for module in model.get_modules():
+                    model.sindy_coefficients[module].data *= model.sindy_coefficients_presence[module]
+
+        return total_loss.item()
+
+    return 0.0
+
+
 def _run_sindy_training(
     model: BaseModel,
     xs_train: torch.Tensor,
@@ -848,6 +968,7 @@ def _run_sindy_training(
     sindy_threshold_pruning: float = None,
     sindy_pruning_terms: int = None,
     shooting_steps: int = 20,
+    sindy_ridge: bool = True,
     verbose: bool = True,
     ):
 
@@ -951,7 +1072,7 @@ def _run_sindy_training(
                     for b_start in range(0, B, batch_size_sessions):
                         b_end = min(b_start + batch_size_sessions, B)
                         batch_sessions = session_perm[b_start:b_end]
-                        loss_e = _run_shooting_epoch(
+                        loss_e = _run_shooting_epoch_vectorized(
                             model=model,
                             optimizer=optimizer_21,
                             xs_train=xs_train,
@@ -1027,17 +1148,7 @@ def _run_sindy_training(
 
     K = shooting_steps
 
-    # Re-initialize coefficients within discovered support
-    for module in model.get_modules():
-        model.sindy_coefficients[module].data = (
-            torch.randn_like(model.sindy_coefficients[module].data) * 0.001
-            * model.sindy_coefficients_presence[module].float()
-        )
-
-    sindy_parameters = [p for name, p in model.named_parameters() if 'sindy' in name]
-    optimizer_22 = torch.optim.AdamW(sindy_parameters, lr=lr_warmup, weight_decay=0)
-
-    # Build shooting windows
+    # Build shooting windows (shared by ridge evaluation and SGD)
     if K > 1:
         n_windows = T // K
         window_starts = [i * K for i in range(n_windows)]
@@ -1049,6 +1160,56 @@ def _run_sindy_training(
     else:
         window_starts = list(range(T))
 
+    # Re-initialize coefficients within discovered support
+    for module in model.get_modules():
+        model.sindy_coefficients[module].data = (
+            torch.randn_like(model.sindy_coefficients[module].data) * 0.001
+            * model.sindy_coefficients_presence[module].float()
+        )
+
+    # ── Ridge regression (closed-form one-step solve) ──
+    ridge_success = False
+    if sindy_ridge:
+        ridge_success = _ridge_solve_sindy(model, xs_train, ys_train)
+        if ridge_success:
+            sgd_epochs = min(200, epochs)
+            # Evaluate ridge solution with K-step shooting loss
+            model.fit_sindy = False
+            model.train(use_sindy=True)
+            for rnn_module in model.submodules_rnn.values():
+                rnn_module.eval()
+            with torch.no_grad():
+                ridge_loss = _run_shooting_epoch_vectorized(
+                    model=model,
+                    optimizer=None,
+                    xs_train=xs_train,
+                    state_trajectories=state_trajectories,
+                    nan_mask=nan_mask,
+                    window_starts=window_starts,
+                    K=K,
+                    batch_sessions=torch.arange(B),
+                    sindy_alpha=None,
+                )
+            if verbose:
+                print(f"Ridge regression succeeded (K={K} loss: {ridge_loss:.7f}). Running SGD refinement...")
+        else:
+            # Re-initialize coefficients since ridge may have partially written
+            for module in model.get_modules():
+                model.sindy_coefficients[module].data = (
+                    torch.randn_like(model.sindy_coefficients[module].data) * 0.001
+                    * model.sindy_coefficients_presence[module].float()
+                )
+            if verbose:
+                print("Ridge regression failed. Falling back to full SGD...")
+
+    if not ridge_success:
+        sgd_epochs = epochs
+
+    # ── SGD shooting (refinement after ridge, or full fallback) ──
+    sgd_lr_init = lr_base if ridge_success else lr_warmup
+    sindy_parameters = [p for name, p in model.named_parameters() if 'sindy' in name]
+    optimizer_22 = torch.optim.AdamW(sindy_parameters, lr=sgd_lr_init, weight_decay=0)
+
     model.fit_sindy = False
     model.train(use_sindy=True)
     for rnn_module in model.submodules_rnn.values():
@@ -1057,12 +1218,12 @@ def _run_sindy_training(
     batch_size_sessions = B
     while True:
         try:
-            pbar = tqdm(range(epochs))
+            pbar = tqdm(range(sgd_epochs))
             for epoch in pbar:
                 session_perm = torch.randperm(B)
 
-                # LR schedule: warmup -> base
-                if epoch == n_warmup_steps:
+                # LR schedule: warmup -> base (skip if ridge provided init)
+                if not ridge_success and epoch == n_warmup_steps:
                     for pg in optimizer_22.param_groups:
                         pg['lr'] = lr_base
 
@@ -1072,7 +1233,7 @@ def _run_sindy_training(
                 for b_start in range(0, B, batch_size_sessions):
                     b_end = min(b_start + batch_size_sessions, B)
                     batch_sessions = session_perm[b_start:b_end]
-                    loss_e = _run_shooting_epoch(
+                    loss_e = _run_shooting_epoch_vectorized(
                         model=model,
                         optimizer=optimizer_22,
                         xs_train=xs_train,
@@ -1616,6 +1777,7 @@ def fit_spice(
     sindy_pruning_terms: int = None,
     sindy_reconditioning_epochs: int = 3,
     sindy_refit: bool = True,
+    sindy_ridge: bool = True,
     sindy_shooting_steps: int = 20,
 
     verbose: bool = True,
@@ -1849,6 +2011,7 @@ def fit_spice(
             sindy_threshold_pruning=sindy_threshold_pruning,
             sindy_pruning_terms=sindy_pruning_terms,
             shooting_steps=sindy_shooting_steps,
+            sindy_ridge=sindy_ridge,
             verbose=verbose,
         )
         
@@ -1861,16 +2024,38 @@ def fit_spice(
         print("\n" + status_lines)
         print("Training results:")
         msg = "\t"
-
-        if epochs > 0:
-            msg += f"L(Train, RNN): {loss_train:.7f}"
-            msg += "\n\t"
-
         batch_size = xs_train_5d.shape[1]
         
         if dataset_test is not None:
             with torch.no_grad():
-                _, _, _, loss_test_rnn, loss_test_sindy = _run_joint_training(
+                _, _, loss_train, _, _ = _run_joint_training(
+                    model=model,
+                    optimizer=optimizer,
+                    xs_train=xs_train_5d,
+                    ys_train=ys_train_5d,
+                    dataset_test=dataset_train,
+
+                    epochs=0,
+                    n_warmup_steps=999,
+                    batch_size=batch_size,
+                    convergence_threshold=0,
+                    n_steps=n_steps,
+                    loss_fn=loss_fn,
+                    loss_fn_kwargs=loss_fn_kwargs,
+
+                    sindy_weight=sindy_weight,
+                    sindy_alpha=0,
+                    sindy_threshold_pruning=None,
+                    sindy_pruning_frequency=None,
+                    sindy_ensemble_pruning=None,
+                    sindy_population_pruning=None,
+
+                    verbose=False,
+                    keep_log=False,
+                    path_save_checkpoints=None,
+                )
+                
+                _, _, loss_train, loss_test_rnn, loss_test_sindy = _run_joint_training(
                     model=model,
                     optimizer=optimizer,
                     xs_train=xs_train_5d,
@@ -1897,6 +2082,8 @@ def fit_spice(
                     path_save_checkpoints=None,
                 )
 
+            msg += f"L(Train, RNN): {loss_train:.7f}"
+            msg += "\n\t"            
             msg += f"L(Val, RNN):   {loss_test_rnn:.7f}"
             if sindy_weight > 0:
                 msg += "\n\t"
