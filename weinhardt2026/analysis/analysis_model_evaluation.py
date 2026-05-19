@@ -113,7 +113,7 @@ def analysis_model_evaluation(
         spice_model.eval(use_sindy=True)
         
         spice_predictions, _ = spice_model(dataset.xs.to(spice_model.device))           
-        spice_choice_probs = get_choice_probs(spice_predictions.mean(dim=0)).detach().cpu()
+        spice_choice_probs = get_choice_probs(spice_predictions[0]).detach().cpu()
         
         spice_model.use_sindy(False)
         spice_model.model.init_state(batch_size=dataset.xs.shape[0])

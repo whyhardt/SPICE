@@ -530,7 +530,8 @@ class SpiceDiagnostics:
             # logits: (E, B, T, W, A) from post_forward_pass
             # ys:     (B, T, W, A)
             if logits.dim() == 5:
-                logits = logits.mean(dim=0)  # average over ensemble
+                # SINDy: member 0 (consensus-fitted); RNN: ensemble mean
+                logits = logits[0] if model.use_sindy else logits.mean(dim=0)
             # NaN masking (same logic as _run_batch_training)
             mask = ~torch.isnan(xs[..., :model.n_actions].sum(dim=-1))
             return loss_fn(logits[mask], ys[mask]).item()

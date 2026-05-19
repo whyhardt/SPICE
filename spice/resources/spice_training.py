@@ -959,6 +959,8 @@ def _run_sindy_training(
     model: BaseModel,
     xs_train: torch.Tensor,
     ys_train: torch.Tensor,
+    xs_train_original: torch.Tensor = None,
+    ys_train_original: torch.Tensor = None,
     epochs: int = 1000,
     n_warmup_steps: int = 100,
     sindy_alpha: float = None,
@@ -986,12 +988,18 @@ def _run_sindy_training(
         within the support, and fit using multi-step shooting (K=shooting_steps)
         without pruning or L1 penalty. Same LR schedule (warmup 0.01 -> 0.001).
 
-    Both stages share the same pre-computed sequential state trajectories.
+    Stage 2.1 uses bootstrapped data. Stage 2.2 optionally re-computes
+    trajectories on the full (non-bootstrapped) dataset and averages them
+    across ensemble members to create consensus targets.
 
     Args:
         model: Trained RNN model with SINDy coefficients
-        xs_train: 5D training data (E, B, T, W, F)
-        ys_train: 5D training targets
+        xs_train: 5D training data (E, B, T, W, F) — bootstrapped
+        ys_train: 5D training targets — bootstrapped
+        xs_train_original: 4D original training data (B, T, W, F) before
+            bootstrapping. If provided and E > 1, Stage 2.2 re-computes
+            trajectories on full data with ensemble-averaged targets.
+        ys_train_original: 4D original training targets
         epochs: Training epochs per stage (default: 1000)
         n_warmup_steps: Warmup epochs per stage (default: 100)
         sindy_alpha: Degree-weighted L1 penalty strength for Stage 2.1
@@ -1145,6 +1153,25 @@ def _run_sindy_training(
         else:
             print("Stage 2.2: SINDy coefficient estimation (one-step-ahead)")
         print("=" * terminal_width)
+
+    # Switch to full (non-bootstrapped) data with ensemble-averaged targets
+    if xs_train_original is not None and E > 1:
+        if verbose:
+            print("Re-computing state trajectories on full data (ensemble-averaged)...")
+        xs_full_5d = xs_train_original.unsqueeze(0).expand(E, -1, -1, -1, -1).contiguous()
+        ys_full_5d = ys_train_original.unsqueeze(0).expand(E, -1, -1, -1, -1).contiguous()
+        model.eval(use_sindy=False)
+        state_trajectories, nan_mask = _vectorize_state_sequential(
+            model, xs_full_5d, ys_full_5d, verbose=verbose
+        )
+        # Average over ensemble → consensus targets
+        for s in state_trajectories:
+            state_trajectories[s] = state_trajectories[s].mean(
+                dim=1, keepdim=True
+            ).expand(-1, E, -1, -1, -1).contiguous()
+        xs_train = xs_full_5d
+        ys_train = ys_full_5d
+        B = xs_train.shape[1]
 
     K = shooting_steps
 
@@ -2002,6 +2029,8 @@ def fit_spice(
             model=model,
             xs_train=xs_train_5d.to(torch.device('cpu')),
             ys_train=ys_train_5d.to(torch.device('cpu')),
+            xs_train_original=dataset_train.xs,
+            ys_train_original=dataset_train.ys,
             epochs=1000,
             n_warmup_steps=100,
             sindy_alpha=sindy_alpha,

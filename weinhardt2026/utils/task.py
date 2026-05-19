@@ -117,7 +117,7 @@ def generate_behavior(
         
         # Normalize logits to (B, A)
         if logits.dim() == 5:  # BaseModel: (E, B, T, W, A)
-            logits = logits.mean(dim=0)
+            logits = logits.mean(dim=0)  # ensemble mean (generative uses RNN)
         if logits.dim() == 4:  # (B, T, W, A)
             logits_t = logits[:, -1, 0, :n_actions]
         else:  # (B, T, A)

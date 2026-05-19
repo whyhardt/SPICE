@@ -305,8 +305,14 @@ class SpiceEstimator(BaseEstimator):
         else:
             raise TypeError(f"conditions must be either of type numpy.ndarray or torch.Tensor.")
         
-        # average across ensemble dim (E, B, T, W, A) -> (B, T, W, A)
-        prediction = self.model(conditions)[0].mean(dim=0).detach().cpu().numpy()
+        logits = self.model(conditions)[0]
+        # SINDy mode: use member 0 (all members fitted to consensus targets)
+        # RNN mode: use ensemble mean (no single member saw all data)
+        if logits.dim() == 5:
+            prediction = logits[0] if self.model.use_sindy else logits.mean(dim=0)
+        else:
+            prediction = logits
+        prediction = prediction.detach().cpu().numpy()
         return prediction
     
     def print_spice_model(self, participant_id: int = 0, experiment_id: int = 0) -> None:
