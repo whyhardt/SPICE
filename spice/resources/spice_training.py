@@ -284,6 +284,7 @@ def _run_batch_training(
     ys: torch.Tensor,
     optimizer: torch.optim.Optimizer = None,
     sindy_weight: float = 0.,
+    sindy_weight_fit: float = 1.,
     sindy_alpha: float = 0.,
     n_steps: int = None,
     loss_fn: callable = cross_entropy_loss,
@@ -322,9 +323,9 @@ def _run_batch_training(
         loss_step = loss_fn(ys_pred, ys_step, **loss_fn_kwargs)
 
         if torch.is_grad_enabled():
-            # Add SINDy losses (decoupled: sindy_weight controls RNN regularization only)
+            # Add SINDy losses (decoupled gradients: sindy_loss_reg → RNN, sindy_loss_fit → SINDy coefficients)
             if sindy_weight > 0 and model.sindy_loss_reg != 0:
-                loss_step = loss_step + sindy_weight * model.sindy_loss_reg + model.sindy_loss_fit
+                loss_step = loss_step + sindy_weight * model.sindy_loss_reg + sindy_weight_fit * model.sindy_loss_fit
 
             if sindy_weight > 0 and sindy_alpha > 0:
                 loss_step = loss_step + model.compute_weighted_coefficient_penalty(sindy_alpha=sindy_alpha, norm=1)
@@ -332,10 +333,18 @@ def _run_batch_training(
             # backpropagation
             optimizer.zero_grad()
             loss_step.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            # Clip RNN and SINDy gradients independently so unweighted
+            # sindy_loss_fit doesn't starve RNN gradients via shared norm
+            if len(optimizer.param_groups) > 1:
+                torch.nn.utils.clip_grad_norm_(optimizer.param_groups[0]['params'], max_norm=1.0)
+                torch.nn.utils.clip_grad_norm_(optimizer.param_groups[1]['params'], max_norm=1.0)
+            else:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
 
         loss_batch += loss_step.item()
+        if sindy_weight > 0 and model.sindy_loss_reg != 0:
+            loss_batch -= model.sindy_loss_fit.item() * sindy_weight_fit
         iterations += 1
 
     return model, optimizer, loss_batch/iterations
@@ -1400,11 +1409,14 @@ def _run_joint_training(
                 loss_train = 0
                 t_start = time.time()
 
-                # Compute warmup-scaled SINDy weight
+                # Compute warmup-scaled SINDy weights
                 if n_calls_to_train_model >= n_warmup_steps:
                     sindy_weight_epoch = sindy_weight
+                    sindy_weight_fit_epoch = 1.0
                 else:
-                    sindy_weight_epoch = sindy_weight * warmup_scaler_sindy_weight[n_calls_to_train_model]
+                    warmup_scale = warmup_scaler_sindy_weight[n_calls_to_train_model]
+                    sindy_weight_epoch = sindy_weight * warmup_scale
+                    sindy_weight_fit_epoch = warmup_scale
 
                 # Training iterations for this epoch
                 for _ in range(iterations_per_epoch):
@@ -1428,6 +1440,7 @@ def _run_joint_training(
                         optimizer=optimizer,
                         n_steps=n_steps,
                         sindy_weight=sindy_weight_epoch,
+                        sindy_weight_fit=sindy_weight_fit_epoch,
                         sindy_alpha=sindy_alpha,
                         loss_fn=loss_fn,
                         loss_fn_kwargs=loss_fn_kwargs,
