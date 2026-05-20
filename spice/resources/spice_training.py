@@ -333,6 +333,7 @@ def _run_batch_training(
             # backpropagation
             optimizer.zero_grad()
             loss_step.backward()
+            # torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             # Clip RNN and SINDy gradients independently so unweighted
             # sindy_loss_fit doesn't starve RNN gradients via shared norm
             if len(optimizer.param_groups) > 1:
