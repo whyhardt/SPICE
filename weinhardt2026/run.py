@@ -43,7 +43,7 @@ if __name__=='__main__':
 
     # SINDy training parameters
     parser.add_argument('--sindy_skip_refit', action='store_false', help='Refits the SINDy coefficients in Stage 2 training (default: True)')
-    parser.add_argument('--shooting_steps', type=int, default=20, help='Multi-step shooting horizon for Stage 2 SINDy refit (1=one-step-ahead, default: 20)')
+    parser.add_argument('--shooting_steps', type=int, default=100, help='Multi-step shooting horizon for Stage 2 SINDy refit (1=one-step-ahead, default: 100)')
     parser.add_argument('--sindy_weight', type=float, default=0.1, help='Weight for SINDy regularization during RNN training')
     parser.add_argument('--sindy_alpha', type=float, default=0.0001, help='Degree-weighted coefficient penalty strength (ridge alpha)')
     parser.add_argument('--pruning_method', type=str, default='ratio', help='Pruning method for ensemble pruning. Defaults to "ci". Alternatively "ratio".')
@@ -126,24 +126,24 @@ if __name__=='__main__':
     
     
     
-    # --------------------------------------------------------------------------------------------
-    # RAPID PROTOTYPING
-    from spice import SpiceDataset
+    # # --------------------------------------------------------------------------------------------
+    # # RAPID PROTOTYPING
+    # from spice import SpiceDataset
 
-    # keep only 100 timesteps
-    dataset_train = SpiceDataset(dataset_train.xs[:, :100], dataset_train.ys[:, :100])
+    # # keep only 100 timesteps
+    # dataset_train = SpiceDataset(dataset_train.xs[:, :100], dataset_train.ys[:, :100])
 
-    # keep only 100 participants for rapid prototyping
-    keep_participants = torch.arange(0, 50)
+    # # keep only 100 participants for rapid prototyping
+    # keep_participants = torch.arange(0, 50)
 
-    def keep_subset(dataset, subset):
-        participant_ids = dataset.xs[:, 0, 0, -1]
-        mask = torch.isin(participant_ids, subset)
-        return SpiceDataset(dataset.xs[mask], dataset.ys[mask])
+    # def keep_subset(dataset, subset):
+    #     participant_ids = dataset.xs[:, 0, 0, -1]
+    #     mask = torch.isin(participant_ids, subset)
+    #     return SpiceDataset(dataset.xs[mask], dataset.ys[mask])
 
-    dataset_train = keep_subset(dataset_train, keep_participants)
-    dataset_test = keep_subset(dataset_test, keep_participants)    
-    # --------------------------------------------------------------------------------------------
+    # dataset_train = keep_subset(dataset_train, keep_participants)
+    # dataset_test = keep_subset(dataset_test, keep_participants)    
+    # # --------------------------------------------------------------------------------------------
     
     
     
