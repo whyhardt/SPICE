@@ -457,15 +457,13 @@ class SpiceDiagnostics:
         was_training = model.training
         was_sindy = model.use_sindy
         was_fit_sindy = getattr(model, 'fit_sindy', True)
-        was_rnn_finished = getattr(model, 'rnn_training_finished', False)
 
         # eval() disables dropout; override training flag so the sindy_loss
-        # gate check in call_module fires
+        # gate check in call_module fires (requires training=True, use_sindy=False)
         model.eval()
         model.training = True
         model.use_sindy = False
         model.fit_sindy = True
-        model.rnn_training_finished = False
         type(model).compute_sindy_loss_for_module = recording_compute
 
         with torch.no_grad():
@@ -476,7 +474,6 @@ class SpiceDiagnostics:
         type(model).compute_sindy_loss_for_module = original_compute
         model.use_sindy = was_sindy
         model.fit_sindy = was_fit_sindy
-        model.rnn_training_finished = was_rnn_finished
         if was_training:
             model.train()
         else:

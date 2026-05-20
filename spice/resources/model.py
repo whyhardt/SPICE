@@ -190,7 +190,7 @@ class BaseModel(nn.Module):
         self.n_experiments = n_experiments
         self.n_sessions = n_participants * n_experiments
         self.use_sindy = use_sindy
-        self.rnn_training_finished = False
+        self.ridge_mode = False
         self.n_items = n_items if n_items is not None else n_actions
         self.ensemble_size = ensemble_size
         self.compiled_forward = compiled_forward
@@ -481,15 +481,13 @@ class BaseModel(nn.Module):
         inputs = torch.nan_to_num(inputs, nan=0.0)
         
         if key_module in self.submodules_rnn.keys():
-            if (not self.use_sindy  # RNN mode
-                or (self.use_sindy and self.training and self.rnn_training_finished)  # SINDy ridge-solve
-                ):
+            if not self.use_sindy or self.ridge_mode:
                 # Get RNN module prediction
                 inputs_rnn = torch.cat((inputs, embedding), dim=-1)  # [W, E, B, I, feat+emb]
                 next_value = self.submodules_rnn[key_module](inputs_rnn, state=value).squeeze(-1)  # [W, E, B, I]
                 if activation_rnn is not None:
                     next_value = activation_rnn(next_value)
-                if self.use_sindy and self.rnn_training_finished:
+                if self.ridge_mode:
                     # direct ridge solve for sindy coefficients
                     success = self.sindy_ridge_solve(
                         key_module=key_module,
@@ -528,9 +526,9 @@ class BaseModel(nn.Module):
             raise ValueError(f'Invalid module key {key_module}.')
 
         # SINDy loss (uses unclipped values, last within-trial step)
-        if (self.fit_sindy 
-            and self.training 
-            and not self.rnn_training_finished 
+        if (self.fit_sindy
+            and self.training
+            and not self.use_sindy
             and participant_index is not None
             ):
             action_mask_2d = action_mask[-1] if action_mask is not None and action_mask.dim() >= 4 else action_mask

@@ -40,8 +40,7 @@ class QLearning(BaseModel):
             use_sindy=True, 
             sindy_polynomial_degree=2,
             ensemble_size=1)
-        self.rnn_training_finished = True
-        
+
         self.beta_reward = torch.full((self.n_participants, self.n_experiments), beta_reward) if isinstance(beta_reward, float) else beta_reward.reshape(n_participants, n_experiments)
         self.alpha_reward = torch.full((self.n_participants, self.n_experiments), alpha_reward) if isinstance(alpha_reward, float) else alpha_reward.reshape(n_participants, n_experiments)
         self.alpha_penalty = torch.full((self.n_participants, self.n_experiments), alpha_penalty) if isinstance(alpha_penalty, float) else alpha_penalty.reshape(n_participants, n_experiments)
@@ -51,7 +50,6 @@ class QLearning(BaseModel):
         self.countefactual_learning = torch.full((self.n_participants, self.n_experiments), counterfactual_learning) if isinstance(counterfactual_learning, float) else counterfactual_learning.reshape(n_participants, n_experiments)
         
         # basic SPICE stuff
-        self.rnn_training_finished = True  # rnn not necessary here
         self.setup_module(key_module='value_reward_chosen', input_size=1, embedding_size=0)
         self.setup_module(key_module='value_reward_not_chosen', input_size=0, embedding_size=0)
         self.setup_module(key_module='value_choice', input_size=1, embedding_size=0)

@@ -548,7 +548,7 @@ def _ridge_solve_sindy(
     """
     was_training = model.training
     prev_use_sindy = model.use_sindy
-    prev_rnn_training_finished = model.rnn_training_finished
+    prev_ridge_mode = model.ridge_mode
 
     model.eval(use_sindy=False)
     input_state_buffer, _, xs_flat, _ = _vectorize_state(model, xs_train, ys_train)
@@ -556,7 +556,7 @@ def _ridge_solve_sindy(
     model._ridge_solve_success = True
 
     with torch.no_grad():
-        model.rnn_training_finished = True
+        model.ridge_mode = True
         model.train(use_sindy=True)
         for rnn_module in model.submodules_rnn.values():
             rnn_module.eval()
@@ -565,7 +565,7 @@ def _ridge_solve_sindy(
 
     success = model._ridge_solve_success
 
-    model.rnn_training_finished = prev_rnn_training_finished
+    model.ridge_mode = prev_ridge_mode
     if was_training:
         model.train(use_sindy=prev_use_sindy)
     else:
@@ -615,15 +615,15 @@ def _ridge_recalibrate_sindy(
     # 3. Freeze RNN, run forward to collect state buffers, then ridge solve
     was_training = model.training
     prev_use_sindy = model.use_sindy
-    prev_rnn_training_finished = model.rnn_training_finished
+    prev_ridge_mode = model.ridge_mode
     prev_fit_sindy = model.fit_sindy
 
     model.eval(use_sindy=False)
     input_state_buffer, target_state_buffer, xs_flat, _ = _vectorize_state(model, xs_train, ys_train)
 
-    # Ridge solve (temporarily set rnn_training_finished=True to trigger lstsq path)
+    # Ridge solve (temporarily enable ridge_mode to trigger lstsq path in call_module)
     with torch.no_grad():
-        model.rnn_training_finished = True
+        model.ridge_mode = True
         model.train(use_sindy=True)
         for rnn_module in model.submodules_rnn.values():
             rnn_module.eval()
@@ -632,7 +632,7 @@ def _ridge_recalibrate_sindy(
 
     # 4. SGD reconditioning: warm-start optimizer at the new coefficient landscape
     if n_reconditioning_epochs > 0:
-        model.rnn_training_finished = False
+        model.ridge_mode = False
         model.fit_sindy = False  # disable internal sindy_loss accumulation
         model.train(use_sindy=True)
         for rnn_module in model.submodules_rnn.values():
@@ -668,7 +668,7 @@ def _ridge_recalibrate_sindy(
             optimizer.step()
 
     # 5. Restore model state
-    model.rnn_training_finished = prev_rnn_training_finished
+    model.ridge_mode = prev_ridge_mode
     model.fit_sindy = prev_fit_sindy
 
     if was_training:
@@ -1992,7 +1992,6 @@ def fit_spice(
                     path_save_checkpoints=path_save_checkpoints,
                 )
                 model, optimizer, loss_train, loss_test_rnn, loss_test_sindy = results
-                model.rnn_training_finished = True
                 break
             except (torch.cuda.OutOfMemoryError, RuntimeError) as e:
                 if _check_cuda_oom(e):

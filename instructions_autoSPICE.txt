@@ -1,0 +1,846 @@
+Requirements for automated discovery of SPICE architecture
+
+
+TASK
+====
+
+Find a SPICE architecture for a four-armed bandit task with drifting reward
+probabilities that beats the benchmark model (Castro et al. 2025) on test
+average trial likelihood. The GRU serves as an upper bound.
+
+Performance targets:
+
+                    Train                               Test
+                    Avg Trial Likelihood    BIC         Avg Trial Likelihood    BIC
+Benchmark           0.621020                465678      0.598384                131456
+GRU                 0.627344                n.a.        0.618730                n.a.
+
+The primary metric is Test Avg Trial Likelihood (must exceed 0.598384).
+BIC matters for interpretability but is secondary to beating the benchmark.
+The best SPICE architecture so far achieved 0.59 test avg trial likelihood.
+
+Do not change any hyperparameters and focus only on the SPICE architecture.
+
+
+RUNNING A MODEL
+===============
+
+Save each architecture as a py-file:
+  weinhardt2026/studies/castro2025/spice_castro2025_ARCHITECTURENAME.py
+
+Replace ARCHITECTURENAME with your variant name.
+
+The command to run from terminal is:
+python weinhardt2026/run.py \
+  --module studies.castro2025.spice_castro2025_ARCHITECTURENAME \
+  --data weinhardt2026/studies/castro2025/data/eckstein2024.csv \
+  --model weinhardt2026/studies/castro2025/params/spice_castro2025_ARCHITECTURENAME.pkl \
+  --test_sessions 2 \
+  --shooting_steps 100 \
+  --results
+
+Each run takes ~1-2 hours on GPU.
+
+The training log ends with evaluation tables:
+
+================================================================================
+Training results:
+    L(Train, RNN): 0.5334578
+    L(Val, RNN):   0.5595379
+    L(Val, SINDy): 0.5783522
+================================================================================
+
+Evaluation on test data:
+           Trial Lik.     (std)  ...           AIC            BIC
+SPICE-RNN    0.590570  0.157183  ...  167239.62500  326187.250000
+SPICE        0.581250  0.205601  ...  213958.28125  214487.171875
+
+The SPICE-RNN row shows the SPICE-RNN performance. 
+Here the RNN was regularized by "--sindy_weight 0.1" to push its dynamics into a polynomial amenable space.
+Without SINDy regularization i.e. "sindy_weight 0", SPICE-RNN performance beats already the benchmark with a result of ~0.605...
+This shows that the SPICE-RNN has generally enough capacity to perform well in this task.
+The SPICE row shows the SINDy equation performance — THIS is the primary metric.
+The gap between SPICE-RNN and SPICE reflects how much predictive performance
+is lost when the RNN dynamics are compressed into sparse polynomial equations.
+
+The challenge is to design SPICE architectures where the RNN dynamics are inherently
+polynomial-amenable, minimizing this gap. A good architecture makes it EASY
+for SINDy to approximate what the RNN learned.
+
+
+WHAT IS A SPICE MODEL
+=====================
+
+A SPICE model is a Python file containing two objects:
+
+1. CONFIG (SpiceConfig) - declares modules, their input signals, memory states,
+   and which states contribute to action logits.
+
+2. SpiceModel (BaseModel subclass) - implements the forward pass: how modules
+   are called, what precomputed signals they receive, and how states compose
+   into logits.
+
+The RNN submodules learn dynamics during training. SINDy then approximates
+those dynamics as sparse polynomial equations. The architecture determines
+WHAT the RNN can learn, not the equations themselves.
+
+
+ANATOMY OF A SPICE MODEL
+=========================
+
+```python
+import torch
+from spice import BaseModel, SpiceConfig
+
+CONFIG = SpiceConfig(
+    library_setup={
+        'module_name': ['signal_1', 'signal_2'],  # SINDy library inputs
+    },
+    memory_state={
+        'state_name': None,      # None = learnable initial value per participant
+        'buffer_name': 0,        # fixed initial value, typically for buffers
+    },
+    states_in_logit=['state_name'],  # which states feed into action logits
+)
+
+class SpiceModel(BaseModel):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.participant_embedding = self.setup_embedding(
+            num_embeddings=self.n_participants, dropout=self.dropout,
+        )
+        self.setup_module(key_module='module_name', input_size=2, dropout=self.dropout)
+
+    def forward(self, inputs, state=None):
+        spice_signals = self.init_forward_pass(inputs, state)
+        participant_embedding = self.participant_embedding(spice_signals.participant_ids)
+
+        for trial in spice_signals.trials:
+            # precompute signals, call modules, update buffers, compose logits
+            ...
+
+        spice_signals = self.post_forward_pass(spice_signals)
+        return spice_signals.logits, self.get_state()
+```
+
+
+KEY API METHODS
+===============
+
+setup_module(key_module, input_size, dropout, polynomial_degree, include_bias,
+             include_state, interaction_only)
+  - key_module: must match a key in CONFIG.library_setup
+  - input_size: number of tensor inputs passed to call_module (NOT SINDy library
+    size; embeddings are excluded from this count but auto-concatenated)
+  - polynomial_degree: override default SINDy degree for this module
+  - include_bias: include constant term '1' in SINDy library (default True)
+  - include_state: include module's own state in SINDy library (default True)
+
+call_module(key_module, key_state, action_mask, inputs, participant_index,
+            participant_embedding, activation_rnn)
+  - key_module: which module to execute
+  - key_state: which memory state to update with the module's output
+  - action_mask: binary tensor [W,E,B,I] -- 1=update this item, 0=keep previous.
+    If None, all items are updated.
+  - inputs: single tensor or tuple of tensors, each broadcastable to [W,E,B,I]
+  - The module computes a RESIDUAL update: state_new = state_old + f(inputs, state)
+
+
+TENSOR DIMENSIONS
+=================
+
+All tensors inside the trial loop use this shape convention:
+
+  [W, E, B, I]
+
+  W = within-trial timesteps (always 1 for this task)
+  E = ensemble members (number of independent RNN copies trained in parallel)
+  B = batch (sessions = participants x blocks)
+  I = items (internal value representations, equals n_actions for this task)
+
+Memory states have shape [W,E,B,I]. Inputs to call_module must be broadcastable
+to [W,E,B,I]. Participant IDs have shape [E,B].
+
+
+AVAILABLE DATA SIGNALS
+======================
+
+These are available from spice_signals inside the trial loop:
+
+  spice_signals.actions[trial]        # one-hot [W,E,B,I], current action
+  spice_signals.rewards[trial]        # [W,E,B,I], reward per action (NaN for unchosen in partial feedback)
+  spice_signals.participant_ids       # [E,B], integer participant IDs
+  spice_signals.experiment_ids        # [E,B], integer experiment IDs
+
+For this task: n_actions=4, rewards are normalized to [0,1], partial feedback
+(only the chosen action's reward is observed).
+
+
+PRECOMPUTED FEATURES
+====================
+
+Non-polynomial transforms must be precomputed in forward() and passed as
+inputs to modules. The SINDy library can only represent polynomial combinations
+of its declared inputs. Any transform that is not a polynomial (relu, abs,
+clipping, ratios, logs) MUST be computed in forward() before passing to a module.
+
+Proven useful precomputed features:
+
+1. reward_full = spice_signals.rewards.sum(dim=-1, keepdim=True).expand_as(...)
+   Scalar reward broadcast to all items. Used for environment-level reward
+   tracking (all items see the same global reward signal).
+
+2. mean_value_reward = self.state['value_reward'].mean(dim=-1, keepdim=True)
+                       .expand_as(self.state['value_reward']).detach()
+   Mean across items of current reward values. Enables relative value
+   comparisons and contraction-toward-mean dynamics.
+
+3. dvalue = (self.state['value_reward'] - self.state['value_reward[t-1]']).detach()
+   dvalue_pos = torch.relu(dvalue)
+   dvalue_neg = torch.relu(-dvalue)
+   Signed prediction error decomposed into positive and negative components.
+   Enables asymmetric responses to gains vs losses. .detach() prevents
+   gradient flow back through reward module.
+
+4. one_minus_reward = 1 - spice_signals.rewards[trial]
+   Complement of reward signal. Enables loss aversion: SINDy can discover
+   different coefficients for reward vs (1-reward), equivalent to
+   reward - gamma*(1-reward) in the benchmark.
+
+5. Spatial distance flags (for circular action layouts):
+   chosen_idx = spice_signals.actions[trial].argmax(dim=-1, keepdim=True)
+   items = torch.arange(self.n_actions, device=self.device).expand_as(actions)
+   raw_dist = torch.abs(items - chosen_idx)
+   circ_dist = torch.min(raw_dist, self.n_actions - raw_dist)
+   is_adjacent = (circ_dist == 1).float()
+   is_opposite = (circ_dist == (self.n_actions // 2)).float()
+   Binary flags indicating spatial relation of each item to the chosen action.
+
+Ideas for NEW precomputed features to try:
+
+6. Reward variance/uncertainty:
+   reward_var = ((self.state['value_reward'] - mean_value_reward) ** 2)
+                .mean(dim=-1, keepdim=True).expand_as(...).detach()
+
+7. Reward range (max - min across items):
+   reward_range = (self.state['value_reward'].max(dim=-1, keepdim=True)[0]
+                  - self.state['value_reward'].min(dim=-1, keepdim=True)[0])
+                  .expand_as(...).detach()
+
+8. Absolute prediction error (unsigned surprise):
+   abs_dvalue = torch.abs(dvalue)
+
+9. Chosen item's value relative to best alternative:
+   value_gap = (self.state['value_reward']
+               - self.state['value_reward'].max(dim=-1, keepdim=True)[0])
+               .detach()
+
+10. Exponential moving average of reward (alternative to env reward module):
+    Track as buffer state updated manually each trial.
+    Perhaps even with individually fitted window length
+
+
+MODULE DESIGN PATTERNS
+======================
+
+Pattern 1: Chosen / Not-Chosen Split
+-------------------------------------
+Two separate modules update the same state with different equations.
+action_mask selects which items each module affects.
+
+Setup (CONFIG):
+  library_setup={
+      'value_X_chosen': ['signal_1', 'signal_2'],
+      'value_X_not_chosen': ['signal_1'],
+  }
+  memory_state={'value_X': None, ...}           # None = learnable initial value
+  states_in_logit=['value_X', ...]
+
+Setup (__init__):
+  self.setup_module(key_module='value_X_chosen', input_size=2, dropout=self.dropout)
+  self.setup_module(key_module='value_X_not_chosen', input_size=1, dropout=self.dropout)
+
+Forward (trial loop):
+  self.call_module('value_X_chosen', key_state='value_X',
+                   action_mask=spice_signals.actions[trial], inputs=(...))
+  self.call_module('value_X_not_chosen', key_state='value_X',
+                   action_mask=1 - spice_signals.actions[trial], inputs=(...))
+
+Advantages: each module has a small SINDy library; chosen and unchosen items
+can follow completely different update rules.
+
+Disadvantages: more modules, more parameters.
+
+Pattern 2: Merged Module (no action mask)
+------------------------------------------
+One module updates all items simultaneously. Must include action[t] as an input
+so the module can distinguish chosen from unchosen items internally.
+
+Setup (CONFIG):
+  library_setup={
+      'value_X': ['action[t]', 'signal_1', 'signal_2'],
+  }
+  memory_state={'value_X': None, ...}
+  states_in_logit=['value_X', ...]
+
+Setup (__init__):
+  self.setup_module(key_module='value_X', input_size=3, dropout=self.dropout)
+
+Forward (trial loop):
+  self.call_module('value_X', key_state='value_X',
+                   action_mask=None,
+                   inputs=(spice_signals.actions[trial], signal_1, signal_2))
+
+Advantages: fewer modules, can discover interaction terms like action[t]*signal.
+Disadvantages: requires polynomial_degree >= 2 for the interaction to appear in
+SINDy; larger SINDy library with more inputs.
+
+Pattern 3: Stateless Module (per-trial, no memory state)
+---------------------------------------------------------
+For signals that should not accumulate across trials. Instead of maintaining a
+state slot, call the module with key_state=None and use the return value
+directly in logit composition. Because there is no state, include_state=False
+removes the (nonexistent) state from the SINDy library. include_bias=False is
+also typical since the module only needs to express a linear combination of its
+inputs, not a constant offset.
+
+Setup (CONFIG):
+  library_setup={
+      'value_X_chosen': ['signal_1'],
+      'value_X_not_chosen': ['signal_1', 'signal_2'],
+  }
+  # No memory state needed for value_X -- it's computed fresh each trial
+
+Setup (__init__):
+  self.setup_module(key_module='value_X_chosen', input_size=1,
+                    dropout=self.dropout, polynomial_degree=1,
+                    include_bias=False, include_state=False)
+  self.setup_module(key_module='value_X_not_chosen', input_size=2,
+                    dropout=self.dropout, polynomial_degree=1,
+                    include_bias=False, include_state=False)
+
+Forward (trial loop):
+  value_X_chosen = self.call_module('value_X_chosen', key_state=None,
+                   action_mask=spice_signals.actions[trial],
+                   inputs=(signal_1,))
+  value_X_not_chosen = self.call_module('value_X_not_chosen', key_state=None,
+                   action_mask=1 - spice_signals.actions[trial],
+                   inputs=(signal_1, signal_2))
+  # Use directly in logit composition (no state, no reset needed):
+  spice_signals.logits[trial] = ... + value_X_chosen + value_X_not_chosen
+
+Used for: spatial attention bias that should reflect only the current trial's
+action position, not accumulate over history.
+
+Pattern 4: Environment-Level Module (no action mask, shared across items)
+--------------------------------------------------------------------------
+Tracks a global signal (e.g., mean environment reward) applied equally to all
+items. The output is typically not used in logits directly but passed as an
+input to item-level modules.
+
+Setup (CONFIG):
+  library_setup={
+      'value_env': ['reward[t]'],
+  }
+  memory_state={'value_env': None, ...}
+  states_in_logit=[...]                         # typically NOT included here
+
+Setup (__init__):
+  self.setup_module(key_module='value_env', input_size=1, dropout=self.dropout)
+
+Forward (trial loop):
+  value_env = self.call_module('value_env', key_state='value_env',
+                                inputs=reward_full[trial])
+  # Pass value_env as input to other modules:
+  self.call_module('value_reward_chosen', ..., inputs=(value_env, reward, ...))
+
+Pattern 5: Buffer States
+-------------------------
+States that store values for use in the next trial but don't contribute to
+logits. Declared in memory_state with a fixed initial value (typically 0),
+and excluded from states_in_logit. No module writes to them via call_module;
+they are updated manually in the trial loop.
+
+Setup (CONFIG):
+  memory_state={
+      'value_reward': None,                     # logit state (learnable init)
+      'value_reward[t-1]': None,                # buffer (excluded from logits)
+      'action[t-1]': 0,                         # buffer with fixed init = 0
+  }
+  states_in_logit=['value_reward', ...]         # buffers NOT listed here
+
+Forward (trial loop, after all modules and logit computation):
+  self.state['value_reward[t-1]'] = self.state['value_reward']
+  self.state['action[t-1]'] = spice_signals.actions[trial]
+
+
+LOGIT COMPOSITION
+=================
+
+Logits are composed additively from memory states:
+
+  spice_signals.logits[trial] = (
+      self.state['value_reward']
+      + self.state['value_choice']
+      + self.state['value_exploration']
+  )
+
+Each state has shape [W,E,B,I] (items dimension). The logits are passed through
+softmax internally to produce choice probabilities.
+
+Only states listed in states_in_logit contribute. Keep the logit composition
+simple (additive). Don't pack multiple functions into one state.
+
+
+DESIGN PRINCIPLES (learned from experimentation)
+=================================================
+
+0. DESIGN FOR POLYNOMIAL AMENABILITY
+   The architecture must make it easy for SINDy polynomials to approximate the
+   RNN's learned dynamics. This is the central challenge. The RNN alone already
+   beats the benchmark (~0.605 test) — the problem is that SINDy can't compress
+   those dynamics into sparse equations without losing too much accuracy. Every
+   design decision should ask: "Will SINDy be able to represent this as a simple
+   polynomial?" Prefer simple, separable mechanisms over complex entangled ones.
+
+1. ONE COGNITIVE FUNCTION PER STATE
+   Each memory state should track one interpretable quantity. Don't overload
+   a state with multiple functions (e.g., don't merge choice persistence and
+   spatial bias into one state unless you explicitly want entangled equations).
+
+2. 1-3 CONTROL SIGNALS PER MODULE
+   More inputs = larger SINDy library = harder to prune = risk of overfitting.
+   Keep modules focused. If you need 4+ signals, consider whether some can be
+   precomputed into fewer composite signals.
+
+3. EXTERNALIZE GATING VIA ACTION MASKS
+   Use the chosen/not_chosen split with action_mask instead of relying on the
+   RNN to learn internal gating. The mask is free and exact.
+
+4. PRECOMPUTE NON-POLYNOMIAL TRANSFORMS
+   Anything that isn't a polynomial (relu, abs, max, min, log, ratios, clipping)
+   must be computed in forward() and passed as a regular input.
+
+5. KEEP INPUTS IN [-1, 1]
+   Small inputs keep the RNN dynamics in a regime amenable to polynomial
+   approximation. Normalize or clip signals if needed.
+
+6. (EXPERIMENTAL) USE .detach() ON DERIVED SIGNALS
+   When computing signals from states (mean_value_reward, dvalue), call .detach()
+   to prevent gradient flow back through earlier modules. This keeps modules
+   independent.
+
+7. MATCH POLYNOMIAL DEGREE TO MECHANISM
+   d=1 for additive effects (bias terms, linear updates).
+   d=2 for multiplicative interactions (e.g., action[t] * signal in merged modules).
+   Default d (from estimator) works for most modules.
+
+8. DON'T ADD REDUNDANT INPUTS
+   If a signal is constant (e.g., is_adjacent is always 0 for the chosen item),
+   it wastes capacity. Only pass inputs that carry information for the masked
+   items that module updates.
+
+9. BUFFER UPDATE ORDER MATTERS
+   Update buffers (value_reward[t-1], action[t-1]) AFTER all modules have used
+   them, just before computing logits.
+
+10. AVOID PARAMETERS OUTSIDE THE SINDY FRAMEWORK
+    Don't use nn.Parameter or setup_constant for per-participant biases. These
+    bypass SINDy regularization and overfit heavily. Use modules instead.
+
+
+WHAT THE BENCHMARK MODEL DOES (for reference)
+==============================================
+
+The benchmark (Castro2025Model) has 13 parameters per participant.
+Understanding it in detail helps identify what SPICE must capture.
+
+Parameters (13 per participant):
+  beta_r                  softplus, [0.01, 20]    Value scaling in softmax
+  lapse                   sigmoid,  [0.01, 0.99]  Uniform exploration probability
+  prior                   softplus, [0.01, 0.99]  Initial Q-value (all arms equal)
+  alpha_exploration_rate  sigmoid,  [0.01, 0.99]  Initial exploration rate
+  decay_rate              sigmoid,  [0.01, 0.99]  Multiplicative Q-value decay
+  attention_bias1         unconstrained           Bonus toward previous action
+  attention_bias2         unconstrained           Bonus toward opposite action
+  perseveration_strength  softplus, >=0           Bonus for repeating same action
+  switch_strength         unconstrained           Bonus for switching action
+  lambda_param            softplus, [0, 1]        Unused (kept for param recovery)
+  gamma                   softplus, >=0           Loss aversion weight
+  temperature             softplus, [1e-6, 100]   Softmax temperature
+  beta_p                  softplus, >=0           Cumulative-choice bonus scaling
+
+State variables (per trial):
+  q_values                (B, 4)    Action values, initialized to prior
+  old_choice              (B,)      Previous action index (-1 initially)
+  trial_since_last_switch (B,)      Consecutive trials on same action
+  exploration_rate        (B,)      Current exploration rate (decays slowly)
+  cumchoice               (B, 4)    Cumulative choice count per action
+
+Trial-by-trial computation (pseudocode):
+
+  1. Q-VALUE UPDATE (only for chosen action):
+     delta = reward - gamma * (1 - reward) - Q[chosen]
+     Q[chosen] += delta
+     This is equivalent to: Q[chosen] = reward - gamma * (1-reward)
+     since delta = reward - gamma*(1-reward) - Q[chosen] and Q += delta
+     collapses to direct assignment. The learning rate is implicitly 1.
+     Loss aversion: gamma > 0 means losses (1-reward) are weighted more,
+     making Q systematically lower than reward alone.
+
+  2. EXPLORATION SMOOTHING (all actions):
+     Q = (1 - er) * Q + er * mean(Q)
+     This pushes all Q-values toward their mean, reducing value spread.
+     er starts at alpha_exploration_rate and decays slowly:
+     er *= (1 - 1e-3)  each trial. After 1000 trials er has decayed
+     to ~37% of its initial value. Effect: early exploration (values
+     compressed toward mean) gradually gives way to exploitation.
+
+  3. Q-VALUE DECAY (all actions):
+     Q *= decay_rate
+     Multiplicative shrinkage toward 0. Combined with step 2, this
+     means Q-values are constantly pulled toward zero with a
+     participant-specific rate. This is hard for SINDy because it's
+     a multiplicative operation on the state (Q_new = c * Q_old),
+     which SINDy can represent as a linear term with coefficient
+     (decay_rate - 1), but the interaction with exploration smoothing
+     makes it harder.
+
+  4. BASE LOGITS:
+     logits = beta_r * Q / temperature + beta_p * log(1 + cumchoice)
+     Two components:
+     a) Scaled Q-values: beta_r/temperature is effectively a single
+        inverse temperature parameter.
+     b) Cumulative choice bonus: log(1 + count) grows sublinearly
+        with how often each action was chosen. This creates a
+        "rich get richer" perseveration that grows over the session.
+
+  5. LAPSE RATE:
+     probs = (1 - lapse) * softmax(logits) + lapse / 4
+     Mixes the softmax distribution with a uniform distribution.
+     This operates in probability space (post-softmax), which is
+     fundamentally different from additive logit terms. SPICE works
+     in logit space, so there is no exact equivalent.
+     Approximation: label smoothing in the cross-entropy loss.
+
+  6. CHOICE-CONDITIONED BONUSES (added to log-probabilities):
+     These are applied AFTER softmax+lapse, to log(probs):
+
+     a) Perseveration: if same action repeated,
+        add perseveration_strength to chosen action's log-prob
+     b) Switch bonus: if action changed,
+        add switch_strength to chosen action's log-prob
+     c) Attention bias 1: add attention_bias1 to old_choice's log-prob
+        (spatial: favors the previously chosen action)
+     d) Attention bias 2: add attention_bias2 to (choice+2)%4's log-prob
+        (spatial: favors the action opposite to current choice)
+     e) Tenure bonus: add log(1 + trial_since_last_switch) to chosen
+        action's log-prob
+
+     NOTE: bonuses (a), (b), (e) apply to the CURRENT choice only.
+     They are retrospective -- they adjust the log-probability of the
+     action that was actually taken. This is an unusual modeling choice
+     that effectively makes the model's prediction partially dependent
+     on the target it's trying to predict. SPICE models are purely
+     predictive (logits computed BEFORE seeing the action), so these
+     bonuses must be approximated differently.
+
+  7. STATE UPDATES:
+     old_choice = current choice
+     trial_since_last_switch = tsls+1 if same action, else 0
+     cumchoice[chosen] += 1
+
+SPICE equivalents for each benchmark mechanism:
+
+  Mechanism                SPICE equivalent                     Quality
+  ─────────────────────────────────────────────────────────────────────────
+  Q-value learning         reward_chosen module with reward[t]   exact
+  Loss aversion (gamma)    (1-reward[t]) as extra input          exact
+  Mean smoothing (er)      mean_value_reward input               close
+  er decay over time       not directly (fixed SINDy coeff.)     gap
+  Q-value decay            c*state in SINDy (include_state)      partial
+  beta_r * Q / temp        implicit in SINDy coefficient scale   exact
+  cumchoice bonus          choice module accumulates via state   close
+  Lapse rate               label smoothing approximation         partial
+  Perseveration/switch     action[t-1] input to choice modules   close
+  Attention bias 1         is_adjacent / is_opposite flags       exact
+  Attention bias 2         is_adjacent / is_opposite flags       exact
+  Tenure bonus             choice state accumulation             partial
+  Retrospective bonuses    not possible (SPICE is predictive)    gap
+
+
+WHAT HAS BEEN TRIED
+====================
+
+Architecture variants tested (all based on v5.2 baseline):
+
+  Base (v5.2): 7 modules (reward_env, reward_chosen, reward_not_chosen,
+  choice_chosen, choice_not_chosen, exploration_chosen, exploration_not_chosen),
+  3 logit states (value_reward, value_choice, value_exploration).
+  Test trial likelihood: ~0.585
+
+  + Spatial attention (bias_5): Added value_attention_not_chosen module with
+  is_adjacent/is_opposite flags, d=1, no bias, no state. Stateless reset.
+  8 modules, 4 logit states. Test: ~0.59
+
+  + Loss aversion: Added (1-reward[t]) as 4th input to reward_chosen.
+
+  + Merged choice: Collapsed choice_chosen + choice_not_chosen into single
+  value_choice module with action[t], action[t-1], is_adjacent, is_opposite.
+
+  + Exploration chosen only: Dropped exploration_not_chosen module.
+
+  - Raw per-participant constants (nn.Parameter): Severe overfitting. Avoid.
+
+Combinations of the above were tested systematically (v6a through v6j).
+
+IMPORTANT: All of the above STILL fell short of the benchmark (0.598).
+New architectures need genuinely new ideas, not recombinations of the above.
+
+
+STRATEGY FOR NEW ARCHITECTURES
+================================
+
+1. Start from a working baseline (e.g., spice_castro2025_bias_5.py or
+   spice_castro2025.py). Study the code, understand every line.
+
+2. Form a hypothesis about what cognitive mechanism is missing or poorly
+   captured, then design a targeted change.
+
+3. Prefer adding ONE new precomputed feature or module per variant. Don't
+   change multiple things at once -- you won't know what helped.
+
+4. After each run, check:
+   - Did SPICE test likelihood improve? (PRIMARY metric — must beat 0.598)
+   - Is the SPICE-RNN to SPICE gap small? (small gap = polynomial-amenable dynamics)
+   - Is there a large train-test gap? (overfitting -> simplify)
+
+5. If a module has no effect, remove it. Fewer modules = less SINDy approximation
+   error = smaller gap between RNN and SPICE performance.
+
+6. Think about what information the model needs that it doesn't currently have
+   access to. What would YOU use to predict the next action if you could see
+   the participant's history?
+
+
+REFERENCE: COMPLETE WORKING MODEL (best current architecture)
+=============================================================
+
+File: weinhardt2026/studies/castro2025/spice_castro2025_bias_5.py
+
+```python
+import torch
+
+from spice import BaseModel
+from spice import SpiceConfig
+
+
+CONFIG = SpiceConfig(
+    library_setup={
+        'value_reward_env': [
+            'reward[t]',
+        ],
+        'value_reward_chosen': [
+            'reward_env',
+            'reward[t]',
+            'value_reward_mean',
+        ],
+        'value_reward_not_chosen': [
+            'reward_env',
+            'value_reward_mean',
+        ],
+        'value_choice_chosen': [
+            'action[t-1]',
+        ],
+        'value_choice_not_chosen': [
+            'action[t-1]',
+        ],
+        'value_exploration_chosen': [
+            'dvalue_pos',
+            'dvalue_neg',
+        ],
+        'value_exploration_not_chosen': [
+            'dvalue_pos',
+            'dvalue_neg',
+        ],
+        'value_attention_not_chosen': [
+            'is_adjacent',
+            'is_opposite',
+        ],
+    },
+    memory_state={
+        'value_reward_env': None,
+        'value_reward': None,
+        'value_choice': None,
+        'value_exploration': None,
+        'value_attention': None,
+
+        # Buffers (excluded from logits)
+        'value_reward[t-1]': None,
+        'action[t-1]': 0,
+    },
+    states_in_logit=['value_reward', 'value_choice', 'value_exploration', 'value_attention'],
+)
+
+
+class SpiceModel(BaseModel):
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
+        self.participant_embedding = self.setup_embedding(
+            num_embeddings=self.n_participants, dropout=self.dropout,
+        )
+
+        self.setup_module(key_module='value_reward_env', input_size=1, dropout=self.dropout)
+        self.setup_module(key_module='value_reward_chosen', input_size=3, dropout=self.dropout)
+        self.setup_module(key_module='value_reward_not_chosen', input_size=2, dropout=self.dropout)
+        self.setup_module(key_module='value_choice_chosen', input_size=1, dropout=self.dropout)
+        self.setup_module(key_module='value_choice_not_chosen', input_size=1, dropout=self.dropout)
+        self.setup_module(key_module='value_exploration_chosen', input_size=2, dropout=self.dropout)
+        self.setup_module(key_module='value_exploration_not_chosen', input_size=2, dropout=self.dropout)
+        self.setup_module(key_module='value_attention_not_chosen', input_size=2, dropout=self.dropout,
+                          polynomial_degree=1, include_bias=False, include_state=False)
+
+    def forward(self, inputs, state=None):
+        spice_signals = self.init_forward_pass(inputs, state)
+
+        reward_full = spice_signals.rewards.sum(dim=-1, keepdim=True).expand_as(spice_signals.actions)
+        participant_embedding = self.participant_embedding(spice_signals.participant_ids)
+
+        item_indices = torch.arange(self.n_actions, device=self.device)
+
+        for trial in spice_signals.trials:
+
+            # --- ENV REWARD ---
+            value_reward_env = self.call_module(
+                key_module='value_reward_env',
+                key_state='value_reward_env',
+                inputs=reward_full[trial],
+                participant_index=spice_signals.participant_ids,
+                participant_embedding=participant_embedding,
+            )
+
+            # --- REWARD VALUE UPDATES ---
+            mean_value_reward = self.state['value_reward'].mean(
+                dim=-1, keepdim=True,
+            ).expand_as(self.state['value_reward']).detach()
+
+            self.call_module(
+                key_module='value_reward_chosen',
+                key_state='value_reward',
+                action_mask=spice_signals.actions[trial],
+                inputs=(
+                    value_reward_env,
+                    spice_signals.rewards[trial],
+                    mean_value_reward,
+                ),
+                participant_index=spice_signals.participant_ids,
+                participant_embedding=participant_embedding,
+            )
+
+            self.call_module(
+                key_module='value_reward_not_chosen',
+                key_state='value_reward',
+                action_mask=1 - spice_signals.actions[trial],
+                inputs=(
+                    value_reward_env,
+                    mean_value_reward,
+                ),
+                participant_index=spice_signals.participant_ids,
+                participant_embedding=participant_embedding,
+            )
+
+            # --- CHOICE VALUE UPDATES ---
+            self.call_module(
+                key_module='value_choice_chosen',
+                key_state='value_choice',
+                action_mask=spice_signals.actions[trial],
+                inputs=(self.state['action[t-1]'],),
+                participant_index=spice_signals.participant_ids,
+                participant_embedding=participant_embedding,
+            )
+
+            self.call_module(
+                key_module='value_choice_not_chosen',
+                key_state='value_choice',
+                action_mask=1 - spice_signals.actions[trial],
+                inputs=(self.state['action[t-1]'],),
+                participant_index=spice_signals.participant_ids,
+                participant_embedding=participant_embedding,
+            )
+
+            # --- EXPLORATION VALUE UPDATES ---
+            dvalue = (self.state['value_reward'] - self.state['value_reward[t-1]']).detach()
+            dvalue_pos = torch.relu(dvalue)
+            dvalue_neg = torch.relu(-dvalue)
+
+            self.call_module(
+                key_module='value_exploration_chosen',
+                key_state='value_exploration',
+                action_mask=spice_signals.actions[trial],
+                inputs=(dvalue_pos, dvalue_neg),
+                participant_index=spice_signals.participant_ids,
+                participant_embedding=participant_embedding,
+            )
+
+            self.call_module(
+                key_module='value_exploration_not_chosen',
+                key_state='value_exploration',
+                action_mask=1 - spice_signals.actions[trial],
+                inputs=(dvalue_pos, dvalue_neg),
+                participant_index=spice_signals.participant_ids,
+                participant_embedding=participant_embedding,
+            )
+
+            # --- ATTENTION VALUE UPDATES (binary distance flags) ---
+            chosen_idx = spice_signals.actions[trial].argmax(dim=-1, keepdim=True)
+            items = item_indices.expand_as(spice_signals.actions[trial])
+            raw_dist = torch.abs(items - chosen_idx)
+            circ_dist = torch.min(raw_dist, self.n_actions - raw_dist)
+
+            is_adjacent = (circ_dist == 1).float()
+            is_opposite = (circ_dist == (self.n_actions // 2)).float()
+
+            self.state['value_attention'] = self.state['value_attention'] * (1 - spice_signals.actions[trial])
+            self.call_module(
+                key_module='value_attention_not_chosen',
+                key_state='value_attention',
+                action_mask=1 - spice_signals.actions[trial],
+                inputs=(is_adjacent, is_opposite),
+                participant_index=spice_signals.participant_ids,
+                participant_embedding=participant_embedding,
+            )
+
+            # --- BUFFER UPDATES ---
+            self.state['value_reward[t-1]'] = self.state['value_reward']
+            self.state['action[t-1]'] = spice_signals.actions[trial]
+
+            # --- LOGITS ---
+            spice_signals.logits[trial] = (
+                self.state['value_reward']
+                + self.state['value_choice']
+                + self.state['value_exploration']
+                + self.state['value_attention']
+            )
+
+            self.state['value_attention'] = torch.zeros_like(self.state['value_attention'])
+
+        spice_signals = self.post_forward_pass(spice_signals)
+        return spice_signals.logits, self.get_state()
+```
+
+
+CONSISTENCY RULES (must hold for every architecture)
+=====================================================
+
+- Every key in CONFIG.library_setup must have a matching self.setup_module() call
+- input_size in setup_module must equal the number of tensor inputs passed to
+  call_module for that module (embeddings are NOT counted in input_size)
+- Every state referenced by key_state in call_module must exist in memory_state
+- Every entry in states_in_logit must exist in memory_state
+- Buffer states (not in states_in_logit) should have fixed initial values (0)
+- Logit states should have initial value None (learnable per participant)
+- Module names in library_setup are arbitrary strings but must be unique
+- The library_setup signal names are for SINDy documentation only -- the actual
+  data flow is determined by the inputs= argument in call_module
