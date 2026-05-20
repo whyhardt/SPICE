@@ -284,7 +284,7 @@ def _run_batch_training(
     ys: torch.Tensor,
     optimizer: torch.optim.Optimizer = None,
     sindy_weight: float = 0.,
-    sindy_weight_fit: float = 1.,
+    sindy_weight_fit: float = 0.1,
     sindy_alpha: float = 0.,
     n_steps: int = None,
     loss_fn: callable = cross_entropy_loss,
@@ -325,7 +325,7 @@ def _run_batch_training(
         if torch.is_grad_enabled():
             # Add SINDy losses (decoupled gradients: sindy_loss_reg → RNN, sindy_loss_fit → SINDy coefficients)
             if sindy_weight > 0 and model.sindy_loss_reg != 0:
-                loss_step = loss_step + sindy_weight * model.sindy_loss_reg + sindy_weight_fit * model.sindy_loss_fit
+                loss_step = loss_step + sindy_weight * model.sindy_loss_reg #+ sindy_weight_fit * model.sindy_loss_fit
 
             if sindy_weight > 0 and sindy_alpha > 0:
                 loss_step = loss_step + model.compute_weighted_coefficient_penalty(sindy_alpha=sindy_alpha, norm=1)
@@ -343,8 +343,8 @@ def _run_batch_training(
             optimizer.step()
 
         loss_batch += loss_step.item()
-        if sindy_weight > 0 and model.sindy_loss_reg != 0:
-            loss_batch -= model.sindy_loss_fit.item() * sindy_weight_fit
+        # if sindy_weight > 0 and model.sindy_loss_reg != 0:
+        #     loss_batch -= model.sindy_loss_fit.item() * sindy_weight_fit
         iterations += 1
 
     return model, optimizer, loss_batch/iterations

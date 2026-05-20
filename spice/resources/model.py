@@ -723,7 +723,8 @@ class BaseModel(nn.Module):
         )  # [W, E, B, I]
 
         # Decoupled losses: detach opposite side so gradients flow to one param set only
-        diff_reg = (h_next_rnn - h_next_sindy.detach()) ** 2  # gradients → RNN only
+        diff_reg = (h_next_rnn - h_next_sindy) ** 2  # full gradients
+        # diff_reg = (h_next_rnn - h_next_sindy.detach()) ** 2  # gradients → RNN only
         diff_fit = (h_next_rnn.detach() - h_next_sindy) ** 2  # gradients → SINDy coefficients only
 
         if action_mask is not None:
