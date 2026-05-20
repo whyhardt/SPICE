@@ -343,7 +343,7 @@ Setup (CONFIG):
       'value_env': ['reward[t]'],
   }
   memory_state={'value_env': None, ...}
-  states_in_logit=[...]                         # typically NOT included here
+  states_in_logit=[...]                         # WARNING: see note below
 
 Setup (__init__):
   self.setup_module(key_module='value_env', input_size=1, dropout=self.dropout)
@@ -353,6 +353,13 @@ Forward (trial loop):
                                 inputs=reward_full[trial])
   # Pass value_env as input to other modules:
   self.call_module('value_reward_chosen', ..., inputs=(value_env, reward, ...))
+
+WARNING: states_in_logit controls Stage 2 SINDy fitting (see critical note
+below). States NOT in states_in_logit will never get Stage 2 multi-step
+shooting refinement, so their SINDy coefficients will be poorly fit. If
+you use Pattern 4, either include the env state in states_in_logit (even
+though it doesn't appear in the logit sum), or avoid this pattern entirely
+and pass the raw signal directly to downstream modules.
 
 Pattern 5: Buffer States
 -------------------------

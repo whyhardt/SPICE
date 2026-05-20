@@ -222,7 +222,8 @@ class BaseModel(nn.Module):
                 )
 
         # Setup initial values of RNN
-        self.sindy_loss = torch.tensor(0, requires_grad=True, device=device, dtype=torch.float32)
+        self.sindy_loss_reg = torch.tensor(0, requires_grad=True, device=device, dtype=torch.float32)
+        self.sindy_loss_fit = torch.tensor(0, requires_grad=True, device=device, dtype=torch.float32)
         self.state = None
         self.init_state()  # initial memory state
         
@@ -243,7 +244,8 @@ class BaseModel(nn.Module):
         if self.batch_first:
             inputs = inputs.permute(2, 3, 0, 1, 4)  # (E, B, T, W, F) -> (T, W, E, B, F)
 
-        self.sindy_loss = torch.tensor(0, requires_grad=True, device=self.device, dtype=torch.float32)
+        self.sindy_loss_reg = torch.tensor(0, requires_grad=True, device=self.device, dtype=torch.float32)
+        self.sindy_loss_fit = torch.tensor(0, requires_grad=True, device=self.device, dtype=torch.float32)
 
         spice_signals = SpiceSignals()
 
@@ -343,7 +345,8 @@ class BaseModel(nn.Module):
     def to(self, device: torch.device):
         self.device = device
         super().to(device=device)
-        self.sindy_loss = self.sindy_loss.to(device)
+        self.sindy_loss_reg = self.sindy_loss_reg.to(device)
+        self.sindy_loss_fit = self.sindy_loss_fit.to(device)
         # Move masks, weights, and patience counters to the correct device
         for module_name in self.sindy_coefficients_presence:
             self.sindy_coefficients_presence[module_name] = self.sindy_coefficients_presence[module_name].to(device)
@@ -533,7 +536,7 @@ class BaseModel(nn.Module):
             ):
             action_mask_2d = action_mask[-1] if action_mask is not None and action_mask.dim() >= 4 else action_mask
             value_0 = self.get_state()[key_state][-1].unsqueeze(0) if key_state is not None else torch.zeros(W, E, B, I, device=self.device)
-            self.sindy_loss = self.sindy_loss + self.compute_sindy_loss_for_module(
+            sindy_loss_reg, sindy_loss_fit = self.compute_sindy_loss_for_module(
                     module_name=key_module,
                     h_current=torch.concat((value_0, next_value[:-1])),
                     h_next_rnn=next_value,
@@ -543,6 +546,8 @@ class BaseModel(nn.Module):
                     experiment_ids=experiment_index,
                     polynomial_degree=self.sindy_polynomial_degree,
                 )
+            self.sindy_loss_reg = self.sindy_loss_reg + sindy_loss_reg
+            self.sindy_loss_fit = self.sindy_loss_fit + sindy_loss_fit
 
         # clip next_value to a specific range
         next_value = torch.clip(input=next_value, min=-1e1, max=1e1)
@@ -679,10 +684,16 @@ class BaseModel(nn.Module):
         participant_ids: torch.Tensor,
         experiment_ids: torch.Tensor,
         polynomial_degree: int = 2,
-    ) -> torch.Tensor:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Compute differentiable SINDy reconstruction loss for one module.
         Direct comparison per ensemble member (no cross-ensemble averaging).
+
+        Returns two decoupled loss terms:
+        - sindy_loss_reg: gradients flow only to RNN parameters (h_next_sindy detached).
+          Scaled by sindy_weight in the training loop to control RNN regularization strength.
+        - sindy_loss_fit: gradients flow only to SINDy coefficients (h_next_rnn detached).
+          Independent of sindy_weight so coefficient fitting is decoupled from RNN regularization.
 
         Args:
             module_name: Name of the RNN module
@@ -695,11 +706,12 @@ class BaseModel(nn.Module):
             polynomial_degree: Polynomial degree
 
         Returns:
-            Scalar loss tensor
+            Tuple of (sindy_loss_reg, sindy_loss_fit) scalar tensors
         """
 
         if module_name not in self.sindy_coefficients:
-            return torch.tensor(0.0, device=self.device)
+            zero = torch.tensor(0.0, device=self.device)
+            return zero, zero
 
         h_next_sindy = self.forward_sindy(
             h_current=h_current,
@@ -710,22 +722,24 @@ class BaseModel(nn.Module):
             polynomial_degree=polynomial_degree,
         )  # [W, E, B, I]
 
-        # Direct comparison: [W, E, B, I]
-        diff = (h_next_rnn - h_next_sindy) ** 2
+        # Decoupled losses: detach opposite side so gradients flow to one param set only
+        diff_reg = (h_next_rnn - h_next_sindy.detach()) ** 2  # gradients → RNN only
+        diff_fit = (h_next_rnn.detach() - h_next_sindy) ** 2  # gradients → SINDy coefficients only
 
         if action_mask is not None:
-            masked_diff = torch.where(action_mask == 1, diff, 0)
+            masked_diff_reg = torch.where(action_mask == 1, diff_reg, 0)
+            masked_diff_fit = torch.where(action_mask == 1, diff_fit, 0)
             n_masked = action_mask.sum(dim=-1).clamp(min=1)  # (E, B)
         else:
-            masked_diff = diff
-            n_masked = diff.shape[-1]
+            masked_diff_reg = diff_reg
+            masked_diff_fit = diff_fit
+            n_masked = diff_reg.shape[-1]
 
-        sindy_loss = torch.mean(masked_diff.sum(dim=-1) / n_masked) / len(self.submodules_rnn)
+        n_modules = len(self.submodules_rnn)
+        sindy_loss_reg = torch.clamp(torch.mean(masked_diff_reg.sum(dim=-1) / n_masked) / n_modules, max=100.0)
+        sindy_loss_fit = torch.clamp(torch.mean(masked_diff_fit.sum(dim=-1) / n_masked) / n_modules, max=100.0)
 
-        # Clip loss to prevent explosion
-        sindy_loss = torch.clamp(sindy_loss, max=100.0)
-
-        return sindy_loss
+        return sindy_loss_reg, sindy_loss_fit
     
     def sindy_ridge_solve(self, key_module: str, participant_ids: torch.Tensor, experiment_ids: torch.Tensor,
                           h_next: torch.Tensor, h_current: torch.Tensor, controls: torch.Tensor,

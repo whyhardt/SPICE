@@ -322,9 +322,9 @@ def _run_batch_training(
         loss_step = loss_fn(ys_pred, ys_step, **loss_fn_kwargs)
 
         if torch.is_grad_enabled():
-            # Add SINDy regularization loss
-            if sindy_weight > 0 and model.sindy_loss != 0:
-                loss_step = loss_step + sindy_weight * model.sindy_loss
+            # Add SINDy losses (decoupled: sindy_weight controls RNN regularization only)
+            if sindy_weight > 0 and model.sindy_loss_reg != 0:
+                loss_step = loss_step + sindy_weight * model.sindy_loss_reg + model.sindy_loss_fit
 
             if sindy_weight > 0 and sindy_alpha > 0:
                 loss_step = loss_step + model.compute_weighted_coefficient_penalty(sindy_alpha=sindy_alpha, norm=1)
@@ -2050,13 +2050,12 @@ def fit_spice(
     if verbose:
         status_lines = "=" * _get_terminal_width()
         print("\n" + status_lines)
-        print("Training results:")
-        msg = "\t"
+        print("Losses:")
         batch_size = xs_train_5d.shape[1]
         
         if dataset_test is not None:
             with torch.no_grad():
-                _, _, loss_train, _, _ = _run_joint_training(
+                _, _, _, loss_train_rnn, loss_train_sindy = _run_joint_training(
                     model=model,
                     optimizer=optimizer,
                     xs_train=xs_train_5d,
@@ -2071,7 +2070,7 @@ def fit_spice(
                     loss_fn=loss_fn,
                     loss_fn_kwargs=loss_fn_kwargs,
 
-                    sindy_weight=sindy_weight,
+                    sindy_weight=1,
                     sindy_alpha=0,
                     sindy_threshold_pruning=None,
                     sindy_pruning_frequency=None,
@@ -2083,7 +2082,7 @@ def fit_spice(
                     path_save_checkpoints=None,
                 )
                 
-                _, _, loss_train, loss_test_rnn, loss_test_sindy = _run_joint_training(
+                _, _, _, loss_test_rnn, loss_test_sindy = _run_joint_training(
                     model=model,
                     optimizer=optimizer,
                     xs_train=xs_train_5d,
@@ -2098,7 +2097,7 @@ def fit_spice(
                     loss_fn=loss_fn,
                     loss_fn_kwargs=loss_fn_kwargs,
 
-                    sindy_weight=sindy_weight,
+                    sindy_weight=1,
                     sindy_alpha=0,
                     sindy_threshold_pruning=None,
                     sindy_pruning_frequency=None,
@@ -2110,14 +2109,11 @@ def fit_spice(
                     path_save_checkpoints=None,
                 )
 
-            msg += f"L(Train, RNN): {loss_train:.7f}"
-            msg += "\n\t"            
-            msg += f"L(Val, RNN):   {loss_test_rnn:.7f}"
-            if sindy_weight > 0:
-                msg += "\n\t"
-                msg += f"L(Val, SINDy): {loss_test_sindy:.7f}"
-
-        print(msg)
+            msg_result = "\t         Training    Validation"
+            msg_result += f"\n\tRNN      {loss_train_rnn:.5f}     {loss_test_rnn:.5f}"
+            msg_result += f"\n\tSINDy    {loss_train_sindy:.5f}     {loss_test_sindy:.5f}"
+            
+        print(msg_result)
         print(status_lines)
 
     return model.eval(use_sindy=True), optimizer

@@ -12,7 +12,7 @@ CONFIG = SpiceConfig(
         'value_reward_chosen': [
             'reward_env',
             'reward[t]',
-            '(1-reward[t])',
+            # '(1-reward[t])',
             'value_reward_mean',
         ],
         'value_reward_not_chosen': [
@@ -22,8 +22,8 @@ CONFIG = SpiceConfig(
         'value_choice': [
             'action[t]',
             'action[t-1]',
-            'is_adjacent',
-            'is_opposite',
+            # 'is_adjacent',
+            # 'is_opposite',
         ],
         'value_exploration_chosen': [
             'dvalue_pos',
@@ -33,18 +33,30 @@ CONFIG = SpiceConfig(
             'dvalue_pos',
             'dvalue_neg',
         ],
+        'bias_attention': [
+            'action[t-1]',
+            'is_adjacent',
+            'is_opposite',
+        ],
     },
     memory_state={
         'value_reward_env': None,
         'value_reward': None,
         'value_choice': None,
         'value_exploration': None,
-
+        'bias_attention': None,
+        
         # Buffers (excluded from logits)
         'value_reward[t-1]': None,
         'action[t-1]': 0,
     },
-    states_in_logit=['value_reward', 'value_choice', 'value_exploration'],
+    states_in_logit=[
+        'value_reward_env',
+        'value_reward', 
+        'value_choice', 
+        'value_exploration', 
+        'bias_attention',
+        ],
 )
 
 
@@ -66,11 +78,13 @@ class SpiceModel(BaseModel):
         )
 
         self.setup_module(key_module='value_reward_env', input_size=1, dropout=self.dropout)
-        self.setup_module(key_module='value_reward_chosen', input_size=4, dropout=self.dropout)
+        self.setup_module(key_module='value_reward_chosen', input_size=3, dropout=self.dropout)
         self.setup_module(key_module='value_reward_not_chosen', input_size=2, dropout=self.dropout)
-        self.setup_module(key_module='value_choice', input_size=4, dropout=self.dropout)
+        self.setup_module(key_module='value_choice', input_size=2, dropout=self.dropout)
         self.setup_module(key_module='value_exploration_chosen', input_size=2, dropout=self.dropout)
         self.setup_module(key_module='value_exploration_not_chosen', input_size=2, dropout=self.dropout)
+        self.setup_module(key_module='bias_attention', input_size=3, dropout=self.dropout)#, polynomial_degree=1, include_bias=False, include_state=False)
+        
 
     def forward(self, inputs, state=None):
         spice_signals = self.init_forward_pass(inputs, state)
@@ -105,7 +119,7 @@ class SpiceModel(BaseModel):
                 inputs=(
                     value_reward_env,
                     spice_signals.rewards[trial],
-                    one_minus_reward,
+                    # one_minus_reward,
                     mean_value_reward,
                 ),
                 participant_index=spice_signals.participant_ids,
@@ -139,8 +153,8 @@ class SpiceModel(BaseModel):
                 inputs=(
                     spice_signals.actions[trial],
                     self.state['action[t-1]'],
-                    is_adjacent,
-                    is_opposite,
+                    # is_adjacent,
+                    # is_opposite,
                 ),
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
@@ -175,6 +189,19 @@ class SpiceModel(BaseModel):
                 participant_embedding=participant_embedding,
             )
 
+            # --- STATE-LESS ATTENTION COMPUTATION ---
+            self.call_module(
+                key_module='bias_attention',
+                key_state='bias_attention',
+                inputs=(
+                    self.state['action[t-1]'],
+                    is_adjacent,
+                    is_opposite,
+                ),
+                participant_index=spice_signals.participant_ids,
+                participant_embedding=participant_embedding,
+            )
+
             # --- BUFFER UPDATES ---
             self.state['value_reward[t-1]'] = self.state['value_reward']
             self.state['action[t-1]'] = spice_signals.actions[trial]
@@ -184,6 +211,7 @@ class SpiceModel(BaseModel):
                 self.state['value_reward']
                 + self.state['value_choice']
                 + self.state['value_exploration']
+                + self.state['bias_attention']
             )
 
         spice_signals = self.post_forward_pass(spice_signals)
