@@ -108,7 +108,7 @@ class SpiceModel(BaseModel):
             # --- REWARD VALUE UPDATES ---
             mean_value_reward = self.state['value_reward'].mean(
                 dim=-1, keepdim=True,
-            ).expand_as(self.state['value_reward']).detach()
+            ).expand_as(self.state['value_reward'])#.detach()
 
             one_minus_reward = 1 - spice_signals.rewards[trial]
 
@@ -161,7 +161,7 @@ class SpiceModel(BaseModel):
             )
 
             # --- EXPLORATION VALUE UPDATES ---
-            dvalue = (self.state['value_reward'] - self.state['value_reward[t-1]']).detach()
+            dvalue = (self.state['value_reward'] - self.state['value_reward[t-1]'])#.detach()
             dvalue_pos = torch.relu(dvalue)
             dvalue_neg = torch.relu(-dvalue)
 
