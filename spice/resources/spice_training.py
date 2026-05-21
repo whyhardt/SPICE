@@ -544,6 +544,7 @@ def _ridge_solve_sindy(
     model: BaseModel,
     xs_train: torch.Tensor,
     ys_train: torch.Tensor,
+    alpha: float = None,
 ) -> bool:
     """
     Lightweight ridge solve: snap SINDy coefficients to their MSE-optimal
@@ -560,6 +561,10 @@ def _ridge_solve_sindy(
     prev_use_sindy = model.use_sindy
     prev_ridge_mode = model.ridge_mode
 
+    prev_sindy_alpha = model.sindy_alpha
+    if alpha is not None:
+        model.sindy_alpha = alpha
+    
     model.eval(use_sindy=False)
     input_state_buffer, _, xs_flat, _ = _vectorize_state(model, xs_train, ys_train)
 
@@ -580,6 +585,8 @@ def _ridge_solve_sindy(
         model.train(use_sindy=prev_use_sindy)
     else:
         model.eval(use_sindy=prev_use_sindy)
+        
+    model.sindy_alpha = prev_sindy_alpha
 
     return success
 
@@ -909,6 +916,14 @@ def _run_shooting_epoch_vectorized(
         for s in state_trajectories
     }  # each value: (W, E, B_eff, I)
 
+    state_noise_std = 0.01
+    if state_noise_std > 0:
+        current_state = {
+            s: v + state_noise_std * torch.randn_like(v)
+            for s, v in current_state.items()
+        }
+
+    
     model.zero_grad()
     total_loss = torch.tensor(0.0, device=model.device)
     n_valid_steps = 0
@@ -950,7 +965,7 @@ def _run_shooting_epoch_vectorized(
 
         if optimizer is not None:
             if sindy_alpha is not None and sindy_alpha > 0:
-                total_loss = total_loss + model.compute_weighted_coefficient_penalty(sindy_alpha=sindy_alpha, norm=1)
+                total_loss = total_loss + model.compute_weighted_coefficient_penalty(sindy_alpha=sindy_alpha)
 
             total_loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -1030,7 +1045,7 @@ def _run_sindy_training(
     state_trajectories, nan_mask = _vectorize_state_sequential(model, xs_train, ys_train, verbose=verbose)
 
     # LR constants (same schedule as Stage 1)
-    lr_base = 0.001
+    lr_base = 0.01
     lr_warmup = 0.01
     lr_post_pruning = 0.01
     pruning_boost_duration = max(1, int(0.1 * sindy_pruning_frequency)) if sindy_pruning_frequency else 0
@@ -1040,6 +1055,12 @@ def _run_sindy_training(
 
     # ── Stage 2.1: Sparsity discovery (K=1, with pruning) ────────────────
     if has_sparsity:
+        # Auto-compute pruning rate for Stage 2.1 budget
+        if sindy_pruning_terms is None and sindy_pruning_frequency is not None:
+            total_terms = sum(model.sindy_coefficients[m].shape[-1] for m in model.submodules_rnn)
+            n_pruning_events = max(1, (epochs - n_warmup_steps) // max(1, sindy_pruning_frequency))
+            sindy_pruning_terms = math.ceil(total_terms / n_pruning_events)
+
         if verbose:
             terminal_width = _get_terminal_width()
             print("\n" + "=" * terminal_width)
@@ -1053,6 +1074,14 @@ def _run_sindy_training(
             model.sindy_coefficients[module].data = (
                 torch.randn_like(model.sindy_coefficients[module].data) * 0.001
             )
+
+        # Ridge solve with L2 penalty to initialize coefficients
+        ridge_success_21 = _ridge_solve_sindy(model, xs_train, ys_train)
+        if verbose:
+            if ridge_success_21:
+                print("Ridge initialization succeeded (with L2 penalty).")
+            else:
+                print("Ridge initialization failed. Starting from random init.")
 
         sindy_parameters = [p for name, p in model.named_parameters() if 'sindy' in name]
         optimizer_21 = torch.optim.AdamW(sindy_parameters, lr=lr_warmup, weight_decay=0)
@@ -1209,7 +1238,7 @@ def _run_sindy_training(
     if sindy_ridge:
         ridge_success = _ridge_solve_sindy(model, xs_train, ys_train)
         if ridge_success:
-            sgd_epochs = min(200, epochs)
+            sgd_epochs = min(1000, epochs)
             # Evaluate ridge solution with K-step shooting loss
             model.fit_sindy = False
             model.train(use_sindy=True)
@@ -1225,7 +1254,7 @@ def _run_sindy_training(
                     window_starts=window_starts,
                     K=K,
                     batch_sessions=torch.arange(B),
-                    sindy_alpha=None,
+                    sindy_alpha=sindy_alpha,
                 )
             if verbose:
                 print(f"Ridge regression succeeded (K={K} loss: {ridge_loss:.7f}). Running SGD refinement...")
@@ -1246,6 +1275,9 @@ def _run_sindy_training(
     sgd_lr_init = lr_base if ridge_success else lr_warmup
     sindy_parameters = [p for name, p in model.named_parameters() if 'sindy' in name]
     optimizer_22 = torch.optim.AdamW(sindy_parameters, lr=sgd_lr_init, weight_decay=0)
+    scheduler_22 = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer_22, mode='min', factor=0.5, patience=10, min_lr=1e-5,
+    )
 
     model.fit_sindy = False
     model.train(use_sindy=True)
@@ -1287,8 +1319,11 @@ def _run_sindy_training(
                 if n_batches > 0:
                     loss_epoch /= n_batches
 
+                scheduler_22.step(loss_epoch)
+
                 pbar.set_postfix(
                     loss=f"{loss_epoch:.7f}",
+                    lr=f"{optimizer_22.param_groups[0]['lr']:.1e}",
                     n_params=f"{model.count_sindy_coefficients().mean():.2f}+/-{model.count_sindy_coefficients().std():.2f}",
                     K=K,
                 )
@@ -2015,12 +2050,7 @@ def fit_spice(
                 model.zero_grad(set_to_none=True)
                 torch.cuda.empty_cache()
                 batch_size = max(1, batch_size // 2)
-                
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # STAGE 2: Final SINDy Refit
-    # ══════════════════════════════════════════════════════════════════════════
-    if sindy_refit:
+        
         # Save Stage 1 model checkpoint before Stage 2 overwrites coefficients
         if path_save_checkpoints is not None:
             stage1_path = path_save_checkpoints.replace('.pkl', '_stage1.pkl')
@@ -2036,8 +2066,13 @@ def fit_spice(
                 'sindy_coefficients_presence': model.sindy_coefficients_presence,
             }, stage1_path)
             if verbose:
-                print(f"\nStage 1 model saved to: {stage1_path}")
+                print(f"\nStage 1 model saved to: {stage1_path}")        
+                
 
+    # ══════════════════════════════════════════════════════════════════════════
+    # STAGE 2: Final SINDy Refit
+    # ══════════════════════════════════════════════════════════════════════════
+    if sindy_refit:
         _run_sindy_training(
             model=model,
             xs_train=xs_train_5d.to(torch.device('cpu')),

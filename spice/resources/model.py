@@ -211,6 +211,7 @@ class BaseModel(nn.Module):
         self.sindy_pruning_patience_counters = {}  # Patience counters for thresholding
         self.sindy_specs = {}  # sindy-specific specifications for each module (e.g. include_bias, interaction_only, ...)
         self.sindy_alpha = sindy_alpha
+        self.sindy_norm = 1
         
         # Learnable initial state values: for memory_state entries set to None,
         # create per-participant learnable parameters instead of fixed scalars.
@@ -933,7 +934,7 @@ class BaseModel(nn.Module):
                 coefficients[index_state_not_in_model] -= 1
         return coefficients
 
-    def compute_weighted_coefficient_penalty(self, sindy_alpha: float, norm: int = 1) -> torch.Tensor:
+    def compute_weighted_coefficient_penalty(self, sindy_alpha: float) -> torch.Tensor:
         """
         Compute weighted coefficient penalty on SINDy coefficients based on polynomial degree.
         Each term is penalized according to its degree: d=0 -> 1*coeff^2, d=1 -> 2*coeff^2, d=2 -> 3*coeff^2, etc.
@@ -946,7 +947,7 @@ class BaseModel(nn.Module):
             Weighted coefficient penalty (scalar tensor)
         """
 
-        assert norm == 1 or norm == 2, "Only L1-norm or L2-norm are allowed."
+        assert self.sindy_norm == 1 or self.sindy_norm == 2, "Only L1-norm or L2-norm are allowed."
 
         penalty = torch.tensor(0.0, device=self.device)
         
@@ -970,7 +971,7 @@ class BaseModel(nn.Module):
             # Compute weighted coefficient penalty for each term
             # For each coefficient, penalty = (degree + 1) * |coeff|^norm
             # degree_weights already contains (degree + 1) for each term
-            if norm == 2:
+            if self.sindy_norm == 2:
                 # Sum across coefficient dimension, mean over participants and ensemble
                 weighted_penalty = ((coeffs ** 2) * degree_weights).sum(dim=-1).mean()
             else:
@@ -982,7 +983,7 @@ class BaseModel(nn.Module):
         # Penalize any learnable constants (e.g. switch biases) with unweighted L1/L2
         if hasattr(self, 'constants') and isinstance(self.constants, torch.nn.ParameterDict):
             for param in self.constants.values():
-                if norm == 2:
+                if self.sindy_norm == 2:
                     penalty += (param ** 2).mean()
                 else:
                     penalty += param.abs().mean()

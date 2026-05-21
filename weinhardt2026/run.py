@@ -16,6 +16,7 @@ from spice.resources.spice_training import _get_terminal_width
 
 from studies.synthetic.benchmarking_qlearning import QLearning
 from analysis.analysis_model_evaluation import analysis_model_evaluation
+from analysis.analysis_sindy_onestepahead import analysis_sindy_onestepahead
 
 
 if __name__=='__main__':
@@ -126,24 +127,24 @@ if __name__=='__main__':
     
     
     
-    # # --------------------------------------------------------------------------------------------
-    # # RAPID PROTOTYPING
-    # from spice import SpiceDataset
+    # --------------------------------------------------------------------------------------------
+    # RAPID PROTOTYPING
+    from spice import SpiceDataset
 
-    # # keep only 100 timesteps
-    # dataset_train = SpiceDataset(dataset_train.xs[:, :100], dataset_train.ys[:, :100])
+    # keep only 100 timesteps
+    dataset_train = SpiceDataset(dataset_train.xs[:, :100], dataset_train.ys[:, :100])
 
-    # # keep only 100 participants for rapid prototyping
-    # keep_participants = torch.arange(0, 50)
+    # keep only 100 participants for rapid prototyping
+    keep_participants = torch.arange(0, 50)
 
-    # def keep_subset(dataset, subset):
-    #     participant_ids = dataset.xs[:, 0, 0, -1]
-    #     mask = torch.isin(participant_ids, subset)
-    #     return SpiceDataset(dataset.xs[mask], dataset.ys[mask])
+    def keep_subset(dataset, subset):
+        participant_ids = dataset.xs[:, 0, 0, -1]
+        mask = torch.isin(participant_ids, subset)
+        return SpiceDataset(dataset.xs[mask], dataset.ys[mask])
 
-    # dataset_train = keep_subset(dataset_train, keep_participants)
-    # dataset_test = keep_subset(dataset_test, keep_participants)    
-    # # --------------------------------------------------------------------------------------------
+    dataset_train = keep_subset(dataset_train, keep_participants)
+    dataset_test = keep_subset(dataset_test, keep_participants)    
+    # --------------------------------------------------------------------------------------------
     
     
     
@@ -233,7 +234,21 @@ if __name__=='__main__':
             dataset=dataset_test,
             spice_model=estimator,
         ))
-        
+
+        print("\nSINDy one-step-ahead diagnostic (train):")
+        summary_train, trial_train = analysis_sindy_onestepahead(
+            dataset=dataset_train,
+            spice_model=estimator,
+        )
+        print(summary_train)
+
+        print("\nSINDy one-step-ahead diagnostic (test):")
+        summary_test, trial_test = analysis_sindy_onestepahead(
+            dataset=dataset_test,
+            spice_model=estimator,
+        )
+        print(summary_test)
+
         # agents={
         #     'rnn': estimator.rnn_agent,
         #     }
