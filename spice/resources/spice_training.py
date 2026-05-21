@@ -328,7 +328,7 @@ def _run_batch_training(
                 loss_step = loss_step + sindy_weight * model.sindy_loss_reg #+ sindy_weight_fit * model.sindy_loss_fit
 
             if sindy_weight > 0 and sindy_alpha > 0:
-                loss_step = loss_step + model.compute_weighted_coefficient_penalty(sindy_alpha=sindy_alpha, norm=1)
+                loss_step = loss_step + model.compute_weighted_coefficient_penalty(sindy_alpha=sindy_alpha)
                 
             # backpropagation
             optimizer.zero_grad()
@@ -872,6 +872,7 @@ def _run_shooting_epoch_vectorized(
     K: int,
     batch_sessions: torch.Tensor,
     sindy_alpha: float = None,
+    contraction_weight: float = 0.0,
 ) -> float:
     """Vectorized shooting epoch: fold all windows into the batch dimension.
 
@@ -892,6 +893,9 @@ def _run_shooting_epoch_vectorized(
         K: Shooting window size
         batch_sessions: Session indices for this batch (tensor)
         sindy_alpha: L1 penalty strength (None or 0 = disabled)
+        contraction_weight: Jacobian contraction penalty weight (0 = disabled).
+            Penalizes |d(h_next)/d(h_current)| > 1 per state to prevent
+            error amplification in autoregressive rollout.
 
     Returns:
         Mean loss over all valid steps
@@ -916,14 +920,19 @@ def _run_shooting_epoch_vectorized(
         for s in state_trajectories
     }  # each value: (W, E, B_eff, I)
 
-    state_noise_std = 0.01
+    state_noise_std = 0.1
     if state_noise_std > 0:
         current_state = {
             s: v + state_noise_std * torch.randn_like(v)
             for s, v in current_state.items()
         }
 
-    
+    # Enable gradients on logit states for Jacobian contraction penalty
+    if contraction_weight > 0:
+        for s_key in model.spice_config.states_in_logit:
+            if s_key in current_state:
+                current_state[s_key] = current_state[s_key].detach().requires_grad_(True)
+
     model.zero_grad()
     total_loss = torch.tensor(0.0, device=model.device)
     n_valid_steps = 0
@@ -944,6 +953,14 @@ def _run_shooting_epoch_vectorized(
         # Gather xs for this step: (E, B_eff, W, F) → insert T=1 → (E, B_eff, 1, W, F)
         xs_step = xs_train[:, session_idx, t_k_safe].unsqueeze(2).to(model.device)
 
+        # Save references to current state for Jacobian computation
+        if contraction_weight > 0:
+            prev_state_refs = {
+                s_key: current_state[s_key]
+                for s_key in model.spice_config.states_in_logit
+                if s_key in current_state
+            }
+
         # Forward pass through full model in SINDy mode
         _, next_state = model(xs_step, current_state)
 
@@ -955,6 +972,28 @@ def _run_shooting_epoch_vectorized(
             mask = valid.view(1, 1, -1, 1).expand_as(pred)
             diff = (pred - target) ** 2
             step_loss = step_loss + (diff * mask).sum() / mask.sum().clamp(min=1)
+
+        # Jacobian contraction penalty: penalize |d(h_next)/d(h_current)| > 1
+        if contraction_weight > 0 and prev_state_refs:
+            contraction_loss = torch.tensor(0.0, device=model.device)
+            n_jac = 0
+            for s_key, h_in in prev_state_refs.items():
+                h_out = next_state[s_key]
+                # Diagonal Jacobian: d(h_out[w,e,b,i])/d(h_in[w,e,b,i])
+                # Since items are independent, grad_outputs=ones gives per-element derivatives
+                jac = torch.autograd.grad(
+                    outputs=h_out,
+                    inputs=h_in,
+                    grad_outputs=torch.ones_like(h_out),
+                    create_graph=True,
+                    retain_graph=True,
+                )[0]  # same shape as h_in: (W, E, B_eff, I)
+                mask_j = valid.view(1, 1, -1, 1).expand_as(jac)
+                jac_penalty = torch.relu(jac.abs() - 1.0) ** 2
+                contraction_loss = contraction_loss + (jac_penalty * mask_j).sum() / mask_j.sum().clamp(min=1)
+                n_jac += 1
+            if n_jac > 0:
+                step_loss = step_loss + contraction_weight * contraction_loss / n_jac
 
         total_loss = total_loss + step_loss
         n_valid_steps += 1
@@ -996,6 +1035,7 @@ def _run_sindy_training(
     sindy_pruning_terms: int = None,
     shooting_steps: int = 20,
     sindy_ridge: bool = True,
+    sindy_contraction_weight: float = 0.0,
     verbose: bool = True,
     ):
 
@@ -1085,6 +1125,9 @@ def _run_sindy_training(
 
         sindy_parameters = [p for name, p in model.named_parameters() if 'sindy' in name]
         optimizer_21 = torch.optim.AdamW(sindy_parameters, lr=lr_warmup, weight_decay=0)
+        scheduler_21 = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer_21, mode='min', factor=0.5, patience=10, min_lr=1e-5,
+        )
 
         # Build K=1 shooting windows (= every trial is its own window)
         window_starts_k1 = list(range(T))
@@ -1136,8 +1179,11 @@ def _run_sindy_training(
                     if n_batches > 0:
                         loss_epoch /= n_batches
 
+                    scheduler_21.step(loss_epoch)
+
                     pbar.set_postfix(
                         loss=f"{loss_epoch:.7f}",
+                        lr=f"{optimizer_21.param_groups[0]['lr']:.1e}",
                         n_params=f"{model.count_sindy_coefficients().mean():.2f}+/-{model.count_sindy_coefficients().std():.2f}",
                     )
 
@@ -1312,6 +1358,7 @@ def _run_sindy_training(
                         K=K,
                         batch_sessions=batch_sessions,
                         sindy_alpha=None,  # unpenalized
+                        contraction_weight=sindy_contraction_weight,
                     )
                     loss_epoch += loss_e
                     n_batches += 1
@@ -1855,6 +1902,7 @@ def fit_spice(
     sindy_refit: bool = True,
     sindy_ridge: bool = True,
     sindy_shooting_steps: int = 20,
+    sindy_contraction_weight: float = 0.0,
 
     verbose: bool = True,
     keep_log: bool = False,
@@ -2089,6 +2137,7 @@ def fit_spice(
             sindy_pruning_terms=sindy_pruning_terms,
             shooting_steps=sindy_shooting_steps,
             sindy_ridge=sindy_ridge,
+            sindy_contraction_weight=sindy_contraction_weight,
             verbose=verbose,
         )
         
