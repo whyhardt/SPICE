@@ -210,6 +210,7 @@ class BaseModel(nn.Module):
         self.sindy_degree_weights = {}  # Weights for coefficient penalty based on polynomial degree
         self.sindy_pruning_patience_counters = {}  # Patience counters for thresholding
         self.sindy_specs = {}  # sindy-specific specifications for each module (e.g. include_bias, interaction_only, ...)
+        self.sindy_damping_raw = nn.ParameterDict()  # Per-module learnable damping: sigmoid(raw) -> gamma in (0,1)
         self.sindy_alpha = sindy_alpha
         self.sindy_norm = 1
         
@@ -622,6 +623,11 @@ class BaseModel(nn.Module):
         degree_weights = torch.tensor([max(1,d*2) for d in term_degrees], dtype=torch.float32, device=self.device)
         self.sindy_degree_weights[key_module] = degree_weights
 
+        # Initialize per-module damping: sigmoid(5.0) ≈ 0.993 (near no-damping)
+        self.sindy_damping_raw[key_module] = nn.Parameter(
+            torch.full((self.ensemble_size, self.n_participants, self.n_experiments), 5.0)
+        )
+
         # Initialize patience counters to zero
         self.sindy_pruning_patience_counters[key_module] = torch.zeros(
             self.ensemble_size, self.n_participants, self.n_experiments, n_library_terms,
@@ -670,9 +676,13 @@ class BaseModel(nn.Module):
 
         library = library_folded.reshape(W, E, B, I, -1)  # (W, E, B, I, terms)
 
+        # Learnable damping: gamma in (0, 1) per module/ensemble/participant/experiment
+        gamma = torch.sigmoid(self.sindy_damping_raw[key_module][E_idx, participant_ids, experiment_ids])  # (E, B)
+        gamma = gamma.unsqueeze(0).unsqueeze(-1)  # (1, E, B, 1) for broadcasting with (W, E, B, I)
+
         # Compute predictions: library (W, E, B, I, C) @ coeffs (E, B, C) -> (W, E, B, I)
-        h_next_sindy = h_current + torch.einsum('webic,ebc->webi', library, sindy_coeffs)
-        
+        h_next_sindy = gamma * h_current + torch.einsum('webic,ebc->webi', library, sindy_coeffs)
+
         return h_next_sindy
     
     def compute_sindy_loss_for_module(
