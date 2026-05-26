@@ -920,7 +920,7 @@ def _run_shooting_epoch_vectorized(
         for s in state_trajectories
     }  # each value: (W, E, B_eff, I)
 
-    state_noise_std = 0.1
+    state_noise_std = 0.
     if state_noise_std > 0:
         current_state = {
             s: v + state_noise_std * torch.randn_like(v)

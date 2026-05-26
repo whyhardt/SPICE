@@ -677,11 +677,12 @@ class BaseModel(nn.Module):
         library = library_folded.reshape(W, E, B, I, -1)  # (W, E, B, I, terms)
 
         # Learnable damping: gamma in (0, 1) per module/ensemble/participant/experiment
-        gamma = torch.sigmoid(self.sindy_damping_raw[key_module][E_idx, participant_ids, experiment_ids])  # (E, B)
-        gamma = gamma.unsqueeze(0).unsqueeze(-1)  # (1, E, B, 1) for broadcasting with (W, E, B, I)
+        # gamma = torch.sigmoid(self.sindy_damping_raw[key_module][E_idx, participant_ids, experiment_ids])  # (E, B)
+        # gamma = gamma.unsqueeze(0).unsqueeze(-1)  # (1, E, B, 1) for broadcasting with (W, E, B, I)
 
         # Compute predictions: library (W, E, B, I, C) @ coeffs (E, B, C) -> (W, E, B, I)
-        h_next_sindy = gamma * h_current + torch.einsum('webic,ebc->webi', library, sindy_coeffs)
+        # h_next_sindy = gamma * h_current + torch.einsum('webic,ebc->webi', library, sindy_coeffs)
+        h_next_sindy = h_current + torch.einsum('webic,ebc->webi', library, sindy_coeffs)
 
         return h_next_sindy
     
