@@ -591,109 +591,6 @@ def _ridge_solve_sindy(
     return success
 
 
-def _ridge_recalibrate_sindy(
-    model: BaseModel,
-    xs_train: torch.Tensor,
-    ys_train: torch.Tensor,
-    optimizer: torch.optim.Optimizer,
-    n_reconditioning_epochs: int = 3,
-):
-    """
-    Ridge-recalibrate SINDy coefficients after a pruning event, then
-    run a short SGD reconditioning phase to warm-start the optimizer.
-
-    Steps:
-        1. Reinitialize SINDy coefficients (respecting current presence mask)
-        2. Clear SINDy optimizer state (Adam momentum/variance)
-        3. Freeze RNN, collect state buffers, ridge-solve for optimal coefficients
-        4. One-shot gradient seeding + N epochs of pure SINDy SGD to
-           warm-start the optimizer for the new coefficient landscape
-
-    Args:
-        model: RNN model with updated sindy_coefficients_presence masks
-        xs_train: 5D training data (E, B, T, W, F)
-        ys_train: 5D training targets
-        optimizer: optimizer (SINDy param group state will be cleared)
-        n_reconditioning_epochs: number of pure SINDy SGD epochs after ridge
-            solve to warm-start the optimizer (default: 3)
-    """
-    # 1. Reinitialize SINDy coefficient values (respecting current presence mask)
-    for module in model.submodules_rnn:
-        presence = model.sindy_coefficients_presence[module]
-        model.sindy_coefficients[module].data = (
-            torch.randn_like(model.sindy_coefficients[module].data) * 0.001 * presence.float()
-        )
-
-    # 2. Clear SINDy optimizer state (Adam momentum/variance)
-    for param in optimizer.param_groups[0]['params']:
-        if param in optimizer.state:
-            optimizer.state[param] = {}
-
-    # 3. Freeze RNN, run forward to collect state buffers, then ridge solve
-    was_training = model.training
-    prev_use_sindy = model.use_sindy
-    prev_ridge_mode = model.ridge_mode
-    prev_fit_sindy = model.fit_sindy
-
-    model.eval(use_sindy=False)
-    input_state_buffer, target_state_buffer, xs_flat, _ = _vectorize_state(model, xs_train, ys_train)
-
-    # Ridge solve (temporarily enable ridge_mode to trigger lstsq path in call_module)
-    with torch.no_grad():
-        model.ridge_mode = True
-        model.train(use_sindy=True)
-        for rnn_module in model.submodules_rnn.values():
-            rnn_module.eval()
-        initial_state = {s: t.clone() for s, t in input_state_buffer.items()}
-        model(xs_flat.to(model.device), initial_state)
-
-    # 4. SGD reconditioning: warm-start optimizer at the new coefficient landscape
-    if n_reconditioning_epochs > 0:
-        model.ridge_mode = False
-        model.fit_sindy = False  # disable internal sindy_loss accumulation
-        model.train(use_sindy=True)
-        for rnn_module in model.submodules_rnn.values():
-            rnn_module.eval()
-
-        criterion = nn.MSELoss()
-        for epoch in range(n_reconditioning_epochs):
-            optimizer.zero_grad()
-            iter_prev_state = {s: t.clone() for s, t in input_state_buffer.items()}
-            _, pred_state = model(xs_flat.to(model.device), prev_state=iter_prev_state)
-            loss = sum(
-                criterion(pred_state[s], target_state_buffer[s])
-                for s in model.spice_config.states_in_logit
-            )
-            loss.backward()
-            # Null RNN param grads so the optimizer only updates SINDy coefficients
-            # (avoids toggling requires_grad which causes torch.compile recompilation)
-            for param in optimizer.param_groups[1]['params']:
-                param.grad = None
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-
-            # One-shot gradient seeding on first epoch: initialize Adam state
-            # from the current gradient so momentum/variance start reasonable
-            if epoch == 0:
-                for param in optimizer.param_groups[0]['params']:
-                    if param.grad is not None:
-                        optimizer.state[param] = {
-                            'step': torch.tensor(10.0),
-                            'exp_avg': param.grad.clone(),
-                            'exp_avg_sq': (param.grad ** 2).clone(),
-                        }
-
-            optimizer.step()
-
-    # 5. Restore model state
-    model.ridge_mode = prev_ridge_mode
-    model.fit_sindy = prev_fit_sindy
-
-    if was_training:
-        model.train(use_sindy=prev_use_sindy)
-    else:
-        model.eval(use_sindy=prev_use_sindy)
-
-
 def _vectorize_state_sequential(
     model: BaseModel,
     xs_train: torch.Tensor,
@@ -774,94 +671,6 @@ def _vectorize_state_sequential(
     return state_trajectories, nan_mask
 
 
-def _run_shooting_epoch(
-    model: BaseModel,
-    optimizer: torch.optim.Optimizer,
-    xs_train: torch.Tensor,
-    state_trajectories: dict,
-    nan_mask: torch.Tensor,
-    window_starts: list,
-    K: int,
-    batch_sessions: torch.Tensor,
-    sindy_alpha: float = None,
-) -> float:
-    """Run one epoch of multi-step shooting training.
-
-    Args:
-        model: Model in SINDy training mode (use_sindy=True, RNN frozen)
-        optimizer: SINDy coefficient optimizer
-        xs_train: 5D training data (E, B, T, W, F)
-        state_trajectories: Dict[state_key -> (W, E, B, T+1, I)]
-        nan_mask: (B, T) boolean validity mask
-        window_starts: List of trial indices where shooting windows begin
-        K: Shooting window size
-        batch_sessions: Session indices for this epoch (tensor)
-        sindy_alpha: L1 penalty strength (None or 0 = disabled)
-
-    Returns:
-        Mean loss over all windows
-    """
-    T = nan_mask.shape[1]
-    loss_epoch = 0.0
-    n_batches = 0
-    window_perm = torch.randperm(len(window_starts))
-
-    for w_idx in window_perm:
-        t_start = window_starts[w_idx.item()]
-        t_end = min(t_start + K, T)
-        K_actual = t_end - t_start
-
-        model.zero_grad()
-
-        current_state = {
-            s: state_trajectories[s][:, :, batch_sessions, t_start].to(model.device)
-            for s in state_trajectories
-        }
-
-        loss_window = torch.tensor(0.0, device=model.device)
-        n_valid_steps = 0
-
-        for k in range(K_actual):
-            t_idx = t_start + k
-            valid = nan_mask[batch_sessions, t_idx].to(model.device)
-            if not valid.any():
-                continue
-
-            xs_step = xs_train[:, batch_sessions, t_idx:t_idx + 1].to(model.device)
-            _, next_state = model(xs_step, current_state)
-
-            step_loss = torch.tensor(0.0, device=model.device)
-            for s_key in model.spice_config.states_in_logit:
-                target = state_trajectories[s_key][:, :, batch_sessions, t_idx + 1].to(model.device)
-                pred = next_state[s_key]
-                mask = valid.view(1, 1, -1, 1).expand_as(pred)
-                diff = (pred - target) ** 2
-                step_loss = step_loss + (diff * mask).sum() / mask.sum().clamp(min=1)
-
-            loss_window = loss_window + step_loss
-            n_valid_steps += 1
-            current_state = next_state
-
-        if n_valid_steps > 0:
-            loss_window = loss_window / n_valid_steps
-
-            if sindy_alpha is not None and sindy_alpha > 0:
-                loss_window = loss_window + model.compute_weighted_coefficient_penalty(sindy_alpha=sindy_alpha, norm=1)
-
-            loss_window.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            optimizer.step()
-
-            with torch.no_grad():
-                for module in model.get_modules():
-                    model.sindy_coefficients[module].data *= model.sindy_coefficients_presence[module]
-
-            loss_epoch += loss_window.item()
-            n_batches += 1
-
-    return loss_epoch / max(n_batches, 1)
-
-
 def _run_shooting_epoch_vectorized(
     model: BaseModel,
     optimizer: torch.optim.Optimizer,
@@ -920,12 +729,12 @@ def _run_shooting_epoch_vectorized(
         for s in state_trajectories
     }  # each value: (W, E, B_eff, I)
 
-    state_noise_std = 0.
-    if state_noise_std > 0:
-        current_state = {
-            s: v + state_noise_std * torch.randn_like(v)
-            for s, v in current_state.items()
-        }
+    state_noise_std = 0.05
+    # if state_noise_std > 0:
+    #     current_state = {
+    #         s: v + state_noise_std * torch.randn_like(v)
+    #         for s, v in current_state.items()
+    #     }
 
     # Enable gradients on logit states for Jacobian contraction penalty
     if contraction_weight > 0:
@@ -961,6 +770,12 @@ def _run_shooting_epoch_vectorized(
                 if s_key in current_state
             }
 
+        if state_noise_std > 0:
+            current_state = {
+                s: v + state_noise_std * torch.randn_like(v)
+                for s, v in current_state.items()
+            }
+        
         # Forward pass through full model in SINDy mode
         _, next_state = model(xs_step, current_state)
 
