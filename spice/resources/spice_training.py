@@ -1427,8 +1427,8 @@ def _run_joint_training(
                         #     _ridge_recalibrate_sindy(model, xs_train, ys_train, optimizer, n_reconditioning_epochs=sindy_reconditioning_epochs)
 
                         # LR boost after pruning event
-                        if pruned:
-                            lr_scheduler.notify_pruning(n_calls_to_train_model)
+                        # if pruned:
+                        #     lr_scheduler.notify_pruning(n_calls_to_train_model)
 
             # Check convergence
             dloss = last_loss - (loss_test_rnn if dataloader_test is not None else loss_train)
