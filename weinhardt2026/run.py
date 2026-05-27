@@ -49,7 +49,7 @@ if __name__=='__main__':
     parser.add_argument('--sindy_weight', type=float, default=0.1, help='Weight for SINDy regularization during RNN training')
     parser.add_argument('--sindy_alpha', type=float, default=0.0001, help='Degree-weighted coefficient penalty strength (ridge alpha)')
     parser.add_argument('--pruning_method', type=str, default='ratio', help='Pruning method for ensemble pruning. Defaults to "ci". Alternatively "ratio".')
-    parser.add_argument('--pruning_test', type=float, default=0.7, help='Ensemble pruning test threshold (recommended: ci -> 0.05; ratio -> 0.7)')
+    parser.add_argument('--pruning_test', type=float, default=0.5, help='Ensemble pruning test threshold (recommended: ci -> 0.05; ratio -> 0.7)')
     parser.add_argument('--pruning_threshold', type=float, default=0.01, help='Significance threshold value for SINDy coefficients')
     parser.add_argument('--pruning_frequency', type=int, default=100, help='Epochs between pruning events')
     parser.add_argument('--pruning_population', type=float, default=None, help='Percentage of participants which have to have a term active in order to keep it.')
@@ -226,16 +226,16 @@ if __name__=='__main__':
     
     if args.results:
         
-        print("\nEvaluation on train data:")
-        print(analysis_model_evaluation(
-            dataset=dataset_train,
-            spice_model=estimator,
-        ))
-        print("\nEvaluation on test data:")
-        print(analysis_model_evaluation(
-            dataset=dataset_test,
-            spice_model=estimator,
-        ))
+        # print("\nEvaluation on train data:")
+        # print(analysis_model_evaluation(
+        #     dataset=dataset_train,
+        #     spice_model=estimator,
+        # ))
+        # print("\nEvaluation on test data:")
+        # print(analysis_model_evaluation(
+        #     dataset=dataset_test,
+        #     spice_model=estimator,
+        # ))
 
         print("\nSINDy one-step-ahead diagnostic (train):")
         summary_train, trial_train = analysis_sindy_onestepahead(

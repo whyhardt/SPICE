@@ -50,7 +50,7 @@ def _print_training_status(
     time_elapsed: float,
     convergence_value: float,
     sindy_weight: float,
-    scheduler=None,
+    lr=None,
     warmup_steps: int = 0,
     converged: bool = False,
     finished: bool = False,
@@ -75,8 +75,8 @@ def _print_training_status(
         postfix_parts['L(Val,SINDy)'] = f'{loss_test_sindy:.7f}'
     if convergence_value is not None:
         postfix_parts['Conv'] = f'{convergence_value:.2e}'
-    if scheduler is not None:
-        postfix_parts['LR'] = f'{scheduler.get_last_lr()[-1]:.2e}'
+    if lr is not None:
+        postfix_parts['LR'] = f'{lr:.2e}'
 
     postfix_str = ', '.join(f'{k}={v}' for k, v in postfix_parts.items())
     bar_str = tqdm.format_meter(
@@ -1267,14 +1267,21 @@ def _run_joint_training(
         dataloader_test = DataLoader(dataset_test, batch_size=len(dataset_test))
 
     warmup_scaler_sindy_weight = _setup_warmup_scaler(n_warmup_steps=n_warmup_steps, exp_max=5)
-    lr_scheduler = SpiceLRScheduler(
-        optimizer=optimizer,
-        n_warmup_steps=n_warmup_steps,
-        warmup_factor=lr_warmup_factor,
-        boost_factor_rnn=lr_boost_factor_rnn,
-        boost_factor_sindy=lr_boost_factor_sindy,
-        boost_duration_frac=lr_boost_duration_frac,
-        sindy_pruning_frequency=sindy_pruning_frequency if sindy_pruning_frequency else 100,
+    # lr_scheduler = SpiceLRScheduler(
+    #     optimizer=optimizer,
+    #     n_warmup_steps=n_warmup_steps,
+    #     warmup_factor=lr_warmup_factor,
+    #     boost_factor_rnn=lr_boost_factor_rnn,
+    #     boost_factor_sindy=lr_boost_factor_sindy,
+    #     boost_duration_frac=lr_boost_duration_frac,
+    #     sindy_pruning_frequency=sindy_pruning_frequency if sindy_pruning_frequency else 100,
+    # )
+    lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, 
+        mode='min', 
+        factor=0.5, 
+        patience=50, 
+        min_lr=[optimizer.param_groups[0]['lr'], 1e-5], # SINDy stays at 0.01, RNN can reduce to 1e-5
     )
 
     # Handle zero epochs case
@@ -1301,7 +1308,7 @@ def _run_joint_training(
     while continue_training:
         try:  # try because of possibility for manual early stopping via keyboard interrupt
             # --- Learning rate adaptation ---
-            lr_scheduler.step(n_calls_to_train_model)
+            # lr_scheduler.step(n_calls_to_train_model)
 
             if epochs > 0:
                 loss_train = 0
@@ -1347,6 +1354,8 @@ def _run_joint_training(
 
                 n_calls_to_train_model += 1
                 loss_train /= iterations_per_epoch
+                
+                lr_scheduler.step(loss_train)
 
             # Validation (test data is 4D, unsqueeze to 5D for _run_batch_training)
             if dataloader_test is not None:
@@ -1446,7 +1455,7 @@ def _run_joint_training(
                     time_elapsed=time.time() - t_start_total,
                     convergence_value=convergence_value,
                     sindy_weight=sindy_weight,
-                    scheduler=lr_scheduler,
+                    lr=optimizer.param_groups[1]["lr"],
                     warmup_steps=n_warmup_steps,
                     converged=converged,
                     finished=not continue_training,
