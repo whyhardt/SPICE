@@ -51,13 +51,13 @@ def analysis_sindy_onestepahead(
     probs_rnn = torch.softmax(logits_rnn.mean(dim=0), dim=-1).cpu()
 
     # ------------------------------------------------------------------
-    # 2. SPICE SINDy autoregressive (member 0)
+    # 2. SPICE SINDy (autoregressive ensemble mean) ---old: (member 0)
     # ------------------------------------------------------------------
     print("  Computing SPICE (autoregressive) predictions...")
     model.eval(use_sindy=True)
     logits_sindy_ar, _ = model(xs)
     # (E, B, T, W, A) → member 0 → (B, T, W, A)
-    probs_sindy_ar = torch.softmax(logits_sindy_ar[0], dim=-1).cpu()
+    probs_sindy_ar = torch.softmax(logits_sindy_ar.mean(dim=0), dim=-1).cpu()
 
     # ------------------------------------------------------------------
     # 3. SPICE SINDy one-step-ahead (teacher-forced with RNN states)
@@ -85,7 +85,7 @@ def analysis_sindy_onestepahead(
         model.eval(use_sindy=True)
         logits_t, _ = model(xs_t, pre_state)
         # (E, B, 1, W, A) → member 0 → (B, 1, W, A)
-        logits_osa_parts.append(logits_t[0].cpu())
+        logits_osa_parts.append(logits_t.mean(dim=0).cpu())
 
     probs_sindy_osa = torch.softmax(
         torch.cat(logits_osa_parts, dim=1), dim=-1,

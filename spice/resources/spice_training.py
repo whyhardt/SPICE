@@ -1054,21 +1054,16 @@ def _run_sindy_training(
             print("Stage 2.2: SINDy coefficient estimation (one-step-ahead)")
         print("=" * terminal_width)
 
-    # Switch to full (non-bootstrapped) data with ensemble-averaged targets
+    # Switch to full (non-bootstrapped) data with per-member targets
     if xs_train_original is not None and E > 1:
         if verbose:
-            print("Re-computing state trajectories on full data (ensemble-averaged)...")
+            print("Re-computing state trajectories on full data (per-member targets)...")
         xs_full_5d = xs_train_original.unsqueeze(0).expand(E, -1, -1, -1, -1).contiguous()
         ys_full_5d = ys_train_original.unsqueeze(0).expand(E, -1, -1, -1, -1).contiguous()
         model.eval(use_sindy=False)
         state_trajectories, nan_mask = _vectorize_state_sequential(
             model, xs_full_5d, ys_full_5d, verbose=verbose
         )
-        # Average over ensemble → consensus targets
-        for s in state_trajectories:
-            state_trajectories[s] = state_trajectories[s].mean(
-                dim=1, keepdim=True
-            ).expand(-1, E, -1, -1, -1).contiguous()
         xs_train = xs_full_5d
         ys_train = ys_full_5d
         B = xs_train.shape[1]
