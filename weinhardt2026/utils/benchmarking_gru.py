@@ -64,21 +64,31 @@ class GRUModel(torch.nn.Module):
 
 
 def training(
-    model: GRUModel, 
-    optimizer: torch.optim.Optimizer, 
-    dataset_train: SpiceDataset, 
-    dataset_test: SpiceDataset = None, 
+    model: GRUModel,
+    optimizer: torch.optim.Optimizer,
+    dataset_train: SpiceDataset,
+    dataset_test: SpiceDataset = None,
     epochs = 3000,
     batch_size = None,
     loss_fn = cross_entropy_loss,
     loss_kwargs = {},
+    scheduler: bool = False,
     device: torch.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu'),
     ):
-    
+
     n_actions = dataset_train.ys.shape[-1]
     batch_size = min(dataset_train.xs.shape[0], batch_size) if batch_size is not None else dataset_train.xs.shape[0]
     dataloader = torch.utils.data.DataLoader(dataset_train, batch_size=batch_size, shuffle=True)
     model.to(device)
+
+    if scheduler:
+        lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            mode='min',
+            factor=0.5,
+            patience=50,
+            min_lr=1e-5,
+        )
     
     for epoch in range(epochs):
         model.train()
@@ -110,7 +120,8 @@ def training(
             loss.backward()
             optimizer.step()
         
-        msg = f"Epoch {epoch+1}/{epochs}: L(Train): {loss.item()}"
+        lr = optimizer.param_groups[0]['lr']
+        msg = f"Epoch {epoch+1}/{epochs}: L(Train): {loss.item():.4f}; LR: {lr:.1e}"
         
         # test data
         if dataset_test is not None:
@@ -126,8 +137,11 @@ def training(
             
             msg += f"; L(Test): {loss_test.item()}"
         
+        if scheduler:
+            lr_scheduler.step(loss_test if dataset_test is not None else loss)
+
         print(msg)
-        
+
     return model
 
 
