@@ -81,6 +81,7 @@ for d in tqdm(dirs):
                 'volatility': group['volatility'].iloc[0],
                 'stochasticity': group['stochasticity'].iloc[0],
                 'laserRotation': group['laserRotation'].iloc[0],
+                'shieldRotation': group['shieldRotation'].iloc[0],
                 
                 # TARGET VARIABLE (Stay/Move Space)
                 # 1 if they moved at all during this event window, 0 if they stayed completely still
@@ -123,7 +124,7 @@ if all_subject_events:
     # Reordering columns strictly to place the target variable and lookahead feature cleanly together
     columns_ordered = [
         'participant', 'experiment', 'block', 'event', 
-        'volatility', 'stochasticity', 'laserRotation', 'next_laserRotation', 'action',
+        'volatility', 'stochasticity', 'shieldRotation', 'laserRotation', 'next_laserRotation', 'action',
         'trial_duration_frames', 'shield_distance_initial', 'total_movement_degrees', 
         'frames_spent_moving', 'button_press_onsets', 'reaction_time_frames', 
         'laser_caught', 'hit_occurred', 'reward_change', 'total_reward'
