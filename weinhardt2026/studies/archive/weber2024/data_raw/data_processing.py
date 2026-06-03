@@ -101,7 +101,8 @@ for d in tqdm(dirs):
                 # PI Metric: reward assessment metrics
                 'laser_caught': group['is_covering_laser'].any(),
                 'hit_occurred': group['currentHit'].any(),
-                'reward_change': group['totalReward'].iloc[0] - prev_total_reward
+                'reward_change': group['totalReward'].iloc[0] - prev_total_reward,
+                'total_reward': group['totalReward'].iloc[0],
             })
             prev_total_reward = group['totalReward'].iloc[-1]
             
@@ -125,7 +126,7 @@ if all_subject_events:
         'volatility', 'stochasticity', 'laserRotation', 'next_laserRotation', 'action',
         'trial_duration_frames', 'shield_distance_initial', 'total_movement_degrees', 
         'frames_spent_moving', 'button_press_onsets', 'reaction_time_frames', 
-        'laser_caught', 'hit_occurred', 'reward_change'
+        'laser_caught', 'hit_occurred', 'reward_change', 'total_reward'
     ]
     df_master = df_master[columns_ordered]
     

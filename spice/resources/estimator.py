@@ -65,14 +65,14 @@ class SpiceEstimator(BaseEstimator):
         sindy_library_polynomial_degree: Optional[int] = 2,
         sindy_pruning_frequency: Optional[int] = 100,  # Epochs between pruning events
         sindy_threshold_pruning: Optional[float] = 0.01,  # Optional per-member threshold pruning (None to disable)
-        sindy_ensemble_pruning: Optional[float] = 0.7,  # Ensemble t-test significance level (primary pruning mechanism)
+        sindy_ensemble_pruning: Optional[float] = 0.5,  # Ensemble t-test significance level (primary pruning mechanism)
         sindy_ensemble_pruning_mode: Optional[str] = 'ratio',  # 'ci' for CI test, 'ratio' for ensemble ratio test
         sindy_population_pruning: Optional[float] = None,  # Optional cross-participant filter (0-1)
         sindy_pruning_terms: Optional[int] = None, # Number of pruned terms per pruning event (Defaults to None: Computed automatically such that n_coefficients can reach 0 within 'epochs-epochs_warmup' epochs)
         sindy_reconditioning_epochs: Optional[int] = 3,  # Pure SINDy SGD epochs after ridge recalibration
         sindy_refit: Optional[bool] = True,  # Enable Stage 2 Training (SINDy refit on frozen RNN parameters)
         sindy_ridge: Optional[bool] = True,  # Use ridge regression initialization in Stage 2.2 (falls back to SGD on failure)
-        sindy_shooting_steps: Optional[int] = 20,  # Multi-step shooting horizon for Stage 2 (1 = one-step-ahead)
+        sindy_shooting_steps: Optional[int] = 100,  # Multi-step shooting horizon for Stage 2 (1 = one-step-ahead)
         sindy_contraction_weight: Optional[float] = 0.0,  # Jacobian contraction penalty weight for Stage 2.2 (0 = disabled)
 
         verbose: Optional[bool] = False,
