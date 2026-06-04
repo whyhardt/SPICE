@@ -86,7 +86,7 @@ def training(
             optimizer,
             mode='min',
             factor=0.5,
-            patience=10,
+            patience=50,
             min_lr=1e-5,
         )
     
