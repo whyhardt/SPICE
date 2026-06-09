@@ -46,7 +46,7 @@ if __name__=='__main__':
     parser.add_argument('--sindy_skip_refit', action='store_false', help='Refits the SINDy coefficients in Stage 2 training (default: True)')
     parser.add_argument('--shooting_steps', type=int, default=100, help='Multi-step shooting horizon for Stage 2 SINDy refit (1=one-step-ahead, default: 100)')
     parser.add_argument('--contraction_weight', type=float, default=0.0, help='Jacobian contraction penalty weight for Stage 2.2 (0=disabled, try 0.1-1.0)')
-    parser.add_argument('--sindy_weight', type=float, default=0.1, help='Weight for SINDy regularization during RNN training')
+    parser.add_argument('--sindy_weight', type=float, default=0.01, help='Weight for SINDy regularization during RNN training')
     parser.add_argument('--sindy_alpha', type=float, default=0.0001, help='Degree-weighted coefficient penalty strength (ridge alpha)')
     parser.add_argument('--pruning_method', type=str, default='ratio', help='Pruning method for ensemble pruning. Defaults to "ci". Alternatively "ratio".')
     parser.add_argument('--pruning_test', type=float, default=0.5, help='Ensemble pruning test threshold (recommended: ci -> 0.05; ratio -> 0.7)')

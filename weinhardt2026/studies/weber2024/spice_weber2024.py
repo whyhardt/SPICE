@@ -67,10 +67,14 @@ class SpiceModel(BaseModel):
 
         # Mean tracking: shared module applied to sin and cos components separately
         self.setup_module(key_module='mean_update', input_size=1)
-        self.setup_module(key_module='update_distance', input_size=2)
+        self.setup_module(key_module='update_distance', input_size=2)  # NOTE: perhaps split mean-distance and last-laser-distance into two different modules/values
         self.setup_module(key_module='update_action', input_size=2)
         self.setup_module(key_module='update_bias', input_size=6, polynomial_degree=1)
 
+        # for ddm:
+        # add new module for e.g. drift with inputs value_{distance, action, bias}
+        
+        
     def forward(self, inputs, prev_state=None):
 
         spice_signals = self.init_forward_pass(inputs, prev_state)
