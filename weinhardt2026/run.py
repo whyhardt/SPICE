@@ -31,7 +31,7 @@ if __name__=='__main__':
     
     # RNN training parameters
     parser.add_argument('--epochs', type=int, default=1000, help='Number of training epochs')
-    parser.add_argument('--epochs_warmup', type=int, default=250, help='Number of training epochs for warmup (exp increase of sindy-weight; no pruning)')
+    parser.add_argument('--epochs_warmup', type=int, default=500, help='Number of training epochs for warmup (exp increase of sindy-weight; no pruning)')
     parser.add_argument('--lr', type=float, default=0.01, help='Learning rate')
     parser.add_argument('--rnn_l2_lambda', type=float, default=0., help='L2 Reg of the RNN parameters')
     parser.add_argument('--loss_kwargs', type=json.loads, default='{"label_smoothing": 0.01}', help='Learning rate')
@@ -56,11 +56,10 @@ if __name__=='__main__':
     parser.add_argument('--pruning_terms', type=int, default=None, help='Max terms pruned per event. None=auto-compute so coefficients can reach 0 within training.')
     
     # Data setup parameters
+    parser.add_argument('--data_kwargs', type=json.loads, default='{}', help='additional kwargs for csv_to_dataset for loading the data correctly.')
+    parser.add_argument('--n_items', type=int, default=None, help='Number of items in dataset; Default None: As many items as actions (automatically detected from dataset);')
     parser.add_argument('--train_ratio_time', type=float, default=None, help='Ratio of data used for training. Split along time dimension. Not combinable with test_sessions')
     parser.add_argument('--test_sessions', type=str, default=None, help='Comma-separated list of integeres which indicate test sessions. Not combinable with train_ratio_time')
-    parser.add_argument('--n_items', type=int, default=None, help='Number of items in dataset; Default None: As many items as actions (automatically detected from dataset);')
-    parser.add_argument('--additional_columns', type=str, default=None, help='Comma-separated list of columns which are added to the dataset.')
-    parser.add_argument('--timeshift_additional_columns', action='store_true', help='Shifts additional columns (defined by the kwarg "additional_columns") [t]->[t-1]; Necessary for e.g. predictor stimuli which are usually listed in the trial of which SPICE has to predict the action.')
 
     parser.add_argument('--results', action='store_true', help='Shows the results using a fitted SPICE model. The results are value-dynamics-over-time plot, a parameter distribution histogram, and the corresponding symbolic SPICE model.')
     
@@ -110,9 +109,7 @@ if __name__=='__main__':
     print(f"Dataset: {args.data}")
     dataset = csv_to_dataset(
         file=args.data,
-        df_participant_id='participant',
-        additional_inputs=args.additional_columns.split(',') if args.additional_columns else None,
-        timeshift_additional_inputs=args.timeshift_additional_columns,
+        **args.data_kwargs,
     )
     dataset.normalize_rewards()
     
