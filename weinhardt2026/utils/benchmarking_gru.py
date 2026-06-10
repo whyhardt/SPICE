@@ -1,4 +1,5 @@
 import torch
+from tqdm import tqdm
 
 from spice import SpiceDataset, csv_to_dataset, split_data_along_sessiondim, split_data_along_timedim, cross_entropy_loss
 
@@ -90,7 +91,8 @@ def training(
             min_lr=1e-5,
         )
     
-    for epoch in range(epochs):
+    pbar = tqdm(range(epochs))
+    for epoch in pbar:
         model.train()
         optimizer.zero_grad()
         
@@ -135,12 +137,12 @@ def training(
                 loss_test = loss_fn(logits_test, labels_test)
             model.train()
             
-            msg += f"; L(Test): {loss_test.item()}"
+            msg += f"; L(Test): {loss_test.item():.4f}"
         
         if scheduler:
             lr_scheduler.step(loss_test if dataset_test is not None else loss)
 
-        print(msg)
+        pbar.set_postfix_str(msg)
 
     return model
 

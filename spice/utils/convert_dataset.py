@@ -67,19 +67,23 @@ def _validate_additional_inputs(
 def _build_reward_matrix(
     group_df: pd.DataFrame,
     df_feedback: tuple[str, ...],
-    n_actions: int,
+    n_reward_cols: int,
     choice_vals: np.ndarray,
+    continuous_action: bool = False,
 ) -> np.ndarray:
-    """Build (n_rows, n_actions) reward matrix.
+    """Build (n_rows, n_reward_cols) reward matrix.
 
-    Partial feedback: reward placed in chosen action's column, others NaN.
-    Full/counterfactual: each column maps directly to its action index.
+    For discrete actions:
+        Partial feedback: reward placed in chosen action's column, others NaN.
+        Full/counterfactual: each column maps directly to its action index.
+    For continuous actions:
+        Each feedback column maps directly to its reward column (no action-index mapping).
     """
     n_rows = len(group_df)
-    rewards = np.full((n_rows, n_actions), np.nan)
+    rewards = np.full((n_rows, n_reward_cols), np.nan)
     for col_idx, col_name in enumerate(df_feedback):
         vals = group_df[col_name].values
-        if len(df_feedback) > 1:
+        if continuous_action or len(df_feedback) > 1:
             rewards[:, col_idx] = vals
         else:
             for i in range(n_rows):
@@ -109,6 +113,7 @@ def _build_arrays_standard(
     df, groupby_kw, df_choice, df_feedback, additional_inputs,
     n_actions, n_reward_cols, n_features, n_groups, max_trials,
     remove_failed_trials,
+    continuous_action=False, choice_columns=None,
 ):
     """Build 4D arrays for trial-level data (within_ts=1)."""
     xs = np.full((n_groups, max_trials, 1, n_features), np.nan)
@@ -116,16 +121,32 @@ def _build_arrays_standard(
 
     for idx, (_, group_df) in enumerate(df.groupby(groupby_kw)):
         if remove_failed_trials:
-            group_df = group_df[~np.isnan(group_df[df_choice])]
+            first_choice_col = choice_columns[0] if choice_columns else df_choice
+            group_df = group_df[~np.isnan(group_df[first_choice_col].astype(float))]
 
-        choice_vals = group_df[df_choice].values.astype(int)
-        choice_onehot = np.eye(n_actions)[choice_vals]
-        n = len(choice_vals) - 1  # exclude last for next-action shift
+        if continuous_action:
+            # Raw float values for each action dimension
+            choice_matrix = np.column_stack(
+                [group_df[col].values.astype(float) for col in choice_columns]
+            )  # (n_rows, n_actions)
+            n = len(choice_matrix) - 1
 
-        # Data (trials 0..n-1)
-        xs[idx, :n, 0, :n_actions] = choice_onehot[:-1]
+            xs[idx, :n, 0, :n_actions] = choice_matrix[:-1]
+            ys[idx, :n, 0] = choice_matrix[1:]
+        else:
+            choice_vals = group_df[df_choice].values.astype(int)
+            choice_onehot = np.eye(n_actions)[choice_vals]
+            n = len(choice_vals) - 1
+
+            xs[idx, :n, 0, :n_actions] = choice_onehot[:-1]
+            ys[idx, :n, 0] = choice_onehot[1:]
+
         if df_feedback is not None:
-            rewards = _build_reward_matrix(group_df, df_feedback, n_actions, choice_vals)
+            if continuous_action:
+                rewards = _build_reward_matrix(group_df, df_feedback, n_reward_cols, None, continuous_action=True)
+            else:
+                choice_vals_int = group_df[df_choice].values.astype(int)
+                rewards = _build_reward_matrix(group_df, df_feedback, n_actions, choice_vals_int)
             xs[idx, :n, 0, n_actions:n_actions + n_reward_cols] = rewards[:-1]
         for ai, name in enumerate(additional_inputs):
             xs[idx, :n, 0, n_actions + n_reward_cols + ai] = group_df[name].values[:-1]
@@ -137,8 +158,6 @@ def _build_arrays_standard(
         xs[idx, :, 0, -2] = group_df[groupby_kw[1]].values[0]      # experiment
         xs[idx, :, 0, -1] = group_df[groupby_kw[0]].values[0]      # participant
 
-        ys[idx, :n, 0] = choice_onehot[1:]
-
     return xs, ys
 
 
@@ -146,6 +165,7 @@ def _build_arrays_within_trial(
     df, groupby_kw, df_trial, df_choice, df_feedback, df_time,
     additional_inputs, n_actions, n_reward_cols, n_features,
     n_groups, remove_failed_trials,
+    continuous_action=False, choice_columns=None,
 ):
     """Build 4D arrays with within-trial timesteps grouped by df_trial."""
     groupby_trial_kw = groupby_kw + [df_trial]
@@ -155,10 +175,12 @@ def _build_arrays_within_trial(
     xs = np.full((n_groups, max_outer_ts, max_within_ts, n_features), np.nan)
     ys = np.full((n_groups, max_outer_ts, max_within_ts, n_actions), np.nan)
 
+    first_choice_col = choice_columns[0] if choice_columns else df_choice
+
     for idx, (_, group_df) in enumerate(df.groupby(groupby_kw)):
         trials = [t for _, t in group_df.groupby(df_trial, sort=True)]
         if remove_failed_trials:
-            trials = [t for t in trials if not np.isnan(t[df_choice].values.astype(float)).any()]
+            trials = [t for t in trials if not np.isnan(t[first_choice_col].values.astype(float)).any()]
 
         # Metadata (all slots)
         xs[idx, :, :, -5] = 0                                         # time_trial default
@@ -171,12 +193,30 @@ def _build_arrays_within_trial(
         for t_idx in range(len(trials) - 1):
             trial_df = trials[t_idx]
             n_w = len(trial_df)
-            choice_vals = trial_df[df_choice].values.astype(int)
 
-            xs[idx, t_idx, :n_w, :n_actions] = np.eye(n_actions)[choice_vals]
-            if df_feedback is not None:
-                xs[idx, t_idx, :n_w, n_actions:n_actions + n_reward_cols] = \
-                    _build_reward_matrix(trial_df, df_feedback, n_actions, choice_vals)
+            if continuous_action:
+                choice_matrix = np.column_stack(
+                    [trial_df[col].values.astype(float) for col in choice_columns]
+                )
+                xs[idx, t_idx, :n_w, :n_actions] = choice_matrix
+                if df_feedback is not None:
+                    xs[idx, t_idx, :n_w, n_actions:n_actions + n_reward_cols] = \
+                        _build_reward_matrix(trial_df, df_feedback, n_reward_cols, None, continuous_action=True)
+
+                # Target: next trial's choice values (replicated across within-trial timesteps)
+                next_vals = np.array([trials[t_idx + 1][col].values[0] for col in choice_columns])
+                ys[idx, t_idx, :n_w] = next_vals[None, :]
+            else:
+                choice_vals = trial_df[df_choice].values.astype(int)
+                xs[idx, t_idx, :n_w, :n_actions] = np.eye(n_actions)[choice_vals]
+                if df_feedback is not None:
+                    xs[idx, t_idx, :n_w, n_actions:n_actions + n_reward_cols] = \
+                        _build_reward_matrix(trial_df, df_feedback, n_actions, choice_vals)
+
+                # Target: next trial's choice (replicated across within-trial timesteps)
+                next_choice = int(trials[t_idx + 1][df_choice].values[0])
+                ys[idx, t_idx, :n_w] = np.eye(n_actions)[next_choice]
+
             for ai, name in enumerate(additional_inputs):
                 xs[idx, t_idx, :n_w, n_actions + n_reward_cols + ai] = trial_df[name].values
 
@@ -185,10 +225,6 @@ def _build_arrays_within_trial(
                 xs[idx, t_idx, :n_w, -5] = trial_df[df_time].values.astype(float)
             elif n_w > 1:
                 xs[idx, t_idx, :n_w, -5] = np.linspace(0, 1, n_w)
-
-            # Target: next trial's choice (replicated across within-trial timesteps)
-            next_choice = int(trials[t_idx + 1][df_choice].values[0])
-            ys[idx, t_idx, :n_w] = np.eye(n_actions)[next_choice]
 
     return xs, ys
 
@@ -248,11 +284,11 @@ def _resolve_additional_input_names(provided: Optional[List[str]], n_expected: i
 # ============================================================================
 
 def csv_to_dataset(
-    file: str,
+    file: Union[str, pd.DataFrame],
     df_participant_id: str = 'participant',
     df_block: str = 'block',
     df_experiment_id: str = 'experiment',
-    df_choice: str = 'choice',
+    df_choice: Union[str, Iterable[str]] = 'choice',
     df_feedback: Optional[Union[str, Iterable[str]]] = 'reward',
     df_time: Optional[str] = None,
     df_trial: Optional[str] = None,
@@ -261,19 +297,26 @@ def csv_to_dataset(
     sequence_length: int = None,
     timeshift_additional_inputs: Optional[Iterable[int]] = None,
     remove_failed_trials: bool = True,
+    continuous_action: bool = False,
 ) -> SpiceDataset:
     """Convert a behavioural CSV file to a SpiceDataset.
 
     Output shape is 4D: ``(sessions, outer_ts, within_ts, features)``.
-    Feature layout: ``[actions_onehot, rewards_per_action, *additional_inputs, time_trial,
+    Feature layout: ``[actions, rewards, *additional_inputs, time_trial,
     trial, block, experiment, participant]``
 
+    For discrete actions (default), actions are one-hot encoded and rewards are
+    mapped to action indices. For continuous actions (``continuous_action=True``),
+    raw float values are stored directly and rewards are independent columns.
+
     Args:
-        file: Path to CSV file.
+        file: Path to CSV file, or a ``pd.DataFrame`` directly.
         df_participant_id: Column name for participant IDs.
         df_block: Column name for block IDs.
         df_experiment_id: Column name for experiment IDs.
-        df_choice: Column name for choice values.
+        df_choice: Column name(s) for choice values. For continuous actions,
+            can be a list of column names for multivariate action spaces
+            (e.g. ``['magnitude', 'direction']``), giving ``n_actions = len(df_choice)``.
         df_feedback: Column name(s) for reward/feedback. ``None`` to omit.
         additional_inputs: Column name(s) for extra input signals.
         df_time: Column for within-trial time values. Requires ``df_trial``.
@@ -283,6 +326,9 @@ def csv_to_dataset(
         sequence_length: Optional BPTT truncation length.
         timeshift_additional_inputs: Per-input shift direction (``-1``, ``0``, or ``1``).
         remove_failed_trials: Drop trials containing NaN choices.
+        continuous_action: If True, treat actions as continuous float values
+            instead of discrete categories. Supports univariate (single column)
+            and multivariate (list of columns) action spaces.
 
     Returns:
         SpiceDataset with shape ``(sessions, outer_ts, within_ts, features)``.
@@ -295,7 +341,10 @@ def csv_to_dataset(
             f"!= additional_inputs length ({len(additional_inputs)})"
         )
 
-    df = pd.read_csv(file, index_col=None)
+    if isinstance(file, pd.DataFrame):
+        df = file.copy()
+    else:
+        df = pd.read_csv(file, index_col=None)
 
     # Normalize ID columns to 0-indexed integers
     _normalize_ids(df, df_participant_id)
@@ -307,12 +356,20 @@ def csv_to_dataset(
     n_groups = df.groupby(groupby_kw).ngroups
     max_trials = df.groupby(groupby_kw).size().max()
 
-    n_actions = _prepare_choices(df, df_choice)
+    # Normalize choice columns for continuous vs discrete
+    if continuous_action:
+        choice_columns = [df_choice] if isinstance(df_choice, str) else list(df_choice)
+        n_actions = len(choice_columns)
+    else:
+        assert isinstance(df_choice, str), "df_choice must be a single column name for discrete actions"
+        choice_columns = [df_choice]
+        n_actions = _prepare_choices(df, df_choice)
+
     additional_inputs, n_additional = _validate_additional_inputs(df, additional_inputs)
 
     if df_feedback is not None:
         df_feedback = (df_feedback,) if isinstance(df_feedback, str) else tuple(df_feedback)
-    n_reward_cols = n_actions if df_feedback is not None else 0
+    n_reward_cols = len(df_feedback) if (df_feedback is not None and continuous_action) else (n_actions if df_feedback is not None else 0)
     n_features = n_actions + n_reward_cols + n_additional + 5
 
     # Build 4D arrays: (sessions, outer_ts, within_ts, features)
@@ -321,18 +378,23 @@ def csv_to_dataset(
             df, groupby_kw, df_trial, df_choice, df_feedback, df_time,
             additional_inputs, n_actions, n_reward_cols, n_features,
             n_groups, remove_failed_trials,
+            continuous_action=continuous_action, choice_columns=choice_columns,
         )
     else:
         xs, ys = _build_arrays_standard(
             df, groupby_kw, df_choice, df_feedback, additional_inputs,
             n_actions, n_reward_cols, n_features, n_groups, max_trials,
             remove_failed_trials,
+            continuous_action=continuous_action, choice_columns=choice_columns,
         )
 
     if timeshift_additional_inputs is not None:
         xs, ys = _apply_timeshift(xs, ys, timeshift_additional_inputs, n_actions + n_reward_cols)
 
-    return SpiceDataset(xs, ys, device=device, sequence_length=sequence_length, n_reward_features=n_reward_cols)
+    return SpiceDataset(
+        xs, ys, device=device, sequence_length=sequence_length,
+        n_reward_features=n_reward_cols, continuous_action=continuous_action,
+    )
 
 
 def dataset_to_csv(
@@ -341,7 +403,7 @@ def dataset_to_csv(
     df_participant_id: str = 'participant',
     df_experiment_id: str = 'experiment',
     df_block: str = 'block',
-    df_choice: str = 'choice',
+    df_choice: Union[str, List[str]] = 'choice',
     df_feedback: str = 'reward',
     additional_inputs: Optional[List[str]] = None,
 ) -> None:
@@ -349,14 +411,27 @@ def dataset_to_csv(
 
     Reconstructs the tabular representation from the 4D tensor layout
     ``(sessions, outer_ts, within_ts, features)``. NaN-padded slots are skipped.
+
+    For continuous action datasets (``dataset.continuous_action == True``),
+    ``df_choice`` can be a list of column names for multivariate actions.
     """
     xs = dataset.xs.cpu().numpy() if hasattr(dataset.xs, 'cpu') else np.array(dataset.xs)
     ys = dataset.ys.cpu().numpy() if hasattr(dataset.ys, 'cpu') else np.array(dataset.ys)
     n_groups, _, n_within_ts, _ = xs.shape
+    is_continuous = getattr(dataset, 'continuous_action', False)
 
     n_actions, n_reward_cols, n_additional = _infer_feature_layout(dataset)
     additional_inputs = _resolve_additional_input_names(additional_inputs, n_additional)
-    is_full = _detect_full_feedback(xs, n_actions, n_reward_cols)
+    is_full = _detect_full_feedback(xs, n_actions, n_reward_cols) if not is_continuous else False
+
+    # Resolve choice column names for continuous multivariate actions
+    if is_continuous and n_actions > 1:
+        if isinstance(df_choice, str):
+            choice_names = [f'{df_choice}_{i}' for i in range(n_actions)]
+        else:
+            choice_names = list(df_choice)
+    else:
+        choice_names = None  # single column, handled below
 
     rows = []
     for g in range(n_groups):
@@ -371,19 +446,32 @@ def dataset_to_csv(
             for w in range(n_within_ts):
                 if np.isnan(xs[g, t, w, 0]):
                     continue
-                choice = int(np.argmax(xs[g, t, w, :n_actions]))
                 row = {
                     **session_meta,
                     'trial': int(xs[g, t, w, -4]),
                     'timestep': float(xs[g, t, w, -5]),
-                    df_choice: choice,
                 }
+
+                if is_continuous:
+                    if choice_names is not None:
+                        for a, name in enumerate(choice_names):
+                            row[name] = float(xs[g, t, w, a])
+                    else:
+                        col_name = df_choice if isinstance(df_choice, str) else df_choice[0]
+                        row[col_name] = float(xs[g, t, w, 0])
+                else:
+                    choice = int(np.argmax(xs[g, t, w, :n_actions]))
+                    col_name = df_choice if isinstance(df_choice, str) else df_choice[0]
+                    row[col_name] = choice
+
                 if n_reward_cols > 0:
                     rewards = xs[g, t, w, n_actions:n_actions + n_reward_cols]
-                    if is_full:
-                        for a in range(n_actions):
-                            row[f'{df_feedback}_{a}'] = rewards[a]
+                    if is_continuous or is_full:
+                        for r in range(n_reward_cols):
+                            col = f'{df_feedback}_{r}' if n_reward_cols > 1 else df_feedback
+                            row[col] = rewards[r]
                     else:
+                        choice = int(np.argmax(xs[g, t, w, :n_actions]))
                         row[df_feedback] = rewards[choice] if not np.isnan(rewards[choice]) else np.nan
                 if additional_inputs is not None:
                     for i, name in enumerate(additional_inputs):
@@ -448,7 +536,10 @@ def split_data_along_timedim(dataset: SpiceDataset, split_ratio: float, device: 
         train_xs[index_session, :, :, -5:] = xs[index_session, :train_xs.shape[1], :, -5:]
         test_xs[index_session, :, :, -5:] = xs[index_session, :test_xs.shape[1], :, -5:]
 
-    return SpiceDataset(train_xs, train_ys, device=device), SpiceDataset(test_xs, test_ys, device=device)
+    return (
+        SpiceDataset(train_xs, train_ys, device=device, n_reward_features=dataset.n_reward_features, continuous_action=dataset.continuous_action),
+        SpiceDataset(test_xs, test_ys, device=device, n_reward_features=dataset.n_reward_features, continuous_action=dataset.continuous_action),
+    )
 
 
 def split_data_along_sessiondim(dataset: SpiceDataset, test_sessions: list[int] = None, device: torch.device = torch.device('cpu')):
@@ -518,7 +609,10 @@ def split_data_along_sessiondim(dataset: SpiceDataset, test_sessions: list[int] 
         test_xs = torch.cat(test_xs_list, dim=0) if test_xs_list else torch.zeros((0, *xs.shape[1:]))
         test_ys = torch.cat(test_ys_list, dim=0) if test_ys_list else torch.zeros((0, *ys.shape[1:]))
 
-        return SpiceDataset(train_xs, train_ys, device=device, n_reward_features=dataset.n_reward_features), SpiceDataset(test_xs, test_ys, device=device, n_reward_features=dataset.n_reward_features)
+        return (
+            SpiceDataset(train_xs, train_ys, device=device, n_reward_features=dataset.n_reward_features, continuous_action=dataset.continuous_action),
+            SpiceDataset(test_xs, test_ys, device=device, n_reward_features=dataset.n_reward_features, continuous_action=dataset.continuous_action),
+        )
 
     else:
         return dataset, dataset

@@ -104,6 +104,8 @@ def get_dataset(path_data: str = None, test_sessions: tuple[int] = None):
             'button_press_onsets',
             'reaction_time_frames',
             'laser_caught',
+            'volatility',
+            'stochasticity',
             ],
     )
     
@@ -399,6 +401,7 @@ def generate_behavior(
                 'shield_distance_initial', 'shieldRotation', 'laserRotation',
                 'trial_duration_frames', 'total_movement_degrees', 'frames_spent_moving',
                 'button_press_onsets', 'reaction_time_frames', 'laser_caught',
+                'volatility', 'stochasticity',
             ],
         )
 

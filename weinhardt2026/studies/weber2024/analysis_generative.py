@@ -41,7 +41,7 @@ def _extract_data(dataset: SpiceDataset):
         valid: (n_sessions, n_trials) bool — True for non-padded trials.
     """
     n_actions = dataset.n_actions
-    ai_start = n_actions + dataset.n_reward_features
+    ai_start = n_actions
     xs = dataset.xs[:, :, 0, :]  # (sessions, trials, features)
 
     # Valid-trial mask

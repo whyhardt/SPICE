@@ -145,7 +145,7 @@ def analysis_generative_behavior(
 
     Args:
         datasets: Dict mapping display names to CSV file paths.
-            Example: {'Real Data': 'data/eckstein2024.csv', 'SPICE': 'results/gen_spice.csv'}
+            Example: {'Real Data': 'data/eckstein2024.csv', 'SPICE-SYM': 'results/gen_spice.csv'}
         output_dir: Directory for output plots.
         test_sessions: Session indices for train/test split (forwarded to get_dataset).
 

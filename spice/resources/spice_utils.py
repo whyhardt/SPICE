@@ -12,6 +12,7 @@ class SpiceDataset(torch.utils.data.Dataset):
         sequence_length: int = None,
         stride: int = 1,
         device=None,
+        continuous_action: bool = False,
         ):
         """Initializes the dataset for training the RNN.
 
@@ -60,6 +61,7 @@ class SpiceDataset(torch.utils.data.Dataset):
         self.n_timesteps = self.xs.shape[2]
         self.n_reward_features = n_reward_features if n_reward_features is not None else self.n_actions
         self.n_additional_inputs = self.xs.shape[-1] - (self.n_actions + self.n_reward_features + 5)
+        self.continuous_action = continuous_action
         
     def normalize_column(self, index, range=None):
         """Normalize feature column(s) in xs to a target range.

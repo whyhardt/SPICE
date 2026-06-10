@@ -1,11 +1,13 @@
 import os
 import sys
+from typing import Optional
 
 import argparse
 import importlib
 import numpy as np
 import pandas as pd
 import torch
+import matplotlib.pyplot as plt
 
 # standard methods and classes used for every model evaluation
 from spice import SpiceEstimator, csv_to_dataset, SpiceDataset
@@ -208,11 +210,264 @@ def analysis_model_evaluation(
 
     df = pd.DataFrame(
         data=scores,
-        index=['Benchmark', 'GRU', 'SPICE-RNN', 'SPICE'],
+        index=['Benchmark', 'GRU', 'SPICE-RNN', 'SPICE-SYM'],
         columns = ('Trial Lik.', '(std)', 'n_parameters', '(std)', 'NLL', 'AIC', 'BIC'),
         )
     
     if verbose:
         print(df)
-    
+
     return df
+
+
+# ============================================================================
+# MSE-based model evaluation (for continuous action spaces)
+# ============================================================================
+
+def _get_predictions(
+    model,
+    dataset: SpiceDataset,
+) -> torch.Tensor:
+    """Run forward pass and return predictions with shape (B, T, W, A).
+
+    Handles SpiceEstimator (with ensemble averaging), BaseModel, and vanilla nn.Module.
+    """
+    if isinstance(model, SpiceEstimator):
+        preds, _ = model(dataset.xs.to(model.device))
+        if isinstance(preds, tuple):
+            preds = preds[0]
+        # SpiceEstimator returns (E, B, T, W, A) — average over ensemble
+        if preds.dim() == 5:
+            preds = preds.mean(dim=0)
+        return preds.detach().cpu()
+    else:
+        preds, _ = model(dataset.xs)
+        # BaseModel forward returns (T, W, E, B, A) via post_forward_pass → (B, T, W, A)
+        # GRU / benchmark return (B, T, W, A) directly
+        if preds.dim() == 5:
+            preds = preds.mean(dim=0)  # ensemble average if present
+        return preds.detach().cpu()
+
+
+def _compute_mse_metrics(
+    predictions: torch.Tensor,
+    targets: torch.Tensor,
+    valid_mask: torch.Tensor,
+) -> dict:
+    """Compute MSE, RMSE, MAE, R² from masked predictions and targets.
+
+    Args:
+        predictions: (B, T, W, A) raw model outputs.
+        targets: (B, T, W, A) ground truth.
+        valid_mask: (B, T) bool mask for non-padded trials.
+
+    Returns:
+        Dict with aggregate and per-session metrics.
+    """
+    n_sessions = predictions.shape[0]
+    n_actions = predictions.shape[-1]
+
+    # Flatten valid predictions/targets
+    mask_expanded = valid_mask.unsqueeze(-1).unsqueeze(-1).expand_as(predictions)
+    pred_valid = predictions[mask_expanded].reshape(-1, n_actions)
+    tgt_valid = targets[mask_expanded].reshape(-1, n_actions)
+
+    # Aggregate metrics
+    errors = pred_valid - tgt_valid
+    mse = (errors ** 2).mean().item()
+    rmse = mse ** 0.5
+    mae = errors.abs().mean().item()
+
+    ss_res = (errors ** 2).sum().item()
+    ss_tot = ((tgt_valid - tgt_valid.mean(dim=0)) ** 2).sum().item()
+    r2 = 1 - ss_res / ss_tot if ss_tot > 0 else float('nan')
+
+    # Per-session metrics
+    mse_per_session = torch.full((n_sessions,), float('nan'))
+    for s in range(n_sessions):
+        s_mask = valid_mask[s]
+        if s_mask.sum() == 0:
+            continue
+        s_pred = predictions[s, s_mask, 0]  # (n_valid, A)
+        s_tgt = targets[s, s_mask, 0]
+        mse_per_session[s] = ((s_pred - s_tgt) ** 2).mean()
+
+    return {
+        'mse': mse,
+        'rmse': rmse,
+        'mae': mae,
+        'r2': r2,
+        'mse_per_session': mse_per_session,
+    }
+
+
+@torch.no_grad()
+def analysis_model_evaluation_mse(
+    dataset: SpiceDataset,
+    spice_model: SpiceEstimator = None,
+    benchmark_model: torch.nn.Module = None,
+    gru_model: torch.nn.Module = None,
+    output_dir: Optional[str] = None,
+    verbose: bool = True,
+) -> pd.DataFrame:
+    """Evaluate models on continuous prediction tasks using MSE-based metrics.
+
+    Counterpart to ``analysis_model_evaluation`` for continuous action spaces.
+    Computes MSE, RMSE, MAE, and R² for each model.
+
+    Args:
+        dataset: Test dataset (SpiceDataset with continuous targets).
+        spice_model: Fitted SpiceEstimator (optional).
+        benchmark_model: Fitted benchmark nn.Module (optional).
+        gru_model: Fitted GRU nn.Module (optional).
+        output_dir: If provided, save summary CSV and bar plot to this directory.
+        verbose: Print results to console.
+
+    Returns:
+        DataFrame with MSE, RMSE, MAE, R², n_parameters per model.
+    """
+    valid_mask = ~torch.isnan(dataset.xs[:, :, 0, 0])
+    targets = dataset.ys.cpu()
+
+    models = {}
+
+    # --- Benchmark model ---
+    if benchmark_model is not None:
+        print("Evaluating benchmark model...")
+        benchmark_model.eval()
+        preds = _get_predictions(benchmark_model, dataset)
+        n_params = (
+            benchmark_model.count_parameters()
+            if hasattr(benchmark_model, 'count_parameters')
+            else sum(p.numel() for p in benchmark_model.parameters())
+        )
+        models['Benchmark'] = (_compute_mse_metrics(preds, targets, valid_mask), n_params)
+
+    # --- GRU model ---
+    if gru_model is not None:
+        print("Evaluating GRU model...")
+        gru_model.eval()
+        preds = _get_predictions(gru_model, dataset)
+        n_params = sum(p.numel() for p in gru_model.parameters())
+        models['GRU'] = (_compute_mse_metrics(preds, targets, valid_mask), n_params)
+
+    # --- SPICE model (RNN mode + SINDy mode) ---
+    if spice_model is not None:
+        # SPICE-RNN
+        print("Evaluating SPICE-RNN model...")
+        spice_model.eval(use_sindy=False)
+        spice_model.model.init_state(batch_size=dataset.xs.shape[0])
+        preds_rnn, _ = spice_model(dataset.xs.to(spice_model.device))
+        if isinstance(preds_rnn, tuple):
+            preds_rnn = preds_rnn[0]
+        if preds_rnn.dim() == 5:
+            preds_rnn = preds_rnn.mean(dim=0)
+        preds_rnn = preds_rnn.detach().cpu()
+
+        spice_rnn_params = 0
+        for module in spice_model.get_modules():
+            spice_rnn_params += sum(p.numel() for p in spice_model.model.submodules_rnn[module].parameters())
+        spice_rnn_params += spice_model.model.embedding_size
+        models['SPICE-RNN'] = (_compute_mse_metrics(preds_rnn, targets, valid_mask), spice_rnn_params)
+
+        # SPICE (SINDy)
+        print("Evaluating SPICE model...")
+        spice_model.eval(use_sindy=True)
+        preds_sindy, _ = spice_model(dataset.xs.to(spice_model.device))
+        if isinstance(preds_sindy, tuple):
+            preds_sindy = preds_sindy[0]
+        if preds_sindy.dim() == 5:
+            preds_sindy = preds_sindy.mean(dim=0)
+        preds_sindy = preds_sindy.detach().cpu()
+
+        spice_params_tensor = spice_model.count_sindy_coefficients()
+        participant_ids = dataset.xs[:, 0, 0, -1].long().cpu()
+        experiment_ids = dataset.xs[:, 0, 0, -2].long().cpu()
+        unique_pairs = torch.unique(torch.stack([participant_ids, experiment_ids], dim=1), dim=0)
+        unique_param_counts = spice_params_tensor[unique_pairs[:, 0], unique_pairs[:, 1]]
+        spice_n_params = unique_param_counts.float().mean().item()
+        models['SPICE-SYM'] = (_compute_mse_metrics(preds_sindy, targets, valid_mask), spice_n_params)
+
+        spice_model.use_sindy(True)
+
+    # --- Build results table ---
+    rows = []
+    for name, (metrics, n_params) in models.items():
+        mse_std = metrics['mse_per_session'][~metrics['mse_per_session'].isnan()].std().item()
+        rows.append({
+            'Model': name,
+            'MSE': metrics['mse'],
+            'MSE (std)': mse_std,
+            'RMSE': metrics['rmse'],
+            'MAE': metrics['mae'],
+            'R²': metrics['r2'],
+            'n_parameters': n_params,
+        })
+
+    df = pd.DataFrame(rows).set_index('Model')
+
+    if verbose:
+        print("\nModel Evaluation (MSE):")
+        print(df.to_string(float_format='{:.6f}'.format))
+
+    # --- Plot ---
+    if output_dir is not None:
+        os.makedirs(output_dir, exist_ok=True)
+        df.to_csv(os.path.join(output_dir, 'model_evaluation_mse.csv'))
+        _plot_mse_comparison(models, output_dir)
+
+    return df
+
+
+def _plot_mse_comparison(models: dict, output_dir: str) -> None:
+    """Bar chart of MSE per model + per-session violin overlay."""
+    model_names = list(models.keys())
+    n_models = len(model_names)
+    colors = plt.cm.tab10.colors[:n_models]
+
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+
+    # --- Panel 1: Aggregate metrics bar chart ---
+    ax = axes[0]
+    metric_names = ['MSE', 'RMSE', 'MAE']
+    x = np.arange(len(metric_names))
+    width = 0.8 / n_models
+
+    for i, name in enumerate(model_names):
+        metrics = models[name][0]
+        vals = [metrics['mse'], metrics['rmse'], metrics['mae']]
+        ax.bar(x + i * width, vals, width, label=name, color=colors[i], alpha=0.8)
+
+    ax.set_xticks(x + width * (n_models - 1) / 2)
+    ax.set_xticklabels(metric_names)
+    ax.set_ylabel('Error')
+    ax.set_title('Aggregate Metrics')
+    ax.legend(fontsize=9)
+    ax.grid(axis='y', alpha=0.3)
+
+    # --- Panel 2: Per-session MSE violin ---
+    ax = axes[1]
+    data = []
+    for name in model_names:
+        mse_ps = models[name][0]['mse_per_session']
+        data.append(mse_ps[~mse_ps.isnan()].numpy())
+
+    parts = ax.violinplot(data, showmeans=True, showmedians=True, showextrema=False)
+    for j, body in enumerate(parts['bodies']):
+        body.set_facecolor(colors[j])
+        body.set_alpha(0.7)
+    parts['cmeans'].set_color('black')
+    parts['cmedians'].set_color('gray')
+    parts['cmedians'].set_linestyle('--')
+
+    ax.set_xticks(range(1, n_models + 1))
+    ax.set_xticklabels(model_names, fontsize=9)
+    ax.set_ylabel('MSE per session')
+    ax.set_title('Per-Session MSE Distribution')
+    ax.grid(axis='y', alpha=0.3)
+
+    fig.tight_layout()
+    fig.savefig(os.path.join(output_dir, 'model_evaluation_mse.pdf'), bbox_inches='tight', dpi=150)
+    fig.savefig(os.path.join(output_dir, 'model_evaluation_mse.png'), bbox_inches='tight', dpi=150)
+    plt.show()
+    plt.close(fig)

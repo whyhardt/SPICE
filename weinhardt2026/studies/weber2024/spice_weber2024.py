@@ -53,17 +53,8 @@ class SpiceModel(BaseModel):
 
         self.dropout = 0.1
 
-        self.participant_embedding = self.setup_embedding(
-            num_embeddings=self.n_participants,
-            embedding_size=self.embedding_size,
-            dropout=self.dropout,
-        )
-
-        self.experiment_embedding = self.setup_embedding(
-            num_embeddings=self.n_experiments,
-            embedding_size=2,
-            dropout=self.dropout,
-        )
+        self.experiment_embedding = self.setup_embedding(num_embeddings=self.n_experiments, embedding_size=2, dropout=self.dropout)
+        self.participant_embedding = self.setup_embedding(num_embeddings=self.n_participants, embedding_size=self.embedding_size)#, dropout=self.dropout, n_additional_inputs=2)
 
         # Mean tracking: shared module applied to sin and cos components separately
         self.setup_module(key_module='mean_update', input_size=1)
@@ -96,7 +87,7 @@ class SpiceModel(BaseModel):
         button_press_onsets = spice_signals.additional_inputs[..., 6].unsqueeze(-1).expand_as(spice_signals.actions)
         reaction_time_frames = spice_signals.additional_inputs[..., 7].unsqueeze(-1).expand_as(spice_signals.actions)
         laser_caught = spice_signals.additional_inputs[..., 8].unsqueeze(-1).expand_as(spice_signals.actions)
-
+        
         # Precompute sin/cos of laser and shield positions (degrees → radians → trig)
         laser_rad = laser_rotation_raw * (math.pi / 180)
         sin_laser = torch.sin(laser_rad)
@@ -115,8 +106,11 @@ class SpiceModel(BaseModel):
             self.state['mean_sin'] = self.state['mean_sin'] + sin_laser[0]
             self.state['mean_cos'] = self.state['mean_cos'] + cos_laser[0]
 
-        participant_embedding = self.participant_embedding(spice_signals.participant_ids)
-        experiment_embedding = self.experiment_embedding(spice_signals.experiment_ids)
+        # additional inputs for participant embedding
+        volatility = spice_signals.additional_inputs[..., 9].unsqueeze(-1)
+        stochasticity = spice_signals.additional_inputs[..., 10].unsqueeze(-1)
+        participant_embedding = self.participant_embedding(spice_signals.participant_ids, (volatility, stochasticity))
+        experiment_embedding = self.experiment_embedding(spice_signals.experiment_ids) if hasattr(self, 'experiment_embedding') else None
 
         for trial in spice_signals.trials:
 
@@ -128,6 +122,8 @@ class SpiceModel(BaseModel):
                 inputs=(sin_laser[trial],),
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
+                experiment_index=spice_signals.experiment_ids if experiment_embedding is not None else None,
+                experiment_embedding=experiment_embedding
             )
 
             self.call_module(
@@ -137,6 +133,8 @@ class SpiceModel(BaseModel):
                 inputs=(cos_laser[trial],),
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
+                experiment_index=spice_signals.experiment_ids if experiment_embedding is not None else None,
+                experiment_embedding=experiment_embedding
             )
 
             # --- Distance: sin(shield - mean) via trig identity ---
@@ -163,6 +161,8 @@ class SpiceModel(BaseModel):
                     ),
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
+                experiment_index=spice_signals.experiment_ids if experiment_embedding is not None else None,
+                experiment_embedding=experiment_embedding
             )
             
             self.call_module(
@@ -175,6 +175,8 @@ class SpiceModel(BaseModel):
                     ),
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
+                experiment_index=spice_signals.experiment_ids if experiment_embedding is not None else None,
+                experiment_embedding=experiment_embedding
             )
             
             self.call_module(
@@ -191,6 +193,8 @@ class SpiceModel(BaseModel):
                     ),
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
+                experiment_index=spice_signals.experiment_ids if experiment_embedding is not None else None,
+                experiment_embedding=experiment_embedding
             )
 
             # --- Logit computation ---

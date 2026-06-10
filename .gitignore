@@ -59,3 +59,5 @@ weinhardt2026/data/weber2024_raw
 *.jpg
 *.pdf
 *.zip
+*.tsv
+*.json

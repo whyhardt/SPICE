@@ -39,13 +39,18 @@ class EnsembleEmbedding(nn.Module):
 
     Parameters have shape (ensemble_size, num_embeddings, embedding_dim).
     """
-    def __init__(self, ensemble_size, num_embeddings, embedding_dim, dropout=0.):
+    def __init__(self, ensemble_size, num_embeddings, embedding_dim, n_additional_inputs: int = 0, dropout: float = 0.):
         super().__init__()
         self.weight = nn.Parameter(torch.empty(ensemble_size, num_embeddings, embedding_dim))
+        if n_additional_inputs > 0:
+            self.lin_ai = EnsembleLinear(ensemble_size, n_additional_inputs, embedding_dim)
+            self.embedding_fusion = EnsembleLinear(ensemble_size, embedding_dim*2, embedding_dim)
+        else:
+            self.embedding_fusion = None
         self.dropout = nn.Dropout(p=dropout)
         nn.init.normal_(self.weight)
 
-    def forward(self, indices):
+    def forward(self, indices, additional_inputs: list[torch.Tensor] = None):
         # indices: (E, B) -> (E, B, D) using per-ensemble advanced indexing
         if indices.dim() == 2:
             E_idx = torch.arange(self.weight.shape[0], device=self.weight.device).unsqueeze(1)  # (E, 1)
@@ -53,9 +58,39 @@ class EnsembleEmbedding(nn.Module):
         else:
             # indices: (B,) -> (E, B, D)
             embedded = self.weight[:, indices]
+        
+        if additional_inputs is not None and self.embedding_fusion is not None:
+            additional_inputs = torch.concat([a[0, 0] for a in additional_inputs], dim=-1)
+            embedded_ai = torch.nn.functional.gelu(self.lin_ai(additional_inputs))
+            embedded = torch.nn.functional.gelu(embedded)
+            embedded = self.embedding_fusion(torch.concat((embedded, embedded_ai), dim=-1))   
+            
         return self.dropout(embedded)
 
+
+class EnsembleEmbeddingFusion(nn.Module):
+    """Linear layer with independent parameters per ensemble member.
+
+    Parameters have shape (ensemble_size, out_features, in_features).
+    Forward uses einsum for vectorized computation across ensemble.
+    """
+    def __init__(self, ensemble_size, in_features, out_features):
+        super().__init__()
+        self.ensemble_size = ensemble_size
+        self.in_features = in_features
+        self.out_features = out_features
+        self.weight = nn.Parameter(torch.empty(ensemble_size, out_features, in_features))
+        self.bias = nn.Parameter(torch.zeros(ensemble_size, out_features))
+        # Xavier uniform initialization
+        nn.init.xavier_uniform_(self.weight.view(ensemble_size, out_features, in_features))
+
+    def forward(self, *args):
+        # args: each (E, B, F_i) -> concat along features -> (E, B, sum(F_i))
+        # weight: (E, O, F), output: (E, B, O)
+        x = torch.cat([torch.nn.functional.gelu(a) for a in args], dim=-1)
+        return torch.einsum('eof,ebf->ebo', self.weight, x) + self.bias.unsqueeze(1)
     
+
 class EnsembleRNNModule(nn.Module):
     """GRU module with independent parameters per ensemble member.
     
@@ -201,6 +236,8 @@ class BaseModel(nn.Module):
         self.recording = {}
         self.submodules_rnn = nn.ModuleDict()
         self.submodules_eq = dict()
+        self.embedding_fusion = lambda *embeddings: torch.cat(embeddings, dim=-1)
+        self.total_embedding_size = 0
 
         # Differentiable SINDy coefficients
         self.sindy_polynomial_degree = sindy_polynomial_degree
@@ -361,11 +398,19 @@ class BaseModel(nn.Module):
         # return ParameterModule(n_ensemble, n_participants, n_experiments)
         return nn.Parameter(torch.zeros((n_ensemble, n_participants, n_experiments)))
     
-    def setup_embedding(self, num_embeddings: int, embedding_size: int = None, leaky_relu: float = 0.01, dropout: float = 0.):
+    def setup_embedding(self, num_embeddings: int, embedding_size: int = None, dropout: float = 0., target_embedding_size_fusion: int = None, n_additional_inputs: int = 0):
         if embedding_size is None:
             embedding_size = self.embedding_size
-        return EnsembleEmbedding(self.ensemble_size, num_embeddings, embedding_size, dropout=dropout)
+        self.setup_embedding_fusion(embedding_size=embedding_size, target_embedding_size=embedding_size if target_embedding_size_fusion is None else target_embedding_size_fusion)
+        return EnsembleEmbedding(self.ensemble_size, num_embeddings, embedding_size, dropout=dropout, n_additional_inputs=n_additional_inputs)
     
+    def setup_embedding_fusion(self, embedding_size: int, target_embedding_size: int):
+        self.total_embedding_size += embedding_size
+        # For a single embedding the default concat lambda suffices; for multiple
+        # embeddings a learned linear layer fuses them in call_module().
+        if self.total_embedding_size > embedding_size:
+            self.embedding_fusion = EnsembleEmbeddingFusion(self.ensemble_size, self.total_embedding_size, target_embedding_size)
+
     def setup_module(
         self, 
         key_module: str, 
@@ -479,9 +524,10 @@ class BaseModel(nn.Module):
         if experiment_embedding is None:
             experiment_embedding = torch.zeros(E, B, 0, dtype=torch.float32, device=self.device)
 
-        embedding = torch.cat((experiment_embedding, participant_embedding), dim=-1)  # [E, B, emb]
+        # embedding = torch.cat((experiment_embedding, participant_embedding), dim=-1)  # [E, B, emb]
+        embedding = self.embedding_fusion(participant_embedding, experiment_embedding)
         embedding = embedding.view(1, E, B, 1, -1).expand(W, -1, -1, I, -1)  # [W, E, B, I, emb]
-
+        
         # Replace NaN in inputs
         inputs = torch.nan_to_num(inputs, nan=0.0)
         

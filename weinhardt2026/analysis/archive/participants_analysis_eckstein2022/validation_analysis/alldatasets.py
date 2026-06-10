@@ -133,7 +133,7 @@ def calculate_behavioral_metrics(df, dataset_name):
 file_paths = {
     'ApBr': "/Users/martynaplomecka/closedloop_rl/params/benchmarking/eckstein2022_simulated_ApBr.csv",
     'RNN': "/Users/martynaplomecka/closedloop_rl/params/benchmarking/eckstein2022_simulated_rnn_new.csv",
-    'SPICE': "/Users/martynaplomecka/closedloop_rl/params/benchmarking/eckstein2022_simulated_spice_new.csv",
+    'SPICE-SYM': "/Users/martynaplomecka/closedloop_rl/params/benchmarking/eckstein2022_simulated_spice_new.csv",
     'True': "/Users/martynaplomecka/closedloop_rl/params/benchmarking/eckstein2022_age.csv",
     'Benchmark': "/Users/martynaplomecka/closedloop_rl/params/benchmarking/eckstein2022_simulated_benchmark.csv"
 
