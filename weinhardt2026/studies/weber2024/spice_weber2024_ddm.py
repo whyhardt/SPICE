@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 
-from spice import SpiceEstimator, SpiceConfig, BaseModel, csv_to_dataset, SpiceDataset, split_data_along_sessiondim
+from spice import SpiceEstimator, SpiceConfig, BaseModel, csv_to_dataset, SpiceDataset, split_data_along_blockdim
 
 import sys
 from pathlib import Path
@@ -14,7 +14,7 @@ train_gru = True
 
 
 path_data = 'weinhardt2026/studies/archive/weber2024/data/weber2024_baseline.csv'
-test_sessions = 2, 5, 9, 14
+test_blocks = 2, 5, 9, 14
 
 dataset = csv_to_dataset(
     file = path_data,
@@ -46,7 +46,7 @@ dataset = csv_to_dataset(
 # For now, assume dataset is provided in the correct shape.
 
 path_data = 'weinhardt2026/studies/archive/weber2024/data/weber2024.csv'
-test_sessions = 8, 10, 12
+test_blocks = 8, 10, 12
 
 dataset = csv_to_dataset(
     file = path_data,
@@ -68,8 +68,8 @@ xs = torch.concat((dataset.xs[..., :1], move, dataset.xs[..., 3:4], rewards_move
 ys = torch.concat((dataset.ys[..., :1], move_ys), dim=-1)
 dataset = SpiceDataset(xs, ys)
 
-if test_sessions is not None:
-    dataset_train, dataset_test = split_data_along_sessiondim(dataset, test_sessions)
+if test_blocks is not None:
+    dataset_train, dataset_test = split_data_along_blockdim(dataset, test_blocks)
 else:
     dataset_train, dataset_test = dataset, None
 

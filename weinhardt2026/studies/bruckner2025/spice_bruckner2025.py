@@ -44,7 +44,7 @@ class SpiceModel(BaseModel):
         # additional_inputs:  [mu_t, c_t, z_{t+1}] → (T, W, E, B, 3)
         outcome = spice_signals.rewards                                 # x_t / 300
         bucket = spice_signals.actions                                  # b_t / 300
-        z_next = spice_signals.additional_inputs[..., 2].unsqueeze(-1)  # z_{t+1} / 300 (T, W, E, B, 1)
+        z_next = spice_signals.additional_inputs[..., 0].unsqueeze(-1)  # z_{t+1} / 300 (T, W, E, B, 1)
 
         # Embeddings
         experiment_embedding = self.experiment_embedding(spice_signals.experiment_ids) if hasattr(self, 'experiment_embedding') else None

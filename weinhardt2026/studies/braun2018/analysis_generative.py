@@ -182,7 +182,7 @@ def analysis_generative_behavior(
 
     for name, path in datasets.items():
         print(f"Loading {name} from {path}...")
-        dataset, _, _ = get_dataset(path_data=path, test_sessions=())
+        dataset, _, _ = get_dataset(path_data=path, test_blocks=())
         choices, current_dec, other_inc, difference = _extract_data(dataset)
         all_metrics[name] = _compute_metrics(choices, current_dec, other_inc, difference)
 

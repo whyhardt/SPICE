@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 from typing import Union
 
-from spice import SpiceEstimator, SpiceDataset, csv_to_dataset, split_data_along_sessiondim
+from spice import SpiceEstimator, SpiceDataset, csv_to_dataset, split_data_along_blockdim
 
 sys.path.append('../../..')
 from weinhardt2026.utils.task import Env, generate_behavior as _generate_behavior
@@ -16,7 +16,7 @@ N_GRID = 100
 KAPPA_MAX = 0.1
 
 
-def get_dataset(path_data: str = None, test_sessions: tuple[int] = None, verbose: bool = False) -> tuple[SpiceDataset, SpiceDataset, dict]:
+def get_dataset(path_data: str = None, test_blocks: tuple[int] = None, verbose: bool = False) -> tuple[SpiceDataset, SpiceDataset, dict]:
 
     if path_data is None:
         path_data = 'data/ganesh2024a_choice.csv'
@@ -50,10 +50,10 @@ def get_dataset(path_data: str = None, test_sessions: tuple[int] = None, verbose
         print(f"Number of participants: {n_participants}")
         print(f"Number of actions: {n_actions}")
 
-    if test_sessions is None:
-        test_sessions = (3, 6, 9)
-    if test_sessions:
-        dataset_train, dataset_test = split_data_along_sessiondim(dataset, test_sessions)
+    if test_blocks is None:
+        test_blocks = (3, 6, 9)
+    if test_blocks:
+        dataset_train, dataset_test = split_data_along_blockdim(dataset, test_blocks)
     else:
         dataset_train = dataset_test = dataset
 
@@ -349,7 +349,7 @@ def generate_behavior(
         SpiceDataset with model-generated behavior.
     """
     if dataset is None:
-        dataset, _, _ = get_dataset(path_data=path_data, test_sessions=())
+        dataset, _, _ = get_dataset(path_data=path_data, test_blocks=())
 
     n_actions = dataset.n_actions
     n_blocks = len(dataset.xs[:, 0, 0, -3].unique())
@@ -384,7 +384,7 @@ def generate_behavior(
 
 def fit(
     path_data: str = None,
-    test_sessions: tuple[int] = None,
+    test_blocks: tuple[int] = None,
     epochs: int = 3000,
     lr: float = 1e-2,
     device: torch.device = None,
@@ -396,7 +396,7 @@ def fit(
 
     Args:
         path_data: Path to CSV data file (default: data/ganesh2024a_choice.csv).
-        test_sessions: Session indices for test split (default: (3, 6, 9)).
+        test_blocks: Session indices for test split (default: (3, 6, 9)).
         epochs: Number of training epochs.
         lr: Learning rate for Adam optimizer.
         device: Compute device (default: auto-detect).
@@ -408,7 +408,7 @@ def fit(
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     dataset_train, dataset_test, info = get_dataset(
-        path_data=path_data, test_sessions=test_sessions, verbose=True,
+        path_data=path_data, test_blocks=test_blocks, verbose=True,
     )
 
     model = BayesianModel(

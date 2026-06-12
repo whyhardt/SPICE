@@ -2,14 +2,14 @@
 Utilities for SPICE package.
 """
 
-from .convert_dataset import csv_to_dataset, split_data_along_sessiondim, split_data_along_timedim, reshape_data_along_participantdim
+from .convert_dataset import csv_to_dataset, split_data_along_blockdim, split_data_along_timedim, reshape_data_along_participantdim
 from .plotting import plot_session, plot_dynamics
 from .diagnostics import SpiceDiagnostics
 
 
 __all__ = [
     'csv_to_dataset',
-    'split_data_along_sessiondim',
+    'split_data_along_blockdim',
     'split_data_along_timedim',
     'reshape_data_along_participantdim',
     'plot_session',

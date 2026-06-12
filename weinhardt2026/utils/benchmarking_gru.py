@@ -1,7 +1,7 @@
 import torch
 from tqdm import tqdm
 
-from spice import SpiceDataset, csv_to_dataset, split_data_along_sessiondim, split_data_along_timedim, cross_entropy_loss
+from spice import SpiceDataset, csv_to_dataset, split_data_along_blockdim, split_data_along_timedim, cross_entropy_loss
 
 
 class GRUModel(torch.nn.Module):
@@ -46,7 +46,7 @@ class GRUModel(torch.nn.Module):
         xs = torch.concat((actions, rewards, additional_inputs), dim=-1)
 
         if self.n_experiments > 1:
-            experiment_embedding = self.experiment_embedding[inputs[..., -2].long()]
+            experiment_embedding = self.experiment_embedding(inputs[..., -2].long())
             xs = torch.concat((xs, experiment_embedding), dim=-1)
         
         if self.n_participants > 1:
@@ -154,7 +154,7 @@ def main(path_save_model:str, path_data: str, epochs: int, lr: float, split_rati
     if isinstance(split_ratio, float):
         dataset_training, dataset_test = split_data_along_timedim(dataset, split_ratio=split_ratio)
     else:
-        dataset_training, dataset_test = split_data_along_sessiondim(dataset, test_sessions=split_ratio)
+        dataset_training, dataset_test = split_data_along_blockdim(dataset, test_blocks=split_ratio)
     
     n_actions = dataset_training.ys.shape[-1]
     n_participants = len(dataset_training.xs[..., -1].unique())

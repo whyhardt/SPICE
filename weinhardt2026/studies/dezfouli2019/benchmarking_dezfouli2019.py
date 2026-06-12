@@ -2,13 +2,13 @@ import sys
 import torch
 from typing import Union
 
-from spice import SpiceEstimator, SpiceDataset, csv_to_dataset, split_data_along_sessiondim
+from spice import SpiceEstimator, SpiceDataset, csv_to_dataset, split_data_along_blockdim
 
 sys.path.append('../../..')
 from weinhardt2026.utils.task import Env, generate_behavior as _generate_behavior
 
 
-def get_dataset(path_data: str = None, test_sessions: tuple[int] = None, verbose: bool = False) -> tuple[SpiceDataset, SpiceDataset, dict]:
+def get_dataset(path_data: str = None, test_blocks: tuple[int] = None, verbose: bool = False) -> tuple[SpiceDataset, SpiceDataset, dict]:
 
     # Load your data
     if path_data is None:
@@ -27,9 +27,9 @@ def get_dataset(path_data: str = None, test_sessions: tuple[int] = None, verbose
         print(f"Number of participants: {n_participants}")
         print(f"Number of actions in dataset: {n_actions}")
 
-    if test_sessions is None:
-        test_sessions = (3, 6, 9)
-    dataset_train, dataset_test = split_data_along_sessiondim(dataset, test_sessions)
+    if test_blocks is None:
+        test_blocks = (3, 6, 9)
+    dataset_train, dataset_test = split_data_along_blockdim(dataset, test_blocks)
 
     info_dataset = {
         'n_participants': n_participants,

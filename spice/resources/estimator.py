@@ -60,7 +60,7 @@ class SpiceEstimator(BaseEstimator):
 
         # SPICE training parameters
         use_sindy: Optional[bool] = False,
-        sindy_weight: Optional[float] = 0.1,  # Weight for SINDy regularization loss
+        sindy_weight: Optional[float] = 0.01,  # Weight for SINDy regularization loss
         sindy_alpha: Optional[float] = 1e-4,  # Degree-weighted coefficient penalty strength (ridge alpha)
         sindy_library_polynomial_degree: Optional[int] = 2,
         sindy_pruning_frequency: Optional[int] = 100,  # Epochs between pruning events

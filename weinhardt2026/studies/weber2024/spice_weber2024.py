@@ -54,7 +54,7 @@ class SpiceModel(BaseModel):
         self.dropout = 0.1
 
         self.experiment_embedding = self.setup_embedding(num_embeddings=self.n_experiments, embedding_size=2, dropout=self.dropout)
-        self.participant_embedding = self.setup_embedding(num_embeddings=self.n_participants, embedding_size=self.embedding_size)#, dropout=self.dropout, n_additional_inputs=2)
+        self.participant_embedding = self.setup_embedding(num_embeddings=self.n_participants, embedding_size=self.embedding_size, dropout=self.dropout)#, n_additional_inputs=2)
 
         # Mean tracking: shared module applied to sin and cos components separately
         self.setup_module(key_module='mean_update', input_size=1)

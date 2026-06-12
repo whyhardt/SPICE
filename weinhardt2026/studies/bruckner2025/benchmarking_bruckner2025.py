@@ -6,7 +6,7 @@ import math
 from typing import Union
 from tqdm import tqdm
 
-from spice import SpiceEstimator, SpiceDataset, BaseModel, split_data_along_sessiondim, dataset_to_csv, csv_to_dataset
+from spice import SpiceEstimator, SpiceDataset, BaseModel, split_data_along_blockdim, dataset_to_csv, csv_to_dataset
 
 
 # --- Constants ---
@@ -38,16 +38,14 @@ def mse_loss(prediction: torch.Tensor, target: torch.Tensor, **kwargs) -> torch.
 
 def get_dataset(
     path_data: str = None,
-    test_sessions: tuple[int] = None,
+    test_blocks: tuple[int] = None,
 ) -> tuple[SpiceDataset, SpiceDataset]:
     """Load bruckner2025 data and build a SpiceDataset for continuous prediction.
 
     Feature layout of xs (n_features = 1 + 1 + 3 + 5 = 10):
         [0]  b_t / 300       — "action" (bucket position, normalized)
         [1]  x_t / 300       — "reward" (outcome position, normalized)
-        [2]  mu_t / 300      — additional input: true helicopter position
-        [3]  c_t             — additional input: change point indicator
-        [4]  z_{t+1} / 300   — additional input: next trial's initial bucket position
+        [2]  z_{t+1} / 300   — additional input: next trial's initial bucket position
         [-5] time_trial      — always 0
         [-4] trial index     — 0-based
         [-3] block           — raw block id from CSV
@@ -72,12 +70,12 @@ def get_dataset(
         file=df,
         df_choice='b_t',
         df_feedback='x_t',
-        additional_inputs=('mu_t', 'c_t', 'z_next'),
+        additional_inputs=('z_next',),
         continuous_action=True,
     )
 
-    if test_sessions is not None:
-        return split_data_along_sessiondim(dataset, test_sessions)
+    if test_blocks is not None:
+        return split_data_along_blockdim(dataset, test_blocks)
     return dataset, None
 
 

@@ -11,7 +11,7 @@ import pandas as pd
 import json
 import importlib
 
-from spice import SpiceEstimator, csv_to_dataset, split_data_along_sessiondim, split_data_along_timedim
+from spice import SpiceEstimator, csv_to_dataset, split_data_along_blockdim, split_data_along_timedim
 from spice.resources.spice_training import _get_terminal_width
 
 from studies.synthetic.benchmarking_qlearning import QLearning
@@ -58,8 +58,8 @@ if __name__=='__main__':
     # Data setup parameters
     parser.add_argument('--data_kwargs', type=json.loads, default='{}', help='additional kwargs for csv_to_dataset for loading the data correctly.')
     parser.add_argument('--n_items', type=int, default=None, help='Number of items in dataset; Default None: As many items as actions (automatically detected from dataset);')
-    parser.add_argument('--train_ratio_time', type=float, default=None, help='Ratio of data used for training. Split along time dimension. Not combinable with test_sessions')
-    parser.add_argument('--test_sessions', type=str, default=None, help='Comma-separated list of integeres which indicate test sessions. Not combinable with train_ratio_time')
+    parser.add_argument('--train_ratio_time', type=float, default=None, help='Ratio of data used for training. Split along time dimension. Not combinable with test_blocks')
+    parser.add_argument('--test_blocks', type=str, default=None, help='Comma-separated list of integeres which indicate test sessions. Not combinable with train_ratio_time')
 
     parser.add_argument('--results', action='store_true', help='Shows the results using a fitted SPICE model. The results are value-dynamics-over-time plot, a parameter distribution histogram, and the corresponding symbolic SPICE model.')
     
@@ -80,29 +80,29 @@ if __name__=='__main__':
     # args.module = "studies.castro2025.spice_castro2025_2"
     # args.model = "weinhardt2026/studies/castro2025/params/spice_castro2025.pkl"
     # args.data = "weinhardt2026/studies/castro2025/data/eckstein2024.csv"
-    # args.test_sessions = "1,3"
+    # args.test_blocks = "1,3"
     
     # args.model = "weinhardt2026/params/dezfouli2019/spice_dezfouli2019_test.pkl"
     # args.data = "weinhardt2026/data/dezfouli2019/dezfouli2019.csv"
-    # args.test_sessions = "3,6,9"
+    # args.test_blocks = "3,6,9"
     
     # args.data="weinhardt2026/data/sugawara2021/sugawara2021.csv" 
     # args.model="weinhardt2026/params/sugawara2021/spice_sugawara2021.pkl" 
     # args.additional_columns="shown_at_0,shown_at_1,shown_at_0_next,shown_at_1_next"
     # args.n_items=8
-    # args.test_sessions="1"
+    # args.test_blocks="1"
     
     # args.data = "weinhardt2026/data/weber2024/weber2024.csv" 
     # args.model = "weinhardt2026/params/weber2024/spice_weber2024.pkl" 
     # args.additional_columns = None,
-    # args.test_sessions = "4,8,12"
+    # args.test_blocks = "4,8,12"
     # ----------------------------------------------------------------------------------------------------------------------------------
     
     example_participant = 2
     plot_coef_dist = True
     
-    if args.train_ratio_time and args.test_sessions:
-        raise ValueError("kwargs train_ratio_time and test_sessions cannot be assigned at the same time.")
+    if args.train_ratio_time and args.test_blocks:
+        raise ValueError("kwargs train_ratio_time and test_blocks cannot be assigned at the same time.")
     
     print("\n"+"="*_get_terminal_width())
     print(f"Module: {args.module}")
@@ -114,11 +114,11 @@ if __name__=='__main__':
     dataset.normalize_rewards()
     
     if args.train_ratio_time:
-        args.test_sessions = None
+        args.test_blocks = None
         dataset_train, dataset_test = split_data_along_timedim(dataset, args.train_ratio_time)
-    elif args.test_sessions:
-        args.test_sessions = [int(item) for item in args.test_sessions.split(',')]
-        dataset_train, dataset_test = split_data_along_sessiondim(dataset, args.test_sessions)
+    elif args.test_blocks:
+        args.test_blocks = [int(item) for item in args.test_blocks.split(',')]
+        dataset_train, dataset_test = split_data_along_blockdim(dataset, args.test_blocks)
     else:
         print("Training/test split: None")
         dataset_train, dataset_test = dataset, dataset    

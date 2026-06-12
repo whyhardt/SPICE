@@ -3,7 +3,7 @@ import numpy as np
 from typing import Union
 from tqdm import tqdm
 
-from spice import SpiceEstimator, SpiceDataset, BaseModel, csv_to_dataset, split_data_along_sessiondim, dataset_to_csv
+from spice import SpiceEstimator, SpiceDataset, BaseModel, csv_to_dataset, split_data_along_blockdim, dataset_to_csv
 
 
 # --- Constants ---
@@ -80,12 +80,12 @@ def compute_mean_rts(dataset: SpiceDataset) -> torch.Tensor:
 
 # --- Data Loading ---
 
-def get_dataset(path_data: str = None, test_sessions: tuple[int] = None):
+def get_dataset(path_data: str = None, test_blocks: tuple[int] = None):
 
     if path_data is None:
         path_data = 'weinhardt2026/studies/weber2024/data/weber2024.csv'
-    if test_sessions is None:
-        test_sessions = 2, 5, 9, 14
+    if test_blocks is None:
+        test_blocks = 2, 5, 9, 14
 
     dataset = csv_to_dataset(
         file = path_data,
@@ -109,8 +109,8 @@ def get_dataset(path_data: str = None, test_sessions: tuple[int] = None):
             ],
     )
     
-    if test_sessions is not None:
-        dataset_train, dataset_test = split_data_along_sessiondim(dataset, test_sessions)
+    if test_blocks is not None:
+        dataset_train, dataset_test = split_data_along_blockdim(dataset, test_blocks)
     else:
         dataset_train, dataset_test = dataset, None
 

@@ -542,9 +542,9 @@ def split_data_along_timedim(dataset: SpiceDataset, split_ratio: float, device: 
     )
 
 
-def split_data_along_sessiondim(dataset: SpiceDataset, test_sessions: list[int] = None, device: torch.device = torch.device('cpu')):
-    """Split the data along the time dimension (dim=1).
-    Each session (dim=0) can be of individual length and is therefore post-padded with -1.
+def split_data_along_blockdim(dataset: SpiceDataset, test_blocks: list[int] = None, device: torch.device = torch.device('cpu')):
+    """Split the data along the blocks.
+    Each block (dim=0) can be of individual length and is therefore post-padded with -1.
     To split the data into training and testing samples according to the split_ratio each session's individual length has to be considered.
     E.g.:
     1. session_length = len(session 0) -> 120
@@ -560,7 +560,7 @@ def split_data_along_sessiondim(dataset: SpiceDataset, test_sessions: list[int] 
         tuple(DatasetRNN, DatasetRNN): Training data and testing data splitted along time dimension (dim=1)
     """
 
-    if test_sessions is not None:
+    if test_blocks is not None:
 
         dim = 1
         xs, ys = dataset.xs.cpu(), dataset.ys.cpu()
@@ -572,8 +572,8 @@ def split_data_along_sessiondim(dataset: SpiceDataset, test_sessions: list[int] 
         session_ids = xs[:, 0, 0, -3].unique()
 
         # set training sessions
-        if test_sessions:
-            session_ids_test = torch.tensor(test_sessions, dtype=torch.float32)
+        if test_blocks:
+            session_ids_test = torch.tensor(test_blocks, dtype=torch.float32)
         else:
             session_ids_test = torch.tensor([])
 

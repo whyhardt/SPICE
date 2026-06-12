@@ -21,7 +21,7 @@ from collections import defaultdict
 import torch
 import numpy as np
 
-from spice import SpiceEstimator, csv_to_dataset, split_data_along_sessiondim
+from spice import SpiceEstimator, csv_to_dataset, split_data_along_blockdim
 
 
 def diagnose_sindy_loss(estimator, dataset, n_steps=None):
@@ -227,7 +227,7 @@ if __name__ == '__main__':
     parser.add_argument('--module', type=str, required=True, help='SPICE model module path')
     parser.add_argument('--model', type=str, required=True, help='Path to fitted .pkl model')
     parser.add_argument('--data', type=str, required=True, help='Path to dataset CSV')
-    parser.add_argument('--test_sessions', type=str, default='1,3', help='Test sessions (comma-separated)')
+    parser.add_argument('--test_blocks', type=str, default='1,3', help='Test sessions (comma-separated)')
     parser.add_argument('--split', type=str, default='test', choices=['train', 'test', 'both'],
                         help='Which split to diagnose')
     parser.add_argument('--n_steps', type=int, default=None, help='Max timesteps to evaluate')
@@ -237,8 +237,8 @@ if __name__ == '__main__':
     dataset = csv_to_dataset(file=args.data)
     dataset.normalize_rewards()
 
-    test_sessions = [int(s) for s in args.test_sessions.split(',')]
-    dataset_train, dataset_test = split_data_along_sessiondim(dataset, test_sessions)
+    test_blocks = [int(s) for s in args.test_blocks.split(',')]
+    dataset_train, dataset_test = split_data_along_blockdim(dataset, test_blocks)
 
      # --------------------------------------------------------------------------------------------
     # RAPID PROTOTYPING

@@ -86,7 +86,7 @@ source activate spice
 python weinhardt2026/run.py \
     --model weinhardt2026/studies/castro2025/params/spice_castro2025_${SUFFIXES[$ID]}.pkl \
     --data weinhardt2026/studies/castro2025/data/eckstein2024.csv \
-    --test_sessions 2 \
+    --test_blocks 2 \
     --results \
     --module ${MODULES[$ID]} \
     --sindy_weight ${SINDY_WEIGHTS[$ID]} \
