@@ -17,9 +17,11 @@ N_BLOCKS = 4
 N_TRIALS_PER_BLOCK = 100
 
 # Additional input column indices (relative to start of additional inputs block)
-_AI_MU_T = 0        # true helicopter position (normalized)
-_AI_C_T = 1          # change point indicator
-_AI_Z_T = 2          # next trial's initial bucket position z_{t+1} (normalized)
+_AI_Z_NEXT = 0      # next trial's initial bucket position z_{t+1} (normalized)
+_AI_CATCH = 1        # binary: caught the coin
+_AI_V_T = 2          # helicopter visible on next trial (timeshifted -1)
+_AI_MU_T = 3         # true helicopter position (normalized)
+_AI_C_T = 4          # change point indicator
 
 
 # --- MSE loss compatible with SPICE training pipeline ---
@@ -42,10 +44,14 @@ def get_dataset(
 ) -> tuple[SpiceDataset, SpiceDataset]:
     """Load bruckner2025 data and build a SpiceDataset for continuous prediction.
 
-    Feature layout of xs (n_features = 1 + 1 + 3 + 5 = 10):
+    Feature layout of xs (n_features = 1 + 1 + 5 + 5 = 12):
         [0]  b_t / 300       — "action" (bucket position, normalized)
         [1]  x_t / 300       — "reward" (outcome position, normalized)
-        [2]  z_{t+1} / 300   — additional input: next trial's initial bucket position
+        [2]  z_{t+1} / 300   — additional input 0: next trial's initial bucket position
+        [3]  catch            — additional input 1: binary coin catch flag
+        [4]  v_{t+1}          — additional input 2: helicopter visible on next trial (timeshifted -1)
+        [5]  mu_t / 300       — additional input 3: true helicopter position
+        [6]  c_t              — additional input 4: change point indicator
         [-5] time_trial      — always 0
         [-4] trial index     — 0-based
         [-3] block           — raw block id from CSV
@@ -70,8 +76,15 @@ def get_dataset(
         file=df,
         df_choice='b_t',
         df_feedback='x_t',
-        additional_inputs=('z_next',),
+        additional_inputs=(
+            'z_next',
+            'catch',
+            'v_t',
+            'mu_t',
+            'c_t',
+            ),
         continuous_action=True,
+        timeshift_additional_inputs=(0, 0, -1, 0, 0),
     )
 
     if test_blocks is not None:
@@ -131,7 +144,7 @@ class RationalResourceModel(nn.Module):
         xs = xs.nan_to_num(0.)
         b_t = xs[:, :, 0, 0]     # bucket position (normalized)
         x_t = xs[:, :, 0, 1]     # outcome (normalized)
-        z_next = xs[:, :, 0, 4]  # z_{t+1}: next trial's initial bucket position (normalized)
+        z_next = xs[:, :, 0, 2]  # z_{t+1}: next trial's initial bucket position (normalized)
         participant_ids = xs[:, 0, 0, -1].long()
 
         # Transform per-participant parameters
@@ -156,10 +169,12 @@ class RationalResourceModel(nn.Module):
 
             # Change-point probability (Eq. 8)
             # In normalized space [0,1]: uniform density = 1, so (1/300)^s → 1^s = 1
+            # Compute likelihood^s in log space to avoid gradient singularity
+            # at likelihood=0 (grad of x^s diverges when 0 < s < 1, x → 0)
             log_lik = -0.5 * delta ** 2 / total_var - 0.5 * torch.log(2 * math.pi * total_var)
-            likelihood = torch.exp(log_lik)
+            likelihood_pow_s = torch.exp(s * log_lik)
             numerator = h                                                    # 1^s * h
-            denominator = likelihood ** s * (1 - h) + h + 1e-10
+            denominator = likelihood_pow_s * (1 - h) + h + 1e-10
             omega = (numerator / denominator).clamp(0, 1)
 
             # Learning rate (Eq. 7)
@@ -204,10 +219,22 @@ class EnvironmentBruckner2025:
     def __init__(self, dataset: SpiceDataset):
         n_sessions, n_trials = dataset.xs.shape[0], dataset.xs.shape[1]
 
-        self.outcomes = dataset.xs[:, :, 0, 1].clone()        # x_t / 300
-        self.mu_t = dataset.xs[:, :, 0, 2].clone()            # mu_t / 300
-        self.c_t = dataset.xs[:, :, 0, 3].clone()             # c_t
-        self.z_t = dataset.xs[:, :, 0, 4].clone()             # z_{t+1} / 300
+        n_actions = 1
+        n_rewards = dataset.n_reward_features
+        ai = n_actions + n_rewards  # start of additional inputs block
+
+        self.outcomes = dataset.xs[:, :, 0, 1].clone()                  # x_t / 300
+        self.z_next = dataset.xs[:, :, 0, ai + _AI_Z_NEXT].clone()     # z_{t+1} / 300
+        self.catch = dataset.xs[:, :, 0, ai + _AI_CATCH].clone()       # catch flag
+        self.v_t = dataset.xs[:, :, 0, ai + _AI_V_T].clone()           # helicopter visible (next trial)
+        self.mu_t = dataset.xs[:, :, 0, ai + _AI_MU_T].clone()         # mu_t / 300
+        self.c_t = dataset.xs[:, :, 0, ai + _AI_C_T].clone()           # change point indicator
+
+        # Detect no-anchor-shift trials: z_{t+1} ≈ b_t in original data
+        # (bucket stays where participant placed it → z_next should track model's b_t during generation)
+        bucket_orig = dataset.xs[:, :, 0, 0]
+        pixel_tol = 1.5 / POSITION_SCALE  # slightly above 1-pixel resolution
+        self.is_no_anchor = (torch.abs(self.z_next - bucket_orig) < pixel_tol).clone()
 
         self.n_sessions = n_sessions
         self.n_trials = n_trials
@@ -217,18 +244,23 @@ class EnvironmentBruckner2025:
         """Reset trial counter for a new generation run."""
         self.trial_counter = 0
 
-    def step(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    def step(self) -> dict:
         """Return outcome and metadata for the current trial.
 
-        Returns:
-            outcome: (n_sessions,) x_t normalized.
-            z_t: (n_sessions,) initial bucket position normalized.
-            mu_t: (n_sessions,) true helicopter position normalized.
-            c_t: (n_sessions,) change point indicator.
+        Returns dict with keys: outcome, z_next, is_no_anchor, catch, v_t, mu_t, c_t.
+        All tensors have shape (n_sessions,).
         """
         t = self.trial_counter
         self.trial_counter += 1
-        return self.outcomes[:, t], self.z_t[:, t], self.mu_t[:, t], self.c_t[:, t]
+        return {
+            'outcome': self.outcomes[:, t],
+            'z_next': self.z_next[:, t],
+            'is_no_anchor': self.is_no_anchor[:, t],
+            'catch': self.catch[:, t],
+            'v_t': self.v_t[:, t],
+            'mu_t': self.mu_t[:, t],
+            'c_t': self.c_t[:, t],
+        }
 
 
 # --- Behavior Generation ---
@@ -285,19 +317,26 @@ def generate_behavior(
 
     env.reset()
 
+    n_actions = 1
+    ai = n_actions + n_rewards  # start of additional inputs block
+
     for t in tqdm(range(n_trials)):
-        outcome, z_t, mu_t, c_t = env.step()
-        outcome = outcome.to(device)
-        z_t = z_t.to(device)
-        mu_t = mu_t.to(device)
-        c_t = c_t.to(device)
+        trial = env.step()
+        trial = {k: v.to(device) for k, v in trial.items()}
+
+        # For no-anchor-shift trials, z_{t+1} = model's current bucket position
+        # (bucket stays where the model placed it, not where the human placed it)
+        z_next = trial['z_next'].clone()
+        z_next[trial['is_no_anchor']] = bucket_position[trial['is_no_anchor']]
 
         # Build observation
-        xs_gen[:, t, 0, 0] = bucket_position        # model-generated bucket position
-        xs_gen[:, t, 0, 1] = outcome                 # replayed outcome
-        xs_gen[:, t, 0, 2] = mu_t                    # replayed true mean
-        xs_gen[:, t, 0, 3] = c_t                     # replayed change point
-        xs_gen[:, t, 0, 4] = z_t                     # replayed initial bucket
+        xs_gen[:, t, 0, 0] = bucket_position                       # model-generated bucket position
+        xs_gen[:, t, 0, 1] = trial['outcome']                      # replayed outcome
+        xs_gen[:, t, 0, ai + _AI_Z_NEXT] = z_next                 # z_{t+1}: dynamic for no-anchor, replayed for anchor
+        xs_gen[:, t, 0, ai + _AI_CATCH] = trial['catch']          # replayed catch
+        xs_gen[:, t, 0, ai + _AI_V_T] = trial['v_t']              # replayed visibility
+        xs_gen[:, t, 0, ai + _AI_MU_T] = trial['mu_t']            # replayed true mean
+        xs_gen[:, t, 0, ai + _AI_C_T] = trial['c_t']              # replayed change point
 
         # Zero out inactive sessions
         inactive = ~valid_mask[:, t]
@@ -347,6 +386,10 @@ def _save_generated_csv(dataset: SpiceDataset, path: str) -> None:
     ys = dataset.ys.numpy()
     n_sessions = xs.shape[0]
 
+    n_actions = 1
+    n_rewards = dataset.n_reward_features
+    ai = n_actions + n_rewards  # start of additional inputs block
+
     rows = []
     for s in range(n_sessions):
         n_valid = int((~np.isnan(xs[s, :, 0, 0])).sum())
@@ -358,9 +401,11 @@ def _save_generated_csv(dataset: SpiceDataset, path: str) -> None:
                 'trial': int(xs[s, t, 0, -4]),
                 'b_t': xs[s, t, 0, 0] * POSITION_SCALE,
                 'x_t': xs[s, t, 0, 1] * POSITION_SCALE,
-                'mu_t': xs[s, t, 0, 2] * POSITION_SCALE,
-                'c_t': xs[s, t, 0, 3],
-                'z_t': xs[s, t, 0, 4] * POSITION_SCALE,
+                'z_next': xs[s, t, 0, ai + _AI_Z_NEXT] * POSITION_SCALE,
+                'catch': xs[s, t, 0, ai + _AI_CATCH],
+                'v_t': xs[s, t, 0, ai + _AI_V_T],
+                'mu_t': xs[s, t, 0, ai + _AI_MU_T] * POSITION_SCALE,
+                'c_t': xs[s, t, 0, ai + _AI_C_T],
             })
 
     pd.DataFrame(rows).to_csv(path, index=False)
