@@ -134,6 +134,13 @@ def _plot_violins(all_metrics, output_dir):
             values = all_metrics[model_name][metric]
             data.append(values[~np.isnan(values)])
 
+        if any(len(d) == 0 for d in data):
+            ax.set_xticks(range(1, len(model_names) + 1))
+            ax.set_xticklabels(model_names, fontsize=9)
+            ax.set_title(f"{METRIC_LABELS[metric]} (no data)", fontsize=11)
+            ax.grid(axis='y', alpha=0.3)
+            continue
+
         parts = ax.violinplot(data, showmeans=True, showmedians=True, showextrema=False)
 
         for j, body in enumerate(parts['bodies']):

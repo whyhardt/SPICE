@@ -6,17 +6,24 @@ from spice import SpiceConfig, BaseModel
 CONFIG = SpiceConfig(
     library_setup={
         # Main belief update: learns from prediction error (x_t - belief)
-        'belief_update': ('prediction_error',),
+        'belief_update': ('prediction_error', 'catch',),
         # Anchoring bias: learns influence of bucket displacement in push conditions
         'anchor_update': ('anchor_shift',),
+        # Choice perseverance: Especially useful for blocks without anchor shift
+        'choice_update': ('action',),
     },
 
     memory_state={
-        'belief': 0.5,           # initial belief = center of screen (normalized)
+        'belief_value': 0.5,           # initial belief = center of screen (normalized)
         'anchor_value': 0.0,     # initial anchoring bias
+        'choice_value': 0.0,
     },
 
-    states_in_logit=['belief', 'anchor_value'],
+    states_in_logit=[
+        'belief_value', 
+        'anchor_value',
+        'choice_value'
+        ],
 )
 
 
@@ -33,6 +40,7 @@ class SpiceModel(BaseModel):
         self.setup_module(key_module='belief_update', input_size=1)
         # anchor_update: 1 control signal (anchor_shift)
         self.setup_module(key_module='anchor_update', input_size=1)
+        self.setup_module(key_module='choice_update', input_size=1)
 
     def forward(self, inputs, prev_state=None):
 
@@ -53,15 +61,15 @@ class SpiceModel(BaseModel):
         for trial in spice_signals.trials:
 
             # --- Prediction error: outcome minus internal belief ---
-            prediction_error = outcome[trial] - self.state['belief']
+            prediction_error = outcome[trial] - self.state['belief_value']
 
-            # --- Anchor shift: y_t = z_{t+1} - b_t (push displacement) ---
+            # # --- Anchor shift: y_t = z_{t+1} - b_t (push displacement) ---
             anchor_shift = z_next[trial] - bucket[trial]
 
             # --- Belief update ---
             self.call_module(
                 key_module='belief_update',
-                key_state='belief',
+                key_state='belief_value',
                 action_mask=None,
                 inputs=(prediction_error,),
                 participant_index=spice_signals.participant_ids,
@@ -81,11 +89,24 @@ class SpiceModel(BaseModel):
                 experiment_index=spice_signals.experiment_ids if experiment_embedding is not None else None,
                 experiment_embedding=experiment_embedding,
             )
+            
+            # --- Choice bias update ---
+            self.call_module(
+                key_module='choice_update',
+                key_state='choice_value',
+                action_mask=None,
+                inputs=(spice_signals.actions[trial],),
+                participant_index=spice_signals.participant_ids,
+                participant_embedding=participant_embedding,
+                experiment_index=spice_signals.experiment_ids if experiment_embedding is not None else None,
+                experiment_embedding=experiment_embedding,
+            )
 
             # --- Logit = predicted next position ---
             spice_signals.logits[trial] = (
-                + self.state['belief']
+                + self.state['belief_value']
                 + self.state['anchor_value']
+                + self.state['choice_value']
             )
 
         spice_signals = self.post_forward_pass(spice_signals)

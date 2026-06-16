@@ -92,57 +92,61 @@ def training(
         )
     
     pbar = tqdm(range(epochs))
-    for epoch in pbar:
-        model.train()
-        optimizer.zero_grad()
-        
-        # random_indexes = torch.randint(dataset_train.xs.shape[0], (1, dataset_train.xs.shape[0]))[0]
-        
-        # xs_train = dataset_train.xs[random_indexes].to(device)
-        # ys_train = dataset_train.ys[random_indexes].to(device)
-        # xs_test = dataset_test.xs.to(device)
-        # ys_test = dataset_test.ys.to(device)
-        
-        for batch in dataloader:
-            
-            xs, ys = batch[0].to(device), batch[1].to(device)
-            
-            # Forward pass
-            logits, _ = model(xs)
-            
-            # Reshape for loss computation
-            nan_mask = ~torch.isnan(xs[..., :model.n_actions].sum(dim=-1))
-            logits = logits[nan_mask]
-            labels = ys[nan_mask]
-            
-            # Compute loss
-            loss = loss_fn(logits, labels, **loss_kwargs)
-            
-            # Backward pass
-            loss.backward()
-            optimizer.step()
-        
-        lr = optimizer.param_groups[0]['lr']
-        msg = f"Epoch {epoch+1}/{epochs}: L(Train): {loss.item():.4f}; LR: {lr:.1e}"
-        
-        # test data
-        if dataset_test is not None:
-            model.eval()
-            with torch.no_grad():
-                logits_test, _ = model(dataset_test.xs.to(device))
-                nan_mask = ~torch.isnan(dataset_test.xs[..., :model.n_actions].sum(dim=-1))
-                logits_test = logits_test[nan_mask].to(device)
-                # labels_test = torch.argmax(dataset_test.ys[..., :n_actions].to(device).reshape(-1, n_actions)[nan_mask], dim=-1).reshape(-1).long()
-                labels_test = dataset_test.ys[nan_mask].to(device)
-                loss_test = loss_fn(logits_test, labels_test)
+    try:
+        for epoch in pbar:
             model.train()
-            
-            msg += f"; L(Test): {loss_test.item():.4f}"
-        
-        if scheduler:
-            lr_scheduler.step(loss_test if dataset_test is not None else loss)
+            optimizer.zero_grad()
 
-        pbar.set_postfix_str(msg)
+            # random_indexes = torch.randint(dataset_train.xs.shape[0], (1, dataset_train.xs.shape[0]))[0]
+
+            # xs_train = dataset_train.xs[random_indexes].to(device)
+            # ys_train = dataset_train.ys[random_indexes].to(device)
+            # xs_test = dataset_test.xs.to(device)
+            # ys_test = dataset_test.ys.to(device)
+
+            for batch in dataloader:
+
+                xs, ys = batch[0].to(device), batch[1].to(device)
+
+                # Forward pass
+                logits, _ = model(xs)
+
+                # Reshape for loss computation
+                nan_mask = ~torch.isnan(xs[..., :model.n_actions].sum(dim=-1))
+                logits = logits[nan_mask]
+                labels = ys[nan_mask]
+
+                # Compute loss
+                loss = loss_fn(logits, labels, **loss_kwargs)
+
+                # Backward pass
+                loss.backward()
+                optimizer.step()
+
+            lr = optimizer.param_groups[0]['lr']
+            msg = f"Epoch {epoch+1}/{epochs}: L(Train): {loss.item():.4f}; LR: {lr:.1e}"
+
+            # test data
+            if dataset_test is not None:
+                model.eval()
+                with torch.no_grad():
+                    logits_test, _ = model(dataset_test.xs.to(device))
+                    nan_mask = ~torch.isnan(dataset_test.xs[..., :model.n_actions].sum(dim=-1))
+                    logits_test = logits_test[nan_mask].to(device)
+                    # labels_test = torch.argmax(dataset_test.ys[..., :n_actions].to(device).reshape(-1, n_actions)[nan_mask], dim=-1).reshape(-1).long()
+                    labels_test = dataset_test.ys[nan_mask].to(device)
+                    loss_test = loss_fn(logits_test, labels_test)
+                model.train()
+
+                msg += f"; L(Test): {loss_test.item():.4f}"
+
+            if scheduler:
+                lr_scheduler.step(loss_test if dataset_test is not None else loss)
+
+            pbar.set_postfix_str(msg)
+
+    except KeyboardInterrupt:
+        print('\nTraining interrupted. Returning current model...')
 
     return model
 
