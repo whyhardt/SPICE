@@ -1,0 +1,206 @@
+Continuous Predictive Inference Task — Method Summary
+Weber, Rascu, Foucault, Li, [...], Klein-Flugge, Hunt (2025 draft)
+"From trials to continuous paradigms: efficient, reliable EEG biomarkers of predictive inference in individual participants"
+
+========================================================================
+1. GOAL
+========================================================================
+
+The task is designed to study predictive inference (how people form predictions,
+detect changepoints, and update beliefs under uncertainty) using a continuous
+rather than trial-based paradigm. The core innovation is maximising the density
+of belief-updating events per unit time: laser beam emissions occur every ~300ms
+on average, yielding approximately 600 prediction error events per 3-minute
+block. This represents a roughly tenfold increase in event density compared to
+conventional trial-based predictive inference tasks (where the outcome phase
+occurs every 2-3 seconds). The primary motivation is to obtain reliable
+individual-level EEG temporal response functions (TRFs) of belief updating from
+brief recordings, enabling practical use as biomarkers in clinical populations.
+
+========================================================================
+2. TASK DESIGN
+========================================================================
+
+Cover story. Participants are instructed to "Save the World" by protecting a
+planet from radioactive laser beams. They move a shield (circular arc) around
+a circle on screen using left/right keypresses to catch laser beams emitted
+from the centre of the screen.
+
+Generative process. Laser beams are emitted at frequent but variable intervals
+with a median inter-beam interval of 300ms. The angular position of each beam
+on the circle is drawn from a Gaussian distribution (wrapped modulo 360 deg).
+The mean of this distribution remains fixed for several seconds until a
+"changepoint" occurs, at which point the mean shifts to a new location. The
+variance (stochasticity/noise) and changepoint frequency (volatility) of the
+distribution are fixed within each 3-minute block but vary between blocks.
+
+Prediction error. The prediction error on each beam event is the angular
+distance between the laser beam landing position and the current centre of the
+participant's shield. Unlike trial-based versions where participants explicitly
+report their estimate of the mean after each observation, here participants
+continuously and freely adjust their shield position at any time.
+
+Factorial manipulation (2x2 design):
+  - Changepoint frequency (volatility): high vs. low
+  - Noise (stochasticity): high vs. low
+  This yields four conditions. Participants complete two 3-minute blocks per
+  condition, for a total of eight blocks (24 minutes of recording per session).
+  The current condition is indicated by the colour of the central "radioactive
+  laser source," an association pre-learned during behavioural training.
+
+Expected behavioural effects:
+  - High volatility (more changepoints): faster changepoint detection, steeper
+    integration kernels, and higher weight on the most recent sample.
+  - High noise (more stochasticity): slower changepoint detection, shallower
+    integration kernels, and greater integration over previous samples.
+  These two factors have opposing effects on belief updating, and manipulating
+  them independently allows dissociation in both behaviour and neural signals.
+
+========================================================================
+3. PARTICIPANTS AND STUDY TIMELINE
+========================================================================
+
+The data come from a larger pharmacological study contrasting behaviour and EEG
+during and after ketamine vs. placebo (saline) infusion. The present manuscript
+analyses only baseline data (before infusion) to characterise average effects
+and test-retest reliability.
+
+Sample: 38 healthy volunteers total, 8 excluded (3 pilots, 4 side effects from
+ketamine infusion, 1 hypertensive episode), leaving a final sample of 30
+participants (15 female, ages 18-40, M=24.63, SD=5.43). Paid 250 GBP plus
+performance bonus up to 50 GBP. Approved by University of Oxford CUREC3
+(Ref: R77437/RE001).
+
+Timeline (3 visits):
+  - Visit 1: Screening visit.
+  - Visit 2 and 3 (1 week apart, counterbalanced by gender): Infusion visits
+    (ketamine or placebo). Each visit includes a baseline recording session
+    (before infusion) used for test-retest analyses.
+  - 3 days of online training before each infusion visit: task instructions,
+    two short training blocks (intermediate volatility/noise) on day 1, four
+    blocks (one of each condition) on days 2 and 3. Training teaches the
+    association between laser source colour and environmental condition.
+
+========================================================================
+4. BEHAVIOURAL MEASURES
+========================================================================
+
+Three behavioural indices of belief updating are used to assess sensitivity
+to changepoint frequency and stochasticity:
+
+(a) Reaction time to changepoints. Defined as the time taken for the shield
+    position to cross halfway (in angular space) from the pre-changepoint mean
+    to the post-changepoint mean. This measure is robust against small
+    adjustments near the old mean and failure to fully reach the new mean.
+    Results: faster under high volatility, faster under low noise.
+
+(b) Integration kernels. A regression model estimates the lagged influence of
+    the five most recent signed prediction errors on the decision to move the
+    shield. The difference in weight between the (t-1) and (t-2) beam captures
+    the "steepness" of recency weighting.
+    Results: steeper under high volatility, steeper under low noise.
+
+(c) Peri-changepoint learning rates. The learning rate for each beam event is
+    the fractional movement of the shield toward the beam location. Peri-
+    changepoint learning rates are computed by locking to each changepoint and
+    measuring the transient increase.
+    Results: evoked learning rate change is larger under low volatility and
+    under low noise.
+
+All three behavioural measures show medium-to-strong test-retest reliability
+across sessions one week apart.
+
+========================================================================
+5. EEG ANALYSIS APPROACH
+========================================================================
+
+Because of the high event density (~300ms inter-beam interval), neural
+responses to successive beam events overlap in time. A deconvolutional general
+linear modelling (GLM) approach is used to unmix these overlapping EEG
+responses, estimating temporal response functions (TRFs) to prediction error
+events from -200ms to 1000ms around each laser emission.
+
+Parametric modulators in the GLM:
+  (i)   Sensory change: absolute angular distance from beam(t-1) to beam(t).
+  (ii)  Belief prediction error: absolute angular distance from beam(t) to
+        the current shield position.
+  (iii) Signed belief prediction error: signed (left/right) angular distance
+        from beam(t) to the shield position.
+
+Key EEG findings:
+  - Beam onset evokes a visual negativity ~110ms post-onset at occipital
+    electrode Oz.
+  - A later positive-going potential (250-330ms, central electrode Cz) is
+    sensitive to sensory change magnitude, consistent with P300/sensory
+    surprise.
+  - Belief prediction error yields a triphasic potential most prominent over
+    centroparietal electrodes (CPz), modulated by both volatility and
+    stochasticity.
+  - Signed belief prediction error is lateralised (e.g., right-hemisphere
+    sensors for left-handed button press).
+
+========================================================================
+6. TEST-RETEST RELIABILITY
+========================================================================
+
+TRFs were measured in two baseline sessions one week apart. Despite inter-
+individual variation in waveform morphology, TRFs were highly consistent
+within participants across sessions.
+
+Intraclass correlation (ICC) results:
+  - Using 24 minutes of EEG: ICCs approach 0.9 for all four TRF components
+    (beam onset, sensory change, belief prediction error, signed belief PE).
+  - Using 6 minutes of EEG: ICC > 0.75 for all components (high reliability).
+  - Using 3 minutes of EEG: ICC ~ 0.75 (adequate reliability).
+
+This demonstrates that the high event density of the continuous paradigm
+enables reliable neurophysiological markers of predictive inference at the
+individual level from brief recordings.
+
+========================================================================
+7. USABILITY AND CLINICAL TRANSLATION
+========================================================================
+
+Key usability features:
+  - Minimal training required (3 days of short online sessions before lab
+    visit), unlike previous continuous paradigms that required extensive
+    training (several hours).
+  - Brief recording duration: reliable measures from as few as 6 minutes of
+    EEG data.
+  - Simple instructions and intuitive cover story ("Save the World").
+  - Can be paired with a conventional auditory mismatch negativity (MMN)
+    paradigm running in the background, providing a second pre-attentive
+    marker of predictive inference with known high test-retest reliability.
+  - Documented online repository with task code, analysis scripts, and
+    deployment guidance.
+
+Clinical relevance:
+  - Predictive inference alterations have been implicated in schizophrenia and
+    psychosis (aberrant precision weighting, "jump to conclusions," reduced
+    MMN), autism spectrum conditions (atypical weighting of priors vs. sensory
+    evidence), OCD and compulsivity (excessive information gathering, altered
+    learning rates), and neurodegenerative conditions such as Lewy body
+    dementia (visual hallucinations from failures of perceptual inference).
+  - The 2x2 factorial design enables dissociation of volatility and noise
+    effects, which may differ across clinical populations.
+  - High test-retest reliability supports within-subject longitudinal designs
+    (tracking changes over time or in response to intervention), which the
+    authors argue is more appropriate for clinical translation than cross-
+    sectional between-group comparisons.
+
+========================================================================
+8. KEY DESIGN PARAMETERS (where specified)
+========================================================================
+
+  - Inter-beam interval: median 300ms (variable)
+  - Block duration: 3 minutes
+  - Blocks per condition: 2
+  - Total conditions: 4 (2x2: volatility x noise)
+  - Total recording time per session: 24 minutes (8 blocks)
+  - Beam distribution: Gaussian, wrapped modulo 360 deg
+  - Changepoint structure: mean shifts to new location after several seconds
+  - Shield control: left/right keypress (clockwise/counter-clockwise)
+  - TRF window: -200ms to 1000ms relative to beam onset
+  - Shield width, movement speed, exact changepoint rates, and distribution
+    variances per condition: not specified in this draft (noted as TBD in the
+    methods section)

@@ -43,6 +43,7 @@ CONFIG = SpiceConfig(
         'value_action',
         'value_bias',
         ],
+    
     additional_inputs=(
         'shield_distance_initial',
         'shieldRotation',
