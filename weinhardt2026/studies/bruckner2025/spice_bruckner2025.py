@@ -13,14 +13,14 @@ CONFIG = SpiceConfig(
             ),
         # Changepoint detection: learns omega (surprise-driven) from PE magnitude
         'changepoint_lr_update': (
-            'prediction_error', 
+            # 'prediction_error', 
             'catch', 
             'v_t',
             ),
         'changepoint_lr_decay': (),
         # Base learning rate: learns tau (condition-dependent baseline)
         'uncertainty_lr_update': (
-            'prediction_error', 
+            # 'prediction_error', 
             'catch', 
             'v_t',
             ),
@@ -115,7 +115,7 @@ class SpiceModel(BaseModel):
                 key_state='surprise_value',
                 action_mask=mask_pe_big,
                 inputs=(
-                    prediction_error.detach(),
+                    # prediction_error.detach(),
                     spice_signals.additional_inputs['catch'][trial],
                     spice_signals.additional_inputs['v_t'][trial],
                 ),
@@ -141,7 +141,7 @@ class SpiceModel(BaseModel):
                 key_state='uncertainty_value',
                 action_mask=1-mask_pe_big,
                 inputs=(
-                    prediction_error.detach(),
+                    # prediction_error.detach(),
                     spice_signals.additional_inputs['catch'][trial],
                     spice_signals.additional_inputs['v_t'][trial],
                 ),
