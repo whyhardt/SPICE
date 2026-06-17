@@ -129,7 +129,8 @@ class SpiceConfig():
     def __init__(self,
                  library_setup: Dict[str, Iterable[str]],
                  memory_state: Union[List[str], Dict[str, float]],
-                 states_in_logit: List[str] = None, 
+                 states_in_logit: List[str] = None,
+                 additional_inputs: List[str] = None,
                  ):
         """
         Config class for SPICE model.
@@ -138,9 +139,11 @@ class SpiceConfig():
             library_setup: Dictionary of rnn modules and their input signals (without self-references)
             memory_state: Dictionary of memory state variables and their initial values
             states_in_logit: List of memory states which are included directly in the logit computation. If None: All states are used. 
+            additional_inputs: List of additional control signals in dataset. If None: No additional control signals available
         """
         
         self.library_setup = library_setup
+        self.additional_inputs = additional_inputs if additional_inputs is not None else tuple([])
         
         self.control_signals = []
         for key in library_setup.keys():

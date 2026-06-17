@@ -6,6 +6,8 @@ from tqdm import tqdm
 
 from spice import SpiceEstimator, SpiceDataset, BaseModel, csv_to_dataset, split_data_along_blockdim, dataset_to_csv
 
+from weinhardt2026.studies.hwang2026.spice_hwang2026 import CONFIG
+
 
 # --- Constants ---
 
@@ -31,7 +33,7 @@ def get_dataset(
         df_participant_id='interaction_id',
         df_choice='SigAct_ID1',
         df_feedback=None,
-        additional_inputs=['SigAct_ID2', 'ID1', 'ID2'],
+        additional_inputs=CONFIG.additional_inputs,
     )
 
     n_actions = dataset.n_actions

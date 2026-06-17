@@ -14,32 +14,32 @@ CONFIG = SpiceConfig(
     library_setup={
         # Value learning can depend on recent reward sequence (working memory)
         'value_reward_chosen': [
-            'reward[t]',           
-            'reward[t-1]', 
+            'reward[t]',
+            'reward[t-1]',
             'reward[t-2]',
             'reward[t-3]',
             # 'value_choice',
         ],
         'value_reward_not_chosen': [
-            'reward[t-1]', 
+            'reward[t-1]',
             'reward[t-2]',
             'reward[t-3]',
             # 'value_choice',
             ],
         'value_reward_not_displayed': [
-            'reward[t-1]', 
+            'reward[t-1]',
             'reward[t-2]',
             'reward[t-3]',
             # 'value_choice',
             ],
         'value_choice_chosen': [
-            'choice[t-1]', 
+            'choice[t-1]',
             'choice[t-2]',
             'choice[t-3]',
             # 'value_reward',
             ],
         'value_choice_not_chosen': [
-            'choice[t-1]', 
+            'choice[t-1]',
             'choice[t-2]',
             'choice[t-3]',
             # 'value_reward',
@@ -51,7 +51,7 @@ CONFIG = SpiceConfig(
             # 'value_reward',
             ],
     },
-    
+
     memory_state = {
         'value_reward': 0.5,      # reward value (enables slow learning)
         'value_choice': 0.0,      # choice value (enables slow learning)
@@ -61,7 +61,8 @@ CONFIG = SpiceConfig(
         'buffer_choice_1': 0.5,   # t-1 choice
         'buffer_choice_2': 0.5,   # t-2 choice
         'buffer_choice_3': 0.5,   # t-3 choice
-    }
+    },
+    additional_inputs=('shown_at_0_current', 'shown_at_1_current', 'shown_at_0_next', 'shown_at_1_next'),
 )
 
 
@@ -94,11 +95,10 @@ class SpiceModel(BaseModel):
         spice_signals = self.init_forward_pass(inputs, prev_state)
 
         # Get shown items (raw indices) - these are time-shifted, so they refer to the NEXT trial
-        # additional_inputs shape: [T_out, W, B, n_add]; for RL W=1
-        shown_at_0_current = spice_signals.additional_inputs[:, 0, :, 0].long()  # [T_out, B]
-        shown_at_1_current = spice_signals.additional_inputs[:, 0, :, 1].long()  # [T_out, B]
-        shown_at_0_next = spice_signals.additional_inputs[:, 0, :, 2].long()     # [T_out, B]
-        shown_at_1_next = spice_signals.additional_inputs[:, 0, :, 3].long()     # [T_out, B]
+        shown_at_0_current = spice_signals.additional_inputs['shown_at_0_current'][:, 0, :, :, 0].long()  # [T, E, B]
+        shown_at_1_current = spice_signals.additional_inputs['shown_at_1_current'][:, 0, :, :, 0].long()  # [T, E, B]
+        shown_at_0_next = spice_signals.additional_inputs['shown_at_0_next'][:, 0, :, :, 0].long()        # [T, E, B]
+        shown_at_1_next = spice_signals.additional_inputs['shown_at_1_next'][:, 0, :, :, 0].long()        # [T, E, B]
 
         # perform time-invariant computations
         participant_embedding = self.participant_embedding(spice_signals.participant_ids)

@@ -7,6 +7,7 @@ from spice import SpiceEstimator, SpiceDataset, csv_to_dataset, split_data_along
 
 sys.path.append('../../..')
 from weinhardt2026.utils.task import Env, generate_behavior as _generate_behavior
+from weinhardt2026.studies.bustamante2023.spice_bustamante2023 import CONFIG
 
 
 def get_dataset(path_data: str = None, test_blocks: tuple[int] = None, verbose: bool = False) -> tuple[SpiceDataset, SpiceDataset, dict]:
@@ -21,7 +22,7 @@ def get_dataset(path_data: str = None, test_blocks: tuple[int] = None, verbose: 
         df_choice='decision',
         df_feedback='reward',
         df_block='overall_round',
-        additional_inputs=['harvest_duration', 'travel_duration'],
+        additional_inputs=CONFIG.additional_inputs,
         )
     dataset.normalize_rewards()
 
@@ -56,7 +57,7 @@ def get_dataset(path_data: str = None, test_blocks: tuple[int] = None, verbose: 
     }
     
     return dataset_train, dataset_test, info_dataset
-
+    
 
 class MarginalValueTheoremModel(torch.nn.Module):
     """
@@ -137,11 +138,11 @@ class MarginalValueTheoremModel(torch.nn.Module):
         - delta_i = r_i/tau_i - ro_i
         - ro_{i+1} = ro_i + [1-(1-alpha)^tau_i] · delta_i
         """
-        input_variables, participant_ids, logits, timesteps = self.init_forward_pass(inputs, prev_state, self.batch_first)
+        input_variables, participant_ids, logits, trials = self.init_forward_pass(inputs, prev_state, self.batch_first)
         actions, rewards, harvest_duration, travel_duration = input_variables
 
         # Process each timestep
-        for t in timesteps:
+        for t in trials:
             # Get current timestep data (shape: [batch_size, ...])
             action_t = actions[t]  # (B, n_actions)
             reward_t = rewards[t]  # (B, n_actions)
@@ -434,6 +435,6 @@ def generate_behavior(
             df_choice='decision',
             df_feedback='reward',
             df_block='overall_round',
-            additional_inputs=['harvest_duration', 'travel_duration'],
+            additional_inputs=CONFIG.additional_inputs,
         ),
     )

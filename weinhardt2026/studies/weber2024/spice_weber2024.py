@@ -37,12 +37,25 @@ CONFIG = SpiceConfig(
     },
 
     states_in_logit=[
-        'mean_sin', 
-        'mean_cos', 
-        'value_distance', 
+        'mean_sin',
+        'mean_cos',
+        'value_distance',
         'value_action',
         'value_bias',
         ],
+    additional_inputs=(
+        'shield_distance_initial',
+        'shieldRotation',
+        'laserRotation',
+        'trial_duration_frames',
+        'total_movement_degrees',
+        'frames_spent_moving',
+        'button_press_onsets',
+        'reaction_time_frames',
+        'laser_caught',
+        'volatility',
+        'stochasticity',
+    ),
 )
 
 
@@ -77,27 +90,16 @@ class SpiceModel(BaseModel):
         stayed = spice_signals.actions[..., 0].unsqueeze(-1).expand_as(spice_signals.actions)
         moved = spice_signals.actions[..., 1].unsqueeze(-1).expand_as(spice_signals.actions)
         
-        # Additional inputs expanded to item dimension [T, W, E, B, I]
-        # Indices: 0=shield_distance_initial, 1=shieldRotation, 2=laserRotation, 8=laser_caught
-        shield_rotation_raw = spice_signals.additional_inputs[..., 1].unsqueeze(-1).expand_as(spice_signals.actions)
-        laser_rotation_raw = spice_signals.additional_inputs[..., 2].unsqueeze(-1).expand_as(spice_signals.actions)
-        trial_duration_frames = spice_signals.additional_inputs[..., 3].unsqueeze(-1).expand_as(spice_signals.actions)
-        total_movement_degrees_raw = spice_signals.additional_inputs[..., 4].unsqueeze(-1).expand_as(spice_signals.actions)
-        frames_spent_moving = spice_signals.additional_inputs[..., 5].unsqueeze(-1).expand_as(spice_signals.actions)
-        button_press_onsets = spice_signals.additional_inputs[..., 6].unsqueeze(-1).expand_as(spice_signals.actions)
-        reaction_time_frames = spice_signals.additional_inputs[..., 7].unsqueeze(-1).expand_as(spice_signals.actions)
-        laser_caught = spice_signals.additional_inputs[..., 8].unsqueeze(-1).expand_as(spice_signals.actions)
-        
         # Precompute sin/cos of laser and shield positions (degrees → radians → trig)
-        laser_rad = laser_rotation_raw * (math.pi / 180)
+        laser_rad = spice_signals.additional_inputs['laserRotation'] * (math.pi / 180)
         sin_laser = torch.sin(laser_rad)
         cos_laser = torch.cos(laser_rad)
 
-        shield_rad = shield_rotation_raw * (math.pi / 180)
+        shield_rad = spice_signals.additional_inputs['shieldRotation'] * (math.pi / 180)
         sin_shield = torch.sin(shield_rad)
         cos_shield = torch.cos(shield_rad)
         
-        movement_rad = total_movement_degrees_raw * (math.pi / 180)
+        movement_rad = spice_signals.additional_inputs['total_movement_degrees'] * (math.pi / 180)
         # sin_movement = torch.sin(movement_rad)
         # cos_movement = torch.cos(movement_rad)
         
@@ -107,9 +109,10 @@ class SpiceModel(BaseModel):
             self.state['mean_cos'] = self.state['mean_cos'] + cos_laser[0]
 
         # additional inputs for participant embedding
-        volatility = spice_signals.additional_inputs[..., 9].unsqueeze(-1)
-        stochasticity = spice_signals.additional_inputs[..., 10].unsqueeze(-1)
-        participant_embedding = self.participant_embedding(spice_signals.participant_ids, (volatility, stochasticity))
+        participant_embedding = self.participant_embedding(
+            spice_signals.participant_ids,
+            (spice_signals.additional_inputs['volatility'], spice_signals.additional_inputs['stochasticity']),
+        )
         experiment_embedding = self.experiment_embedding(spice_signals.experiment_ids) if hasattr(self, 'experiment_embedding') else None
 
         for trial in spice_signals.trials:
@@ -184,12 +187,12 @@ class SpiceModel(BaseModel):
                 key_state='value_bias',
                 action_mask=mask_move_value,
                 inputs=(
-                    trial_duration_frames[trial],
+                    spice_signals.additional_inputs['trial_duration_frames'][trial],
                     movement_rad[trial],
-                    frames_spent_moving[trial],
-                    button_press_onsets[trial],
-                    reaction_time_frames[trial],
-                    laser_caught[trial],
+                    spice_signals.additional_inputs['frames_spent_moving'][trial],
+                    spice_signals.additional_inputs['button_press_onsets'][trial],
+                    spice_signals.additional_inputs['reaction_time_frames'][trial],
+                    spice_signals.additional_inputs['laser_caught'][trial],
                     ),
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,

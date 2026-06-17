@@ -10,6 +10,7 @@ from spice import SpiceEstimator, SpiceDataset, csv_to_dataset, split_data_along
 sys.path.append('../../..')
 from weinhardt2026.utils.task import Env, generate_behavior as _generate_behavior
 from weinhardt2026.utils.benchmarking_gru import training
+from weinhardt2026.studies.ganesh2024a.spice_ganesh2024a import CONFIG
 
 
 N_GRID = 100
@@ -377,7 +378,7 @@ def generate_behavior(
             df_choice='choice',
             df_feedback='reward',
             df_block='blocks',
-            additional_inputs=['contrast_difference', 'contrast_difference_next'],
+            additional_inputs=CONFIG.additional_inputs,
         ),
     )
 

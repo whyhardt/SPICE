@@ -6,28 +6,53 @@ from spice import SpiceConfig, BaseModel
 CONFIG = SpiceConfig(
     library_setup={
         # Belief update: learns target position from prediction error
-        'belief_update': ('prediction_error', 'catch', 'catch_trial'),
+        'belief_update': (
+            'prediction_error', 
+            'catch', 
+            'v_t',
+            ),
         # Changepoint detection: learns omega (surprise-driven) from PE magnitude
-        'changepoint': ('prediction_error', 'catch', 'catch_trial'),
+        'changepoint_lr_update': (
+            'prediction_error', 
+            'catch', 
+            'v_t',
+            ),
+        'changepoint_lr_decay': (),
         # Base learning rate: learns tau (condition-dependent baseline)
-        'learning_rate': ('catch', 'catch_trial'),
+        'uncertainty_lr_update': (
+            'prediction_error', 
+            'catch', 
+            'v_t',
+            ),
+        'uncertainty_lr_decay': (),
         # Anchoring bias: learns compensation for bucket displacement
-        'anchor_update': ('anchor_shift',),
+        'anchor_update': (
+            'anchor_shift',
+            ),
     },
 
     memory_state={
         'belief_value': 0.5,      # initial belief = center of screen (normalized)
-        'omega_value': 0.0,       # changepoint probability state (sigmoid(0) = 0.5)
-        'tau_value': 0.0,         # base learning rate state (sigmoid(0) = 0.5)
-        'anchor_value': 0.0,      # per-trial anchoring correction (reset each trial)
+        'surprise_value': None,       # changepoint probability state (sigmoid(0) = 0.5)
+        'uncertainty_value': None,         # base learning rate state (sigmoid(0) = 0.5)
+        'anchor_value': 0,      # per-trial anchoring correction (reset each trial)
     },
-
+    
     states_in_logit=[
         'belief_value',
-        'omega_value',
-        'tau_value',
+        'surprise_value',
+        'uncertainty_value',
         'anchor_value',
     ],
+    
+    additional_inputs=(
+        'z_next',
+        'catch',
+        'v_t',
+        'sigma',
+        'mu_t',
+        'c_t',
+    ),
 )
 
 
@@ -37,16 +62,11 @@ class SpiceModel(BaseModel):
         super().__init__(**kwargs)
 
         self.participant_embedding = self.setup_embedding(num_embeddings=self.n_participants, embedding_size=self.embedding_size)
-
-        # belief_update: 3 control signals (prediction_error, catch, catch_trial)
-        self.setup_module(key_module='belief_update', input_size=3, dropout=self.dropout)
-        # changepoint: 3 control signals (prediction_error, catch, catch_trial)
-        self.setup_module(key_module='changepoint', input_size=3, dropout=self.dropout)
-        # learning_rate: 2 control signals (catch, catch_trial)
-        self.setup_module(key_module='learning_rate', input_size=2, dropout=self.dropout)
+        
+        # setup customized modules
         # anchor_update: 1 control signal (anchor_shift); no state in library (always reset to 0)
-        self.setup_module(key_module='anchor_update', input_size=1, dropout=self.dropout, include_state=False)
-
+        self.setup_module(key_module='anchor_update', dropout=self.dropout, include_state=False)
+        
     def forward(self, inputs, prev_state=None):
 
         spice_signals = self.init_forward_pass(inputs, prev_state)
@@ -54,12 +74,8 @@ class SpiceModel(BaseModel):
         # Extract signals — shapes after init: (T, W, E, B, ...)
         # actions:            b_t / 300   → (T, W, E, B, 1)
         # rewards:            x_t / 300   → (T, W, E, B, 1)
-        # additional_inputs:  [z_{t+1}, catch, v_t, mu_t, c_t] → (T, W, E, B, 5)
         outcome = spice_signals.rewards                                 # x_t / 300
         bucket = spice_signals.actions                                  # b_t / 300
-        z_next = spice_signals.additional_inputs[..., 0].unsqueeze(-1)  # z_{t+1} / 300
-        catch = spice_signals.additional_inputs[..., 1].unsqueeze(-1).expand_as(spice_signals.actions)
-        catch_trial = spice_signals.additional_inputs[..., 2].unsqueeze(-1).expand_as(spice_signals.actions)
 
         # Embeddings
         experiment_embedding = self.experiment_embedding(spice_signals.experiment_ids) if hasattr(self, 'experiment_embedding') else None
@@ -71,7 +87,11 @@ class SpiceModel(BaseModel):
             prediction_error = outcome[trial] - self.state['belief_value']
 
             # --- Anchor shift: bucket displacement from push ---
-            anchor_shift = z_next[trial] - bucket[trial]
+            anchor_shift = spice_signals.additional_inputs['z_next'][trial] - bucket[trial]
+            
+            # --- PE masks: small PE -> uncertainty; big PE -> CP ---
+            # Binary: 1 if |PE| exceeds threshold, 0 otherwise
+            mask_pe_big = (prediction_error.abs() > 3 * spice_signals.additional_inputs['sigma'][trial]).float()
 
             # --- Belief update: learns where the helicopter is ---
             self.call_module(
@@ -80,8 +100,8 @@ class SpiceModel(BaseModel):
                 action_mask=None,
                 inputs=(
                     prediction_error,
-                    catch[trial],
-                    catch_trial[trial],
+                    spice_signals.additional_inputs['catch'][trial],
+                    spice_signals.additional_inputs['v_t'][trial],
                 ),
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
@@ -91,14 +111,24 @@ class SpiceModel(BaseModel):
 
             # --- Changepoint: learns surprise-driven update rate (omega) ---
             self.call_module(
-                key_module='changepoint',
-                key_state='omega_value',
-                action_mask=None,
+                key_module='changepoint_lr_update',
+                key_state='surprise_value',
+                action_mask=mask_pe_big,
                 inputs=(
-                    prediction_error,
-                    catch[trial],
-                    catch_trial[trial],
+                    prediction_error.detach(),
+                    spice_signals.additional_inputs['catch'][trial],
+                    spice_signals.additional_inputs['v_t'][trial],
                 ),
+                participant_index=spice_signals.participant_ids,
+                participant_embedding=participant_embedding,
+                experiment_index=spice_signals.experiment_ids if experiment_embedding is not None else None,
+                experiment_embedding=experiment_embedding,
+            )
+            
+            self.call_module(
+                key_module='changepoint_lr_decay',
+                key_state='surprise_value',
+                action_mask=1-mask_pe_big,
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
                 experiment_index=spice_signals.experiment_ids if experiment_embedding is not None else None,
@@ -107,13 +137,24 @@ class SpiceModel(BaseModel):
 
             # --- Learning rate: learns condition-dependent base rate (tau) ---
             self.call_module(
-                key_module='learning_rate',
-                key_state='tau_value',
-                action_mask=None,
+                key_module='uncertainty_lr_update',
+                key_state='uncertainty_value',
+                action_mask=1-mask_pe_big,
                 inputs=(
-                    catch[trial],
-                    catch_trial[trial],
+                    prediction_error.detach(),
+                    spice_signals.additional_inputs['catch'][trial],
+                    spice_signals.additional_inputs['v_t'][trial],
                 ),
+                participant_index=spice_signals.participant_ids,
+                participant_embedding=participant_embedding,
+                experiment_index=spice_signals.experiment_ids if experiment_embedding is not None else None,
+                experiment_embedding=experiment_embedding,
+            )
+            
+            self.call_module(
+                key_module='uncertainty_lr_decay',
+                key_state='uncertainty_value',
+                action_mask=mask_pe_big,
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
                 experiment_index=spice_signals.experiment_ids if experiment_embedding is not None else None,
@@ -134,10 +175,11 @@ class SpiceModel(BaseModel):
             )
 
             # --- Combined learning rate: alpha = omega + tau - omega*tau ---
-            omega = torch.sigmoid(self.state['omega_value'])
-            tau = torch.sigmoid(self.state['tau_value'])
-            alpha = omega + tau - omega * tau  # = 1 - (1-omega)(1-tau), ∈ [0, 1]
-
+            surprise_lr = torch.sigmoid(self.state['surprise_value'])
+            uncertainty_lr = torch.sigmoid(self.state['uncertainty_value'])
+            # alpha = surprise_lr + uncertainty_lr - surprise_lr * uncertainty_lr  # = 1 - (1-omega)(1-tau), ∈ [0, 1]
+            alpha = mask_pe_big * surprise_lr + (1-mask_pe_big) * uncertainty_lr
+            
             # --- Gated output + anchor correction ---
             spice_signals.logits[trial] = (
                 bucket[trial] + alpha * (self.state['belief_value'] - bucket[trial])

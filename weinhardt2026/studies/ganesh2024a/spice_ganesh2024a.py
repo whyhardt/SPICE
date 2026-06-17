@@ -16,6 +16,7 @@ CONFIG = SpiceConfig(
         'value_reward_contrast': None,
         'value_choice_contrast': None,
     },
+    additional_inputs=('contrast_difference', 'contrast_difference_next'),
 )
 
 
@@ -42,9 +43,8 @@ class SpiceModel(BaseModel):
         spice_signals = self.init_forward_pass(inputs, state)
         
         # feature extraction
-        # scalar contrast difference per trial (T, W, E, B)
-        cd_current = spice_signals.additional_inputs[..., 0]
-        cd_next = spice_signals.additional_inputs[..., 1].unsqueeze(-1)
+        cd_current = spice_signals.additional_inputs['contrast_difference'].squeeze(-1)  # (T, W, E, B)
+        cd_next = spice_signals.additional_inputs['contrast_difference_next']            # (T, W, E, B, 1)
         # repeated to n_actions for module inputs (T, W, E, B, n_actions)
         contr_diff_current = cd_current.unsqueeze(-1).repeat(1, 1, 1, 1, self.n_actions)
         contr_diff_next = cd_next.repeat(1, 1, 1, 1, self.n_actions)

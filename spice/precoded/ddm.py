@@ -12,7 +12,8 @@ SPICE_CONFIG = SpiceConfig(
                 # 'evidence': 0.,
                 'drift': 0,
                 # 'diffusion': 1,
-            }
+            },
+            additional_inputs=('stimulus',),
         )
 
 
@@ -126,7 +127,7 @@ class DDMRNN(BaseModel):
 
         # Single outer timestep (T_out=1): additional_inputs[0] is [W=max_steps, B, n_add]
         # additional_inputs layout: stimulus_strength(0)
-        stimulus = spice_signals.additional_inputs[0, :, :, :, 0].unsqueeze(-1).expand(-1, -1, -1, self.n_actions) # [W, E, B, n_actions]
+        stimulus = spice_signals.additional_inputs['stimulus'][0].expand(-1, -1, -1, self.n_actions) # [W, E, B, n_actions]
 
         self.call_module(
             key_module='drift',

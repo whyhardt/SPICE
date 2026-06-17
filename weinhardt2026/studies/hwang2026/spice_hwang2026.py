@@ -13,6 +13,7 @@ CONFIG = SpiceConfig(
     memory_state={
         'values': 0,
         },
+    additional_inputs=('SigAct_ID2', 'ID1', 'ID2'),
 )
 
 
@@ -46,7 +47,7 @@ class SpiceModel(BaseModel):
         gesture_id1 = spice_signals.actions[..., 2].unsqueeze(-1).expand_as(spice_signals.actions)
         scratch_id1 = spice_signals.actions[..., 3].unsqueeze(-1).expand_as(spice_signals.actions)
         # id 2
-        actions_id2 = torch.eye(self.n_actions, device=self.device)[spice_signals.additional_inputs[..., 0].int()]  # one hot encoding of actions id2
+        actions_id2 = torch.eye(self.n_actions, device=self.device)[spice_signals.additional_inputs['SigAct_ID2'].squeeze(-1).int()]  # one hot encoding of actions id2
         action_id2 = actions_id2[..., 0].unsqueeze(-1).expand_as(spice_signals.actions)
         grooming_id2 = actions_id2[..., 1].unsqueeze(-1).expand_as(spice_signals.actions)
         gesture_id2 = actions_id2[..., 2].unsqueeze(-1).expand_as(spice_signals.actions)

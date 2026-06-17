@@ -266,6 +266,9 @@ class BaseModel(nn.Module):
         self.state = None
         self.init_state()  # initial memory state
         
+        # setup default modules from config
+        self.setup_modules_from_config()
+        
     def forward(self, inputs, state):
         raise NotImplementedError('This method is not implemented.')
     
@@ -300,7 +303,13 @@ class BaseModel(nn.Module):
         spice_signals.rewards = inputs[:, :, :, :, self.n_actions:reward_end].float()
 
         # additional signals: [outer_ts, within_ts, ensemble, batch, n_additional]
-        spice_signals.additional_inputs = inputs[:, :, :, :, reward_end:-5].float()
+        if len(self.spice_config.additional_inputs) > 0:
+            spice_signals.additional_inputs = {}
+            additional_inputs = inputs[:, :, :, :, reward_end:-5].float()
+            if additional_inputs.shape[-1] != len(self.spice_config.additional_inputs):
+                raise ValueError(f"The number of additional inputs in the inputs tensor (dim=-1; index={reward_end}:-5) is different from the list of additional inputs given in SpiceConfig.") 
+            for index_ai, ai in enumerate(self.spice_config.additional_inputs):
+                spice_signals.additional_inputs[ai] = additional_inputs[..., index_ai].unsqueeze(-1)
 
         # static identifiers — (E, B) shaped
         spice_signals.time_trial = inputs[0, :, :, :, -5].int()       # [within_ts, ensemble, batch]
@@ -411,10 +420,17 @@ class BaseModel(nn.Module):
         if self.total_embedding_size > embedding_size:
             self.embedding_fusion = EnsembleEmbeddingFusion(self.ensemble_size, self.total_embedding_size, target_embedding_size)
 
+    def setup_modules_from_config(self, dropout: float = None):
+        if dropout is None:
+            dropout = self.dropout
+            
+        for module in self.spice_config.library_setup:
+            self.setup_module(key_module=module, dropout=dropout)
+    
     def setup_module(
         self, 
         key_module: str, 
-        input_size: int,
+        input_size: int = None,
         embedding_size: int = None,
         dropout: float = 0., 
         polynomial_degree: int = None, 
@@ -425,7 +441,7 @@ class BaseModel(nn.Module):
         """This method creates the standard RNN-module used in computational discovery of cognitive dynamics
 
         Args:
-            input_size (_type_): The number of inputs (excluding the memory state)
+            input_size (_type_): The number of inputs (excluding the memory state); Default to None -> takes input_size from SpiceConfig
             dropout (_type_): Dropout rate before output layer
 
         Returns:
@@ -438,7 +454,10 @@ class BaseModel(nn.Module):
         
         if embedding_size is None:
             embedding_size = self.embedding_size
-            
+        
+        if input_size is None:
+            input_size = len(self.spice_config.library_setup[key_module])
+        
         self.submodules_rnn[key_module] = EnsembleRNNModule(ensemble_size=self.ensemble_size, input_size=input_size, embedding_size=embedding_size, dropout=dropout, compiled_forward=self.compiled_forward)
         self.sindy_specs[key_module] = {}
         self.sindy_specs[key_module]['include_bias'] = include_bias
@@ -507,9 +526,17 @@ class BaseModel(nn.Module):
         elif isinstance(inputs, tuple):
             expanded = []
             for inp in inputs:
+                if inp.shape[-1] == self.n_items:
+                    pass
+                elif inp.shape[-1] == 1 and self.n_items > 1:
+                    inp = inp.expand(-1, -1, -1, self.n_items)
                 expanded.append(inp.unsqueeze(-1))
             inputs = torch.cat(expanded, dim=-1)
         elif isinstance(inputs, torch.Tensor):
+            if inputs.shape[-1] == self.n_items:
+                    pass
+            elif inputs.shape[-1] == 1 and self.n_items > 1:
+                inputs = inputs.expand(-1, -1, -1, self.n_items)
             inputs = inputs.unsqueeze(-1)
 
         W = inputs.shape[0]

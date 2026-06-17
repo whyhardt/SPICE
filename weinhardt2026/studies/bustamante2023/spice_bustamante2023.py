@@ -55,6 +55,7 @@ CONFIG = SpiceConfig(
         'value_depletion_patch',
         'value_continuation_patch',
     ),
+    additional_inputs=('harvest_duration', 'travel_duration'),
 )
 
 

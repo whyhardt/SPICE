@@ -152,6 +152,7 @@ spice_config = SpiceConfig(
         'start_position': None,                  # learnable per-participant initial DDM bias
     },
     states_in_logit=[],                          # logits produced by DDM, not sum-of-states
+    additional_inputs=('laserRotation', 'shieldRotation', 'totalReward'),
 )
 
 
@@ -185,9 +186,9 @@ class SpiceModel(BaseModel):
         # Override logits shape: (T, W, E, B, n_actions=2) instead of standard (T, 1, E, B, A)
         spice_signals.logits = torch.zeros((T, W, E, B, self.n_actions), device=self.device)
 
-        # Get additional inputs: shape (T, W, E, B)
-        laser_rotation = spice_signals.additional_inputs[..., 0].unsqueeze(-1).expand(-1, -1, -1, -1, self.n_items)
-        shield_rotation = spice_signals.additional_inputs[..., 1].unsqueeze(-1).expand(-1, -1, -1, -1, self.n_items)
+        # Get additional inputs: shape (T, W, E, B, 1) → expand to items
+        laser_rotation = spice_signals.additional_inputs['laserRotation'].expand(-1, -1, -1, -1, self.n_items)
+        shield_rotation = spice_signals.additional_inputs['shieldRotation'].expand(-1, -1, -1, -1, self.n_items)
 
         participant_embedding = self.participant_embedding(spice_signals.participant_ids)
         experiment_embedding = self.experiment_embedding(spice_signals.experiment_ids)

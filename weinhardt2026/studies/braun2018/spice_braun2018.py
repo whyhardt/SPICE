@@ -26,14 +26,14 @@ On repeat/switch bias:
 CONFIG = SpiceConfig(
     library_setup={
         'reward_repeat': (
-            'dreward_tasks', 
+            'dreward_tasks',
             # 'dreward_trials_repeat',
             # 'dreward_trials_switch',
             ),
         'reward_switch': (
             'dreward_tasks',
             # 'dreward_trials_repeat',
-            # 'dreward_trials_switch', 
+            # 'dreward_trials_switch',
             ),
         'task_repeat': (
             'repeat',
@@ -53,6 +53,7 @@ CONFIG = SpiceConfig(
         'value_control': None,
         'value_fatigue': None,
     },
+    additional_inputs=('difference', 'current', 'other'),
 )
 
 
@@ -76,11 +77,6 @@ class SpiceModel(BaseModel):
         
         spice_signals = self.init_forward_pass(inputs, prev_state)
         
-        dreward_tasks_current = -spice_signals.additional_inputs[..., 0].unsqueeze(-1).expand_as(spice_signals.actions)
-        dreward_tasks_other = spice_signals.additional_inputs[..., 0].unsqueeze(-1).expand_as(spice_signals.actions)
-        dreward_trials_current = spice_signals.additional_inputs[..., 1].unsqueeze(-1).expand_as(spice_signals.actions)
-        dreward_trials_other = spice_signals.additional_inputs[..., 2].unsqueeze(-1).expand_as(spice_signals.actions)
-        # rt = spice_signals.additional_inputs[..., 3].unsqueeze(-1).expand_as(spice_signals.actions)
         blocks = spice_signals.blocks.unsqueeze(0).unsqueeze(-1).expand_as(spice_signals.actions[0]) / self.n_blocks
         
         repeat = torch.zeros_like(spice_signals.actions)
@@ -102,7 +98,7 @@ class SpiceModel(BaseModel):
                 key_module='reward_repeat',
                 # key_state='value_reward',
                 action_mask=repeat_mask,
-                inputs=dreward_tasks_current[trial],
+                inputs=-spice_signals.additional_inputs['difference'][trial],
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
             )
@@ -110,7 +106,7 @@ class SpiceModel(BaseModel):
                 key_module='reward_switch',
                 # key_state='value_reward',
                 action_mask=switch_mask,
-                inputs=dreward_tasks_other[trial],
+                inputs=spice_signals.additional_inputs['difference'][trial],
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
             )

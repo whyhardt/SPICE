@@ -7,6 +7,7 @@ from spice import SpiceEstimator, SpiceDataset, csv_to_dataset, split_data_along
 
 sys.path.append('../../..')
 from weinhardt2026.utils.task import Env, generate_behavior as _generate_behavior
+from weinhardt2026.studies.braun2018.spice_braun2018 import CONFIG
 
 
 def get_dataset(path_data: str = None, test_blocks: tuple[int] = None, verbose: bool = False) -> tuple[SpiceDataset, SpiceDataset, dict]:
@@ -20,7 +21,7 @@ def get_dataset(path_data: str = None, test_blocks: tuple[int] = None, verbose: 
         df_choice='transcode',
         df_feedback=None,
         df_block='block',
-        additional_inputs=('difference', 'current', 'other'),
+        additional_inputs=CONFIG.additional_inputs,
         timeshift_additional_inputs=(-1, -1, -1),
     )
 
@@ -328,6 +329,6 @@ def generate_behavior(
             df_choice='transcode',
             df_feedback='reward',
             df_block='block',
-            additional_inputs=['difference', 'current', 'other'],
+            additional_inputs=CONFIG.additional_inputs,
         ),
     )

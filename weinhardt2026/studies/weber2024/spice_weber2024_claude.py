@@ -27,6 +27,19 @@ CONFIG = SpiceConfig(
         'shield_laser_distance[t-1]': 0, # previous trig distance for drift computation
     },
     states_in_logit=['mean_sin', 'mean_cos', 'value_distance', 'value_drift', 'value_perseveration'],
+    additional_inputs=(
+        'shield_distance_initial',
+        'shieldRotation',
+        'laserRotation',
+        'trial_duration_frames',
+        'total_movement_degrees',
+        'frames_spent_moving',
+        'button_press_onsets',
+        'reaction_time_frames',
+        'laser_caught',
+        'volatility',
+        'stochasticity',
+    ),
 )
 
 
@@ -75,18 +88,12 @@ class SpiceModel(BaseModel):
         action_stay = spice_signals.actions[..., 0].unsqueeze(-1).expand_as(spice_signals.actions)
         action_move = spice_signals.actions[..., 1].unsqueeze(-1).expand_as(spice_signals.actions)
 
-        # Additional inputs expanded to item dimension [T, W, E, B, I]
-        # Indices: 0=shield_distance_initial, 1=shieldRotation, 2=laserRotation, 8=laser_caught
-        shield_rotation_raw = spice_signals.additional_inputs[..., 1].unsqueeze(-1).expand_as(spice_signals.actions)
-        laser_rotation_raw = spice_signals.additional_inputs[..., 2].unsqueeze(-1).expand_as(spice_signals.actions)
-        laser_caught_raw = spice_signals.additional_inputs[..., 8].unsqueeze(-1).expand_as(spice_signals.actions)
-
         # Precompute sin/cos of laser and shield positions (degrees → radians → trig)
-        laser_rad = laser_rotation_raw * (math.pi / 180)
+        laser_rad = spice_signals.additional_inputs['laserRotation'] * (math.pi / 180)
         sin_laser = torch.sin(laser_rad)
         cos_laser = torch.cos(laser_rad)
 
-        shield_rad = shield_rotation_raw * (math.pi / 180)
+        shield_rad = spice_signals.additional_inputs['shieldRotation'] * (math.pi / 180)
         sin_shield = torch.sin(shield_rad)
         cos_shield = torch.cos(shield_rad)
 
@@ -143,15 +150,12 @@ class SpiceModel(BaseModel):
             # Distance rate of change (drift signal)
             ddistance = shield_laser_distance - self.state['shield_laser_distance[t-1]']
 
-            # Laser caught (already binary)
-            laser_caught = laser_caught_raw[trial]
-
             # --- Distance processing (fast timescale, like reward_patch in foraging) ---
             self.call_module(
                 key_module='distance_stay',
                 key_state='value_distance',
                 action_mask=stayed,
-                inputs=(shield_laser_distance, shield_mean_distance, laser_caught),
+                inputs=(shield_laser_distance, shield_mean_distance, spice_signals.additional_inputs['laser_caught'][trial]),
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
                 experiment_index=spice_signals.experiment_ids,
@@ -162,7 +166,7 @@ class SpiceModel(BaseModel):
                 key_module='distance_move',
                 key_state='value_distance',
                 action_mask=moved,
-                inputs=(shield_laser_distance, shield_mean_distance, laser_caught),
+                inputs=(shield_laser_distance, shield_mean_distance, spice_signals.additional_inputs['laser_caught'][trial]),
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
                 experiment_index=spice_signals.experiment_ids,

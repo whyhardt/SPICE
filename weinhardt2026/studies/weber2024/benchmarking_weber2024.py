@@ -5,6 +5,8 @@ from tqdm import tqdm
 
 from spice import SpiceEstimator, SpiceDataset, BaseModel, csv_to_dataset, split_data_along_blockdim, dataset_to_csv
 
+from weinhardt2026.studies.weber2024.spice_weber2024 import CONFIG
+
 
 # --- Constants ---
 
@@ -94,19 +96,7 @@ def get_dataset(path_data: str = None, test_blocks: tuple[int] = None):
         df_choice='action',
         df_feedback=None,
         df_block='block',
-        additional_inputs=[
-            'shield_distance_initial',
-            'shieldRotation',
-            'laserRotation',
-            'trial_duration_frames',
-            'total_movement_degrees',
-            'frames_spent_moving',
-            'button_press_onsets',
-            'reaction_time_frames',
-            'laser_caught',
-            'volatility',
-            'stochasticity',
-            ],
+        additional_inputs=CONFIG.additional_inputs,
     )
     
     if test_blocks is not None:

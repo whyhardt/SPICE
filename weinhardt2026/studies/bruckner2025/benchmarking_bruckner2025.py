@@ -8,6 +8,8 @@ from tqdm import tqdm
 
 from spice import SpiceEstimator, SpiceDataset, BaseModel, split_data_along_blockdim, dataset_to_csv, csv_to_dataset
 
+from spice_bruckner2025 import CONFIG
+
 
 # --- Constants ---
 
@@ -20,8 +22,9 @@ N_TRIALS_PER_BLOCK = 100
 _AI_Z_NEXT = 0      # next trial's initial bucket position z_{t+1} (normalized)
 _AI_CATCH = 1        # binary: caught the coin
 _AI_V_T = 2          # helicopter visible on next trial (timeshifted -1)
-_AI_MU_T = 3         # true helicopter position (normalized)
-_AI_C_T = 4          # change point indicator
+_AI_SIGMA = 3        # outcome noise std (normalized)
+_AI_MU_T = 4         # true helicopter position (normalized)
+_AI_C_T = 5          # change point indicator
 
 
 # --- MSE loss compatible with SPICE training pipeline ---
@@ -44,14 +47,15 @@ def get_dataset(
 ) -> tuple[SpiceDataset, SpiceDataset]:
     """Load bruckner2025 data and build a SpiceDataset for continuous prediction.
 
-    Feature layout of xs (n_features = 1 + 1 + 5 + 5 = 12):
+    Feature layout of xs (n_features = 1 + 1 + 6 + 5 = 13):
         [0]  b_t / 300       — "action" (bucket position, normalized)
         [1]  x_t / 300       — "reward" (outcome position, normalized)
         [2]  z_{t+1} / 300   — additional input 0: next trial's initial bucket position
         [3]  catch            — additional input 1: binary coin catch flag
         [4]  v_{t+1}          — additional input 2: helicopter visible on next trial (timeshifted -1)
-        [5]  mu_t / 300       — additional input 3: true helicopter position
-        [6]  c_t              — additional input 4: change point indicator
+        [5]  sigma / 300      — additional input 3: outcome noise std (normalized)
+        [6]  mu_t / 300       — additional input 4: true helicopter position
+        [7]  c_t              — additional input 5: change point indicator
         [-5] time_trial      — always 0
         [-4] trial index     — 0-based
         [-3] block           — raw block id from CSV
@@ -69,22 +73,16 @@ def get_dataset(
     df['z_next'] = df.groupby(['participant', 'experiment', 'block'])['z_t'].shift(-1)
 
     # Normalize positions to [0, 1]
-    for col in ['b_t', 'x_t', 'mu_t', 'z_next']:
+    for col in ['b_t', 'x_t', 'mu_t', 'z_next', 'sigma']:
         df[col] = df[col] / POSITION_SCALE
 
     dataset = csv_to_dataset(
         file=df,
         df_choice='b_t',
         df_feedback='x_t',
-        additional_inputs=(
-            'z_next',
-            'catch',
-            'v_t',
-            'mu_t',
-            'c_t',
-            ),
+        additional_inputs=CONFIG.additional_inputs,
         continuous_action=True,
-        timeshift_additional_inputs=(0, 0, -1, 0, 0),
+        timeshift_additional_inputs=(0, 0, -1, 0, 0, 0),
     )
 
     if test_blocks is not None:

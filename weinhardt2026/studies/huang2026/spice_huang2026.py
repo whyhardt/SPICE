@@ -53,7 +53,8 @@ CONFIG = SpiceConfig(
         'movement_value': None,
     },
     
-    states_in_logit=['information_value_self', 'information_value_partner', 'movement_value']
+    states_in_logit=['information_value_self', 'information_value_partner', 'movement_value'],
+    additional_inputs=('partner_tile_index', 'time_point'),
 )
 
 
@@ -119,8 +120,8 @@ class SpiceModel(BaseModel):
         
         # Get additional inputs
         # trial_progress = spice_signals.blocks.reshape(1, self.ensemble_size, -1, 1).repeat(1, 1, 1, self.n_actions) / spice_signals.blocks.max()
-        tiles_visited_partner = spice_signals.additional_inputs[..., 0].long()
-        time_point = spice_signals.additional_inputs[..., 1] / self.time_max
+        tiles_visited_partner = spice_signals.additional_inputs['partner_tile_index'].squeeze(-1).long()
+        time_point = spice_signals.additional_inputs['time_point'].squeeze(-1) / self.time_max
         
         # One-hot encode partner actions
         actions_partner = torch.nn.functional.one_hot(tiles_visited_partner, num_classes=self.n_actions)
