@@ -86,8 +86,8 @@ def _compute_metrics(bucket, outcome, mu_t, c_t, valid):
     lr = np.clip(lr, 0, 2)
     avg_lr = np.nanmean(lr, axis=1)
 
-    # Perseveration: P(update == 0)
-    p_perseveration = np.nanmean(np.abs(update) < 1e-6, axis=1)
+    # Perseveration: P(|update| < 10 pixels)
+    p_perseveration = np.nanmean(np.abs(update) < 10.0 / POSITION_SCALE, axis=1)
 
     # Post change-point learning rate (trials 1-3 after a CP)
     post_cp_lr = np.full(n_sessions, np.nan)
