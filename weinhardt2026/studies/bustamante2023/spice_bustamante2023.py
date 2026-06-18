@@ -91,7 +91,7 @@ class SpiceModel(BaseModel):
         
         action_harvest = spice_signals.actions[..., 0].unsqueeze(-1).expand_as(spice_signals.actions)
         action_exit = spice_signals.actions[..., 1].unsqueeze(-1).expand_as(spice_signals.actions)
-        rewards = spice_signals.rewards[..., 0].unsqueeze(-1).expand_as(spice_signals.actions)
+        rewards = spice_signals.feedback[..., 0].unsqueeze(-1).expand_as(spice_signals.actions)
         
         participant_embedding = self.participant_embedding(spice_signals.participant_ids)
                 

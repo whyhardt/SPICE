@@ -107,7 +107,7 @@ class SpiceModel(BaseModel):
         for timestep in spice_signals.trials:
 
             actions_t = spice_signals.actions[timestep, 0]   # [B, n_actions]
-            rewards_t = spice_signals.rewards[timestep, 0]   # [B, n_actions]
+            rewards_t = spice_signals.feedback[timestep, 0]   # [B, n_actions]
 
             # Transform input data from action space to item space
 

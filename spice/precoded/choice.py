@@ -59,7 +59,7 @@ class SpiceModel(BaseModel):
                 key_module='value_reward_chosen',
                 key_state='value_reward',
                 action_mask=spice_signals.actions[timestep],
-                inputs=spice_signals.rewards[timestep],
+                inputs=spice_signals.feedback[timestep],
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
                 experiment_index=spice_signals.experiment_ids,

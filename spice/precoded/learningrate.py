@@ -73,7 +73,7 @@ class SpiceModel(BaseModel):
                 key_state='learning_rate_reward',
                 action_mask=spice_signals.actions[timestep, 0],
                 inputs=(
-                    spice_signals.rewards[timestep, 0],
+                    spice_signals.feedback[timestep, 0],
                     self.state['value_reward'],
                     ),
                 activation_rnn=torch.nn.functional.sigmoid,
@@ -86,7 +86,7 @@ class SpiceModel(BaseModel):
                 key_state='value_reward',
                 action_mask=spice_signals.actions[timestep, 0],
                 inputs=(
-                    spice_signals.rewards[timestep, 0],
+                    spice_signals.feedback[timestep, 0],
                     learning_rate_reward,
                     ),
                 )

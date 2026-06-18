@@ -206,7 +206,7 @@ class SpiceSignals:
         self.experiment_ids = None
         self.blocks = None
         self.actions = None
-        self.rewards = None
+        self.feedback = None
         self.trials = None
         self.time_trial = None
         self.additional_inputs = None

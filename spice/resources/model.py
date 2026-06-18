@@ -300,7 +300,7 @@ class BaseModel(nn.Module):
 
         # item-specific signals: [outer_ts, within_ts, ensemble, batch, n_actions/n_rewards]
         spice_signals.actions = inputs[:, :, :, :, :self.n_actions].float()
-        spice_signals.rewards = inputs[:, :, :, :, self.n_actions:reward_end].float()
+        spice_signals.feedback = inputs[:, :, :, :, self.n_actions:reward_end].float()
 
         # additional signals: [outer_ts, within_ts, ensemble, batch, n_additional]
         if len(self.spice_config.additional_inputs) > 0:

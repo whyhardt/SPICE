@@ -5,8 +5,8 @@ import re
 from tqdm import tqdm
 
 # Update this path to your local raw data directory
-path = 'weinhardt2026/studies/archive/weber2024/data_raw'
-target_file = 'weinhardt2026/studies/archive/weber2024/data/weber2024.csv'
+path = 'weinhardt2026/studies/weber2024/data_raw'
+target_file = 'weinhardt2026/studies/weber2024/data/weber2024.csv'
 data_condition = lambda filename: 'baseline' in filename
 
 # Safely identify all participant directories
@@ -104,6 +104,7 @@ for d in tqdm(dirs):
                 'hit_occurred': group['currentHit'].any(),
                 'reward_change': group['totalReward'].iloc[0] - prev_total_reward,
                 'total_reward': group['totalReward'].iloc[0],
+                'trueMean': group['trueMean'].iloc[0],
             })
             prev_total_reward = group['totalReward'].iloc[-1]
             
@@ -127,7 +128,8 @@ if all_subject_events:
         'volatility', 'stochasticity', 'shieldRotation', 'laserRotation', 'next_laserRotation', 'action',
         'trial_duration_frames', 'shield_distance_initial', 'total_movement_degrees', 
         'frames_spent_moving', 'button_press_onsets', 'reaction_time_frames', 
-        'laser_caught', 'hit_occurred', 'reward_change', 'total_reward'
+        'laser_caught', 'hit_occurred', 'reward_change', 'total_reward',
+        'trueMean'
     ]
     df_master = df_master[columns_ordered]
     

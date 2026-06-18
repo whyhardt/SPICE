@@ -101,7 +101,7 @@ class SpiceModel(BaseModel):
                 key_state='value_reward',
                 action_mask=spice_signals.actions[trial],
                 inputs=(
-                    spice_signals.rewards[trial],
+                    spice_signals.feedback[trial],
                     self.state['buffer_reward_1'],
                     self.state['buffer_reward_2'],
                     self.state['buffer_reward_3'],
@@ -168,7 +168,7 @@ class SpiceModel(BaseModel):
             # ACTION BUFFER UPDATES: Shift all buffer entries according to action
             self.state['buffer_reward_3'] = self.state['buffer_reward_2'] * spice_signals.actions[trial] + self.state['buffer_reward_3'] * (1-spice_signals.actions[trial])
             self.state['buffer_reward_2'] = self.state['buffer_reward_1'] * spice_signals.actions[trial] + self.state['buffer_reward_2'] * (1-spice_signals.actions[trial])
-            self.state['buffer_reward_1'] = torch.where(spice_signals.actions[trial]==1, spice_signals.rewards[trial], 0) + torch.where(spice_signals.actions[trial]==0, self.state['buffer_reward_1'], 0)
+            self.state['buffer_reward_1'] = torch.where(spice_signals.actions[trial]==1, spice_signals.feedback[trial], 0) + torch.where(spice_signals.actions[trial]==0, self.state['buffer_reward_1'], 0)
             self.state['buffer_action_3'] = self.state['buffer_action_2']
             self.state['buffer_action_2'] = self.state['buffer_action_1']
             self.state['buffer_action_1'] = spice_signals.actions[trial]

@@ -86,7 +86,7 @@ class QLearning(BaseModel):
                 key_module='value_reward_chosen',
                 key_state='value_reward',
                 inputs=(
-                    spice_signals.rewards[timestep],
+                    spice_signals.feedback[timestep],
                 ),
                 action_mask=spice_signals.actions[timestep],
                 participant_index=spice_signals.participant_ids,

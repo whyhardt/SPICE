@@ -3,16 +3,16 @@ import torch
 import torch.nn as nn
 
 from spice import SpiceEstimator, SpiceConfig, BaseModel, SpiceDataset, split_data_along_blockdim
-from spice_weber2024_continuous import SpiceModel, CONFIG
+from weinhardt2026.studies.weber2024.spice_weber2024 import SpiceModel, CONFIG
 
 import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parents[3]))
 from weinhardt2026.utils.benchmarking_gru import GRUModel, training
-from weinhardt2026.studies.weber2024.benchmarking_weber2024_continuous import (
+from weinhardt2026.studies.weber2024.benchmarking_weber2024 import (
     get_dataset, clamped_angular_mse, generate_behavior,
 )
-from weinhardt2026.studies.weber2024.analysis_generative_continuous import analysis_generative_behavior
+from weinhardt2026.studies.weber2024.analysis_generative import analysis_generative_behavior
 from weinhardt2026.analysis.analysis_model_evaluation import analysis_model_evaluation_mse
 
 
@@ -86,7 +86,7 @@ path_gru = 'weinhardt2026/studies/weber2024/params/gru_weber2024_continuous.pkl'
 
 gru = GRUModel(
     n_actions=2,                                    # output: belief_sin, belief_cos
-    additional_inputs=3,                            # laser_caught, volatility, stochasticity, trial_duration_frames
+    additional_inputs=1,                            # laser_caught, volatility, stochasticity, trial_duration_frames
     n_reward_features=dataset_train.n_reward_features,
     # n_participants=dataset_train.n_participants,
     # n_experiments=dataset_train.n_experiments,
@@ -111,76 +111,12 @@ else:
 
 
 # -------------------------------------------------------------------------------------------
-# ANALYSIS: PLAUSIBILITY CHECK
+# ANALYSIS: EXAMPLE SPICE MODEL
 # -------------------------------------------------------------------------------------------
 
-import matplotlib.pyplot as plt
-
-with torch.no_grad():
-    gru.eval().to(torch.device('cpu'))
-    predictions_gru, _ = gru(dataset.xs)
-    estimator.set_device(torch.device('cpu'))
-    estimator.eval()
-    estimator.use_sindy(False)
-    predictions_spice_rnn = torch.tensor(estimator.predict(dataset.xs))
-    estimator.use_sindy(True)
-    predictions_spice_sym = torch.tensor(estimator.predict(dataset.xs))
-
-# Plot for session 0, trials 5–45
-session = 0
-t_start, t_end = 5, min(45, dataset.xs.shape[1])
-trials = range(t_start, t_end)
-
-# Convert sin/cos predictions back to degrees via atan2
-def sincos_to_degrees(sin_vals, cos_vals):
-    return torch.atan2(sin_vals, cos_vals) * (180.0 / math.pi) % 360
-
-# Ground truth positions (from xs)
-shield_sin = dataset.xs[session, t_start:t_end, 0, 0]
-shield_cos = dataset.xs[session, t_start:t_end, 0, 1]
-laser_sin = dataset.xs[session, t_start:t_end, 0, 2]
-laser_cos = dataset.xs[session, t_start:t_end, 0, 3]
-
-actual_shield_deg = sincos_to_degrees(shield_sin, shield_cos)
-actual_laser_deg = sincos_to_degrees(laser_sin, laser_cos)
-
-# Model predictions → degrees
-pred_gru_deg = sincos_to_degrees(
-    predictions_gru[session, t_start:t_end, 0, 0],
-    predictions_gru[session, t_start:t_end, 0, 1],
-)
-pred_spice_rnn_deg = sincos_to_degrees(
-    predictions_spice_rnn[session, t_start:t_end, 0, 0],
-    predictions_spice_rnn[session, t_start:t_end, 0, 1],
-)
-pred_spice_sym_deg = sincos_to_degrees(
-    predictions_spice_sym[session, t_start:t_end, 0, 0],
-    predictions_spice_sym[session, t_start:t_end, 0, 1],
-)
-
-fig, axs = plt.subplots(2, 1, figsize=(12, 6), sharex=True)
-
-# Top: actual positions
-axs[0].scatter(list(trials), actual_laser_deg.numpy(), c='red', s=15, alpha=0.6, label='Laser', zorder=3)
-axs[0].plot(list(trials), actual_shield_deg.numpy(), 'b-', label='Shield (human)')
-axs[0].set_ylabel('Position (degrees)')
-axs[0].set_title('Actual Positions')
-axs[0].legend(fontsize=8)
-axs[0].grid(alpha=0.3)
-
-# Bottom: model predictions vs actual shield
-axs[1].plot(list(trials), actual_shield_deg.numpy(), 'b-', alpha=0.4, label='Shield (human)')
-axs[1].plot(list(trials), pred_gru_deg.numpy(), 'g-', label='GRU')
-axs[1].plot(list(trials), pred_spice_rnn_deg.numpy(), 'r--', label='SPICE-RNN')
-axs[1].plot(list(trials), pred_spice_sym_deg.numpy(), 'r-', label='SPICE-SYM')
-axs[1].set_ylabel('Predicted Position (degrees)')
-axs[1].set_xlabel('Trial')
-axs[1].set_title('Model Predictions vs Human Shield Position')
-axs[1].legend(fontsize=8)
-axs[1].grid(alpha=0.3)
-
-plt.tight_layout()
-plt.show()
+participant_id = 0
+print(f"Example SPICE model from participant {participant_id}:")
+estimator.print_spice_model(participant_id=participant_id)
 
 
 # -------------------------------------------------------------------------------------------
@@ -200,6 +136,141 @@ df_mse = analysis_model_evaluation_mse(
     output_dir='weinhardt2026/studies/weber2024/results',
     verbose=True,
 )
+
+
+# -------------------------------------------------------------------------------------------
+# ANALYSIS: PLAUSIBILITY CHECK
+# -------------------------------------------------------------------------------------------
+
+import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
+
+session = 0
+t_start, t_end = 5, min(45, dataset.xs.shape[1])
+trials = range(t_start, t_end)
+
+def sincos_to_degrees(sin_vals, cos_vals):
+    return torch.atan2(sin_vals, cos_vals) * (180.0 / math.pi) % 360
+
+# --- Extract predictions ---
+with torch.no_grad():
+    gru.eval().to(torch.device('cpu'))
+    predictions_gru, _ = gru(dataset.xs)
+    estimator.set_device(torch.device('cpu'))
+    estimator.eval()
+    estimator.use_sindy(False)
+    predictions_spice_rnn = torch.tensor(estimator.predict(dataset.xs))
+    estimator.use_sindy(True)
+    predictions_spice_sym = torch.tensor(estimator.predict(dataset.xs))
+
+# --- Extract per-trial SPICE internal states (belief, learning rate) ---
+def extract_spice_states(model, xs_session):
+    """Run model trial-by-trial to capture per-trial belief and learning rate."""
+    beliefs_sin, beliefs_cos, lrs = [], [], []
+    prev_state = None
+    for t in range(xs_session.shape[1]):
+        xs_trial = xs_session[:, t:t+1]
+        _, prev_state = model(xs_trial, prev_state)
+        belief = model.state['belief_value']   # (W, E, B, I=2)
+        lr = torch.sigmoid(model.state['lr_value'])
+        beliefs_sin.append(belief[0, 0, 0, 0].item())
+        beliefs_cos.append(belief[0, 0, 0, 1].item())
+        lrs.append(lr[0, 0, 0, :].mean().item())
+    return beliefs_sin, beliefs_cos, lrs
+
+with torch.no_grad():
+    model = estimator.model
+    model.eval()
+    xs_sess = dataset.xs[session:session+1]
+
+    model.use_sindy = False
+    bs_rnn, bc_rnn, lr_rnn = extract_spice_states(model, xs_sess)
+
+    model.use_sindy = True
+    bs_sym, bc_sym, lr_sym = extract_spice_states(model, xs_sess)
+
+# --- Compute degrees for all quantities ---
+shield_sin = dataset.xs[session, t_start:t_end, 0, 0]
+shield_cos = dataset.xs[session, t_start:t_end, 0, 1]
+laser_sin = dataset.xs[session, t_start:t_end, 0, 2]
+laser_cos = dataset.xs[session, t_start:t_end, 0, 3]
+caught_vals = dataset.xs[session, t_start:t_end, 0, 4].numpy()
+true_mean = dataset.xs[session, t_start:t_end, 0, -6].numpy()
+
+actual_shield_deg = sincos_to_degrees(shield_sin, shield_cos)
+actual_laser_deg = sincos_to_degrees(laser_sin, laser_cos)
+
+belief_rnn_deg = sincos_to_degrees(
+    torch.tensor(bs_rnn[t_start:t_end]), torch.tensor(bc_rnn[t_start:t_end]),
+)
+belief_sym_deg = sincos_to_degrees(
+    torch.tensor(bs_sym[t_start:t_end]), torch.tensor(bc_sym[t_start:t_end]),
+)
+
+pred_gru_deg = sincos_to_degrees(
+    predictions_gru[session, t_start:t_end, 0, 0],
+    predictions_gru[session, t_start:t_end, 0, 1],
+)
+pred_spice_rnn_deg = sincos_to_degrees(
+    predictions_spice_rnn[session, t_start:t_end, 0, 0],
+    predictions_spice_rnn[session, t_start:t_end, 0, 1],
+)
+pred_spice_sym_deg = sincos_to_degrees(
+    predictions_spice_sym[session, t_start:t_end, 0, 0],
+    predictions_spice_sym[session, t_start:t_end, 0, 1],
+)
+
+caught_trials = [t for t, c in zip(trials, caught_vals) if c > 0.5]
+
+# --- Plot: 4 panels ---
+fig, axs = plt.subplots(4, 1, figsize=(12, 10), sharex=True,
+                         gridspec_kw={'height_ratios': [1, 1, 1, 0.6]})
+
+# (1) Actual positions: laser + shield
+axs[0].scatter(list(trials), actual_laser_deg.numpy(), c='blue', s=15, alpha=0.6, label='Laser', zorder=3)
+axs[0].plot(list(trials), true_mean, 'b-', label='True Mean')
+axs[0].plot(list(trials), actual_shield_deg.numpy(), 'b-', alpha=0.4, label='Shield (human)')
+axs[0].set_ylabel('Position (degrees)')
+axs[0].set_title('Actual Positions')
+axs[0].legend(fontsize=8)
+axs[0].grid(alpha=0.3)
+
+# (3) Model predictions vs human shield
+axs[1].plot(list(trials), actual_shield_deg.numpy(), 'b-', alpha=0.4, label='Shield (human)')
+axs[1].plot(list(trials), pred_gru_deg.numpy(), 'g-', label='GRU')
+axs[1].plot(list(trials), pred_spice_rnn_deg.numpy(), 'r--', label='SPICE-RNN')
+axs[1].plot(list(trials), pred_spice_sym_deg.numpy(), 'r-', label='SPICE-SYM')
+axs[1].set_ylabel('Predicted Position (degrees)')
+axs[1].set_title('Model Predictions vs Human Shield Position')
+axs[1].legend(fontsize=8)
+axs[1].grid(alpha=0.3)
+
+# (2) SPICE internal belief vs laser observations
+axs[2].scatter(list(trials), actual_laser_deg.numpy(), c='blue', s=15, alpha=0.6, label='Laser', zorder=3)
+axs[2].plot(list(trials), true_mean, 'b-', label='True Mean')
+axs[2].plot(list(trials), belief_rnn_deg.numpy(), 'r--', label='Belief (RNN)')
+axs[2].plot(list(trials), belief_sym_deg.numpy(), 'r-', label='Belief (SYM)')
+axs[2].set_ylabel('Position (degrees)')
+axs[2].set_title('SPICE Internal Belief vs Laser')
+axs[2].legend(fontsize=8)
+axs[2].grid(alpha=0.3)
+
+# (4) Dynamic learning rate + catch ticks
+axs[3].plot(list(trials), lr_rnn[t_start:t_end], 'r--', label='α (RNN)')
+axs[3].plot(list(trials), lr_sym[t_start:t_end], 'r-', label='α (SYM)')
+axs[3].set_ylabel('Learning Rate (α)')
+axs[3].set_xlabel('Trial')
+axs[3].set_title('Dynamic Learning Rate')
+axs[3].grid(alpha=0.3)
+for ct in caught_trials:
+    axs[3].axvline(ct, ymin=0, ymax=0.06, color='green', linewidth=1.5, alpha=0.7)
+handles, labels = axs[3].get_legend_handles_labels()
+handles.append(Line2D([0], [0], color='green', lw=1.5))
+labels.append('Caught')
+axs[3].legend(handles=handles, labels=labels, fontsize=8)
+
+plt.tight_layout()
+plt.show()
 
 
 # -------------------------------------------------------------------------------------------

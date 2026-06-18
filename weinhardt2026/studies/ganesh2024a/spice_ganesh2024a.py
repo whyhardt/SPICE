@@ -59,7 +59,7 @@ class SpiceModel(BaseModel):
         action_contrast[..., 1] = (((cd_current <= 0) & (chose == 1)) | ((cd_current > 0) & (chose == 0))).float()
         
         # Scalar reward per trial (sum over one-hot reward vector)
-        reward_scalar = spice_signals.rewards.sum(dim=-1, keepdim=True).expand_as(spice_signals.actions)
+        reward_scalar = spice_signals.feedback.sum(dim=-1, keepdim=True).expand_as(spice_signals.actions)
         
         participant_embeddings = self.participant_embedding(spice_signals.participant_ids)
         

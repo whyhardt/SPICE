@@ -96,7 +96,7 @@ class SpiceModel(BaseModel):
         for timestep in spice_signals.trials:
             
             actions_t = spice_signals.actions[timestep]
-            rewards_t = spice_signals.rewards[timestep]
+            rewards_t = spice_signals.feedback[timestep]
 
             # REWARD VALUE UPDATES
             self.call_module(

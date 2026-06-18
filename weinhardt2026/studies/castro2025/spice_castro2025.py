@@ -85,7 +85,7 @@ class SpiceModel(BaseModel):
     def forward(self, inputs, state=None):
         spice_signals = self.init_forward_pass(inputs, state)
 
-        reward_full = spice_signals.rewards.sum(dim=-1, keepdim=True).expand_as(spice_signals.actions)
+        reward_full = spice_signals.feedback.sum(dim=-1, keepdim=True).expand_as(spice_signals.actions)
         participant_embedding = self.participant_embedding(spice_signals.participant_ids)
 
         item_indices = torch.arange(self.n_actions, device=self.device)
@@ -112,7 +112,7 @@ class SpiceModel(BaseModel):
                 action_mask=spice_signals.actions[trial],
                 inputs=(
                     value_reward_env,
-                    spice_signals.rewards[trial],
+                    spice_signals.feedback[trial],
                     mean_value_reward,
                 ),
                 participant_index=spice_signals.participant_ids,

@@ -74,7 +74,7 @@ class SpiceModel(BaseModel):
         # Extract signals — shapes after init: (T, W, E, B, ...)
         # actions:            b_t / 300   → (T, W, E, B, 1)
         # rewards:            x_t / 300   → (T, W, E, B, 1)
-        outcome = spice_signals.rewards                                 # x_t / 300
+        outcome = spice_signals.feedback                                 # x_t / 300
         bucket = spice_signals.actions                                  # b_t / 300
 
         # Embeddings
@@ -91,6 +91,7 @@ class SpiceModel(BaseModel):
             
             # --- PE masks: small PE -> uncertainty; big PE -> CP ---
             # Binary: 1 if |PE| exceeds threshold, 0 otherwise
+            # sigma equals bucket width -> therefore no latent task variable but observable
             mask_pe_big = (prediction_error.abs() > 3 * spice_signals.additional_inputs['sigma'][trial]).float()
 
             # --- Belief update: learns where the helicopter is ---
