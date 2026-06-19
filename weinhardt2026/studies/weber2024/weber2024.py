@@ -1,13 +1,12 @@
 import math
 import torch
-import torch.nn as nn
 
-from spice import SpiceEstimator, SpiceConfig, BaseModel, SpiceDataset, split_data_along_blockdim
-from weinhardt2026.studies.weber2024.spice_weber2024 import SpiceModel, CONFIG
+from spice import SpiceEstimator, SpiceDataset, split_data_along_blockdim
 
 import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parents[3]))
+from weinhardt2026.studies.weber2024.spice_weber2024 import SpiceModel, CONFIG
 from weinhardt2026.utils.benchmarking_gru import GRUModel, training
 from weinhardt2026.studies.weber2024.benchmarking_weber2024 import (
     get_dataset, clamped_angular_mse, generate_behavior,
@@ -117,6 +116,12 @@ else:
 participant_id = 0
 print(f"Example SPICE model from participant {participant_id}:")
 estimator.print_spice_model(participant_id=participant_id)
+
+print(f"\nExample SPICE model from participant {participant_id+1}:")
+estimator.print_spice_model(participant_id=participant_id+1)
+
+print(f"\nExample SPICE model from participant {participant_id+2}:")
+estimator.print_spice_model(participant_id=participant_id+2)
 
 
 # -------------------------------------------------------------------------------------------

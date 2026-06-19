@@ -499,27 +499,42 @@ No benchmark model for this study.
 
 #### SPICE Model
 
-The model uses 2 submodules operating on 2 memory states:
+The model uses 6 submodules operating on 4 memory states. It implements a dual learning rate architecture inspired by the Reduced Bayesian Model, where prediction error magnitude determines whether a surprise-driven (changepoint) or uncertainty-driven (baseline) learning rate governs belief updating. An anchoring module captures the bias induced by bucket displacement between trials.
 
-| Submodule | Control signals | State updated | Action mask | Description |
-|-----------|----------------|---------------|-------------|-------------|
-| `belief_update` | $\delta_t = x_t - \hat{\mu}_t$ | `belief` | — | Belief update from prediction error |
-| `anchor_update` | $y_t = z_{t+1} - b_t$ | `anchor_value` | — | Anchoring bias from bucket displacement |
+| Submodule | Control signals | State updated | Action mask | `include_state` | Description |
+|-----------|----------------|---------------|-------------|-----------------|-------------|
+| `belief_update` | $\delta_t$, `catch`, $v_t$ | `belief_value` | — | True | Belief update from prediction error, modulated by catch trial status and helicopter visibility |
+| `changepoint_lr_update` | `catch`, $v_t$ | `surprise_value` | $\mathbb{1}[|\delta_t| > 3\sigma]$ | True | Surprise-driven learning rate update (fires on large PE) |
+| `changepoint_lr_decay` | — | `surprise_value` | $1 - \mathbb{1}[|\delta_t| > 3\sigma]$ | True | Surprise learning rate decay (fires on small PE) |
+| `uncertainty_lr_update` | `catch`, $v_t$ | `uncertainty_value` | $1 - \mathbb{1}[|\delta_t| > 3\sigma]$ | True | Uncertainty-driven learning rate update (fires on small PE) |
+| `uncertainty_lr_decay` | — | `uncertainty_value` | $\mathbb{1}[|\delta_t| > 3\sigma]$ | True | Uncertainty learning rate decay (fires on large PE) |
+| `anchor_update` | $y_t$ | `anchor_value` | — | False | Stateless anchoring bias from bucket displacement |
 
-**Memory states:** `belief` (initial: 0.5, center of screen), `anchor_value` (initial: 0.0).
+**Memory states:**
+- `belief_value` (initial: 0.5) — internal estimate of helicopter position (center of screen)
+- `surprise_value` (initial: 0) — changepoint probability state; $\sigma(\text{surprise\_value}) = \omega$ (surprise-driven learning rate)
+- `uncertainty_value` (initial: 0) — relative uncertainty state; $\sigma(\text{uncertainty\_value}) = \tau$ (uncertainty-driven baseline learning rate)
+- `anchor_value` (initial: 0) — per-trial anchoring correction (reset to zero each trial)
+
+**States in logit:** `belief_value`, `surprise_value`, `uncertainty_value`, `anchor_value`.
 
 **Control signal preprocessing:**
-- Prediction error: $\delta_t = x_t - \hat{\mu}_t$, the difference between the observed outcome and the model's current belief. This is the primary learning signal.
-- Anchor shift: $y_t = z_{t+1} - b_t$, the displacement between the next trial's initial bucket position and the participant's current bucket position. This captures the potential anchoring effect of bucket repositioning.
+- Prediction error: $\delta_t = x_t - \hat{\mu}_t$, the difference between the observed outcome and the model's current belief.
+- PE magnitude mask: $\mathbb{1}[|\delta_t| > 3\sigma]$, where $\sigma$ is the bucket width (an observable task variable, not a latent parameter). This externalized binary gate routes trials to either the surprise or uncertainty learning rate pathway, mirroring the change-point detection mechanism of the Bayesian benchmark.
+- Anchor shift: $y_t = z_{t+1} - b_t$, the displacement between the next trial's initial bucket position and the participant's current bucket position.
+- Catch trial indicator: `catch` $\in \{0, 1\}$, whether the participant caught the coin on this trial.
+- Helicopter visibility: $v_t \in \{0, 1\}$, whether the helicopter was visible on the next trial (time-shifted by $-1$ during data loading).
 
-**Logit computation:**
-$$\hat{b}_{t+1} = \hat{\mu}_t + V^{\text{anchor}}_t$$
+**Logit computation (gated output + anchoring):**
+$$\omega_t = \sigma(\text{surprise\_value}_t), \quad \tau_t = \sigma(\text{uncertainty\_value}_t)$$
+$$\alpha_t = \mathbb{1}[|\delta_t| > 3\sigma] \cdot \omega_t + (1 - \mathbb{1}[|\delta_t| > 3\sigma]) \cdot \tau_t$$
+$$\hat{b}_{t+1} = b_t + \alpha_t \cdot (\hat{\mu}_t - b_t) + V^{\text{anchor}}_t$$
 
-The predicted next bucket position is the sum of the internal belief and the anchoring bias.
+The predicted next bucket position interpolates between the current bucket position $b_t$ and the internal belief $\hat{\mu}_t$ using a composite learning rate $\alpha_t$, plus an anchoring correction. On large-PE trials (likely change points), the surprise-driven rate $\omega_t$ governs the update; on small-PE trials (stable periods), the uncertainty-driven rate $\tau_t$ governs.
 
 **SINDy library degree:** 2 (default).
 
-**Note:** No action masks are used since the output is a single continuous position rather than a discrete choice among items.
+**Note:** The `anchor_update` module uses `include_state=False` because the anchor correction is stateless — it is reset to zero each trial and computes an instantaneous mapping from the bucket displacement.
 
 #### Benchmark Model: Reduced Bayesian Model (RBM)
 
@@ -570,7 +585,54 @@ The model dynamically adjusts its learning rate via change-point detection: when
 
 ### 2.9. Weber 2024: Laser Tracking (Shield Movement)
 
-[PLACEHOLDER — Full description to be added.]
+**Task.** Participants control a shield on a circular track (0°–360°) to intercept laser beams. On each trial, a new laser beam appears at a position drawn from a von Mises distribution whose mean undergoes discrete change points (controlled by volatility and stochasticity conditions). The shield moves at a fixed speed of 1°/frame, so the maximum movement between two laser beams is limited by the inter-beam interval (trial duration in frames). If the laser lands within the shield's angular width (±10°), it is "caught." The task requires tracking a latent laser mean under movement constraints — a circular analog of the helicopter task (Bruckner 2025). The output is a continuous 2D prediction in $(\sin, \cos)$ space representing the shield position at the next laser beam, and the model is trained with a custom clamped angular MSE loss instead of cross-entropy.
+
+**Data representation.** All angular positions are encoded as $(\sin\theta, \cos\theta)$ pairs to handle the circular geometry. The data is event-based: each trial corresponds to one laser beam event, regardless of the inter-beam time interval. The number of actions and reward features are both $A = 2$ (the sin and cos components).
+
+#### SPICE Model
+
+The model uses 4 submodules operating on 2 memory states. Belief and learning rate updates are split by catch outcome (whether the shield intercepted the laser), using externalized binary gating via the `action_mask` mechanism. A hardcoded gated output equation translates the internal belief into a physically constrained shield position prediction.
+
+| Submodule | Control signals | State updated | Action mask | Description |
+|-----------|----------------|---------------|-------------|-------------|
+| `belief_update_caught` | $\delta_t$ | `belief_value` | `laser_caught` | Belief update when shield catches laser (tracking well) |
+| `belief_update_missed` | $\delta_t$ | `belief_value` | $1 -$ `laser_caught` | Belief update when shield misses laser (tracking poorly) |
+| `lr_update_caught` | — | `lr_value` | `laser_caught` | Learning rate adaptation when catching |
+| `lr_update_missed` | — | `lr_value` | $1 -$ `laser_caught` | Learning rate adaptation when missing |
+
+**Memory states:**
+- `belief_value` (initial: 0, then set to first laser observation) — internal belief about the laser mean position, represented as $(\sin, \cos)$ across items $I = 2$
+- `lr_value` (initial: 0) — dynamic learning rate state; $\sigma(\text{lr\_value}) = \alpha \in [0, 1]$
+
+**States in logit:** `belief_value`, `lr_value`.
+
+**Control signal preprocessing:**
+- Prediction error: $\delta_t = (\sin\theta^{\text{laser}}_t, \cos\theta^{\text{laser}}_t) - \hat{\mu}_t$, the component-wise difference between the observed laser position and the model's current belief, computed in $(\sin, \cos)$ space.
+- Catch mask: `laser_caught` $\in \{0, 1\}$, whether the shield was within ±10° of the laser. This binary signal is externalized from the RNN inputs and used as `action_mask` to route each trial to the appropriate belief and learning rate modules.
+
+**Belief initialization.** On the first trial (no prior state), the belief is initialized to the first observed laser position: $\hat{\mu}_0 = (\sin\theta^{\text{laser}}_0, \cos\theta^{\text{laser}}_0)$.
+
+**Logit computation (gated output):**
+$$\alpha_t = \sigma(\text{lr\_value}_t)$$
+$$\hat{s}_{t+1} = s_t + \alpha_t \cdot (\hat{\mu}_t - s_t)$$
+
+where $s_t = (\sin\theta^{\text{shield}}_t, \cos\theta^{\text{shield}}_t)$ is the current shield position and $\hat{\mu}_t$ is the internal belief. The predicted shield position interpolates between the current position and the belief, with the interpolation rate $\alpha_t$ controlled by the learned dynamic learning rate.
+
+**Custom loss function: Clamped Angular MSE.** Because the shield has a finite movement speed (1°/frame), the raw belief prediction may be physically unreachable within the inter-beam interval. The loss function computes the feasible shield position by clamping the predicted movement:
+
+$$\Delta = \hat{\mu}_t - s_t, \quad f = \min\left(\frac{v \cdot \Delta t \cdot (\pi / 180)}{||\Delta|| + \epsilon}, 1\right)$$
+$$\hat{s}^{\text{clamped}}_{t+1} = s_t + f \cdot \Delta$$
+$$\mathcal{L} = \text{MSE}(\hat{s}^{\text{clamped}}_{t+1}, s^{\text{actual}}_{t+1})$$
+
+where $v = 1$ °/frame is the movement speed, $\Delta t$ is the inter-beam interval in frames, and the fraction $f$ ensures the predicted movement does not exceed what is physically achievable. The target $s^{\text{actual}}_{t+1}$ is the participant's actual shield position at the next laser beam. The targets are packed as $[s^{\text{actual}}_{t+1}, s_t, \Delta t]$ to provide the loss function with the current position and timing information needed for clamping.
+
+**SINDy library degree:** 2 (default).
+
+**Additional inputs:** `laser_caught`, `volatility`, `stochasticity`, `trial_duration_frames`, `trueMean` (ground truth laser mean, for diagnostic plotting only).
+
+#### Benchmark Model
+
+No study-specific benchmark model. The GRU baseline (Section 1) is used as the comparison model, adapted for continuous $(\sin, \cos)$ output with the same clamped angular MSE loss function.
 
 ---
 
@@ -585,5 +647,5 @@ The model dynamically adjusts its learning rate via change-point detection: when
 | Dezfouli 2019 | Two-armed bandit (depression) | 2 | 4 | 8 (2 value + 6 buffer) | 2 | Generalized Q-Learning | 12 |
 | Ganesh 2024a | Perceptual contrast bandit | 2 | 4 | 2 | 2 | Bayesian Belief-Update | 2 |
 | Hwang 2026 | Chimpanzee communication | 4 | 3 | 1 | 2 | — | — |
-| Bruckner 2025 | Helicopter task (predictive inference) | 1 (continuous) | 2 | 2 | 2 | Reduced Bayesian Model | 4 |
-| Weber 2024 | Laser tracking | [PH] | [PH] | [PH] | [PH] | [PH] | [PH] |
+| Bruckner 2025 | Helicopter task (predictive inference) | 1 (continuous) | 6 | 4 | 2 | Reduced Bayesian Model | 4 |
+| Weber 2024 | Laser tracking (shield movement) | 2 (continuous, sin/cos) | 4 | 2 | 2 | GRU baseline | — |
