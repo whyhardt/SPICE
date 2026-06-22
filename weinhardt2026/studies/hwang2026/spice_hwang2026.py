@@ -157,10 +157,17 @@ class SpiceModel(BaseModel):
 def cross_entropy_loss_mask_waiting(prediction, target, label_smoothing: float = 0.):
     
     n_actions = target.shape[-1]
+    waiting_action = n_actions - 1
     
     prediction = prediction.reshape(-1, n_actions)
     target = torch.argmax(target.reshape(-1, n_actions), dim=1)
     
-    non_waiting_mask = target != 4  # filters where ID1 is just waiting -> that way we are dropping waiting as an action category
+    non_waiting_mask = target != waiting_action
+    if not non_waiting_mask.any():
+        return prediction.sum() * 0.
     
-    return torch.nn.functional.cross_entropy(prediction[non_waiting_mask], target[non_waiting_mask])
+    return torch.nn.functional.cross_entropy(
+        prediction[non_waiting_mask],
+        target[non_waiting_mask],
+        label_smoothing=label_smoothing,
+    )
