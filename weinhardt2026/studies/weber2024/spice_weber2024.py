@@ -6,8 +6,16 @@ from spice import SpiceConfig, BaseModel
 CONFIG = SpiceConfig(
     library_setup={
         # Belief update: split by catch outcome (externalized gating)
-        'belief_update_caught': ('prediction_error',),   # update when shield catches laser
-        'belief_update_missed': ('prediction_error',),   # update when shield misses laser
+        'belief_update_caught': (
+            # 'shield',
+            'pe',
+            # 'lr',
+            ),   # update when shield catches laser
+        'belief_update_missed': (
+            # 'shield',
+            'pe',
+            # 'lr',
+            ),   # update when shield misses laser
         # Dynamic learning rate: modulates gated output
         'lr_update_caught': (),    # LR adapts when catching (tracking well)
         'lr_update_missed':  (),    # LR decays when missing (tracking poorly)
@@ -15,10 +23,13 @@ CONFIG = SpiceConfig(
 
     memory_state={
         'belief_value': 0,    # internal belief about laser position (sin/cos as items 0, 1)
-        'lr_value': 0,        # dynamic learning rate state; sigmoid(0) = 0.5
+        'lr_value': 3,        # dynamic learning rate state; sigmoid(3) = 1.0
     },
 
-    states_in_logit=['belief_value', 'lr_value'],
+    states_in_logit=[
+        'belief_value', 
+        'lr_value',
+        ],
 
     additional_inputs=(
         'laser_caught',
@@ -68,29 +79,6 @@ class SpiceModel(BaseModel):
             caught = spice_signals.additional_inputs['laser_caught'][trial]
             caught_mask = caught.expand_as(self.state['belief_value'])
 
-            # --- Belief update: split by catch outcome ---
-            self.call_module(
-                key_module='belief_update_caught',
-                key_state='belief_value',
-                action_mask=caught_mask,
-                inputs=prediction_error,
-                participant_index=spice_signals.participant_ids,
-                participant_embedding=participant_embedding,
-                experiment_index=spice_signals.experiment_ids if experiment_embedding is not None else None,
-                experiment_embedding=experiment_embedding,
-            )
-
-            self.call_module(
-                key_module='belief_update_missed',
-                key_state='belief_value',
-                action_mask=1 - caught_mask,
-                inputs=prediction_error,
-                participant_index=spice_signals.participant_ids,
-                participant_embedding=participant_embedding,
-                experiment_index=spice_signals.experiment_ids if experiment_embedding is not None else None,
-                experiment_embedding=experiment_embedding,
-            )
-
             # --- Dynamic learning rate ---
             self.call_module(
                 key_module='lr_update_caught',
@@ -115,9 +103,39 @@ class SpiceModel(BaseModel):
             # --- Gated output: shield_t + alpha * (belief - shield_t) ---
             # alpha ∈ [0, 1] via sigmoid; interpolates between current position and belief
             alpha = torch.sigmoid(self.state['lr_value'])
-            spice_signals.logits[trial] = (
-                shield[trial] + alpha * (self.state['belief_value'] - shield[trial])
+            
+            # --- Belief update: split by catch outcome ---
+            self.call_module(
+                key_module='belief_update_caught',
+                key_state='belief_value',
+                action_mask=caught_mask,
+                inputs=(
+                    # shield[trial],
+                    prediction_error,
+                    # alpha,
+                    ),
+                participant_index=spice_signals.participant_ids,
+                participant_embedding=participant_embedding,
+                experiment_index=spice_signals.experiment_ids if experiment_embedding is not None else None,
+                experiment_embedding=experiment_embedding,
             )
 
+            self.call_module(
+                key_module='belief_update_missed',
+                key_state='belief_value',
+                action_mask=1 - caught_mask,
+                inputs=(
+                    # shield[trial],
+                    prediction_error,
+                    # alpha,
+                    ),
+                participant_index=spice_signals.participant_ids,
+                participant_embedding=participant_embedding,
+                experiment_index=spice_signals.experiment_ids if experiment_embedding is not None else None,
+                experiment_embedding=experiment_embedding,
+            )
+
+            spice_signals.logits[trial] = (1-alpha) * shield[trial] + alpha * self.state['belief_value']
+            
         spice_signals = self.post_forward_pass(spice_signals)
         return spice_signals.logits, self.get_state()

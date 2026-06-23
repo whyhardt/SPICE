@@ -33,14 +33,14 @@ CONFIG = SpiceConfig(
 
     memory_state={
         'belief_value': 0.5,      # initial belief = center of screen (normalized)
-        'surprise_value': None,       # changepoint probability state (sigmoid(0) = 0.5)
-        'uncertainty_value': None,         # base learning rate state (sigmoid(0) = 0.5)
-        'anchor_value': 0,      # per-trial anchoring correction (reset each trial)
+        'changepoint_value': None,    # changepoint probability state (sigmoid(0) = 0.5)
+        'uncertainty_value': None,    # base learning rate state (sigmoid(0) = 0.5)
+        'anchor_value': 0,        # per-trial anchoring correction (reset each trial)
     },
-    
+
     states_in_logit=[
         'belief_value',
-        'surprise_value',
+        'changepoint_value',
         'uncertainty_value',
         'anchor_value',
     ],
@@ -110,10 +110,10 @@ class SpiceModel(BaseModel):
                 experiment_embedding=experiment_embedding,
             )
 
-            # --- Changepoint: learns surprise-driven update rate (omega) ---
+            # --- Changepoint: learns changepoint-driven update rate (omega) ---
             self.call_module(
                 key_module='changepoint_lr_update',
-                key_state='surprise_value',
+                key_state='changepoint_value',
                 action_mask=mask_pe_big,
                 inputs=(
                     # prediction_error.detach(),
@@ -125,10 +125,10 @@ class SpiceModel(BaseModel):
                 experiment_index=spice_signals.experiment_ids if experiment_embedding is not None else None,
                 experiment_embedding=experiment_embedding,
             )
-            
+
             self.call_module(
                 key_module='changepoint_lr_decay',
-                key_state='surprise_value',
+                key_state='changepoint_value',
                 action_mask=1-mask_pe_big,
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
@@ -176,14 +176,15 @@ class SpiceModel(BaseModel):
             )
 
             # --- Combined learning rate: alpha = omega + tau - omega*tau ---
-            surprise_lr = torch.sigmoid(self.state['surprise_value'])
+            changepoint_lr = torch.sigmoid(self.state['changepoint_value'])
             uncertainty_lr = torch.sigmoid(self.state['uncertainty_value'])
-            # alpha = surprise_lr + uncertainty_lr - surprise_lr * uncertainty_lr  # = 1 - (1-omega)(1-tau), ∈ [0, 1]
-            alpha = mask_pe_big * surprise_lr + (1-mask_pe_big) * uncertainty_lr
+            # alpha = changepoint_lr + uncertainty_lr - changepoint_lr * uncertainty_lr  # = 1 - (1-omega)(1-tau), ∈ [0, 1]
+            alpha = mask_pe_big * changepoint_lr + (1-mask_pe_big) * uncertainty_lr
             
             # --- Gated output + anchor correction ---
             spice_signals.logits[trial] = (
-                bucket[trial] + alpha * (self.state['belief_value'] - bucket[trial])
+                # bucket[trial] + alpha * (self.state['belief_value'] - bucket[trial])
+                self.state['belief_value']
                 + self.state['anchor_value']
             )
 

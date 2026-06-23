@@ -336,11 +336,11 @@ def _run_batch_training(
             # torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             # Clip RNN and SINDy gradients independently so unweighted
             # sindy_loss_fit doesn't starve RNN gradients via shared norm
-            if len(optimizer.param_groups) > 1:
-                torch.nn.utils.clip_grad_norm_(optimizer.param_groups[0]['params'], max_norm=1.0)
-                torch.nn.utils.clip_grad_norm_(optimizer.param_groups[1]['params'], max_norm=1.0)
-            else:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            # if len(optimizer.param_groups) > 1:
+            #     torch.nn.utils.clip_grad_norm_(optimizer.param_groups[0]['params'], max_norm=1.0)
+            #     torch.nn.utils.clip_grad_norm_(optimizer.param_groups[1]['params'], max_norm=1.0)
+            # else:
+            #     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
 
         loss_batch += loss_step.item()
