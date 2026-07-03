@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 
 from spice import SpiceDataset
 from weinhardt2026.studies.castro2025.benchmarking_castro2025 import get_dataset
+from weinhardt2026.analysis.analysis_generative_comparison import compute_generative_comparison
 
 
 METRIC_LABELS = {
@@ -145,7 +146,7 @@ def analysis_generative_behavior(
 
     Args:
         datasets: Dict mapping display names to CSV file paths.
-            Example: {'Real Data': 'data/eckstein2024.csv', 'SPICE-SYM': 'results/gen_spice.csv'}
+            Example: {'Real Data': 'data/eckstein2024.csv', 'SPICE-EQ': 'results/gen_spice.csv'}
         output_dir: Directory for output plots.
         test_blocks: Session indices for train/test split (forwarded to get_dataset).
 
@@ -168,9 +169,11 @@ def analysis_generative_behavior(
     if path_data_spice is not None:
         datasets['spice'] = path_data_spice
         
+    participant_ids = {}
     for name, path in datasets.items():
         print(f"Loading {name} from {path}...")
         dataset_train, _, _ = get_dataset(path_data=path)
+        participant_ids[name] = dataset_train.xs[:, 0, 0, -1].long().numpy()
         choices, rewards = _extract_choices_and_rewards(dataset_train)
         all_metrics[name] = _compute_metrics(choices, rewards)
 
@@ -222,4 +225,11 @@ def analysis_generative_behavior(
         print("\nNormalized MAE (|model_mean - real_mean| / real_std):")
         print(df_comparison)
 
-    return df_summary, df_comparison
+    # Distributional similarity + Spearman comparison
+    df_similarity, df_spearman = None, None
+    if 'real' in all_metrics and participant_ids:
+        df_similarity, df_spearman = compute_generative_comparison(
+            all_metrics, participant_ids, output_dir,
+        )
+
+    return df_summary, df_comparison, df_similarity, df_spearman

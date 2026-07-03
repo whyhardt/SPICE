@@ -17,7 +17,7 @@ from weinhardt2026.analysis.analysis_coefficients_distributions import analysis_
 
 train_spice = False
 train_mvt = False
-train_gru = True
+train_gru = False
 
 # -------------------------------------------------------------------------------------------
 # DATALOADER
@@ -153,6 +153,7 @@ print(analysis_model_evaluation(
     spice_model=estimator,
     benchmark_model=mvt.to(torch.device('cpu')),
     gru_model=gru.to(torch.device('cpu')),
+    output_dir='weinhardt2026/studies/bustamante2023/results',
 ))
 
 
@@ -198,6 +199,7 @@ analysis_generative_behavior(
     path_data_gru='weinhardt2026/studies/bustamante2023/data/bustamante2023_gru.csv',
     path_data_spice_rnn='weinhardt2026/studies/bustamante2023/data/bustamante2023_spice_rnn.csv',
     path_data_spice='weinhardt2026/studies/bustamante2023/data/bustamante2023_spice.csv',
+    output_dir='weinhardt2026/studies/bustamante2023/results',
 )
 
 

@@ -538,9 +538,9 @@ The predicted next bucket position interpolates between the current bucket posit
 
 #### Benchmark Model: Reduced Bayesian Model (RBM)
 
-**Reference:** Bruckner et al. (2025), Eqs. 4-10, 15.
+**Reference:** Bruckner et al. (2025), Eqs. 4-14.
 
-A reduced Bayesian model that maintains a belief about the helicopter's position and an uncertainty estimate that modulates learning rate. The belief is reset to the participant's actual prediction $b_t$ at each trial (subjective prediction errors), while uncertainty dynamics carry forward across trials. The output is a continuous scalar prediction ($A = 1$).
+A reduced Bayesian model that maintains a belief about the helicopter's position and an uncertainty estimate that modulates learning rate. The belief is reset to the participant's actual prediction $b_t$ at each trial (subjective prediction errors), while uncertainty dynamics carry forward across trials. On catch trials (helicopter visible), the belief is additionally updated with the observed helicopter position. The output is a continuous scalar prediction ($A = 1$).
 
 **Parameters (per participant, 4 total):**
 
@@ -549,13 +549,17 @@ A reduced Bayesian model that maintains a belief about the helicopter's position
 | $h$ | $(0, 1)$ sigmoid | Hazard rate — prior probability of a change point |
 | $s$ | $(0, 1)$ sigmoid | Surprise sensitivity — modulates change-point detection |
 | $u$ | unconstrained (exponentiated) | Uncertainty underestimation — $\exp(u)$ divides posterior uncertainty |
-| $d$ | $(-1, 1)$ tanh | Anchoring bias — weight on bucket displacement |
+| $q$ | unconstrained | Reward bias — learning rate increase for high-value trials |
+
+**Fixed task parameters:**
+- $\sigma = 17.5$ pixels — outcome noise standard deviation
+- $\sigma_H = 17.5$ pixels — helicopter cue noise standard deviation (used on catch trials)
 
 **State variables (per session):**
 - $\hat{\sigma}^2_t$ — estimation uncertainty (initialized to $100 / 300^2$)
 - $\tau_t$ — relative uncertainty (initialized to 0.5)
 
-**Trial-by-trial update (Eqs. 4-10, 15):**
+**Trial-by-trial update (Eqs. 4-14):**
 
 1. **Prediction error** (subjective, using participant's actual bucket position):
 $$\delta_t = x_t - b_t$$
@@ -565,22 +569,32 @@ $$\sigma^2_{\text{total}} = \hat{\sigma}^2_t + \sigma^2$$
 $$\ell_t = \mathcal{N}(\delta_t; 0, \sigma^2_{\text{total}})$$
 $$\omega_t = \frac{h}{\ell_t^s \cdot (1 - h) + h}$$
 
-3. **Learning rate** (Eq. 7):
-$$\alpha_t = \omega_t + \tau_t - \tau_t \cdot \omega_t$$
+3. **Learning rate with reward bias** (Eq. 7):
+$$\alpha_t = \text{clamp}(\omega_t + \tau_t - \tau_t \cdot \omega_t + q \cdot \mathbb{1}[r_t \geq 1], \; 0, \; 1)$$
 
-4. **Predicted update with anchoring bias** (Eqs. 5, 15):
-$$\hat{a}_t = \alpha_t \cdot \delta_t + d \cdot (z_{t+1} - b_t)$$
+where $r_t$ is the coin value and $\mathbb{1}[r_t \geq 1]$ is a binary indicator for high-value trials.
 
-5. **Predicted next position** (Eq. 4):
-$$\hat{b}_{t+1} = \text{clamp}(b_t + \hat{a}_t, 0, 1)$$
+4. **Belief update** (Eqs. 4-5):
+$$\mu_{t+1} = b_t + \alpha_t \cdot \delta_t$$
 
-6. **Uncertainty update** (Eq. 9):
+5. **Catch trial update** (Eqs. 11-14, applied only when helicopter is visible, $v_t = 1$):
+$$w_t = \frac{\hat{\sigma}^2_t}{\hat{\sigma}^2_t + \sigma_H^2} \quad \text{(Eq. 12)}$$
+$$\mu_{t+1} = (1 - w_t) \cdot \mu_{t+1} + w_t \cdot \mu_H \quad \text{(Eq. 11)}$$
+$$C = \frac{1}{1/\hat{\sigma}^2_t + 1/\sigma_H^2} \quad \text{(Eq. 14)}$$
+$$\tau_t = \frac{C}{C + \sigma^2} \quad \text{(Eq. 13)}$$
+
+where $\mu_H$ is the true helicopter position revealed on catch trials and $w_t$ weights the helicopter cue against the model's own estimate based on their relative uncertainties.
+
+6. **Predicted next position** (Eq. 4):
+$$\hat{b}_{t+1} = \text{clamp}(\mu_{t+1}, 0, 1)$$
+
+7. **Uncertainty update** (Eq. 9):
 $$\hat{\sigma}^2_{t+1} = \frac{\omega_t \cdot \sigma^2 + (1 - \omega_t) \cdot \tau_t \cdot \sigma^2 + \omega_t(1 - \omega_t)(\delta_t(1 - \tau_t))^2}{\exp(u)}$$
 
-7. **Relative uncertainty update** (Eq. 10):
+8. **Relative uncertainty update** (Eq. 10):
 $$\tau_{t+1} = \frac{\hat{\sigma}^2_{t+1}}{\hat{\sigma}^2_{t+1} + \sigma^2}$$
 
-The model dynamically adjusts its learning rate via change-point detection: when a change point is detected (high $\omega_t$), the learning rate increases to rapidly incorporate the new outcome; during stable periods (low $\omega_t$), the learning rate decreases for more precise estimation. The uncertainty underestimation parameter $u$ captures individual differences in confidence calibration.
+The model dynamically adjusts its learning rate via change-point detection: when a change point is detected (high $\omega_t$), the learning rate increases to rapidly incorporate the new outcome; during stable periods (low $\omega_t$), the learning rate decreases for more precise estimation. The uncertainty underestimation parameter $u$ captures individual differences in confidence calibration. On catch trials, the helicopter's visible position provides an additional cue that is integrated with the model's belief according to their relative uncertainties (Eqs. 11-14).
 
 
 ### 2.9. Weber 2024: Laser Tracking (Shield Movement)

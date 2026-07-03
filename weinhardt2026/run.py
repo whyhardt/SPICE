@@ -415,10 +415,10 @@ if __name__=='__main__':
         #             all_vals = np.concatenate([normalized_coeffs.flatten(), normalized_gt.flatten()])
         #             bin_edges = np.linspace(all_vals.min(), all_vals.max(), 16)
         #             ax.hist(normalized_gt, bins=bin_edges, color='tab:blue', alpha=0.7, edgecolor='black', label='Ground Truth')
-        #             ax.hist(normalized_coeffs, bins=bin_edges, color='tab:orange', alpha=0.7, edgecolor='black', label='SPICE-SYM')
+        #             ax.hist(normalized_coeffs, bins=bin_edges, color='tab:orange', alpha=0.7, edgecolor='black', label='SPICE-EQ')
         #         else:
         #             # Plot SPICE histogram only (orange)
-        #             ax.hist(normalized_coeffs, bins=15, color='tab:orange', alpha=0.7, edgecolor='black', label='SPICE-SYM')
+        #             ax.hist(normalized_coeffs, bins=15, color='tab:orange', alpha=0.7, edgecolor='black', label='SPICE-EQ')
 
         #         # Add vertical line at mean (which should be 0 after normalization)
         #         ax.axvline(x=0, color='red', linestyle='--', linewidth=2, label='Mean')

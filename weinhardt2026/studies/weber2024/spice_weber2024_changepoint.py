@@ -5,14 +5,12 @@ from spice import SpiceConfig, BaseModel
 
 CONFIG = SpiceConfig(
     library_setup={
-        # Changepoint detection: learns to detect when PE magnitude signals a changepoint
-        'changepoint_detection': ('prediction_error',),
         # Changepoint LR: update when CP detected, decay when stable
-        'changepoint_lr_update': ('laser_caught',),
-        'changepoint_lr_decay': ('laser_caught',),
+        'changepoint_update': ('laser_caught',),
+        'changepoint_decay': ('laser_caught',),
         # Uncertainty LR: update when stable, decay when CP detected
-        'uncertainty_lr_update': ('laser_caught',),
-        'uncertainty_lr_decay': ('laser_caught',),
+        'uncertainty_update': ('laser_caught',),
+        'uncertainty_decay': ('laser_caught',),
         # Belief update: learns f(PE) without alpha constraint (gated output architecture)
         'belief_update_caught': ('prediction_error',),
         'belief_update_missed': ('prediction_error',),
@@ -20,12 +18,15 @@ CONFIG = SpiceConfig(
 
     memory_state={
         'belief_value': 0,           # internal belief about laser position (sin/cos)
-        'changepoint_value': 0,      # changepoint probability logit; sigmoid(0) = 0.5
-        'changepoint_lr_value': 3,   # changepoint-driven learning rate (high alpha on changepoints)
-        'uncertainty_lr_value': 3,   # uncertainty-driven learning rate (baseline alpha)
+        'changepoint_value': 0,   # changepoint-driven learning rate (high alpha on changepoints)
+        'uncertainty_value': 0,   # uncertainty-driven learning rate (baseline alpha)
     },
 
-    states_in_logit=['belief_value'],
+    states_in_logit=[
+        'belief_value',
+        'changepoint_value',
+        'uncertainty_value',
+        ],
 
     additional_inputs=(
         'laser_caught',
@@ -42,6 +43,8 @@ class SpiceModel(BaseModel):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
 
+        self.shield_width = 20/360
+        
         self.participant_embedding = self.setup_embedding(
             num_embeddings=self.n_participants,
             embedding_size=self.embedding_size,
@@ -73,27 +76,14 @@ class SpiceModel(BaseModel):
             caught = spice_signals.additional_inputs['laser_caught'][trial]
             caught_mask = caught.expand_as(self.state['belief_value'])
 
-            # --- Changepoint detection: learns to map PE magnitude to changepoint probability ---
-            self.call_module(
-                key_module='changepoint_detection',
-                key_state='changepoint_value',
-                action_mask=None,  # always updates
-                inputs=(prediction_error,),
-                participant_index=spice_signals.participant_ids,
-                participant_embedding=participant_embedding,
-                experiment_index=spice_signals.experiment_ids if experiment_embedding is not None else None,
-                experiment_embedding=experiment_embedding,
-            )
-            cp_prob = torch.sigmoid(self.state['changepoint_value'])
-
-            # --- CP mask: binary threshold at 0.5 ---
-            mask_cp = (cp_prob > 0.5).float()
+            # --- Big PE mask (like in the model for bruckner2025) ---
+            mask_big_pe = (prediction_error.abs() > 3 * self.shield_width / 2).float()
 
             # --- Changepoint LR: update when CP detected (p > 0.5), decay when stable ---
             self.call_module(
-                key_module='changepoint_lr_update',
-                key_state='changepoint_lr_value',
-                action_mask=mask_cp,
+                key_module='changepoint_update',
+                key_state='changepoint_value',
+                action_mask=mask_big_pe,
                 inputs=(caught,),
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
@@ -102,9 +92,9 @@ class SpiceModel(BaseModel):
             )
 
             self.call_module(
-                key_module='changepoint_lr_decay',
-                key_state='changepoint_lr_value',
-                action_mask=1 - mask_cp,
+                key_module='changepoint_decay',
+                key_state='changepoint_value',
+                action_mask=1 - mask_big_pe,
                 inputs=(caught,),
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
@@ -114,9 +104,9 @@ class SpiceModel(BaseModel):
 
             # --- Uncertainty LR: update when stable (p <= 0.5), decay when CP detected ---
             self.call_module(
-                key_module='uncertainty_lr_update',
-                key_state='uncertainty_lr_value',
-                action_mask=1 - mask_cp,
+                key_module='uncertainty_update',
+                key_state='uncertainty_value',
+                action_mask=1 - mask_big_pe,
                 inputs=(caught,),
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
@@ -125,9 +115,9 @@ class SpiceModel(BaseModel):
             )
 
             self.call_module(
-                key_module='uncertainty_lr_decay',
-                key_state='uncertainty_lr_value',
-                action_mask=mask_cp,
+                key_module='uncertainty_decay',
+                key_state='uncertainty_value',
+                action_mask=mask_big_pe,
                 inputs=(caught,),
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
@@ -159,10 +149,10 @@ class SpiceModel(BaseModel):
             )
 
             # --- Composite learning rate: weighted by changepoint probability ---
-            changepoint_lr = torch.sigmoid(self.state['changepoint_lr_value'])
-            uncertainty_lr = torch.sigmoid(self.state['uncertainty_lr_value'])
-            alpha = cp_prob * changepoint_lr + (1 - cp_prob) * uncertainty_lr
-
+            alpha_cp = torch.sigmoid(self.state['changepoint_value'])
+            alpha_var = torch.sigmoid(self.state['uncertainty_value'])
+            alpha = mask_big_pe * alpha_cp + (1 - mask_big_pe) * alpha_var
+            
             # --- Gated output: interpolate between shield and belief ---
             # alpha ∈ [0, 1]; 0 = trust current position, 1 = trust internal belief
             spice_signals.logits[trial] = (1 - alpha) * shield[trial] + alpha * self.state['belief_value']

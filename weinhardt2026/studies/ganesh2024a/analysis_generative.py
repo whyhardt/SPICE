@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 
 from spice import SpiceDataset
 from weinhardt2026.studies.ganesh2024a.benchmarking_ganesh2024a import get_dataset
+from weinhardt2026.analysis.analysis_generative_comparison import compute_generative_comparison
 
 
 METRIC_LABELS = {
@@ -192,9 +193,11 @@ def analysis_generative_behavior(
     if path_data_spice is not None:
         datasets['spice'] = path_data_spice
 
+    participant_ids = {}
     for name, path in datasets.items():
         print(f"Loading {name} from {path}...")
         dataset, _, _ = get_dataset(path_data=path, test_blocks=())
+        participant_ids[name] = dataset.xs[:, 0, 0, -1].long().numpy()
         choices, rewards, contrast = _extract_data(dataset)
         all_metrics[name] = _compute_metrics(choices, rewards, contrast)
 
@@ -246,4 +249,11 @@ def analysis_generative_behavior(
         print("\nNormalized MAE (|model_mean - real_mean| / real_std):")
         print(df_comparison)
 
-    return df_summary, df_comparison
+    # Distributional similarity + Spearman comparison
+    df_similarity, df_spearman = None, None
+    if 'real' in all_metrics and participant_ids:
+        df_similarity, df_spearman = compute_generative_comparison(
+            all_metrics, participant_ids, output_dir,
+        )
+
+    return df_summary, df_comparison, df_similarity, df_spearman

@@ -8,7 +8,7 @@ import os
 
 from spice import SpiceEstimator, SpiceDataset, split_data_along_blockdim
 
-from spice_weber2024_changepoint import SpiceModel, CONFIG
+from spice_weber2024 import SpiceModel, CONFIG
 from benchmarking_weber2024 import get_dataset, clamped_angular_mse, generate_behavior
 from analysis_generative import analysis_generative_behavior
 
@@ -172,7 +172,7 @@ with torch.no_grad():
     estimator.use_sindy(False)
     predictions_spice_rnn = torch.tensor(estimator.predict(dataset.xs))
     estimator.use_sindy(True)
-    predictions_spice_sym = torch.tensor(estimator.predict(dataset.xs))
+    predictions_spice_eq = torch.tensor(estimator.predict(dataset.xs))
 
 # --- Extract per-trial SPICE internal states (belief, learning rate) ---
 def extract_spice_states(model, xs_session):
@@ -269,9 +269,9 @@ pred_spice_rnn_deg = sincos_to_degrees(
     predictions_spice_rnn[session, t_start:t_end, 0, 0],
     predictions_spice_rnn[session, t_start:t_end, 0, 1],
 )
-pred_spice_sym_deg = sincos_to_degrees(
-    predictions_spice_sym[session, t_start:t_end, 0, 0],
-    predictions_spice_sym[session, t_start:t_end, 0, 1],
+pred_spice_eq_deg = sincos_to_degrees(
+    predictions_spice_eq[session, t_start:t_end, 0, 0],
+    predictions_spice_eq[session, t_start:t_end, 0, 1],
 )
 
 caught_trials = [t for t, c in zip(trials, caught_vals) if c > 0.5]
@@ -293,7 +293,7 @@ axs[0].grid(alpha=0.3)
 axs[1].plot(list(trials), actual_shield_deg.numpy(), 'b-', alpha=0.4, label='Shield (human)')
 axs[1].plot(list(trials), pred_gru_deg.numpy(), 'g-', label='GRU')
 axs[1].plot(list(trials), pred_spice_rnn_deg.numpy(), 'r--', label='SPICE-RNN')
-axs[1].plot(list(trials), pred_spice_sym_deg.numpy(), 'r-', label='SPICE-SYM')
+axs[1].plot(list(trials), pred_spice_eq_deg.numpy(), 'r-', label='SPICE-EQ')
 axs[1].set_ylabel('Predicted Position (degrees)')
 axs[1].set_title('Model Predictions vs Human Shield Position')
 axs[1].legend(fontsize=8)
@@ -408,7 +408,7 @@ dataset_gen_spice_rnn = generate_behavior(
 )
 
 estimator.use_sindy(True)
-dataset_gen_spice_sym = generate_behavior(
+dataset_gen_spice_eq = generate_behavior(
     model=estimator,
     dataset=dataset,
 )
@@ -419,6 +419,6 @@ analysis_generative_behavior(
     dataset_real=dataset,
     dataset_gru=dataset_gen_gru,
     dataset_spice_rnn=dataset_gen_spice_rnn,
-    dataset_spice=dataset_gen_spice_sym,
+    dataset_spice=dataset_gen_spice_eq,
     output_dir=output_dir,
 )

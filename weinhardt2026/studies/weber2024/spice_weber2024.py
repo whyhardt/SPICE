@@ -6,16 +6,8 @@ from spice import SpiceConfig, BaseModel
 CONFIG = SpiceConfig(
     library_setup={
         # Belief update: split by catch outcome (externalized gating)
-        'belief_update_caught': (
-            # 'shield',
-            'pe',
-            # 'lr',
-            ),   # update when shield catches laser
-        'belief_update_missed': (
-            # 'shield',
-            'pe',
-            # 'lr',
-            ),   # update when shield misses laser
+        'belief_update_caught': ('pe',),   # update when shield catches laser
+        'belief_update_missed': ('pe',),   # update when shield misses laser
         # Dynamic learning rate: modulates gated output
         'lr_update_caught': (),    # LR adapts when catching (tracking well)
         'lr_update_missed':  (),    # LR decays when missing (tracking poorly)
@@ -23,7 +15,7 @@ CONFIG = SpiceConfig(
 
     memory_state={
         'belief_value': 0,    # internal belief about laser position (sin/cos as items 0, 1)
-        'lr_value': 3,        # dynamic learning rate state; sigmoid(3) = 1.0
+        'lr_value': 0,        # dynamic learning rate state; sigmoid(3) = 1.0
     },
 
     states_in_logit=[
@@ -84,6 +76,7 @@ class SpiceModel(BaseModel):
                 key_module='lr_update_caught',
                 key_state='lr_value',
                 action_mask=caught_mask,
+                # inputs=(prediction_error.detach(),),
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
                 experiment_index=spice_signals.experiment_ids if experiment_embedding is not None else None,
@@ -94,6 +87,7 @@ class SpiceModel(BaseModel):
                 key_module='lr_update_missed',
                 key_state='lr_value',
                 action_mask=1 - caught_mask,
+                # inputs=(prediction_error.detach(),),
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
                 experiment_index=spice_signals.experiment_ids if experiment_embedding is not None else None,
@@ -110,9 +104,7 @@ class SpiceModel(BaseModel):
                 key_state='belief_value',
                 action_mask=caught_mask,
                 inputs=(
-                    # shield[trial],
                     prediction_error,
-                    # alpha,
                     ),
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
@@ -125,9 +117,7 @@ class SpiceModel(BaseModel):
                 key_state='belief_value',
                 action_mask=1 - caught_mask,
                 inputs=(
-                    # shield[trial],
                     prediction_error,
-                    # alpha,
                     ),
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,

@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 
 from spice import SpiceDataset
 from weinhardt2026.studies.bruckner2025.benchmarking_bruckner2025 import get_dataset, POSITION_SCALE, _AI_MU_T, _AI_C_T
+from weinhardt2026.analysis.analysis_generative_comparison import compute_generative_comparison
 
 
 METRIC_LABELS = {
@@ -263,4 +264,15 @@ def analysis_generative_behavior(
         print("\nNormalized MAE (|model_mean - real_mean| / real_std):")
         print(df_comparison)
 
-    return df_summary, df_comparison
+    # Distributional similarity + Spearman comparison
+    df_similarity, df_spearman = None, None
+    if 'real' in all_metrics and 'real' in datasets:
+        pid_dict = {
+            name: ds.xs[:, 0, 0, -1].long().numpy()
+            for name, ds in datasets.items()
+        }
+        df_similarity, df_spearman = compute_generative_comparison(
+            all_metrics, pid_dict, output_dir,
+        )
+
+    return df_summary, df_comparison, df_similarity, df_spearman

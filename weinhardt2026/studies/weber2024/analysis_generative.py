@@ -12,6 +12,7 @@ from weinhardt2026.studies.weber2024.archive.benchmarking_weber2024 import angul
 from weinhardt2026.studies.weber2024.benchmarking_weber2024 import (
     get_dataset, CATCH_THRESHOLD, _N_ACTIONS, _N_REWARDS, _AI_START, _AI_CAUGHT, _AI_DT,
 )
+from weinhardt2026.analysis.analysis_generative_comparison import compute_generative_comparison
 
 
 METRIC_LABELS = {
@@ -248,4 +249,15 @@ def analysis_generative_behavior(
         print("\nNormalized MAE (|model_mean - real_mean| / real_std):")
         print(df_comparison)
 
-    return df_summary, df_comparison
+    # Distributional similarity + Spearman comparison
+    df_similarity, df_spearman = None, None
+    if 'real' in all_metrics:
+        pid_dict = {
+            name: ds.xs[:, 0, 0, -1].long().numpy()
+            for name, ds in datasets.items()
+        }
+        df_similarity, df_spearman = compute_generative_comparison(
+            all_metrics, pid_dict, output_dir,
+        )
+
+    return df_summary, df_comparison, df_similarity, df_spearman

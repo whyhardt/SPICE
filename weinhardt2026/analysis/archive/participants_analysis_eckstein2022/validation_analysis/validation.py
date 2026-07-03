@@ -33,11 +33,11 @@ behavioral_metrics = [
 ]
 
 # Order and colors for datasets
-ordered_datasets = ['True', 'ApBr', 'Benchmark', 'RNN', 'SPICE-SYM']
+ordered_datasets = ['True', 'ApBr', 'Benchmark', 'RNN', 'SPICE-EQ']
 dataset_colors = {
     'True': '#FDE725',
     'RNN': '#B5DE2B',
-    'SPICE-SYM': '#6ECE58',
+    'SPICE-EQ': '#6ECE58',
     'ApBr': '#1F9E89',
     'Benchmark': '#26828E'
 }

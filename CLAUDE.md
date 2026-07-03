@@ -49,7 +49,7 @@ SPICE/
 │   │   ├── dezfouli2019/
 │   │   ├── ganesh2024a/
 │   │   ├── huang2026/
-│   │   ├── hwang2026/
+│   │   ├── kolff2025/
 │   │   └── archive/                    # Inactive studies
 │   ├── analysis/                       # Cross-study analysis pipelines
 │   └── utils/                          # Shared utilities (benchmarking, bandits, etc.)
@@ -299,7 +299,7 @@ SpiceDataset: shape (sessions, outer_ts, within_ts=1, features)
 - **Partial feedback** (single reward column): reward is placed in the column of the chosen action; unchosen columns are NaN
 - **Full/counterfactual feedback** (multiple reward columns): each column maps directly to its corresponding action index
 
-**Splitting utilities:** `split_data_along_timedim()`, `split_data_along_sessiondim()`, `reshape_data_along_participantdim()`
+**Splitting utilities:** `split_data_along_timedim()`, `split_data_along_blockdim()`, `reshape_data_along_participantdim()`
 
 ---
 

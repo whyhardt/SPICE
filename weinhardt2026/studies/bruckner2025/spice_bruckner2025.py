@@ -5,51 +5,39 @@ from spice import SpiceConfig, BaseModel
 
 CONFIG = SpiceConfig(
     library_setup={
+        # Changepoint LR: update on big-PE trials, decay on small-PE
+        'changepoint_update': ('v_t',),
+        'changepoint_decay': ('catch', 'v_t',),
+        # Uncertainty LR: update on small-PE trials, decay on big-PE
+        'uncertainty_update': ('catch', 'v_t',),
+        'uncertainty_decay': ('v_t',),
         # Belief update: learns target position from prediction error
-        'belief_update': (
-            'prediction_error', 
-            'catch', 
-            'v_t',
-            ),
-        # Changepoint detection: learns omega (surprise-driven) from PE magnitude
-        'changepoint_lr_update': (
-            # 'prediction_error', 
-            'catch', 
-            'v_t',
-            ),
-        'changepoint_lr_decay': (),
-        # Base learning rate: learns tau (condition-dependent baseline)
-        'uncertainty_lr_update': (
-            # 'prediction_error', 
-            'catch', 
-            'v_t',
-            ),
-        'uncertainty_lr_decay': (),
+        'belief_update_catch': ('prediction_error',),
+        'belief_update_miss': ('prediction_error',),
         # Anchoring bias: learns compensation for bucket displacement
-        'anchor_update': (
-            'anchor_shift',
-            ),
+        'anchor_update': ('anchor_shift',),
     },
 
     memory_state={
+        'changepoint_value': 0,    # changepoint LR state (sigmoid(3) ≈ 0.95)
+        'uncertainty_value': 0,    # relative uncertainty LR state (sigmoid(3) ≈ 0.95)
         'belief_value': 0.5,      # initial belief = center of screen (normalized)
-        'changepoint_value': None,    # changepoint probability state (sigmoid(0) = 0.5)
-        'uncertainty_value': None,    # base learning rate state (sigmoid(0) = 0.5)
         'anchor_value': 0,        # per-trial anchoring correction (reset each trial)
     },
 
     states_in_logit=[
-        'belief_value',
         'changepoint_value',
         'uncertainty_value',
+        'belief_value',
         'anchor_value',
     ],
-    
+
     additional_inputs=(
         'z_next',
         'catch',
         'v_t',
         'sigma',
+        'r_t',
         'mu_t',
         'c_t',
     ),
@@ -62,18 +50,16 @@ class SpiceModel(BaseModel):
         super().__init__(**kwargs)
 
         self.participant_embedding = self.setup_embedding(num_embeddings=self.n_participants, embedding_size=self.embedding_size)
-        
+
         # setup customized modules
         # anchor_update: 1 control signal (anchor_shift); no state in library (always reset to 0)
         self.setup_module(key_module='anchor_update', dropout=self.dropout, include_state=False)
-        
+
     def forward(self, inputs, prev_state=None):
 
         spice_signals = self.init_forward_pass(inputs, prev_state)
 
         # Extract signals — shapes after init: (T, W, E, B, ...)
-        # actions:            b_t / 300   → (T, W, E, B, 1)
-        # rewards:            x_t / 300   → (T, W, E, B, 1)
         outcome = spice_signals.feedback                                 # x_t / 300
         bucket = spice_signals.actions                                  # b_t / 300
 
@@ -82,27 +68,91 @@ class SpiceModel(BaseModel):
         participant_embedding = self.participant_embedding(spice_signals.participant_ids)
 
         for trial in spice_signals.trials:
-
+            
+            # --- Fix belief value to current position ---
+            self.state['belief_value'] = bucket[trial]
+            
             # --- Prediction error: outcome minus internal belief ---
             prediction_error = outcome[trial] - self.state['belief_value']
 
             # --- Anchor shift: bucket displacement from push ---
             anchor_shift = spice_signals.additional_inputs['z_next'][trial] - bucket[trial]
-            
-            # --- PE masks: small PE -> uncertainty; big PE -> CP ---
-            # Binary: 1 if |PE| exceeds threshold, 0 otherwise
-            # sigma equals bucket width -> therefore no latent task variable but observable
-            mask_pe_big = (prediction_error.abs() > 3 * spice_signals.additional_inputs['sigma'][trial]).float()
 
-            # --- Belief update: learns where the helicopter is ---
+            # --- Masks ---
+            mask_catch = spice_signals.additional_inputs['catch'][trial]
+            mask_vt = spice_signals.additional_inputs['v_t'][trial]
+
+            # --- PE mask: |PE| > 3 bucket half-widths → changepoint; else → uncertainty ---
+            mask_pe_big = (prediction_error.abs() > 3 * spice_signals.additional_inputs['sigma'][trial] / 2).float()
+
+            # --- Changepoint LR: update on big-PE trials, decay on small-PE ---
             self.call_module(
-                key_module='belief_update',
+                key_module='changepoint_update',
+                key_state='changepoint_value',
+                action_mask=mask_pe_big,
+                inputs=(
+                    spice_signals.additional_inputs['v_t'][trial],
+                ),
+                participant_index=spice_signals.participant_ids,
+                participant_embedding=participant_embedding,
+                experiment_index=spice_signals.experiment_ids if experiment_embedding is not None else None,
+                experiment_embedding=experiment_embedding,
+            )
+
+            self.call_module(
+                key_module='changepoint_decay',
+                key_state='changepoint_value',
+                action_mask=1 - mask_pe_big,
+                inputs=(
+                    spice_signals.additional_inputs['catch'][trial],
+                    spice_signals.additional_inputs['v_t'][trial],
+                ),
+                participant_index=spice_signals.participant_ids,
+                participant_embedding=participant_embedding,
+                experiment_index=spice_signals.experiment_ids if experiment_embedding is not None else None,
+                experiment_embedding=experiment_embedding,
+            )
+
+            # --- Uncertainty LR: update on small-PE trials, decay on big-PE ---
+            self.call_module(
+                key_module='uncertainty_update',
+                key_state='uncertainty_value',
+                action_mask=1 - mask_pe_big,
+                inputs=(
+                    spice_signals.additional_inputs['catch'][trial],
+                    spice_signals.additional_inputs['v_t'][trial],
+                ),
+                participant_index=spice_signals.participant_ids,
+                participant_embedding=participant_embedding,
+                experiment_index=spice_signals.experiment_ids if experiment_embedding is not None else None,
+                experiment_embedding=experiment_embedding,
+            )
+
+            self.call_module(
+                key_module='uncertainty_decay',
+                key_state='uncertainty_value',
+                action_mask=mask_pe_big,
+                inputs=(
+                    spice_signals.additional_inputs['v_t'][trial],
+                ),
+                participant_index=spice_signals.participant_ids,
+                participant_embedding=participant_embedding,
+                experiment_index=spice_signals.experiment_ids if experiment_embedding is not None else None,
+                experiment_embedding=experiment_embedding,
+            )
+
+            # --- Hard switch: big PE → use omega, small PE → use tau ---
+            alpha_cp = torch.sigmoid(self.state['changepoint_value'])
+            alpha_var = torch.sigmoid(self.state['uncertainty_value'])
+            alpha = mask_pe_big * alpha_cp + (1 - mask_pe_big) * alpha_var
+
+            # --- Belief update: learns where the helicopter is (non-visible trials only) ---
+            self.call_module(
+                key_module='belief_update_catch',
                 key_state='belief_value',
-                action_mask=None,
+                action_mask=mask_catch * (1 - mask_vt),
                 inputs=(
                     prediction_error,
-                    spice_signals.additional_inputs['catch'][trial],
-                    spice_signals.additional_inputs['v_t'][trial],
                 ),
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
@@ -110,15 +160,12 @@ class SpiceModel(BaseModel):
                 experiment_embedding=experiment_embedding,
             )
 
-            # --- Changepoint: learns changepoint-driven update rate (omega) ---
             self.call_module(
-                key_module='changepoint_lr_update',
-                key_state='changepoint_value',
-                action_mask=mask_pe_big,
+                key_module='belief_update_miss',
+                key_state='belief_value',
+                action_mask=(1 - mask_catch) * (1 - mask_vt),
                 inputs=(
-                    # prediction_error.detach(),
-                    spice_signals.additional_inputs['catch'][trial],
-                    spice_signals.additional_inputs['v_t'][trial],
+                    prediction_error,
                 ),
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
@@ -126,41 +173,9 @@ class SpiceModel(BaseModel):
                 experiment_embedding=experiment_embedding,
             )
 
-            self.call_module(
-                key_module='changepoint_lr_decay',
-                key_state='changepoint_value',
-                action_mask=1-mask_pe_big,
-                participant_index=spice_signals.participant_ids,
-                participant_embedding=participant_embedding,
-                experiment_index=spice_signals.experiment_ids if experiment_embedding is not None else None,
-                experiment_embedding=experiment_embedding,
-            )
-
-            # --- Learning rate: learns condition-dependent base rate (tau) ---
-            self.call_module(
-                key_module='uncertainty_lr_update',
-                key_state='uncertainty_value',
-                action_mask=1-mask_pe_big,
-                inputs=(
-                    # prediction_error.detach(),
-                    spice_signals.additional_inputs['catch'][trial],
-                    spice_signals.additional_inputs['v_t'][trial],
-                ),
-                participant_index=spice_signals.participant_ids,
-                participant_embedding=participant_embedding,
-                experiment_index=spice_signals.experiment_ids if experiment_embedding is not None else None,
-                experiment_embedding=experiment_embedding,
-            )
-            
-            self.call_module(
-                key_module='uncertainty_lr_decay',
-                key_state='uncertainty_value',
-                action_mask=mask_pe_big,
-                participant_index=spice_signals.participant_ids,
-                participant_embedding=participant_embedding,
-                experiment_index=spice_signals.experiment_ids if experiment_embedding is not None else None,
-                experiment_embedding=experiment_embedding,
-            )
+            # On visible trials (v_t=1), hard-set belief to true helicopter position
+            mu_t = spice_signals.additional_inputs['mu_t'][trial]
+            self.state['belief_value'] = torch.where(mask_vt > 0.5, mu_t, self.state['belief_value'])
 
             # --- Anchor correction: reset each trial, learns d * anchor_shift ---
             self.state['anchor_value'] = torch.zeros_like(self.state['anchor_value'])
@@ -175,17 +190,11 @@ class SpiceModel(BaseModel):
                 experiment_embedding=experiment_embedding,
             )
 
-            # --- Combined learning rate: alpha = omega + tau - omega*tau ---
-            changepoint_lr = torch.sigmoid(self.state['changepoint_value'])
-            uncertainty_lr = torch.sigmoid(self.state['uncertainty_value'])
-            # alpha = changepoint_lr + uncertainty_lr - changepoint_lr * uncertainty_lr  # = 1 - (1-omega)(1-tau), ∈ [0, 1]
-            alpha = mask_pe_big * changepoint_lr + (1-mask_pe_big) * uncertainty_lr
-            
             # --- Gated output + anchor correction ---
             spice_signals.logits[trial] = (
-                # bucket[trial] + alpha * (self.state['belief_value'] - bucket[trial])
-                self.state['belief_value']
-                + self.state['anchor_value']
+                + (1 - alpha) * bucket[trial]           # how much to trust current position
+                + alpha * self.state['belief_value']    # how much to trust internal belief
+                + self.state['anchor_value']            # anchor bias
             )
 
         spice_signals = self.post_forward_pass(spice_signals)

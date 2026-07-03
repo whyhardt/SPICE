@@ -19,12 +19,14 @@ N_BLOCKS = 4
 N_TRIALS_PER_BLOCK = 100
 
 # Additional input column indices (relative to start of additional inputs block)
+# Observable inputs first (indices 0–5), then unobservable (index 6)
 _AI_Z_NEXT = 0      # next trial's initial bucket position z_{t+1} (normalized)
 _AI_CATCH = 1        # binary: caught the coin
-_AI_V_T = 2          # helicopter visible on next trial (timeshifted -1)
+_AI_V_T = 2          # helicopter visible on current trial
 _AI_SIGMA = 3        # outcome noise std (normalized)
-_AI_MU_T = 4         # true helicopter position (normalized)
-_AI_C_T = 5          # change point indicator
+_AI_R_T = 4          # coin value (0.25=stone, 1.0=gold, 4.0=jackpot)
+_AI_MU_T = 5         # true helicopter position (normalized; NaN when v_t=0)
+_AI_C_T = 6          # change point indicator (never observable)
 
 
 # --- MSE loss compatible with SPICE training pipeline ---
@@ -47,15 +49,18 @@ def get_dataset(
 ) -> tuple[SpiceDataset, SpiceDataset]:
     """Load bruckner2025 data and build a SpiceDataset for continuous prediction.
 
-    Feature layout of xs (n_features = 1 + 1 + 6 + 5 = 13):
+    Feature layout of xs (n_features = 1 + 1 + 7 + 5 = 14):
         [0]  b_t / 300       — "action" (bucket position, normalized)
         [1]  x_t / 300       — "reward" (outcome position, normalized)
+        --- observable additional inputs (indices 0–5) ---
         [2]  z_{t+1} / 300   — additional input 0: next trial's initial bucket position
         [3]  catch            — additional input 1: binary coin catch flag
-        [4]  v_{t+1}          — additional input 2: helicopter visible on next trial (timeshifted -1)
+        [4]  v_t              — additional input 2: helicopter visible on current trial
         [5]  sigma / 300      — additional input 3: outcome noise std (normalized)
-        [6]  mu_t / 300       — additional input 4: true helicopter position
-        [7]  c_t              — additional input 5: change point indicator
+        [6]  r_t              — additional input 4: coin value (0.25, 1.0, or 4.0)
+        [7]  mu_t / 300       — additional input 5: true helicopter position (NaN when v_t=0)
+        --- unobservable additional inputs (index 6) ---
+        [8]  c_t              — additional input 6: change point indicator
         [-5] time_trial      — always 0
         [-4] trial index     — 0-based
         [-3] block           — raw block id from CSV
@@ -76,13 +81,17 @@ def get_dataset(
     for col in ['b_t', 'x_t', 'mu_t', 'z_next', 'sigma']:
         df[col] = df[col] / POSITION_SCALE
 
+    # Mask mu_t on non-visible trials: participants can only observe
+    # the helicopter position when v_t=1
+    df.loc[df['v_t'] != 1, 'mu_t'] = float('nan')
+
     dataset = csv_to_dataset(
         file=df,
         df_choice='b_t',
         df_feedback='x_t',
         additional_inputs=CONFIG.additional_inputs,
         continuous_action=True,
-        timeshift_additional_inputs=(0, 0, -1, 0, 0, 0),
+        timeshift_additional_inputs=(0, 0, 0, 0, 0, 0, 0),
     )
 
     if test_blocks is not None:
@@ -93,14 +102,14 @@ def get_dataset(
 # --- Benchmark Model: Reduced Bayesian ---
 
 class RationalResourceModel(nn.Module):
-    """Reduced Bayesian model for the helicopter task (Bruckner et al. 2025, Eqs. 4–10, 15).
+    """Reduced Bayesian model for the helicopter task (Bruckner et al. 2025, Eqs. 4–14).
 
     Faithful reimplementation of AlAgentRbm.py from the original codebase.
     Key design: belief is reset to the participant's actual prediction (b_t) at each
     trial (subjective prediction errors), while uncertainty dynamics carry forward.
 
     Per-participant learnable parameters: hazard rate (h), surprise sensitivity (s),
-    uncertainty underestimation (u), and anchoring bias (d).
+    uncertainty underestimation (u), and reward bias (q).
     """
 
     # Fixed initial conditions (matching AgentVars defaults)
@@ -108,9 +117,10 @@ class RationalResourceModel(nn.Module):
     TAU_0 = 0.5                # initial relative uncertainty
     MU_0 = 150.0               # initial belief (center of screen)
 
-    def __init__(self, n_participants: int = 1, sigma: float = SIGMA):
+    def __init__(self, n_participants: int = 1, sigma: float = SIGMA, sigma_H: float = SIGMA):
         super().__init__()
         self.sigma = sigma
+        self.sigma_H = sigma_H
         self.n_participants = n_participants
         self.n_actions = 1
 
@@ -118,15 +128,17 @@ class RationalResourceModel(nn.Module):
         self.h_raw = nn.Parameter(torch.zeros(n_participants))         # → sigmoid → hazard rate [0, 1]
         self.s_raw = nn.Parameter(torch.zeros(n_participants))         # → sigmoid → surprise sensitivity [0, 1]
         self.u_raw = nn.Parameter(torch.zeros(n_participants))         # raw u; used as exp(u) for uncertainty scaling
-        self.d_raw = nn.Parameter(torch.zeros(n_participants))         # → tanh → anchoring bias [-1, 1]
+        self.q_raw = nn.Parameter(torch.zeros(n_participants))         # → unconstrained → reward bias
 
     def forward(self, xs: torch.Tensor, state: torch.Tensor = None):
         """Forward pass: trial-by-trial Bayesian belief updating.
 
-        Matches the original code in AlAgentRbm.py + al_task_agent_int_rbm.py:
+        Matches the original code in AlAgentRbm.py:
         - Belief is reset to b_t each trial (subjective PE)
         - Uncertainty (sigma_est_sq, tau) carries forward across trials
         - u parameter: raw u is exponentiated → divides uncertainty (Eq. 9)
+        - On catch trials (v_t=1), belief is updated with helicopter position (Eqs. 11-14)
+        - Reward bias q * high_val is added to learning rate
 
         Args:
             xs: (B, T, 1, F) input tensor.
@@ -139,17 +151,27 @@ class RationalResourceModel(nn.Module):
         B, T, _, F = xs.shape
         device = xs.device
 
+        n_actions = 1
+        n_rewards = 1
+        ai = n_actions + n_rewards  # start of additional inputs block
+
         xs = xs.nan_to_num(0.)
         b_t = xs[:, :, 0, 0]     # bucket position (normalized)
         x_t = xs[:, :, 0, 1]     # outcome (normalized)
-        z_next = xs[:, :, 0, 2]  # z_{t+1}: next trial's initial bucket position (normalized)
+        mu_H = xs[:, :, 0, ai + _AI_MU_T]   # true helicopter position (normalized)
+        r_t = xs[:, :, 0, ai + _AI_R_T]     # coin value (0.25, 1.0, or 4.0)
         participant_ids = xs[:, 0, 0, -1].long()
+
+        v_t = xs[:, :, 0, ai + _AI_V_T]          # helicopter visible on current trial
+
+        # high_val: binary indicator for high-value trials (r_t >= 1.0)
+        high_val = (r_t >= 1.0).float()
 
         # Transform per-participant parameters
         h = torch.sigmoid(self.h_raw[participant_ids])               # (B,) hazard rate [0, 1]
         s = torch.sigmoid(self.s_raw[participant_ids])               # (B,) surprise sensitivity [0, 1]
-        u_exp = torch.exp(torch.clamp_max(self.u_raw[participant_ids], 10))               # (B,) exp(u) for uncertainty scaling
-        d = torch.tanh(self.d_raw[participant_ids])                  # (B,) anchoring bias [-1, 1]
+        u_exp = torch.exp(torch.clamp_max(self.u_raw[participant_ids], 10))  # (B,) exp(u) for uncertainty scaling
+        q = self.q_raw[participant_ids]                              # (B,) reward bias
 
         # Initialize uncertainty state (fixed, matching original AgentVars)
         sigma_est_sq = torch.full((B,), self.SIGMA_0 / POSITION_SCALE ** 2, device=device)
@@ -176,18 +198,34 @@ class RationalResourceModel(nn.Module):
             omega = (numerator / denominator).clamp(0, 1)
 
             # Learning rate (Eq. 7)
-            alpha = (omega + tau - tau * omega).clamp(0, 1)
+            alpha = omega + tau - tau * omega
 
-            # Predicted update (Eq. 5): a_hat = alpha * delta
-            a_hat = alpha * delta
+            # Reward bias: alpha += q * high_val, clamped to [0, 1]
+            alpha = (alpha + q * high_val[:, t]).clamp(0, 1)
 
-            # Anchoring bias (Eq. 15): a_hat += d * y_t, where y_t = z_{t+1} - b_t
-            y = z_next[:, t] - b_t[:, t]
-            a_hat = a_hat + d * y
+            # Belief update (Eqs. 4-5): mu_t = b_t + alpha * delta
+            mu_t = b_t[:, t] + alpha * delta
 
-            # Predicted next position: b_t + a_hat (Eq. 4, with belief reset to b_t)
-            mu_pred = (b_t[:, t] + a_hat).clamp(0, 1)
-            logits[:, t, 0, 0] = mu_pred
+            # Catch trial handling (Eqs. 11-14): when helicopter is visible
+            # Helicopter weight (Eq. 12): w_t = sigma_t^2 / (sigma_t^2 + sigma_H^2)
+            w_t = sigma_est_sq / (sigma_est_sq + self.sigma_H ** 2 + 1e-10)
+
+            # Update belief with helicopter position (Eq. 11)
+            mu_t_catch = (1 - w_t) * mu_t + w_t * mu_H[:, t]
+
+            # Mixture variance (Eq. 14): C = 1 / (1/sigma_t^2 + 1/sigma_H^2)
+            C = 1.0 / (1.0 / (sigma_est_sq + 1e-10) + 1.0 / (self.sigma_H ** 2 + 1e-10))
+
+            # Update tau on catch trials (Eq. 13): tau = C / (C + sigma^2)
+            tau_catch = C / (C + self.sigma ** 2 + 1e-10)
+
+            # Apply catch trial updates where v_t = 1
+            is_catch = v_t[:, t]
+            mu_t = torch.where(is_catch > 0.5, mu_t_catch, mu_t)
+            tau = torch.where(is_catch > 0.5, tau_catch, tau)
+
+            # Predicted next position (Eq. 4)
+            logits[:, t, 0, 0] = mu_t.clamp(0, 1)
 
             # Update uncertainty for next trial (Eq. 9)
             # sigma_{t+1}^2 = (omega*sigma^2 + (1-omega)*tau*sigma^2
@@ -227,6 +265,7 @@ class EnvironmentBruckner2025:
         self.v_t = dataset.xs[:, :, 0, ai + _AI_V_T].clone()           # helicopter visible (next trial)
         self.mu_t = dataset.xs[:, :, 0, ai + _AI_MU_T].clone()         # mu_t / 300
         self.c_t = dataset.xs[:, :, 0, ai + _AI_C_T].clone()           # change point indicator
+        self.r_t = dataset.xs[:, :, 0, ai + _AI_R_T].clone()           # coin value
 
         # Detect no-anchor-shift trials: z_{t+1} ≈ b_t in original data
         # (bucket stays where participant placed it → z_next should track model's b_t during generation)
@@ -258,6 +297,7 @@ class EnvironmentBruckner2025:
             'v_t': self.v_t[:, t],
             'mu_t': self.mu_t[:, t],
             'c_t': self.c_t[:, t],
+            'r_t': self.r_t[:, t],
         }
 
 
@@ -335,6 +375,7 @@ def generate_behavior(
         xs_gen[:, t, 0, ai + _AI_V_T] = trial['v_t']              # replayed visibility
         xs_gen[:, t, 0, ai + _AI_MU_T] = trial['mu_t']            # replayed true mean
         xs_gen[:, t, 0, ai + _AI_C_T] = trial['c_t']              # replayed change point
+        xs_gen[:, t, 0, ai + _AI_R_T] = trial['r_t']              # replayed coin value
 
         # Zero out inactive sessions
         inactive = ~valid_mask[:, t]
@@ -404,6 +445,7 @@ def _save_generated_csv(dataset: SpiceDataset, path: str) -> None:
                 'v_t': xs[s, t, 0, ai + _AI_V_T],
                 'mu_t': xs[s, t, 0, ai + _AI_MU_T] * POSITION_SCALE,
                 'c_t': xs[s, t, 0, ai + _AI_C_T],
+                'r_t': xs[s, t, 0, ai + _AI_R_T],
             })
 
     pd.DataFrame(rows).to_csv(path, index=False)

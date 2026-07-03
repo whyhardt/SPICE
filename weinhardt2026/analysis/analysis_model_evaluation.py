@@ -1,4 +1,5 @@
 import os
+import math
 import sys
 from typing import Optional
 
@@ -77,6 +78,7 @@ def analysis_model_evaluation(
     benchmark_model: torch.nn.Module = None,
     gru_model: torch.nn.Module = None,
     verbose: bool = False,
+    output_dir: Optional[str] = None,
     ):
     
     # ------------------------------------------------------------
@@ -210,12 +212,23 @@ def analysis_model_evaluation(
 
     df = pd.DataFrame(
         data=scores,
-        index=['Benchmark', 'GRU', 'SPICE-RNN', 'SPICE-SYM'],
+        index=['Benchmark', 'GRU', 'SPICE-RNN', 'SPICE-EQ'],
         columns = ('Trial Lik.', '(std)', 'n_parameters', '(std)', 'NLL', 'AIC', 'BIC'),
         )
-    
+
+    # ΔBIC/trial: anchored to random-choice baseline (0 parameters)
+    n_actions = dataset.n_actions
+    n_trials = considered_trials.item()
+    nll_random = n_trials * math.log(n_actions)
+    bic_random = 2 * nll_random  # 0 parameters → penalty = 0
+    df['ΔBIC/trial'] = (bic_random - df['BIC'].astype(float)) / n_trials
+
     if verbose:
         print(df)
+
+    if output_dir is not None:
+        os.makedirs(output_dir, exist_ok=True)
+        df.to_csv(os.path.join(output_dir, 'model_evaluation.csv'))
 
     return df
 
@@ -386,14 +399,25 @@ def analysis_model_evaluation_mse(
         unique_pairs = torch.unique(torch.stack([participant_ids, experiment_ids], dim=1), dim=0)
         unique_param_counts = spice_params_tensor[unique_pairs[:, 0], unique_pairs[:, 1]]
         spice_n_params = unique_param_counts.float().mean().item()
-        models['SPICE-SYM'] = (_compute_mse_metrics(preds_sindy, targets, valid_mask), spice_n_params)
+        models['SPICE-EQ'] = (_compute_mse_metrics(preds_sindy, targets, valid_mask), spice_n_params)
 
         spice_model.use_sindy(True)
 
     # --- Build results table ---
+    n_valid = valid_mask.sum().item()
+
+    # Random baseline BIC (predict target mean → MSE = var(targets))
+    mask_expanded = valid_mask.unsqueeze(-1).unsqueeze(-1).expand_as(targets)
+    tgt_valid_all = targets[mask_expanded].reshape(-1, targets.shape[-1])
+    mse_random = tgt_valid_all.var(dim=0).mean().item()
+    bic_random = n_valid * (1 + math.log(2 * math.pi) + math.log(max(mse_random, 1e-30)))
+
     rows = []
     for name, (metrics, n_params) in models.items():
         mse_std = metrics['mse_per_session'][~metrics['mse_per_session'].isnan()].std().item()
+        mse_val = max(metrics['mse'], 1e-30)
+        bic = n_valid * (1 + math.log(2 * math.pi) + math.log(mse_val)) + n_params * math.log(n_valid)
+        delta_bic_per_trial = (bic_random - bic) / n_valid
         rows.append({
             'Model': name,
             'MSE': metrics['mse'],
@@ -402,6 +426,8 @@ def analysis_model_evaluation_mse(
             'MAE': metrics['mae'],
             'R²': metrics['r2'],
             'n_parameters': n_params,
+            'BIC': bic,
+            'ΔBIC/trial': delta_bic_per_trial,
         })
 
     df = pd.DataFrame(rows).set_index('Model')
