@@ -859,9 +859,9 @@ def _run_sindy_training(
 
     Stage 2.1 — Sparsity discovery:
         Reset all presence masks to fully active, re-initialize coefficients,
-        and train with one-step-ahead shooting (K=1) + pruning + L1 penalty.
-        Uses the same LR adaptation as Stage 1: warmup at 0.01, then drop to
-        0.001, boost back to 0.01 after pruning events.
+        and train with multi-step shooting (K=shooting_steps) + pruning + L1
+        penalty. Uses the same LR adaptation as Stage 1: warmup at 0.01, then
+        drop to 0.001, boost back to 0.01 after pruning events.
 
     Stage 2.2 — Coefficient estimation:
         Freeze the discovered sparsity pattern, re-initialize coefficients
@@ -919,23 +919,59 @@ def _run_sindy_training(
         if verbose:
             terminal_width = _get_terminal_width()
             print("\n" + "=" * terminal_width)
-            print("Stage 2.1: SINDy sparsity discovery")
+            print(f"Stage 2.1: SINDy sparsity discovery (K={1})")
             print("=" * terminal_width)
 
-        # Reset presence masks and re-initialize coefficients for full exploration
+        # Reset presence masks and re-initialize coefficients for full exploration,
+        # but respect theory-driven prior masks (e.g. binary^2 terms)
         for module in model.get_modules():
             model.sindy_coefficients_presence[module].fill_(True)
+            model.sindy_coefficients_presence[module] &= model.sindy_coefficients_prior_mask[module]
             model.sindy_pruning_patience_counters[module].zero_()
             model.sindy_coefficients[module].data = (
                 torch.randn_like(model.sindy_coefficients[module].data) * 0.001
+                * model.sindy_coefficients_prior_mask[module].float()
             )
+
+        # Build multi-step shooting windows (same as Stage 2.2)
+        K_21 = 1  #shooting_steps
+        if K_21 > 1:
+            n_windows_21 = T // K_21
+            window_starts_k1 = [i * K_21 for i in range(n_windows_21)]
+            if T % K_21 > 0 and T > K_21:
+                window_starts_k1.append(T - K_21)
+            elif T % K_21 > 0 and T <= K_21:
+                window_starts_k1 = [0]
+                K_21 = T
+        else:
+            window_starts_k1 = list(range(T))
 
         # Ridge solve with L2 penalty to initialize coefficients
         ridge_success_21 = _ridge_solve_sindy(model, xs_train, ys_train)
-        if verbose:
-            if ridge_success_21:
-                print("Ridge initialization succeeded (with L2 penalty).")
-            else:
+
+        model.fit_sindy = False
+        model.train(use_sindy=True)
+        for rnn_module in model.submodules_rnn.values():
+            rnn_module.eval()
+
+        if ridge_success_21:
+            # Evaluate ridge solution with K-step shooting loss
+            with torch.no_grad():
+                ridge_loss_21 = _run_shooting_epoch_vectorized(
+                    model=model,
+                    optimizer=None,
+                    xs_train=xs_train,
+                    state_trajectories=state_trajectories,
+                    nan_mask=nan_mask,
+                    window_starts=window_starts_k1,
+                    K=K_21,
+                    batch_sessions=torch.arange(B),
+                    sindy_alpha=sindy_alpha,
+                )
+            if verbose:
+                print(f"Ridge initialization succeeded (K={K_21} loss: {ridge_loss_21:.7f}). Running SGD refinement...")
+        else:
+            if verbose:
                 print("Ridge initialization failed. Starting from random init.")
 
         sindy_parameters = [p for name, p in model.named_parameters() if 'sindy' in name]
@@ -943,15 +979,6 @@ def _run_sindy_training(
         scheduler_21 = torch.optim.lr_scheduler.ReduceLROnPlateau(
             optimizer_21, mode='min', factor=0.5, patience=10, min_lr=1e-5,
         )
-
-        # Build K=1 shooting windows (= every trial is its own window)
-        window_starts_k1 = list(range(T))
-        K_21 = 1
-
-        model.fit_sindy = False
-        model.train(use_sindy=True)
-        for rnn_module in model.submodules_rnn.values():
-            rnn_module.eval()
 
         lr_boost_end = 0  # epoch at which post-pruning LR boost expires
 

@@ -163,6 +163,7 @@ def _plot_violins(all_metrics, output_dir):
 
 def analysis_generative_behavior(
     dataset_real: SpiceDataset = None,
+    dataset_benchmark: SpiceDataset = None,
     dataset_gru: SpiceDataset = None,
     dataset_spice_rnn: SpiceDataset = None,
     dataset_spice: SpiceDataset = None,
@@ -182,6 +183,7 @@ def analysis_generative_behavior(
     datasets = {}
     entries = [
         ('real', dataset_real),
+        ('benchmark', dataset_benchmark),
         ('gru', dataset_gru),
         ('spice_rnn', dataset_spice_rnn),
         ('spice', dataset_spice),

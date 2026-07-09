@@ -1,7 +1,7 @@
 import os
 import math
 import sys
-from typing import Optional
+from typing import Callable, Optional
 
 import argparse
 import importlib
@@ -79,8 +79,20 @@ def analysis_model_evaluation(
     gru_model: torch.nn.Module = None,
     verbose: bool = False,
     output_dir: Optional[str] = None,
+    trial_filter: Optional[Callable[[torch.Tensor], torch.Tensor]] = None,
+    n_actions_random_baseline: Optional[int] = None,
     ):
-    
+    """
+    Args:
+        trial_filter: Optional function ``(ys: Tensor) -> BoolTensor (B, T)``
+            that returns True for trials to **include** in the evaluation.
+            When None (default), all non-NaN trials are included.
+        n_actions_random_baseline: Number of actions for the random-choice
+            baseline in ΔBIC computation. Defaults to ``dataset.n_actions``.
+            Set to a smaller value when some actions are excluded via
+            ``trial_filter`` (e.g. n_actions-1 when filtering out waiting).
+    """
+
     # ------------------------------------------------------------
     # Compute choice probs
     # ------------------------------------------------------------
@@ -117,7 +129,7 @@ def analysis_model_evaluation(
         spice_model.eval(use_sindy=True)
         
         spice_predictions, _ = spice_model(dataset.xs.to(spice_model.device))           
-        spice_choice_probs = get_choice_probs(spice_predictions[0]).detach().cpu()
+        spice_choice_probs = get_choice_probs(spice_predictions.mean(dim=0)).detach().cpu()
         
         spice_model.use_sindy(False)
         spice_model.model.init_state(batch_size=dataset.xs.shape[0])
@@ -134,10 +146,19 @@ def analysis_model_evaluation(
     
     scores = torch.zeros((4, 3))
     metric_participant = torch.zeros((len(scores), len(dataset)))
-    
-    considered_trials_participant = (~torch.isnan(dataset.xs[:, :, 0, 0])).sum(dim=1)
+
+    # Build valid-trial mask: non-NaN AND passes optional filter
+    valid_mask = ~torch.isnan(dataset.xs[:, :, 0, 0])
+    if trial_filter is not None:
+        valid_mask = valid_mask & trial_filter(dataset.ys)
+
+    # Masked targets: excluded trials set to NaN so nansum skips them
+    targets_eval = dataset.ys.clone()
+    targets_eval[~valid_mask] = float('nan')
+
+    considered_trials_participant = valid_mask.sum(dim=1)
     considered_trials = considered_trials_participant.sum()
-    
+
     # SPICE model
     if spice_model is not None:
         participant_ids = dataset.xs[:, 0, 0, -1].long().cpu()
@@ -149,11 +170,11 @@ def analysis_model_evaluation(
         spice_n_params_mean = unique_param_counts.mean().item()
         spice_n_params_std = unique_param_counts.std().item() if len(unique_param_counts) > 1 else 0.0
 
-        scores_spice, nll_per_sample = get_scores(targets=dataset.ys, probs=spice_choice_probs, n_parameters=spice_n_params_mean)
+        scores_spice, nll_per_sample = get_scores(targets=targets_eval, probs=spice_choice_probs, n_parameters=spice_n_params_mean)
         scores[3] += torch.tensor(scores_spice)
         metric_participant[3] = nll_per_sample.sum(dim=-1).nansum(dim=1)[..., 0]
 
-        scores_spice_rnn, nll_per_sample = get_scores(targets=dataset.ys, probs=spice_rnn_choice_probs, n_parameters=spice_rnn_parameters)
+        scores_spice_rnn, nll_per_sample = get_scores(targets=targets_eval, probs=spice_rnn_choice_probs, n_parameters=spice_rnn_parameters)
         scores[2] += torch.tensor(scores_spice_rnn)
         metric_participant[2] = nll_per_sample.sum(dim=-1).nansum(dim=1)[..., 0]
     else:
@@ -162,13 +183,13 @@ def analysis_model_evaluation(
         
     # Benchmark model
     if benchmark_model is not None:
-        scores_benchmark, nll_per_sample = get_scores(targets=dataset.ys, probs=benchmark_choice_probs, n_parameters=benchmark_parameters)
+        scores_benchmark, nll_per_sample = get_scores(targets=targets_eval, probs=benchmark_choice_probs, n_parameters=benchmark_parameters)
         scores[0] += torch.tensor(scores_benchmark)
         metric_participant[0] = nll_per_sample.sum(dim=-1).nansum(dim=1)[..., 0]
         
     # GRU model
     if gru_model is not None:
-        scores_gru, nll_per_sample = get_scores(targets=dataset.ys, probs=gru_choice_probs, n_parameters=gru_parameters)
+        scores_gru, nll_per_sample = get_scores(targets=targets_eval, probs=gru_choice_probs, n_parameters=gru_parameters)
         scores[1] += torch.tensor(scores_gru)
         metric_participant[1] = nll_per_sample.sum(dim=-1).nansum(dim=1)[..., 0]
         
@@ -217,9 +238,9 @@ def analysis_model_evaluation(
         )
 
     # ΔBIC/trial: anchored to random-choice baseline (0 parameters)
-    n_actions = dataset.n_actions
+    n_actions_baseline = n_actions_random_baseline if n_actions_random_baseline is not None else dataset.n_actions
     n_trials = considered_trials.item()
-    nll_random = n_trials * math.log(n_actions)
+    nll_random = n_trials * math.log(n_actions_baseline)
     bic_random = 2 * nll_random  # 0 parameters → penalty = 0
     df['ΔBIC/trial'] = (bic_random - df['BIC'].astype(float)) / n_trials
 

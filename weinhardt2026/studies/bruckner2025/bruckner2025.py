@@ -1,11 +1,14 @@
+import sys
+from pathlib import Path
+ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
 import torch
 
 from spice import SpiceEstimator, SpiceDataset, split_data_along_blockdim
 from spice_bruckner2025 import SpiceModel, CONFIG
-
-import sys
-from pathlib import Path
-sys.path.append(str(Path(__file__).resolve().parents[3]))
+from weinhardt2026.utils.generation import generate_repeated
 from weinhardt2026.utils.benchmarking_gru import GRUModel, training
 from weinhardt2026.studies.bruckner2025.benchmarking_bruckner2025 import (
     get_dataset, mse_loss, generate_behavior, RationalResourceModel, POSITION_SCALE,
@@ -17,6 +20,8 @@ from weinhardt2026.analysis.analysis_model_evaluation import analysis_model_eval
 train_spice = False
 train_gru = False
 train_benchmark = False
+
+N_REPEATS = 100
 
 # -------------------------------------------------------------------------------------------
 # DATALOADER
@@ -344,41 +349,45 @@ df_mse = analysis_model_evaluation_mse(
 # GENERATIVE BENCHMARKING
 # -------------------------------------------------------------------------------------------
 
-output_dir = 'weinhardt2026/studies/bruckner2025/data'
+data_dir = 'weinhardt2026/studies/bruckner2025/data'
 
 # Generate behavior for GRU
 gru.eval().to(torch.device('cpu'))
-dataset_gen_gru = generate_behavior(
+dataset_gen_gru = generate_repeated(
+    generate_behavior,
+    n_repeats=N_REPEATS,
     model=gru,
     dataset=dataset,
-    save_dataset=f'{output_dir}/gen_gru.csv',
 )
 
 # Generate behavior for Benchmark
 benchmark.eval().to(torch.device('cpu'))
-dataset_gen_bm = generate_behavior(
+dataset_gen_bm = generate_repeated(
+    generate_behavior,
+    n_repeats=N_REPEATS,
     model=benchmark,
     dataset=dataset,
-    save_dataset=f'{output_dir}/gen_benchmark.csv',
 )
 
 # Generate behavior for SPICE-RNN
 estimator.model.to(torch.device('cpu'))
 estimator.use_sindy(False)
 estimator.eval()
-dataset_gen_spice_rnn = generate_behavior(
+dataset_gen_spice_rnn = generate_repeated(
+    generate_behavior,
+    n_repeats=N_REPEATS,
     model=estimator,
     dataset=dataset,
-    save_dataset=f'{output_dir}/gen_spice_rnn.csv',
 )
 
 # Generate behavior for SPICE (SINDy mode)
 estimator.use_sindy(True)
 estimator.eval()
-dataset_gen_spice = generate_behavior(
+dataset_gen_spice = generate_repeated(
+    generate_behavior,
+    n_repeats=N_REPEATS,
     model=estimator,
     dataset=dataset,
-    save_dataset=f'{output_dir}/gen_spice.csv',
 )
 
 # Generative analysis: compare real vs generated behavior

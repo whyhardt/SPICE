@@ -243,6 +243,7 @@ class BaseModel(nn.Module):
         self.sindy_polynomial_degree = sindy_polynomial_degree
         self.sindy_coefficients = nn.ParameterDict()
         self.sindy_coefficients_presence = {}  # Binary masks to permanently zero out coefficients
+        self.sindy_coefficients_prior_mask = {}  # Theory-driven masks (e.g. binary^2=0); never reset by pruning
         self.sindy_candidate_terms = {}
         self.sindy_degree_weights = {}  # Weights for coefficient penalty based on polynomial degree
         self.sindy_pruning_patience_counters = {}  # Patience counters for thresholding
@@ -398,6 +399,7 @@ class BaseModel(nn.Module):
         # Move masks, weights, and patience counters to the correct device
         for module_name in self.sindy_coefficients_presence:
             self.sindy_coefficients_presence[module_name] = self.sindy_coefficients_presence[module_name].to(device)
+            self.sindy_coefficients_prior_mask[module_name] = self.sindy_coefficients_prior_mask[module_name].to(device)
             self.sindy_degree_weights[module_name] = self.sindy_degree_weights[module_name].to(device)
             self.sindy_pruning_patience_counters[module_name] = self.sindy_pruning_patience_counters[module_name].to(device)
 
@@ -691,6 +693,15 @@ class BaseModel(nn.Module):
             self.ensemble_size, self.n_participants, self.n_experiments, n_library_terms,
             dtype=torch.bool, device=self.device
         )
+
+        # Initialize prior mask (theory-driven, never reset by pruning).
+        # Only initialize if not already set (preprocess_coefficients may have
+        # written it before a second setup_sindy_coefficients call).
+        if key_module not in self.sindy_coefficients_prior_mask:
+            self.sindy_coefficients_prior_mask[key_module] = torch.ones(
+                self.ensemble_size, self.n_participants, self.n_experiments, n_library_terms,
+                dtype=torch.bool, device=self.device
+            )
 
         # Compute degree-based weights for coefficient penalty
         term_degrees = get_library_term_degrees(self.sindy_candidate_terms[key_module])

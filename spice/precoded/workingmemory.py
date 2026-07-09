@@ -185,7 +185,7 @@ class SpiceModel(BaseModel):
         # remove unnecessary candidate terms, e.g. polynomials of binary signals
         # if reward_binary: reward[t] = reward[t]^2 -> presence[reward[t]^2] = 0
         # accounts for ALL control signals in workingmemory model if reward is binary; else only choice signals
-        
+
         candidate_terms = self.get_candidate_terms()
         for module in self.get_modules():
             if ('reward' in module and reward_binary) or 'choice' in module:
@@ -194,4 +194,5 @@ class SpiceModel(BaseModel):
                     for ict, ct in enumerate(candidate_terms[module]):
                         if cs+'^' in ct:
                             self.sindy_coefficients_presence[module][..., ict] = 0
+                            self.sindy_coefficients_prior_mask[module][..., ict] = 0
         

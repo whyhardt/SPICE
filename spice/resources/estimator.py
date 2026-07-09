@@ -375,6 +375,8 @@ class SpiceEstimator(BaseEstimator):
         for module in self.get_modules():
             self.model.setup_sindy_coefficients(key_module=module, polynomial_degree=self.model.sindy_specs[module]['polynomial_degree'])
         self.model.sindy_coefficients_presence = loaded_parameters['sindy_coefficients_presence']
+        if 'sindy_coefficients_prior_mask' in loaded_parameters:
+            self.model.sindy_coefficients_prior_mask = loaded_parameters['sindy_coefficients_prior_mask']
 
         self.model.load_state_dict(loaded_parameters['model'])
         self.model.init_state(batch_size=self.model.n_participants)
@@ -392,9 +394,10 @@ class SpiceEstimator(BaseEstimator):
         
         # Save RNN model
         state_dict = {
-            'model': self.model.state_dict(), 
-            'optimizer': self.rnn_optimizer.state_dict(), 
+            'model': self.model.state_dict(),
+            'optimizer': self.rnn_optimizer.state_dict(),
             'sindy_coefficients_presence': self.model.sindy_coefficients_presence,
+            'sindy_coefficients_prior_mask': self.model.sindy_coefficients_prior_mask,
             }
         torch.save(state_dict, path_rnn)
         

@@ -170,11 +170,14 @@ def analysis_generative_behavior(
         datasets['spice'] = path_data_spice
 
     participant_ids = {}
-    for name, path in datasets.items():
-        print(f"Loading {name} from {path}...")
-        dataset_train, _, _ = get_dataset(path_data=path)
-        participant_ids[name] = dataset_train.xs[:, 0, 0, -1].long().numpy()
-        choices, rewards = _extract_choices_and_rewards(dataset_train)
+    for name, data in datasets.items():
+        if isinstance(data, str):
+            print(f"Loading {name} from {data}...")
+            dataset, _, _ = get_dataset(path_data=data)
+        else:
+            dataset = data
+        participant_ids[name] = dataset.xs[:, 0, 0, -1].long().numpy()
+        choices, rewards = _extract_choices_and_rewards(dataset)
         all_metrics[name] = _compute_metrics(choices, rewards)
 
     # Summary table

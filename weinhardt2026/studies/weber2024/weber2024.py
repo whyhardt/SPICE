@@ -9,15 +9,19 @@ import os
 from spice import SpiceEstimator, SpiceDataset, split_data_along_blockdim
 
 from spice_weber2024 import SpiceModel, CONFIG
-from benchmarking_weber2024 import get_dataset, clamped_angular_mse, generate_behavior
+from benchmarking_weber2024 import get_dataset, clamped_angular_mse, generate_behavior, ChangePointModel
 from analysis_generative import analysis_generative_behavior
 
 from weinhardt2026.utils.benchmarking_gru import GRUModel, training
 from weinhardt2026.analysis.analysis_model_evaluation import analysis_model_evaluation_mse
+from weinhardt2026.utils.generation import generate_repeated
 
 
-train_spice = True
+train_spice = False
 train_gru = False
+train_benchmark = False
+
+N_REPEATS = 100
 
 truncate_dataset = True
 
@@ -116,6 +120,37 @@ else:
 
 
 # -------------------------------------------------------------------------------------------
+# BENCHMARK: BAYESIAN CHANGEPOINT MODEL
+# -------------------------------------------------------------------------------------------
+
+path_benchmark = 'weinhardt2026/studies/weber2024/params/benchmark_weber2024.pkl'
+
+benchmark = ChangePointModel(
+    n_participants=dataset_train.n_participants,
+    h_step=2,               # 2° discretisation (180 grid points)
+    allowed_changes=(20, 30, 40),
+)
+
+if train_benchmark:
+    optimizer = torch.optim.Adam(benchmark.parameters(), lr=0.01)
+    print("Training Bayesian changepoint benchmark...")
+    benchmark = training(
+        model=benchmark,
+        optimizer=optimizer,
+        dataset_train=dataset_train,
+        dataset_test=dataset_test,
+        epochs=1000,
+        loss_fn=clamped_angular_mse,
+        scheduler=True,
+    )
+    torch.save(benchmark.state_dict(), path_benchmark)
+    print("Trained benchmark parameters saved to " + path_benchmark)
+else:
+    benchmark.load_state_dict(torch.load(path_benchmark, map_location='cpu'))
+
+benchmark.to(torch.device('cpu'))
+
+# -------------------------------------------------------------------------------------------
 # ANALYSIS: EXAMPLE SPICE MODEL
 # -------------------------------------------------------------------------------------------
 
@@ -143,6 +178,7 @@ eval_ds_sliced = SpiceDataset(eval_ds.xs, eval_ds.ys[:, :, :, :2], n_reward_feat
 df_mse = analysis_model_evaluation_mse(
     dataset=eval_ds_sliced,
     spice_model=estimator,
+    benchmark_model=benchmark,
     gru_model=gru,
     output_dir='weinhardt2026/studies/weber2024/results',
     verbose=True,
@@ -167,6 +203,8 @@ def sincos_to_degrees(sin_vals, cos_vals):
 with torch.no_grad():
     gru.eval().to(torch.device('cpu'))
     predictions_gru, _ = gru(dataset.xs)
+    benchmark.eval()
+    predictions_benchmark, _ = benchmark(dataset.xs)
     estimator.set_device(torch.device('cpu'))
     estimator.eval()
     estimator.use_sindy(False)
@@ -261,6 +299,10 @@ belief_sym_deg = sincos_to_degrees(
     torch.tensor(states_sym['belief_cos'][t_start:t_end]),
 )
 
+pred_benchmark_deg = sincos_to_degrees(
+    predictions_benchmark[session, t_start:t_end, 0, 0],
+    predictions_benchmark[session, t_start:t_end, 0, 1],
+)
 pred_gru_deg = sincos_to_degrees(
     predictions_gru[session, t_start:t_end, 0, 0],
     predictions_gru[session, t_start:t_end, 0, 1],
@@ -291,6 +333,7 @@ axs[0].grid(alpha=0.3)
 
 # (3) Model predictions vs human shield
 axs[1].plot(list(trials), actual_shield_deg.numpy(), 'b-', alpha=0.4, label='Shield (human)')
+axs[1].plot(list(trials), pred_benchmark_deg.numpy(), 'm-', alpha=0.7, label='Benchmark')
 axs[1].plot(list(trials), pred_gru_deg.numpy(), 'g-', label='GRU')
 axs[1].plot(list(trials), pred_spice_rnn_deg.numpy(), 'r--', label='SPICE-RNN')
 axs[1].plot(list(trials), pred_spice_eq_deg.numpy(), 'r-', label='SPICE-EQ')
@@ -391,9 +434,19 @@ plt.show()
 # GENERATIVE BENCHMARKING
 # -------------------------------------------------------------------------------------------
 
+# Generate behavior for benchmark model
+dataset_gen_benchmark = generate_repeated(
+    generate_behavior,
+    n_repeats=N_REPEATS,
+    model=benchmark,
+    dataset=dataset,
+)
+
 # Generate behavior for GRU
 gru.eval().to(torch.device('cpu'))
-dataset_gen_gru = generate_behavior(
+dataset_gen_gru = generate_repeated(
+    generate_behavior,
+    n_repeats=N_REPEATS,
     model=gru,
     dataset=dataset,
 )
@@ -402,13 +455,17 @@ dataset_gen_gru = generate_behavior(
 estimator.set_device(torch.device('cpu'))
 estimator.eval()
 estimator.use_sindy(False)
-dataset_gen_spice_rnn = generate_behavior(
+dataset_gen_spice_rnn = generate_repeated(
+    generate_behavior,
+    n_repeats=N_REPEATS,
     model=estimator,
     dataset=dataset,
 )
 
 estimator.use_sindy(True)
-dataset_gen_spice_eq = generate_behavior(
+dataset_gen_spice_eq = generate_repeated(
+    generate_behavior,
+    n_repeats=N_REPEATS,
     model=estimator,
     dataset=dataset,
 )
@@ -417,6 +474,7 @@ dataset_gen_spice_eq = generate_behavior(
 # Generative analysis: compare real vs generated behavior
 analysis_generative_behavior(
     dataset_real=dataset,
+    dataset_benchmark=dataset_gen_benchmark,
     dataset_gru=dataset_gen_gru,
     dataset_spice_rnn=dataset_gen_spice_rnn,
     dataset_spice=dataset_gen_spice_eq,

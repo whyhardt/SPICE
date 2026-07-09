@@ -182,9 +182,12 @@ def analysis_generative_behavior(
         datasets['spice'] = path_data_spice
 
     participant_ids = {}
-    for name, path in datasets.items():
-        print(f"Loading {name} from {path}...")
-        dataset, _, _ = get_dataset(path_data=path, test_blocks=())
+    for name, data in datasets.items():
+        if isinstance(data, str):
+            print(f"Loading {name} from {data}...")
+            dataset, _, _ = get_dataset(path_data=data, test_blocks=())
+        else:
+            dataset = data
         participant_ids[name] = dataset.xs[:, 0, 0, -1].long().numpy()
         choices, current_dec, other_inc, difference = _extract_data(dataset)
         all_metrics[name] = _compute_metrics(choices, current_dec, other_inc, difference)

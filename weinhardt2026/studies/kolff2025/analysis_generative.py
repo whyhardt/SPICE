@@ -11,6 +11,7 @@ from weinhardt2026.studies.kolff2025.benchmarking_kolff2025 import (
     DEFAULT_DATA_PATH,
     GROOMING_ACTION,
     LOWER_STATUS_HAS_LARGER_RANK_NUMBER,
+    WAITING_ACTION,
 )
 from weinhardt2026.analysis.analysis_generative_comparison import compute_generative_comparison
 
@@ -25,7 +26,8 @@ def _action_slug(action_name: str) -> str:
 
 ACTION_FREQUENCY_METRIC_LABELS = {
     f'p_{_action_slug(action_name)}': f'P({action_name.title()})'
-    for action_name in ACTION_NAMES.values()
+    for action_id, action_name in ACTION_NAMES.items()
+    if action_id != WAITING_ACTION
 }
 
 OVERVIEW_METRIC_LABELS = {
@@ -36,7 +38,9 @@ OVERVIEW_METRIC_LABELS = {
 }
 
 CONDITIONAL_METRIC_LABELS = {}
-for action_name in ACTION_NAMES.values():
+for action_id, action_name in ACTION_NAMES.items():
+    if action_id == WAITING_ACTION:
+        continue
     slug = _action_slug(action_name)
     label = action_name.title()
     CONDITIONAL_METRIC_LABELS[f'p_groom_given_partner_{slug}'] = (
@@ -64,12 +68,12 @@ def _get_rank_mapping(path_data: str = DEFAULT_DATA_PATH) -> dict[int, int]:
 
     df = pd.read_csv(path_data)
     rank_map = {}
-    if {'ID1', 'Dominance rank_ID1'}.issubset(df.columns):
-        for _, row in df[['ID1', 'Dominance rank_ID1']].dropna().drop_duplicates().iterrows():
-            rank_map[int(row['ID1'])] = int(row['Dominance rank_ID1'])
-    if {'ID2', 'Dominance rank_ID2'}.issubset(df.columns):
-        for _, row in df[['ID2', 'Dominance rank_ID2']].dropna().drop_duplicates().iterrows():
-            rank_map[int(row['ID2'])] = int(row['Dominance rank_ID2'])
+    if {'ID1', 'Dominance_rank_ID1'}.issubset(df.columns):
+        for _, row in df[['ID1', 'Dominance_rank_ID1']].dropna().drop_duplicates().iterrows():
+            rank_map[int(row['ID1'])] = int(row['Dominance_rank_ID1'])
+    if {'ID2', 'Dominance_rank_ID2'}.issubset(df.columns):
+        for _, row in df[['ID2', 'Dominance_rank_ID2']].dropna().drop_duplicates().iterrows():
+            rank_map[int(row['ID2'])] = int(row['Dominance_rank_ID2'])
     return rank_map
 
 
@@ -156,6 +160,8 @@ def _compute_metrics(choices, partner_actions, sender_ids, receiver_ids, rank_ma
             continue
 
         for action_id, action_name in ACTION_NAMES.items():
+            if action_id == WAITING_ACTION:
+                continue
             metrics[f'p_{_action_slug(action_name)}'][s] = (ch == action_id).mean()
 
         if len(ch) > 1:
@@ -171,6 +177,8 @@ def _compute_metrics(choices, partner_actions, sender_ids, receiver_ids, rank_ma
 
         pa_valid = ~np.isnan(pa)
         for action_id, action_name in ACTION_NAMES.items():
+            if action_id == WAITING_ACTION:
+                continue
             slug = _action_slug(action_name)
             action_mask = pa_valid & (pa == action_id)
             if action_mask.sum() > 0:
@@ -256,6 +264,7 @@ def _plot_violins(all_metrics, output_dir, metric_names, filename):
 
 def analysis_generative_behavior(
     dataset_real: SpiceDataset = None,
+    dataset_benchmark: SpiceDataset = None,
     dataset_gru: SpiceDataset = None,
     dataset_spice_rnn: SpiceDataset = None,
     dataset_spice: SpiceDataset = None,
@@ -274,6 +283,8 @@ def analysis_generative_behavior(
     datasets = {}
     if dataset_real is not None:
         datasets['real'] = dataset_real
+    if dataset_benchmark is not None:
+        datasets['benchmark'] = dataset_benchmark
     if dataset_gru is not None:
         datasets['gru'] = dataset_gru
     if dataset_spice_rnn is not None:

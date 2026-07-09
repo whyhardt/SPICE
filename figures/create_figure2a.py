@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
-
+ 
 
 # ── Default study configuration ────────────────────────────────────
 STUDIES = [
@@ -42,7 +42,7 @@ STUDIES = [
         'name': 'Chimpanzee\nCommunication\n(Kolff 2025)',
         'results_dir': 'weinhardt2026/studies/kolff2025/results',
         'type': 'discrete',
-        'gru_embedding': True,
+        'gru_embedding': False,
     },
     {
         'name': 'Predictive Inference\n(Bruckner 2025)',
@@ -130,8 +130,7 @@ def _load_study_data(results_dir, study_type, gru_embedding=False):
     Returns:
         pred_perf: {model: value} for Row 1
         delta_bic: {model: value} for Row 2
-        gen_sim:   {model: value} for Row 3
-        spearman:  {model: value} for Row 4
+        spearman:  {model: value} for Row 3
     """
     # Row 1 + Row 2: model evaluation CSV
     if study_type == 'discrete':
@@ -148,11 +147,7 @@ def _load_study_data(results_dir, study_type, gru_embedding=False):
     # Remove models that were already filtered from pred_perf
     delta_bic = {m: v for m, v in delta_bic.items() if m in pred_perf or m not in {'Benchmark', 'GRU', 'SPICE-RNN', 'SPICE-EQ'}}
 
-    # Row 3: distributional similarity
-    sim_df = _load_csv(os.path.join(results_dir, 'generative_similarity.csv'))
-    gen_sim = _extract_column(sim_df, 'Mean')
-
-    # Row 4: Spearman rho
+    # Row 3: Spearman rho
     spr_df = _load_csv(os.path.join(results_dir, 'generative_spearman.csv'))
     spearman = _extract_column(spr_df, 'Mean')
 
@@ -160,29 +155,18 @@ def _load_study_data(results_dir, study_type, gru_embedding=False):
     if not gru_embedding:
         spearman.pop('GRU', None)
 
-    return pred_perf, delta_bic, gen_sim, spearman
+    return pred_perf, delta_bic, spearman
 
 
-def _plot_bars(ax, data, n_total):
-    """Plot grouped bars with fixed slot positions."""
-    x = np.arange(n_total)
+def _plot_bars_cell(ax, cell_data):
+    """Plot grouped bars for a single study in one axes."""
     for model in SLOT_ORDER:
-        if model not in data:
+        if model not in cell_data:
             continue
-        ax.bar(x + SLOT_OFFSETS[model], data[model], BAR_WIDTH,
+        ax.bar(SLOT_OFFSETS[model], cell_data[model], BAR_WIDTH,
                label=model, color=COLORS[model], alpha=0.85,
                edgecolor='white', linewidth=0.5)
 
-
-def _trim_yaxis(ax, data):
-    """Set y-axis limits to tightly frame the data."""
-    all_vals = np.concatenate(list(data.values()))
-    all_vals = all_vals[~np.isnan(all_vals)]
-    if len(all_vals) == 0:
-        return
-    vmin, vmax = all_vals.min(), all_vals.max()
-    margin = (vmax - vmin) * 0.15
-    ax.set_ylim(max(0, vmin - margin), vmax + margin)
 
 
 def plot_figure2a(
@@ -190,6 +174,9 @@ def plot_figure2a(
     output_path: str = 'figures/figure2a',
 ):
     """Create Figure 2a from per-study result CSVs.
+
+    Each study gets its own column (and thus its own y-axis scale).
+    Only the leftmost column displays y-axis tick labels.
 
     Args:
         studies: List of study dicts, each with keys:
@@ -211,80 +198,109 @@ def plot_figure2a(
 
     study_names = [s['name'] for s in ordered_studies]
 
-    # Load data for all studies
-    row_data = {
-        'pred_perf': {},
-        'delta_bic': {},
-        'gen_sim': {},
-        'spearman': {},
-    }
-
-    for i, study in enumerate(ordered_studies):
-        pred_perf, delta_bic, gen_sim, spearman = _load_study_data(
+    # Load per-study data as list of 3-tuples
+    study_data = []  # list of (pred_perf, delta_bic, spearman) dicts
+    for study in ordered_studies:
+        study_data.append(_load_study_data(
             study['results_dir'], study['type'],
             gru_embedding=study.get('gru_embedding', False),
-        )
-        for model, val in pred_perf.items():
-            row_data['pred_perf'].setdefault(model, np.full(n_total, np.nan))[i] = val
-        for model, val in delta_bic.items():
-            row_data['delta_bic'].setdefault(model, np.full(n_total, np.nan))[i] = val
-        for model, val in gen_sim.items():
-            row_data['gen_sim'].setdefault(model, np.full(n_total, np.nan))[i] = val
-        for model, val in spearman.items():
-            row_data['spearman'].setdefault(model, np.full(n_total, np.nan))[i] = val
+        ))
 
-    # Row definitions: (title, ylabel, data_dict)
+    # Row definitions: (title, ylabel, data-index into 3-tuple)
     rows = [
-        ('Predictive Performance',          'Predictive Performance',    row_data['pred_perf']),
-        ('Model Selection',                 '$\\Delta$BIC (per trial)',  row_data['delta_bic']),
-        ('Generative Fidelity',             'Distributional Similarity', row_data['gen_sim']),
-        ('Individual Differences Recovery', 'Spearman $\\rho$',         row_data['spearman']),
+        ('Predictive Performance',          'Predictive Performance',    0),
+        ('Model Selection',                 '$\\Delta$BIC (per trial)',  1),
+        ('Individual Differences Recovery', 'Spearman $\\rho$',         2),
     ]
 
-    sep_x = n_discrete - 0.5
+    # ── Figure: 3 rows × n_total columns ────────────────────────────
+    # Insert a narrow separator column between discrete and continuous
+    has_sep = n_discrete > 0 and n_continuous > 0
+    if has_sep:
+        width_ratios = [1] * n_discrete + [0.15] + [1] * n_continuous
+        n_cols = n_total + 1
+        sep_col = n_discrete  # index of the separator column
+    else:
+        width_ratios = [1] * n_total
+        n_cols = n_total
+        sep_col = None
 
-    # ── Figure ──────────────────────────────────────────────────────
-    fig, axes = plt.subplots(4, 1, figsize=(12, 9), sharex=True)
+    n_rows = len(rows)
+    fig, axes = plt.subplots(
+        n_rows, n_cols, figsize=(2 * n_total + 1, 7),
+        gridspec_kw={'width_ratios': width_ratios},
+    )
+    if n_cols == 1:
+        axes = axes.reshape(n_rows, 1)
 
-    for row_idx, (title, ylabel, data) in enumerate(rows):
-        ax = axes[row_idx]
-        if data:
-            _plot_bars(ax, data, n_total)
+    # Map study index → column index (accounting for separator)
+    def _col(study_idx):
+        if has_sep and study_idx >= n_discrete:
+            return study_idx + 1  # skip separator column
+        return study_idx
 
-        if row_idx == 0 and n_continuous > 0:
-            ax.axvline(sep_x, color='#999999', linewidth=0.8, linestyle='--', zorder=0)
+    # Hide separator columns
+    if has_sep:
+        for row_idx in range(n_rows):
+            axes[row_idx, sep_col].set_visible(False)
 
-        ax.set_ylabel(ylabel, fontsize=10)
-        ax.set_title(title, fontsize=11, fontweight='bold', loc='left')
-        ax.grid(axis='y', alpha=0.25, linewidth=0.5)
-        ax.set_axisbelow(True)
-        ax.spines['top'].set_visible(False)
-        ax.spines['right'].set_visible(False)
-        if data:
-            _trim_yaxis(ax, data)
-        ax.yaxis.set_major_formatter(mticker.FormatStrFormatter('%.2f'))
+    # ── Plot each cell ──────────────────────────────────────────────
+    for row_idx, (title, ylabel, data_idx) in enumerate(rows):
+        for study_idx in range(n_total):
+            col = _col(study_idx)
+            ax = axes[row_idx, col]
+            cell_data = study_data[study_idx][data_idx]
 
-        # Row 1 only: annotate the two metric regions
-        if row_idx == 0 and n_continuous > 0:
-            yhi = ax.get_ylim()[1]
-            ax.text((n_discrete - 1) / 2, yhi, 'Avg. Trial Likelihood',
-                    ha='center', va='bottom', fontsize=8.5, fontstyle='italic',
-                    color='#555555')
-            ax.text(n_discrete + (n_continuous - 1) / 2, yhi, '$R^2$',
-                    ha='center', va='bottom', fontsize=8.5, fontstyle='italic',
-                    color='#555555')
+            if cell_data:
+                _plot_bars_cell(ax, cell_data)
+                vals = list(cell_data.values())
+                vmin, vmax = min(vals), max(vals)
+                span = vmax - vmin
+                margin = span * 0.15 if span > 0 else max(abs(vmax) * 0.15, 0.05)
+                ax.set_ylim(max(0, vmin - margin), vmax + margin)
 
-    # X-axis labels
-    axes[-1].set_xticks(np.arange(n_total))
-    axes[-1].set_xticklabels(study_names, fontsize=9)
+            # Formatting
+            ax.set_xticks([])
+            half_bar_group = MAX_MODELS / 2 * BAR_WIDTH
+            ax.set_xlim(-half_bar_group - 0.05, half_bar_group + 0.05)
+            ax.grid(axis='y', alpha=0.25, linewidth=0.5)
+            ax.set_axisbelow(True)
+            ax.spines['top'].set_visible(False)
+            ax.spines['right'].set_visible(False)
+            ax.yaxis.set_major_formatter(mticker.FormatStrFormatter('%.2f'))
 
-    # Fix x-limits
-    x_margin = 0.5
-    axes[0].set_xlim(-x_margin, n_total - 1 + x_margin)
+            # Y-axis text label only on leftmost column
+            if study_idx == 0:
+                ax.set_ylabel(ylabel, fontsize=10)
+            else:
+                ax.set_ylabel('')
 
-    # Shared legend (from whichever row has all 4 models)
+            # Row title above leftmost column
+            if study_idx == 0:
+                ax.set_title(title, fontsize=11, fontweight='bold', loc='left')
+
+            # Study name below bottom row
+            if row_idx == len(rows) - 1:
+                ax.set_xlabel(study_names[study_idx], fontsize=9)
+
+    # Row 1: annotate discrete vs continuous metric regions
+    if has_sep and n_continuous > 0:
+        # "Avg. Trial Likelihood" centered over discrete columns
+        mid_discrete = _col(n_discrete // 2)
+        ax_d = axes[0, mid_discrete]
+        ax_d.text(0, ax_d.get_ylim()[1], 'Avg. Trial Likelihood',
+                  ha='center', va='bottom', fontsize=8.5, fontstyle='italic',
+                  color='#555555')
+        # "R²" centered over continuous columns
+        mid_continuous = _col(n_discrete + n_continuous // 2)
+        ax_c = axes[0, mid_continuous]
+        ax_c.text(0, ax_c.get_ylim()[1], '$R^2$',
+                  ha='center', va='bottom', fontsize=8.5, fontstyle='italic',
+                  color='#555555')
+
+    # ── Shared legend ───────────────────────────────────────────────
     all_handles, all_labels = {}, {}
-    for ax in axes:
+    for ax in axes.flat:
         h, l = ax.get_legend_handles_labels()
         for handle, label in zip(h, l):
             if label not in all_labels:

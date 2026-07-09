@@ -5,6 +5,7 @@ from spice import SpiceEstimator
 import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parents[3]))
+from weinhardt2026.utils.generation import generate_repeated
 from weinhardt2026.studies.bustamante2023.spice_bustamante2023 import SpiceModel, CONFIG
 from weinhardt2026.utils.benchmarking_gru import GRUModel, training
 from weinhardt2026.studies.bustamante2023.benchmarking_bustamante2023 import (
@@ -18,6 +19,8 @@ from weinhardt2026.analysis.analysis_coefficients_distributions import analysis_
 train_spice = False
 train_mvt = False
 train_gru = False
+
+N_REPEATS = 100
 
 # -------------------------------------------------------------------------------------------
 # DATALOADER
@@ -161,32 +164,37 @@ print(analysis_model_evaluation(
 # GENERATIVE BENCHMARKING
 # -------------------------------------------------------------------------------------------
 
+data_dir = 'weinhardt2026/studies/bustamante2023/data'
 output_dir = 'weinhardt2026/studies/bustamante2023/results'
 
 estimator.use_sindy(False)
-generated_dataset_spice_rnn = generate_behavior(
+ds_spice_rnn = generate_repeated(
+    generate_behavior,
+    n_repeats=N_REPEATS,
     dataset=dataset_train,
     model=estimator,
-    save_dataset='weinhardt2026/studies/bustamante2023/data/bustamante2023_spice_rnn.csv',
 )
 
 estimator.use_sindy(True)
-generated_dataset_spice = generate_behavior(
+ds_spice = generate_repeated(
+    generate_behavior,
+    n_repeats=N_REPEATS,
     dataset=dataset_train,
     model=estimator,
-    save_dataset='weinhardt2026/studies/bustamante2023/data/bustamante2023_spice.csv',
 )
 
-generated_dataset_benchmark = generate_behavior(
+ds_benchmark = generate_repeated(
+    generate_behavior,
+    n_repeats=N_REPEATS,
     dataset=dataset_train,
     model=mvt,
-    save_dataset='weinhardt2026/studies/bustamante2023/data/bustamante2023_benchmark.csv',
 )
 
-generated_dataset_gru = generate_behavior(
+ds_gru = generate_repeated(
+    generate_behavior,
+    n_repeats=N_REPEATS,
     dataset=dataset_train,
     model=gru,
-    save_dataset='weinhardt2026/studies/bustamante2023/data/bustamante2023_gru.csv',
 )
 
 # -------------------------------------------------------------------------------------------
@@ -194,12 +202,12 @@ generated_dataset_gru = generate_behavior(
 # -------------------------------------------------------------------------------------------
 
 analysis_generative_behavior(
-    path_data_real='weinhardt2026/studies/bustamante2023/data/bustamante2023.csv',
-    path_data_benchmark='weinhardt2026/studies/bustamante2023/data/bustamante2023_benchmark.csv',
-    path_data_gru='weinhardt2026/studies/bustamante2023/data/bustamante2023_gru.csv',
-    path_data_spice_rnn='weinhardt2026/studies/bustamante2023/data/bustamante2023_spice_rnn.csv',
-    path_data_spice='weinhardt2026/studies/bustamante2023/data/bustamante2023_spice.csv',
-    output_dir='weinhardt2026/studies/bustamante2023/results',
+    path_data_real=f'{data_dir}/bustamante2023.csv',
+    path_data_benchmark=ds_benchmark,
+    path_data_gru=ds_gru,
+    path_data_spice_rnn=ds_spice_rnn,
+    path_data_spice=ds_spice,
+    output_dir=output_dir,
 )
 
 
