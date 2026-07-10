@@ -17,11 +17,11 @@ from weinhardt2026.analysis.analysis_coefficients_individuals import analysis_co
 from weinhardt2026.utils.generation import generate_repeated
 
 
-train_spice = True
+train_spice = False
 train_benchmark = False
 train_gru = False
 
-generate_data = True
+generate_data = False
 N_REPEATS = 1
 
 path_data = 'weinhardt2026/studies/eckstein2026/data/eckstein2024.csv'
@@ -198,10 +198,10 @@ if generate_data:
 # ANALYSIS: INDIVIDUAL DIFFERENCES
 # -------------------------------------------------------------------------------------------
 
-# analysis_coefficients_distributions(
-#     spice_model=estimator,
-#     output_dir=output_dir,
-# )
+analysis_coefficients_distributions(
+    spice_model=estimator,
+    output_dir=output_dir,
+)
 
 # -------------------------------------------------------------------------------------------
 # ANALYSIS: BEHAVIORAL DIFFERENCES

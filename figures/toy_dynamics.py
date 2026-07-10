@@ -67,7 +67,7 @@ ax1.spines['right'].set_visible(False)
 
 # Bottom panel: Action trajectory
 action_display = actions + 1  # Convert 0,1,2 to 1,2,3 for display
-ax2.step(t, action_display, where='post', linewidth=linewidth, color="#c9211e", alpha=0.8)
+ax2.step(t, action_display, where='post', linewidth=linewidth, color="#d62e4e", alpha=0.8)
 
 # Formatting for bottom panel
 ax2.set_xlabel('Trial', fontsize=12)
@@ -149,9 +149,9 @@ t_range = np.arange(n_trials + 1)
 action_to_show = 0
 # ax1.plot(t_range, probs_gt[:, action_to_show], color='gold', linewidth=linewidth,
 #          label='Ground truth (participant p)', alpha=0.9)
-ax1.plot(t_range, probs_rnn[:, action_to_show], color='#c9211e', linewidth=linewidth,
+ax1.plot(t_range, probs_rnn[:, action_to_show], color='#d62e4e', linewidth=linewidth,
          linestyle='--', label='RNN', alpha=0.9)
-ax1.plot(t_range, probs_sym[:, action_to_show], color='#c9211e', linewidth=linewidth,
+ax1.plot(t_range, probs_sym[:, action_to_show], color='#d62e4e', linewidth=linewidth,
          label='Symbolic (SPICE)', alpha=0.6)
 
 ax1.set_ylabel(f'P(action {action_to_show+1})', fontsize=12)
@@ -165,21 +165,21 @@ ax1.grid(alpha=0.2, linestyle='--', linewidth=0.5)
 # Each value (v1, v2, v3) gets its own blue tone, with RNN dashed and SPICE solid
 
 # v1 - darker blue tone
-ax2.plot(t_range, v1_rnn[:, action_to_show], color='#ffaa95', linewidth=linewidth,
+ax2.plot(t_range, v1_rnn[:, action_to_show], color='#ffd7d7', linewidth=linewidth,
          linestyle='--', label='$v_1$ (RNN)', alpha=0.9)
-ax2.plot(t_range, v1_sym[:, action_to_show], color='#ffaa95', linewidth=linewidth,
+ax2.plot(t_range, v1_sym[:, action_to_show], color='#ffd7d7', linewidth=linewidth,
          label='$v_1$ (EQ)', alpha=0.6)
 
 # v2 - medium blue tone
-ax2.plot(t_range, v2_rnn[:, action_to_show], color='#ff7b59', linewidth=linewidth,
+ax2.plot(t_range, v2_rnn[:, action_to_show], color='#ffa6a6', linewidth=linewidth,
          linestyle='--', label='$v_2$ (RNN)', alpha=0.9)
-ax2.plot(t_range, v2_sym[:, action_to_show], color='#ff7b59', linewidth=linewidth,
+ax2.plot(t_range, v2_sym[:, action_to_show], color='#ffa6a6', linewidth=linewidth,
          label='$v_2$ (EQ)', alpha=0.6)
 
 # v3 - lighter blue tone
-ax2.plot(t_range, v3_rnn[:, action_to_show], color='#ff5429', linewidth=linewidth,
+ax2.plot(t_range, v3_rnn[:, action_to_show], color='#ff6d6d', linewidth=linewidth,
          linestyle='--', label='$v_3$ (RNN)', alpha=0.9)
-ax2.plot(t_range, v3_sym[:, action_to_show], color='#ff5429', linewidth=linewidth,
+ax2.plot(t_range, v3_sym[:, action_to_show], color='#ff6d6d', linewidth=linewidth,
          label='$v_3$ (EQ)', alpha=0.6)
 
 ax2.set_xlabel('Trial', fontsize=12)

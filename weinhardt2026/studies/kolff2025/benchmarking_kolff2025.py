@@ -84,7 +84,6 @@ class ConditionalFrequencyModel(torch.nn.Module):
     def count_parameters(self) -> int:
         return self.n_actions * (self.n_actions - 1)
 
-
 # --- Data Loading ---
 
 def get_dataset(

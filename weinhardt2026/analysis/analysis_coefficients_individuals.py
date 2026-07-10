@@ -209,17 +209,29 @@ def prepare(criterion_col, data_path: str, dataset_kwargs: dict = {}, spice_mode
 # 2a. Discrete analysis – logistic regression per group-pair → odds ratios
 # ---------------------------------------------------------------------------
 
-def _logistic_or(presence, is_reference):
-    """Fit logistic regression, return (odds_ratio, p_value)."""
+def _logistic_beta(presence, is_reference):
+    """Fit logistic regression, return (beta, se, p_value)."""
     try:
         scaler = StandardScaler()
         X = scaler.fit_transform(is_reference.reshape(-1, 1)).flatten()
+        X_col = X.reshape(-1, 1)
         model = LogisticRegression(solver="liblinear", max_iter=1000, random_state=0)
-        model.fit(X.reshape(-1, 1), presence)
-        or_val = np.exp(model.coef_[0][0])
+        model.fit(X_col, presence)
+        beta = model.coef_[0][0]
+
+        p_hat = model.predict_proba(X_col)[:, 1]
+
+        # Standard error via Fisher information
+        W = p_hat * (1 - p_hat)
+        X_design = np.column_stack([np.ones(len(X)), X])
+        fisher = (X_design.T * W) @ X_design
+        try:
+            cov = np.linalg.inv(fisher)
+            se = np.sqrt(cov[1, 1])
+        except np.linalg.LinAlgError:
+            se = np.nan
 
         # Likelihood ratio test
-        p_hat = model.predict_proba(X.reshape(-1, 1))[:, 1]
         eps = 1e-15
         ll = np.sum(
             presence * np.log(np.clip(p_hat, eps, 1 - eps))
@@ -229,15 +241,15 @@ def _logistic_or(presence, is_reference):
         ll0 = np.sum(presence * np.log(p0) + (1 - presence) * np.log(1 - p0))
         lr = -2 * (ll0 - ll)
         p_val = 1 - chi2.cdf(max(0, lr), df=1)
-        return or_val, p_val
+        return beta, se, p_val
     except Exception:
-        return np.nan, np.nan
+        return np.nan, np.nan, np.nan
 
 
 def run_discrete(df, sindy_cols, criterion_col, reference_group, output_dir):
     """Pairwise logistic regression of coefficient presence between
-    the reference group and every other group.  Produces odds-ratio
-    bar-charts and presence-rate plots."""
+    the reference group and every other group.  Produces forest plots
+    (beta effect sizes with 95% CIs) and presence-rate plots."""
 
     groups = sorted(df[criterion_col].unique())
     if reference_group not in groups:
@@ -273,19 +285,22 @@ def run_discrete(df, sindy_cols, criterion_col, reference_group, output_dir):
         for cg in comparison_groups:
             pair_mask = (crit_vals == reference_group) | (crit_vals == cg)
             if pair_mask.sum() < 10:
-                result[f"{reference_group}_vs_{cg}_OR"] = np.nan
+                result[f"{reference_group}_vs_{cg}_beta"] = np.nan
+                result[f"{reference_group}_vs_{cg}_se"] = np.nan
                 result[f"{reference_group}_vs_{cg}_p"] = np.nan
                 result[f"{reference_group}_vs_{cg}_sig"] = "insufficient_data"
                 continue
             pair_presence = presence[pair_mask]
             is_ref = (crit_vals[pair_mask] == reference_group).astype(int)
             if pair_presence.std() == 0:
-                result[f"{reference_group}_vs_{cg}_OR"] = np.nan
+                result[f"{reference_group}_vs_{cg}_beta"] = np.nan
+                result[f"{reference_group}_vs_{cg}_se"] = np.nan
                 result[f"{reference_group}_vs_{cg}_p"] = np.nan
                 result[f"{reference_group}_vs_{cg}_sig"] = "no_variation"
                 continue
-            or_val, p_val = _logistic_or(pair_presence, is_ref)
-            result[f"{reference_group}_vs_{cg}_OR"] = or_val
+            beta, se, p_val = _logistic_beta(pair_presence, is_ref)
+            result[f"{reference_group}_vs_{cg}_beta"] = beta
+            result[f"{reference_group}_vs_{cg}_se"] = se
             result[f"{reference_group}_vs_{cg}_p"] = p_val
             result[f"{reference_group}_vs_{cg}_sig"] = get_significance(p_val)
 
@@ -304,10 +319,10 @@ def run_discrete(df, sindy_cols, criterion_col, reference_group, output_dir):
         sig = res_df[res_df[sig_col].isin(["*", "**", "***"])]
         print(f"\n{reference_group} vs {cg}: {len(sig)} significant coefficients")
         for _, row in sig.head(5).iterrows():
-            or_val = row[f"{reference_group}_vs_{cg}_OR"]
+            beta = row[f"{reference_group}_vs_{cg}_beta"]
             p_val = row[f"{reference_group}_vs_{cg}_p"]
-            direction = f"higher in {reference_group}" if or_val > 1 else f"lower in {reference_group}"
-            print(f"  {row['coefficient_clean']}: OR={or_val:.3f}, "
+            direction = f"more present in {reference_group}" if beta > 0 else f"less present in {reference_group}"
+            print(f"  {row['coefficient_clean']}: β={beta:.3f}, "
                   f"p={p_val:.4f} {row[sig_col]} ({direction})")
 
     # ---- plots ----
@@ -317,42 +332,80 @@ def run_discrete(df, sindy_cols, criterion_col, reference_group, output_dir):
     return res_df
 
 
+def _plot_forest(df_plot, ax, title="", xlabel="Effect (β)"):
+    """Forest plot: horizontal point + 95% CI, colored by significance."""
+    if df_plot.empty:
+        ax.text(0.5, 0.5, "No valid data", ha="center", va="center",
+                transform=ax.transAxes)
+        return
+
+    df_plot = df_plot.sort_values("beta", key=abs, ascending=True).reset_index(drop=True)
+    y_pos = np.arange(len(df_plot))
+    colors = df_plot["significance"].map(SIG_COLORS).values
+
+    # CI lines
+    for y, row_idx in zip(y_pos, range(len(df_plot))):
+        row = df_plot.iloc[row_idx]
+        if not np.isnan(row["se"]):
+            lo = row["beta"] - 1.96 * row["se"]
+            hi = row["beta"] + 1.96 * row["se"]
+            ax.plot([lo, hi], [y, y], color=colors[row_idx],
+                    linewidth=2, solid_capstyle="round")
+
+    # Point estimates
+    ax.scatter(df_plot["beta"], y_pos, color=colors, s=50, zorder=5,
+               edgecolors="black", linewidths=0.5)
+
+    # Reference line at zero
+    ax.axvline(0, color="black", linestyle="--", linewidth=0.8, alpha=0.7)
+
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels(df_plot["coefficient_clean"], fontsize=8)
+    ax.set_xlabel(xlabel)
+    ax.set_title(title)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+
+def _forest_legend(ax):
+    """Add shared significance legend to a forest plot axis."""
+    handles = [plt.Line2D([0], [0], marker="o", color=SIG_COLORS[s], linestyle="-",
+               markersize=6, markeredgecolor="black", markeredgewidth=0.5)
+               for s in ["***", "**", "*", "ns"]]
+    ax.legend(handles, ["p<0.001", "p<0.01", "p<0.05", "ns"],
+              title="Significance", loc="best", framealpha=0.9)
+
+
 def _plot_odds_ratios(res_df, ref, comparisons, output_dir):
     n_plots = len(comparisons)
-    fig, axes = plt.subplots(1, max(n_plots, 1), figsize=(10 * max(n_plots, 1), 8))
+    n_rows = max(len(res_df), 1)
+    fig, axes = plt.subplots(1, max(n_plots, 1),
+                             figsize=(8 * max(n_plots, 1), max(6, n_rows * 0.25)))
     if n_plots == 1:
         axes = [axes]
 
     for i, cg in enumerate(comparisons):
-        or_col = f"{ref}_vs_{cg}_OR"
+        beta_col = f"{ref}_vs_{cg}_beta"
+        se_col = f"{ref}_vs_{cg}_se"
         sig_col = f"{ref}_vs_{cg}_sig"
-        if or_col not in res_df.columns:
+        if beta_col not in res_df.columns:
             continue
-        valid = res_df.dropna(subset=[or_col]).copy()
+        valid = res_df.dropna(subset=[beta_col]).copy()
         valid = valid[valid[sig_col].isin(["***", "**", "*", "ns"])]
-        if valid.empty:
-            axes[i].text(0.5, 0.5, "No valid data", ha="center", va="center",
-                         transform=axes[i].transAxes)
-            continue
-        valid = valid.sort_values(or_col)
-        colors = valid[sig_col].map(SIG_COLORS)
-        y_pos = np.arange(len(valid))
-        axes[i].barh(y_pos, valid[or_col], color=colors, edgecolor="black")
-        axes[i].axvline(x=1, color="black", linestyle="--", alpha=0.7)
-        axes[i].set_yticks(y_pos)
-        axes[i].set_yticklabels(valid["coefficient_clean"], fontsize=8)
-        axes[i].set_xlabel(f"Odds Ratio (OR > 1: more in {ref})")
-        axes[i].set_title(f"{ref} vs {cg}")
-        axes[i].set_xscale("log")
+        df_plot = pd.DataFrame({
+            "beta": valid[beta_col].values,
+            "se": valid[se_col].values,
+            "coefficient_clean": valid["coefficient_clean"].values,
+            "significance": valid[sig_col].values,
+        })
+        _plot_forest(df_plot, axes[i], title=f"{ref} vs {cg}",
+                     xlabel="Effect β (>0: more present in reference)")
 
-    handles = [plt.Rectangle((0, 0), 1, 1, facecolor=SIG_COLORS[s], edgecolor="black")
-               for s in ["***", "**", "*", "ns"]]
-    axes[-1].legend(handles, ["p<0.001", "p<0.01", "p<0.05", "ns"],
-                    title="Significance", loc="best")
+    _forest_legend(axes[-1])
     plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, "odds_ratios.png"), dpi=300, bbox_inches="tight")
+    plt.savefig(os.path.join(output_dir, "forest_plot.png"), dpi=300, bbox_inches="tight")
     plt.close()
-    print(f"  Odds-ratio plot saved.")
+    print(f"  Forest plot saved.")
 
 
 def _plot_presence_rates(res_df, df, criterion_col, ref, comparisons, output_dir):
@@ -412,7 +465,7 @@ def _plot_presence_rates(res_df, df, criterion_col, ref, comparisons, output_dir
 def run_continuous(df, sindy_cols, criterion_col, output_dir):
     """For each SINDy coefficient, fit logistic regression predicting
     presence/absence from the continuous criterion (e.g. age).
-    Produces β bar-charts and logistic-curve plots."""
+    Produces forest plots (β with 95% CIs) and logistic-curve plots."""
 
     df_clean = df[df[criterion_col].notna()].copy()
     if df_clean.empty:
@@ -445,6 +498,7 @@ def run_continuous(df, sindy_cols, criterion_col, output_dir):
                 "coefficient": col,
                 "coefficient_clean": clean_name(col),
                 "beta": np.nan,
+                "se": np.nan,
                 "p_value": np.nan,
                 "n_nonzero": int(y.sum()),
                 "n_total": int(len(y)),
@@ -456,11 +510,23 @@ def run_continuous(df, sindy_cols, criterion_col, output_dir):
         solver = "saga" if rate < 0.1 else "liblinear"
         max_iter = 2000 if rate < 0.1 else 1000
         model = LogisticRegression(solver=solver, max_iter=max_iter, random_state=0)
-        model.fit(crit_std[mask].reshape(-1, 1), y)
+        X_col = crit_std[mask].reshape(-1, 1)
+        model.fit(X_col, y)
         beta = model.coef_[0][0]
 
+        p_hat = model.predict_proba(X_col)[:, 1]
+
+        # Standard error via Fisher information
+        W_fisher = p_hat * (1 - p_hat)
+        X_design = np.column_stack([np.ones(mask.sum()), crit_std[mask]])
+        fisher = (X_design.T * W_fisher) @ X_design
+        try:
+            cov = np.linalg.inv(fisher)
+            se = np.sqrt(cov[1, 1])
+        except np.linalg.LinAlgError:
+            se = np.nan
+
         # Likelihood ratio test
-        p_hat = model.predict_proba(crit_std[mask].reshape(-1, 1))[:, 1]
         eps = 1e-15
         ll = np.sum(
             y * np.log(np.clip(p_hat, eps, 1 - eps))
@@ -475,6 +541,7 @@ def run_continuous(df, sindy_cols, criterion_col, output_dir):
             "coefficient": col,
             "coefficient_clean": clean_name(col),
             "beta": beta,
+            "se": se,
             "p_value": p_val,
             "n_nonzero": int(y.sum()),
             "n_total": int(len(y)),
@@ -529,22 +596,16 @@ def run_continuous(df, sindy_cols, criterion_col, output_dir):
 
 
 def _plot_beta_bars(df, criterion_col, output_dir):
-    colors = df["significance"].map(SIG_COLORS)
-    fig, ax = plt.subplots(figsize=(max(10, len(df) * 0.5), 5))
-    ax.bar(range(len(df)), df["beta"], color=colors, edgecolor="black")
-    ax.axhline(0, linestyle="--", color="black")
-    ax.set_ylabel(f"{criterion_col} Effect (β)")
-    ax.set_title(f"{criterion_col} Effect (β) by SINDy Coefficient")
-    ax.set_xticks(range(len(df)))
-    ax.set_xticklabels(df["coefficient_clean"], rotation=45, ha="right", fontsize=8)
-    handles = [plt.Rectangle((0, 0), 1, 1, facecolor=SIG_COLORS[s], edgecolor="black")
-               for s in ["***", "**", "*", "ns"]]
-    ax.legend(handles, ["p<0.001", "p<0.01", "p<0.05", "ns"],
-              title="Significance", loc="best")
+    df_plot = df[["beta", "se", "coefficient_clean", "significance"]].dropna(subset=["beta"]).copy()
+    fig, ax = plt.subplots(figsize=(8, max(6, len(df_plot) * 0.25)))
+    _plot_forest(df_plot, ax,
+                 title=f"Effect of {criterion_col} on coefficient presence",
+                 xlabel=f"Effect β (>0: presence increases with {criterion_col})")
+    _forest_legend(ax)
     plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, "beta_effects.png"), dpi=300, bbox_inches="tight")
+    plt.savefig(os.path.join(output_dir, "forest_plot.png"), dpi=300, bbox_inches="tight")
     plt.close()
-    print(f"  β bar-plot saved.")
+    print(f"  Forest plot saved.")
 
 
 def _plot_logistic_curves(df, criterion_col, crit_min, crit_max, output_dir):

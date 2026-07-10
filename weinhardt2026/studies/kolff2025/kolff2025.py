@@ -20,7 +20,7 @@ from weinhardt2026.studies.kolff2025.analysis_generative import analysis_generat
 # Set to False to reuse saved params instead of retraining.
 train_spice = False
 train_gru = False
-train_benchmark = False
+train_benchmark = True
 
 generate_data = True
 N_REPEATS = 100
@@ -118,22 +118,53 @@ if train_gru:
 else:
     gru.load_state_dict(torch.load(path_gru, map_location='cpu'))
 
+# Interpretable benchmark model (fitted on data stats)
+# # -------------------------------------------------------------------------------------------
+# # BENCHMARK: CONDITIONAL FREQUENCY MODEL
+# # -------------------------------------------------------------------------------------------
+
+# benchmark = ConditionalFrequencyModel(
+#     n_actions=dataset_train.n_actions,
+#     n_participants=n_participants,
+# )
+
+# if train_benchmark:
+#     benchmark.fit(dataset_train)
+#     torch.save(benchmark.state_dict(), path_benchmark)
+#     print("Benchmark parameters saved to " + path_benchmark)
+# else:
+#     benchmark.load_state_dict(torch.load(path_benchmark, map_location='cpu'))
 
 # -------------------------------------------------------------------------------------------
-# BENCHMARK: CONDITIONAL FREQUENCY MODEL
+# BENCHMARK: GRU W/ EMBEDDING
 # -------------------------------------------------------------------------------------------
 
-benchmark = ConditionalFrequencyModel(
+benchmark = GRUModel(
     n_actions=dataset_train.n_actions,
     n_participants=n_participants,
+    additional_inputs=dataset_train.n_additional_inputs,
+    n_reward_features=0,
+    embedding_size=4,
+    hidden_size=8,
 )
 
 if train_benchmark:
-    benchmark.fit(dataset_train)
+    optimizer = torch.optim.Adam(benchmark.parameters(), lr=0.01)
+
+    benchmark = training(
+        model=benchmark,
+        optimizer=optimizer,
+        dataset_train=dataset_train,
+        dataset_test=dataset_test,
+        epochs=1000,
+        loss_fn=cross_entropy_loss_mask_waiting,
+        scheduler=True,
+    )
+
     torch.save(benchmark.state_dict(), path_benchmark)
-    print("Benchmark parameters saved to " + path_benchmark)
+    print("Trained Benchmark parameters saved to " + path_benchmark)
 else:
-    benchmark.load_state_dict(torch.load(path_benchmark, map_location='cpu'))
+    gru.load_state_dict(torch.load(path_benchmark, map_location='cpu'))
 
 
 # -------------------------------------------------------------------------------------------
@@ -142,6 +173,7 @@ else:
 
 estimator.eval()
 gru.eval().to(torch.device('cpu'))
+benchmark.eval().to(torch.device('cpu'))
 
 # General analysis: model evaluation (average trial likelihood)
 print(analysis_model_evaluation(

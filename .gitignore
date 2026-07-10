@@ -61,3 +61,4 @@ weinhardt2026/data/weber2024_raw
 *.zip
 *.tsv
 *.json
+*.jsonl
