@@ -6,18 +6,24 @@ sys.path.insert(0, str(ROOT))
 
 import torch
 
-from spice import SpiceEstimator, csv_to_dataset, split_data_along_blockdim
+from spice import SpiceEstimator
 from weinhardt2026.studies.kolff2025.spice_kolff2025 import CONFIG, SpiceModel, cross_entropy_loss_mask_waiting, filter_non_waiting
-
+from weinhardt2026.studies.kolff2025.benchmarking_kolff2025 import ConditionalFrequencyModel, get_dataset
 from weinhardt2026.utils.benchmarking_gru import GRUModel, training
 from weinhardt2026.analysis.analysis_model_evaluation import analysis_model_evaluation
-from weinhardt2026.studies.kolff2025.benchmarking_kolff2025 import ConditionalFrequencyModel, get_dataset
+from weinhardt2026.analysis.analysis_coefficients_distributions import analysis_coefficients_distributions
+from weinhardt2026.analysis.analysis_coefficients_individuals import analysis_coefficients_individuals
+from weinhardt2026.studies.kolff2025.benchmarking_kolff2025 import generate_behavior_replay
+from weinhardt2026.studies.kolff2025.analysis_generative import analysis_generative_behavior
 
 
 # Set to False to reuse saved params instead of retraining.
 train_spice = False
 train_gru = False
 train_benchmark = False
+
+generate_data = True
+N_REPEATS = 100
 
 # -------------------------------------------------------------------------------------------
 # PATHS
@@ -57,7 +63,7 @@ estimator = SpiceEstimator(
     
     embedding_size=4,
     loss_fn=cross_entropy_loss_mask_waiting,
-    epochs=0,
+    epochs=1000,
     warmup_steps=500,
     ensemble_size=10,
     sindy_weight=0.,
@@ -161,59 +167,82 @@ print(analysis_model_evaluation(
 # -------------------------------------------------------------------------------------------
 # GENERATIVE BENCHMARKING
 # -------------------------------------------------------------------------------------------
+if generate_data:
 
-from weinhardt2026.studies.kolff2025.benchmarking_kolff2025 import generate_behavior_replay
-from weinhardt2026.studies.kolff2025.analysis_generative import analysis_generative_behavior
+    # Full dataset (unsplit) for generative benchmarking
+    dataset_full, _, _ = get_dataset(path_data=path_data, test_blocks=())
 
-N_REPEATS = 100
+    # Generate behavior for GRU
+    gru.eval().to(torch.device('cpu'))
+    dataset_gen_gru = generate_behavior_replay(
+        model=gru,
+        dataset=dataset_full,
+        n_repeats=N_REPEATS,
+        save_csv=f'{data_dir}/gen_gru.csv',
+    )
 
-# Full dataset (unsplit) for generative benchmarking
-dataset_full, _, _ = get_dataset(path_data=path_data, test_blocks=())
+    # Generate behavior for benchmark
+    benchmark.eval()
+    dataset_gen_benchmark = generate_behavior_replay(
+        model=benchmark,
+        dataset=dataset_full,
+        n_repeats=N_REPEATS,
+        save_csv=f'{data_dir}/gen_benchmark.csv',
+    )
 
-# Generate behavior for GRU
-gru.eval().to(torch.device('cpu'))
-dataset_gen_gru = generate_behavior_replay(
-    model=gru,
-    dataset=dataset_full,
-    n_repeats=N_REPEATS,
-    save_csv=f'{data_dir}/gen_gru.csv',
-)
+    # Generate behavior for SPICE-RNN
+    estimator.eval()
+    estimator.model.to(torch.device('cpu'))
+    estimator.use_sindy(False)
+    dataset_gen_spice_rnn = generate_behavior_replay(
+        model=estimator,
+        dataset=dataset_full,
+        n_repeats=N_REPEATS,
+        save_csv=f'{data_dir}/gen_spice_rnn.csv',
+    )
 
-# Generate behavior for benchmark
-benchmark.eval()
-dataset_gen_benchmark = generate_behavior_replay(
-    model=benchmark,
-    dataset=dataset_full,
-    n_repeats=N_REPEATS,
-    save_csv=f'{data_dir}/gen_benchmark.csv',
-)
+    # Generate behavior for SPICE-EQ
+    estimator.use_sindy(True)
+    dataset_gen_spice = generate_behavior_replay(
+        model=estimator,
+        dataset=dataset_full,
+        n_repeats=N_REPEATS,
+        save_csv=f'{data_dir}/gen_spice.csv',
+    )
 
-# Generate behavior for SPICE-RNN
-estimator.eval()
-estimator.model.to(torch.device('cpu'))
-estimator.use_sindy(False)
-dataset_gen_spice_rnn = generate_behavior_replay(
-    model=estimator,
-    dataset=dataset_full,
-    n_repeats=N_REPEATS,
-    save_csv=f'{data_dir}/gen_spice_rnn.csv',
-)
+    # Generative analysis: compare real vs generated behavior
+    analysis_generative_behavior(
+        dataset_real=dataset_full,
+        dataset_benchmark=dataset_gen_benchmark,
+        dataset_gru=dataset_gen_gru,
+        dataset_spice_rnn=dataset_gen_spice_rnn,
+        dataset_spice=dataset_gen_spice,
+        output_dir=output_dir,
+    )
 
-# Generate behavior for SPICE-EQ
-estimator.use_sindy(True)
-dataset_gen_spice = generate_behavior_replay(
-    model=estimator,
-    dataset=dataset_full,
-    n_repeats=N_REPEATS,
-    save_csv=f'{data_dir}/gen_spice.csv',
-)
+# -------------------------------------------------------------------------------------------
+# ANALYSIS: INDIVIDUAL DIFFERENCES
+# -------------------------------------------------------------------------------------------
 
-# Generative analysis: compare real vs generated behavior
-analysis_generative_behavior(
-    dataset_real=dataset_full,
-    dataset_benchmark=dataset_gen_benchmark,
-    dataset_gru=dataset_gen_gru,
-    dataset_spice_rnn=dataset_gen_spice_rnn,
-    dataset_spice=dataset_gen_spice,
+analysis_coefficients_distributions(
+    spice_model=estimator,
     output_dir=output_dir,
+)
+
+# -------------------------------------------------------------------------------------------
+# ANALYSIS: STRUCTURAL GROUP DIFFERENCES
+# -------------------------------------------------------------------------------------------
+
+analysis_coefficients_individuals(
+    spice_model=estimator,
+    path_data=path_data,
+    analysis='cont',
+    criterion='Dominance_rank_ID1',
+    output_dir=output_dir,
+    dataset_kwargs={
+        'df_participant_id': 'ID1',
+        'df_choice': 'SigAct_ID1',
+        'df_feedback': None,
+        'additional_inputs': CONFIG.additional_inputs,
+        },
 )

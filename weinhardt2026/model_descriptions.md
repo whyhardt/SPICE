@@ -207,7 +207,7 @@ The effective learning rate $1 - (1 - \alpha)^{\tau}$ increases with action dura
 - After exit: all patch statistics reset to 0, $s_0 = g_0$ (new patch expectation)
 
 
-### 2.4. Eckstein 2024/Castro 2025: Drifting Multi-Armed Bandit
+### 2.4. Eckstein 2024/Eckstein 2026: Drifting Multi-Armed Bandit
 
 **Task.** Participants make repeated choices among 4 arms arranged in a circle. Arm means follow independent Gaussian random walks: $\mu_{t,i} \sim \mathcal{N}(\lambda \mu_{t-1,i} + (1-\lambda) \cdot 50, \sigma_{\text{drift}})$ with $\lambda = 0.9836$, $\sigma_{\text{drift}} = 2.8$. Observations are noisy: $r_{t,i} \sim \mathcal{N}(\mu_{t,i}, \sigma_{\text{obs}})$ with $\sigma_{\text{obs}} = 4$. Rewards are normalized to [0, 1]. The action space is $A = 4$.
 
@@ -657,7 +657,7 @@ No study-specific benchmark model. The GRU baseline (Section 1) is used as the c
 | Synthetic | Q-learning recovery | 2 | 4 | 2 | 2 | — | — |
 | Braun 2018 | Voluntary task switching | 2 | 6 | 3 | 2 | Expected Value of Control | 5 |
 | Bustamante 2023 | Patch foraging | 2 | 6 | 6 (4 value + 2 buffer) | 2 | Marginal Value Theorem | 3-5 |
-| Eckstein 2024/Castro 2025 | Drifting 4-armed bandit | 4 | 7 | 7 (5 value + 2 buffer) | 2 | Discovered Program | 13 |
+| Eckstein 2024/Eckstein 2026 | Drifting 4-armed bandit | 4 | 7 | 7 (5 value + 2 buffer) | 2 | Discovered Program | 13 |
 | Dezfouli 2019 | Two-armed bandit (depression) | 2 | 4 | 8 (2 value + 6 buffer) | 2 | Generalized Q-Learning | 12 |
 | Ganesh 2024a | Perceptual contrast bandit | 2 | 4 | 2 | 2 | Bayesian Belief-Update | 2 |
 | Hwang 2026 | Chimpanzee communication | 4 | 3 | 1 | 2 | — | — |

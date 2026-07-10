@@ -13,20 +13,29 @@ from weinhardt2026.utils.benchmarking_gru import GRUModel, training
 from weinhardt2026.studies.braun2018.benchmarking_braun2018 import ExpectedValueControl, get_dataset, generate_behavior
 from weinhardt2026.studies.braun2018.analysis_generative import analysis_generative_behavior
 from weinhardt2026.analysis.analysis_model_evaluation import analysis_model_evaluation
+from weinhardt2026.analysis.analysis_coefficients_distributions import analysis_coefficients_distributions
+from weinhardt2026.analysis.analysis_coefficients_individuals import analysis_coefficients_individuals
 from weinhardt2026.utils.generation import generate_repeated
 
 
-train_spice = True
+train_spice = False
 train_benchmark = False
 train_gru = False
 
+generate_data = False
 N_REPEATS = 100
+
+path_data = 'weinhardt2026/studies/braun2018/data/braun2018.csv'
+data_dir = 'weinhardt2026/studies/braun2018/data'
+output_dir = 'weinhardt2026/studies/braun2018/results'
+path_spice = 'weinhardt2026/studies/braun2018/params/spice_braun2018.pkl'
+path_benchmark = 'weinhardt2026/studies/braun2018/params/benchmark_braun2018.pkl'
+path_gru = 'weinhardt2026/studies/braun2018/params/gru_braun2018.pkl'
 
 # -------------------------------------------------------------------------------------------
 # DATALOADER
 # -------------------------------------------------------------------------------------------
 
-path_data = 'weinhardt2026/studies/braun2018/data/braun2018.csv'
 test_blocks = (3, 6, 9)
 
 dataset_train, dataset_test, info_dataset = get_dataset(path_data=path_data, test_blocks=test_blocks, verbose=True)
@@ -48,7 +57,6 @@ print(f"Truncated max sequence length to {cutoff}")
 # SPICE ESTIMATOR
 # -------------------------------------------------------------------------------------------
 
-path_spice = 'weinhardt2026/studies/braun2018/params/spice_braun2018.pkl'
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 estimator = SpiceEstimator(
@@ -58,9 +66,9 @@ estimator = SpiceEstimator(
     n_participants=dataset_train.n_participants,
     n_reward_features=0,
 
-    epochs=1000,
+    epochs=0,
     warmup_steps=500,
-    ensemble_size=1,
+    ensemble_size=10,
     sindy_weight=0.01,
 
     device=device,
@@ -69,16 +77,18 @@ estimator = SpiceEstimator(
 )
 
 if train_spice:
+    if estimator.epochs == 0:
+        estimator.load_spice(path_spice)
+        estimator.model.preprocess_coefficients()
     estimator.fit(dataset_train.xs, dataset_train.ys, dataset_test.xs, dataset_test.ys)
     estimator.save_spice(path_spice)
 else:
     estimator.load_spice(path_spice)
+    estimator.model.preprocess_coefficients()
 
 # -------------------------------------------------------------------------------------------
 # EVC BENCHMARK MODEL (Shenhav et al., 2013)
 # -------------------------------------------------------------------------------------------
-
-path_benchmark = 'weinhardt2026/studies/braun2018/params/benchmark_braun2018.pkl'
 
 benchmark = ExpectedValueControl(n_participants=dataset_train.n_participants)
 
@@ -99,8 +109,6 @@ else:
 # -------------------------------------------------------------------------------------------
 # GRU BENCHMARK MODEL
 # -------------------------------------------------------------------------------------------
-
-path_gru = 'weinhardt2026/studies/braun2018/params/gru_braun2018.pkl'
 
 gru = GRUModel(dataset_train.n_actions, additional_inputs=4, n_reward_features=0)
 
@@ -143,55 +151,82 @@ print(analysis_model_evaluation(
     spice_model=estimator,
     benchmark_model=benchmark,
     gru_model=gru,
-    output_dir='weinhardt2026/studies/braun2018/results',
+    output_dir=output_dir,
 ))
 
-# # -------------------------------------------------------------------------------------------
-# # GENERATIVE BENCHMARKING
-# # -------------------------------------------------------------------------------------------
 
-# data_dir = 'weinhardt2026/studies/braun2018/data'
-# output_dir = 'weinhardt2026/studies/braun2018/results'
+# -------------------------------------------------------------------------------------------
+# GENERATIVE BENCHMARKING
+# -------------------------------------------------------------------------------------------
+if generate_data:
+    estimator.use_sindy(False)
+    ds_spice_rnn = generate_repeated(
+        generate_behavior,
+        n_repeats=N_REPEATS,
+        dataset=dataset_train,
+        model=estimator,
+    )
 
-# estimator.use_sindy(False)
-# ds_spice_rnn = generate_repeated(
-#     generate_behavior,
-#     n_repeats=N_REPEATS,
-#     dataset=dataset_train,
-#     model=estimator,
-# )
+    estimator.use_sindy(True)
+    ds_spice = generate_repeated(
+        generate_behavior,
+        n_repeats=N_REPEATS,
+        dataset=dataset_train,
+        model=estimator,
+    )
 
-# estimator.use_sindy(True)
-# ds_spice = generate_repeated(
-#     generate_behavior,
-#     n_repeats=N_REPEATS,
-#     dataset=dataset_train,
-#     model=estimator,
-# )
+    ds_benchmark = generate_repeated(
+        generate_behavior,
+        n_repeats=N_REPEATS,
+        dataset=dataset_train,
+        model=benchmark,
+    )
 
-# ds_benchmark = generate_repeated(
-#     generate_behavior,
-#     n_repeats=N_REPEATS,
-#     dataset=dataset_train,
-#     model=benchmark,
-# )
+    ds_gru = generate_repeated(
+        generate_behavior,
+        n_repeats=N_REPEATS,
+        dataset=dataset_train,
+        model=gru,
+    )
 
-# ds_gru = generate_repeated(
-#     generate_behavior,
-#     n_repeats=N_REPEATS,
-#     dataset=dataset_train,
-#     model=gru,
-# )
+    # -------------------------------------------------------------------------------------------
+    # ANALYSIS: GENERATIVE BEHAVIOR
+    # -------------------------------------------------------------------------------------------
 
-# # -------------------------------------------------------------------------------------------
-# # ANALYSIS: GENERATIVE BEHAVIOR
-# # -------------------------------------------------------------------------------------------
+    analysis_generative_behavior(
+        path_data_real=f'{data_dir}/braun2018.csv',
+        path_data_benchmark=ds_benchmark,
+        path_data_gru=ds_gru,
+        path_data_spice_rnn=ds_spice_rnn,
+        path_data_spice=ds_spice,
+        output_dir=output_dir,
+    )
 
-# analysis_generative_behavior(
-#     path_data_real=f'{data_dir}/braun2018.csv',
-#     path_data_benchmark=ds_benchmark,
-#     path_data_gru=ds_gru,
-#     path_data_spice_rnn=ds_spice_rnn,
-#     path_data_spice=ds_spice,
-#     output_dir=output_dir,
-# )
+# -------------------------------------------------------------------------------------------
+# ANALYSIS: INDIVIDUAL DIFFERENCES
+# -------------------------------------------------------------------------------------------
+
+analysis_coefficients_distributions(
+    spice_model=estimator,
+    output_dir=output_dir,
+)
+
+# -------------------------------------------------------------------------------------------
+# ANALYSIS: STRUCTURAL GROUP DIFFERENCES
+# -------------------------------------------------------------------------------------------
+
+analysis_coefficients_individuals(
+    spice_model=estimator,
+    path_data=path_data,
+    analysis='cont',
+    criterion='mean_rt',
+    output_dir=output_dir,
+    dataset_kwargs={
+        'df_participant_id': 'subject',
+        'df_choice': 'transcode',
+        'df_feedback': None,
+        'df_block': 'block',
+        'additional_inputs': CONFIG.additional_inputs,
+        'timeshift_additional_inputs': (-1, -1, -1),
+        },
+)

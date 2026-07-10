@@ -114,6 +114,8 @@ def prepare(criterion_col, data_path: str, dataset_kwargs: dict = {}, spice_mode
     dataset.normalize_rewards()
     raw_df = pd.read_csv(data_path)
     
+    df_participant_id = 'participant' if 'df_participant_id' not in dataset_kwargs else dataset_kwargs['df_participant_id']
+    
     n_actions = dataset.ys.shape[-1]
     unique_sessions = dataset.xs[..., -1].int().unique().tolist()
     n_participants = len(unique_sessions)
@@ -165,7 +167,7 @@ def prepare(criterion_col, data_path: str, dataset_kwargs: dict = {}, spice_mode
     # Map integer indices back to original participant labels from the CSV.
     # csv_to_dataset maps participants via enumerate(df["participant"].unique()),
     # so the integer order matches the unique() order of the raw DataFrame.
-    original_pids = raw_df["participant"].unique()
+    original_pids = raw_df[df_participant_id].unique()
     index_to_session = {i: original_pids[i] for i in range(n_participants)}
 
     rows = []
@@ -189,10 +191,13 @@ def prepare(criterion_col, data_path: str, dataset_kwargs: dict = {}, spice_mode
     print(f"Extracted {len(sindy_cols)} SINDy coefficient columns for {len(sindy_df)} participants.")
     
     # --- build criterion column per participant from raw data ---
-    crit_df = raw_df.groupby("participant").first().reset_index()
-    crit_df = crit_df.rename(columns={"participant": "participant_id"})
+    crit_df = raw_df.groupby(df_participant_id).first().reset_index()
+    crit_df = crit_df.rename(columns={df_participant_id: "participant_id"})
+    if criterion_col == df_participant_id:
+        # criterion IS the participant identity — already in participant_id column
+        crit_df[criterion_col] = crit_df["participant_id"]
     crit_df = crit_df[["participant_id", criterion_col]]
-    
+
     # Merge
     df = sindy_df.merge(crit_df, on="participant_id", how="inner")
     df = df.dropna(subset=[criterion_col])
@@ -719,17 +724,20 @@ def run_magnitude_analysis(df, sindy_cols, criterion_col, analysis_type,
 
 
 def analysis_coefficients_individuals(
+    path_data: str,
+    
     criterion: str,
     analysis: str,
-    path_data: str,
+    reference: str = None,
+    
     spice_model: SpiceEstimator = None,
     path_model: str = None,
     model_module: str = None,
     model_class: BaseModel = None,
     model_config: SpiceConfig = None,
-    reference: str = None,
+    
     dataset_kwargs: dict = {},
-    dir_output: str = None,
+    output_dir: str = None,
     ):
     """Run the full individual-level SINDy coefficient analysis pipeline.
 
@@ -760,10 +768,7 @@ def analysis_coefficients_individuals(
     if analysis == "disc" and reference is None:
         raise ValueError("--reference-group is required for discrete analysis.")
 
-    output_dir = dir_output or os.path.join(
-        os.path.dirname(path_data),
-        f"analysis_{criterion}_{analysis}",
-    )
+    output_dir = output_dir or f"analysis_{criterion}_{analysis}"
 
     # 1. Preparation
     print("=" * 70)
@@ -837,5 +842,5 @@ if __name__ == "__main__":
         path_model=args.model,
         model_module=args.model_module,
         reference=args.reference,
-        dir_output=args.output,
+        output_dir=args.output,
     )

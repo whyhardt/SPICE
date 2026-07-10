@@ -23,6 +23,9 @@ On repeat/switch bias:
 """
 
 
+BINARY_SIGNALS = {'repeat'}
+
+
 CONFIG = SpiceConfig(
     library_setup={
         'reward_repeat': (
@@ -70,9 +73,29 @@ class SpiceModel(BaseModel):
         self.setup_module(key_module='reward_switch', input_size=1, dropout=self.dropout, include_state=False)
         self.setup_module(key_module='task_repeat', input_size=1, dropout=self.dropout)
         self.setup_module(key_module='task_switch', input_size=1, dropout=self.dropout)
-        self.setup_module(key_module='fatigue_repeat', input_size=1, dropout=self.dropout, include_state=False)        
-        self.setup_module(key_module='fatigue_switch', input_size=1, dropout=self.dropout, include_state=False)        
-        
+        self.setup_module(key_module='fatigue_repeat', input_size=1, dropout=self.dropout, include_state=False)
+        self.setup_module(key_module='fatigue_switch', input_size=1, dropout=self.dropout, include_state=False)
+
+        self.preprocess_coefficients()
+
+    def preprocess_coefficients(self):
+        """Zero out redundant SINDy terms for binary indicator control signals.
+
+        Binary indicators satisfy x^2 = x, so squared terms are redundant.
+        """
+        candidate_terms = self.get_candidate_terms()
+        for module in self.get_modules():
+            control_signals = self.spice_config.library_setup[module]
+            if not control_signals:
+                continue
+            binary_cs = [cs for cs in control_signals if cs in BINARY_SIGNALS]
+            for ict, ct in enumerate(candidate_terms[module]):
+                for cs in binary_cs:
+                    if cs + '^' in ct:
+                        self.sindy_coefficients_presence[module][..., ict] = 0
+                        self.sindy_coefficients_prior_mask[module][..., ict] = 0
+                        break
+
     def forward(self, inputs, prev_state=None):
         
         spice_signals = self.init_forward_pass(inputs, prev_state)
@@ -94,23 +117,23 @@ class SpiceModel(BaseModel):
         for trial in spice_signals.trials:
             
             # modules for reward perception
-            value_reward_repeat = self.call_module(
+            self.call_module(
                 key_module='reward_repeat',
-                # key_state='value_reward',
+                key_state='value_reward',
                 action_mask=repeat_mask,
                 inputs=-spice_signals.additional_inputs['difference'][trial],
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
             )
-            value_reward_switch = self.call_module(
+            self.call_module(
                 key_module='reward_switch',
-                # key_state='value_reward',
+                key_state='value_reward',
                 action_mask=switch_mask,
                 inputs=spice_signals.additional_inputs['difference'][trial],
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
             )
-            
+
             # modules to update switching costs
             self.call_module(
                 key_module='task_repeat',
@@ -128,30 +151,30 @@ class SpiceModel(BaseModel):
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
             )
-            
+
             # module to update fatigue value based on current block number
-            value_fatigue_repeat = self.call_module(
+            self.call_module(
                 key_module='fatigue_repeat',
-                # key_state='value_fatigue',
+                key_state='value_fatigue',
                 action_mask=repeat_mask,
                 inputs=blocks,
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
             )
-            value_fatigue_switch = self.call_module(
+            self.call_module(
                 key_module='fatigue_switch',
-                # key_state='value_fatigue',
+                key_state='value_fatigue',
                 action_mask=switch_mask,
                 inputs=blocks,
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
             )
-            
+
             # compute logits
             spice_signals.logits[trial] = (
-                value_reward_repeat+value_reward_switch
-                + self.state['value_control'] 
-                + value_fatigue_repeat+value_fatigue_switch
+                self.state['value_reward']
+                + self.state['value_control']
+                + self.state['value_fatigue']
                 )
         
         spice_signals = self.post_forward_pass(spice_signals)

@@ -46,19 +46,25 @@ for action_id, action_name in ACTION_NAMES.items():
     CONDITIONAL_METRIC_LABELS[f'p_groom_given_partner_{slug}'] = (
         f'P(Next Groom | Partner {label})'
     )
-    CONDITIONAL_METRIC_LABELS[f'p_groom_given_partner_{slug}_sender_lower_rank'] = (
-        f'P(Next Groom | Partner {label}, Sender Lower Rank)'
-    )
-    CONDITIONAL_METRIC_LABELS[f'p_groom_given_partner_{slug}_sender_higher_rank'] = (
-        f'P(Next Groom | Partner {label}, Sender Higher Rank)'
+
+SELF_TRANSITION_METRIC_LABELS = {}
+for action_id, action_name in ACTION_NAMES.items():
+    if action_id == WAITING_ACTION:
+        continue
+    slug = _action_slug(action_name)
+    label = action_name.title()
+    SELF_TRANSITION_METRIC_LABELS[f'p_self_repeat_{slug}'] = (
+        f'P(Repeat | Prev {label})'
     )
 
 METRIC_LABELS = {
     **OVERVIEW_METRIC_LABELS,
     **CONDITIONAL_METRIC_LABELS,
+    **SELF_TRANSITION_METRIC_LABELS,
 }
 OVERVIEW_METRICS = list(OVERVIEW_METRIC_LABELS.keys())
 CONDITIONAL_METRICS = list(CONDITIONAL_METRIC_LABELS.keys())
+SELF_TRANSITION_METRICS = list(SELF_TRANSITION_METRIC_LABELS.keys())
 
 
 def _get_rank_mapping(path_data: str = DEFAULT_DATA_PATH) -> dict[int, int]:
@@ -175,6 +181,18 @@ def _compute_metrics(choices, partner_actions, sender_ids, receiver_ids, rank_ma
         if higher_mask.sum() > 0:
             metrics['p_groom_sender_higher_rank'][s] = (ch[higher_mask] == GROOMING_ACTION).mean()
 
+        # Self-transition metrics (conditioned on own previous action)
+        if len(ch) > 1:
+            for action_id, action_name in ACTION_NAMES.items():
+                if action_id == WAITING_ACTION:
+                    continue
+                slug = _action_slug(action_name)
+                prev_was_action = ch[:-1] == action_id
+                if prev_was_action.sum() > 0:
+                    metrics[f'p_self_repeat_{slug}'][s] = (
+                        ch[1:][prev_was_action] == action_id
+                    ).mean()
+
         pa_valid = ~np.isnan(pa)
         for action_id, action_name in ACTION_NAMES.items():
             if action_id == WAITING_ACTION:
@@ -184,18 +202,6 @@ def _compute_metrics(choices, partner_actions, sender_ids, receiver_ids, rank_ma
             if action_mask.sum() > 0:
                 metrics[f'p_groom_given_partner_{slug}'][s] = (
                     ch[action_mask] == GROOMING_ACTION
-                ).mean()
-
-            lower_action_mask = action_mask & lower_mask
-            if lower_action_mask.sum() > 0:
-                metrics[f'p_groom_given_partner_{slug}_sender_lower_rank'][s] = (
-                    ch[lower_action_mask] == GROOMING_ACTION
-                ).mean()
-
-            higher_action_mask = action_mask & higher_mask
-            if higher_action_mask.sum() > 0:
-                metrics[f'p_groom_given_partner_{slug}_sender_higher_rank'][s] = (
-                    ch[higher_action_mask] == GROOMING_ACTION
                 ).mean()
 
     return metrics
@@ -320,13 +326,7 @@ def analysis_generative_behavior(
     print(df_summary)
     df_summary.to_csv(os.path.join(output_dir, 'generative_behavior_summary.csv'))
 
-    _plot_violins(all_metrics, output_dir, OVERVIEW_METRICS, 'generative_behavior')
-    _plot_violins(
-        all_metrics,
-        output_dir,
-        CONDITIONAL_METRICS,
-        'generative_behavior_conditional_grooming',
-    )
+    _plot_violins(all_metrics, output_dir, OVERVIEW_METRICS + CONDITIONAL_METRICS + SELF_TRANSITION_METRICS, 'generative_behavior')
 
     df_comparison = None
     if 'real' in all_metrics:

@@ -6,7 +6,7 @@ import torch
 import matplotlib.pyplot as plt
 
 from spice import SpiceDataset
-from weinhardt2026.studies.castro2025.benchmarking_castro2025 import get_dataset
+from weinhardt2026.studies.eckstein2026.benchmarking_eckstein2026 import get_dataset
 from weinhardt2026.analysis.analysis_generative_comparison import compute_generative_comparison
 
 

@@ -45,7 +45,7 @@ SPICE/
 │   │   ├── synthetic/                  # Synthetic parameter recovery
 │   │   ├── braun2018/                  # Each study has: notebook, benchmarking script,
 │   │   ├── bustamante2023/             #   data/, params/, results/
-│   │   ├── castro2025/
+│   │   ├── eckstein2026/
 │   │   ├── dezfouli2019/
 │   │   ├── ganesh2024a/
 │   │   ├── huang2026/

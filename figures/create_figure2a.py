@@ -21,8 +21,8 @@ STUDIES = [
         'gru_embedding': False,
     },
     {
-        'name': 'Four-Armed Bandit\n(Castro 2025)',
-        'results_dir': 'weinhardt2026/studies/castro2025/results',
+        'name': 'Four-Armed Bandit\n(Eckstein 2026)',
+        'results_dir': 'weinhardt2026/studies/eckstein2026/results',
         'type': 'discrete',
         'gru_embedding': False,
     },

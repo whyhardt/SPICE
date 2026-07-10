@@ -508,9 +508,14 @@ class BaseModel(nn.Module):
             torch.Tensor: [within_ts, ensemble, batch, n_items] — full within-trial trajectory
         """
         
-        if key_state is not None: 
+        if key_state is not None:
             if key_state in self.state:
-                value = self.get_state()[key_state]  # [W, E, B, I]
+                # If include_state=False, the module is stateless: start from zeros
+                # but still write output to state for tracking (e.g. Stage 2 shooting).
+                if self.sindy_specs.get(key_module, {}).get('include_state', True):
+                    value = self.get_state()[key_state]  # [W, E, B, I]
+                else:
+                    value = None
             else:
                 KeyError(f"key_state {key_state} is not in BaseModel's state.")
         else:
@@ -583,7 +588,7 @@ class BaseModel(nn.Module):
             if self.use_sindy:
                 # Get SINDy module prediction — operates per within-trial step
                 next_value = torch.zeros((inputs.shape[:-1]), device=inputs.device)  # [W, E, B, I]
-                if key_state is not None:
+                if value is not None:
                     next_value_t = value[-1]  # [E, B, I]
                 else:
                     next_value_t = torch.zeros(E, B, I, device=self.device)
@@ -612,7 +617,7 @@ class BaseModel(nn.Module):
             and participant_index is not None
             ):
             action_mask_2d = action_mask[-1] if action_mask is not None and action_mask.dim() >= 4 else action_mask
-            value_0 = self.get_state()[key_state][-1].unsqueeze(0) if key_state is not None else torch.zeros(W, E, B, I, device=self.device)
+            value_0 = value[-1].unsqueeze(0) if value is not None else torch.zeros(W, E, B, I, device=self.device)
             sindy_loss_reg, sindy_loss_fit = self.compute_sindy_loss_for_module(
                     module_name=key_module,
                     h_current=torch.concat((value_0, next_value[:-1])),
@@ -695,13 +700,13 @@ class BaseModel(nn.Module):
         )
 
         # Initialize prior mask (theory-driven, never reset by pruning).
-        # Only initialize if not already set (preprocess_coefficients may have
-        # written it before a second setup_sindy_coefficients call).
-        if key_module not in self.sindy_coefficients_prior_mask:
-            self.sindy_coefficients_prior_mask[key_module] = torch.ones(
-                self.ensemble_size, self.n_participants, self.n_experiments, n_library_terms,
-                dtype=torch.bool, device=self.device
-            )
+        # Always re-initialize here so the shape matches the current library;
+        # preprocess_coefficients() runs after all setup_module() calls and
+        # will set the correct mask entries afterward.
+        self.sindy_coefficients_prior_mask[key_module] = torch.ones(
+            self.ensemble_size, self.n_participants, self.n_experiments, n_library_terms,
+            dtype=torch.bool, device=self.device
+        )
 
         # Compute degree-based weights for coefficient penalty
         term_degrees = get_library_term_degrees(self.sindy_candidate_terms[key_module])

@@ -97,7 +97,7 @@ def get_dataset(
 
     dataset = csv_to_dataset(
         file=path_data,
-        df_participant_id='interaction_id',
+        df_participant_id='ID1',
         df_choice='SigAct_ID1',
         df_feedback=None,
         additional_inputs=CONFIG.additional_inputs,
@@ -106,9 +106,9 @@ def get_dataset(
     n_actions = dataset.n_actions
 
     # Remap participant_id -> ID1 (sender)
-    dataset.xs[..., -1] = dataset.xs[..., n_actions + 1].nan_to_num(0)
+    # dataset.xs[..., -1] = dataset.xs[..., n_actions + 1].nan_to_num(0)
 
-    n_participants = dataset.xs[..., -1].nan_to_num(0).max().int().item() + 1
+    # n_participants = dataset.xs[..., -1].nan_to_num(0).max().int().item() + 1
 
     # Normalize rank columns to [0, 1] (rank_diff in model will be in [-1, 1])
     rank_col_start = n_actions + 3  # after SigAct_ID2, ID1, ID2
@@ -123,8 +123,8 @@ def get_dataset(
         dataset_train = dataset_test = dataset
 
     info_dataset = {
-        'n_participants': n_participants,
-        'n_actions': n_actions,
+        'n_participants': dataset.n_participants,
+        'n_actions': dataset.n_actions,
     }
 
     return dataset_train, dataset_test, info_dataset
@@ -558,10 +558,12 @@ def generate_behavior_replay(
 ) -> SpiceDataset:
     """Generate synthetic behavior by replaying empirical turn-taking structure.
 
-    Instead of generating turn-taking from scratch, this function preserves
-    the empirical sequence of who sends when and only generates the action
-    content autoregressively.  Each empirical interaction is repeated
-    ``n_repeats`` times to yield stable per-session statistics.
+    Preserves the empirical sequence of who sends when and only generates
+    ID1's action content autoregressively. ID2's actions are taken directly
+    from the empirical data (the model is only trained to predict ID1
+    behavior, so generating ID2 actions would be unreliable). Each empirical
+    interaction is repeated ``n_repeats`` times to yield stable per-session
+    statistics.
 
     Args:
         model: Fitted SPICE model (SpiceEstimator or nn.Module).
@@ -629,70 +631,38 @@ def generate_behavior_replay(
         rank1_batch = rank1.expand(n_repeats)
         rank2_batch = rank2.expand(n_repeats)
 
-        # Turn structure from empirical data
+        # Turn structure and empirical ID2 actions from data
         is_id1_sender = (
             xs_emp[s, :n_valid, :n_actions].argmax(dim=-1) != waiting_action
         )  # (n_valid,)
+        emp_id2_actions = xs_emp[s, :n_valid, n_actions].nan_to_num(0).long().to(device)
 
-        # Initialize
+        # Initialize — only track ID1 state (ID2 actions come from data)
         state_id1 = None
-        state_id2 = None
         prev_id1 = torch.full((n_repeats,), waiting_action, dtype=torch.long, device=device)
-        prev_id2 = torch.full((n_repeats,), waiting_action, dtype=torch.long, device=device)
 
         actions_id1 = []  # list of (n_repeats,) tensors
-        actions_id2 = []
 
         for t in range(n_valid):
-            if is_id1_sender[t]:
-                # ID1 sends — generate ID1's action
-                obs_id1 = _build_observation(
-                    own_action=prev_id1, partner_action=prev_id2,
-                    sender_id=id1_batch, receiver_id=id2_batch,
-                    sender_rank=rank1_batch, receiver_rank=rank2_batch,
-                    trial_idx=t, n_actions=n_actions, n_features=n_features,
-                    device=device,
-                )
-                logits_id1, state_id1 = inner_model(obs_id1, state_id1)
-                curr_id1 = _sample_action(logits_id1, n_actions)
-                curr_id2 = torch.full((n_repeats,), waiting_action, dtype=torch.long, device=device)
+            emp_id2 = emp_id2_actions[t].expand(n_repeats)
 
-                # Update ID2 state (observes from its perspective)
-                obs_id2 = _build_observation(
-                    own_action=prev_id2, partner_action=prev_id1,
-                    sender_id=id2_batch, receiver_id=id1_batch,
-                    sender_rank=rank2_batch, receiver_rank=rank1_batch,
-                    trial_idx=t, n_actions=n_actions, n_features=n_features,
-                    device=device,
-                )
-                _, state_id2 = inner_model(obs_id2, state_id2)
+            # Build observation for ID1 using empirical ID2 action
+            obs_id1 = _build_observation(
+                own_action=prev_id1, partner_action=emp_id2,
+                sender_id=id1_batch, receiver_id=id2_batch,
+                sender_rank=rank1_batch, receiver_rank=rank2_batch,
+                trial_idx=t, n_actions=n_actions, n_features=n_features,
+                device=device,
+            )
+            logits_id1, state_id1 = inner_model(obs_id1, state_id1)
+
+            if is_id1_sender[t]:
+                curr_id1 = _sample_action(logits_id1, n_actions)
             else:
-                # ID2 sends — generate ID2's action
-                obs_id2 = _build_observation(
-                    own_action=prev_id2, partner_action=prev_id1,
-                    sender_id=id2_batch, receiver_id=id1_batch,
-                    sender_rank=rank2_batch, receiver_rank=rank1_batch,
-                    trial_idx=t, n_actions=n_actions, n_features=n_features,
-                    device=device,
-                )
-                logits_id2, state_id2 = inner_model(obs_id2, state_id2)
-                curr_id2 = _sample_action(logits_id2, n_actions)
                 curr_id1 = torch.full((n_repeats,), waiting_action, dtype=torch.long, device=device)
 
-                # Update ID1 state
-                obs_id1 = _build_observation(
-                    own_action=prev_id1, partner_action=prev_id2,
-                    sender_id=id1_batch, receiver_id=id2_batch,
-                    sender_rank=rank1_batch, receiver_rank=rank2_batch,
-                    trial_idx=t, n_actions=n_actions, n_features=n_features,
-                    device=device,
-                )
-                _, state_id1 = inner_model(obs_id1, state_id1)
-
             actions_id1.append(curr_id1.cpu())
-            actions_id2.append(curr_id2.cpu())
             prev_id1 = curr_id1
-            prev_id2 = curr_id2
 
         # Write xs_gen / ys_gen for this session's repeats
         out_start = s * n_repeats
@@ -702,7 +672,7 @@ def generate_behavior_replay(
             xs_gen[out_start:out_end, t, 0, :n_actions] = torch.nn.functional.one_hot(
                 actions_id1[t], n_actions,
             ).float()
-            xs_gen[out_start:out_end, t, 0, n_actions] = actions_id2[t].float()
+            xs_gen[out_start:out_end, t, 0, n_actions] = emp_id2_actions[t].cpu().float()
             xs_gen[out_start:out_end, t, 0, n_actions + 1] = id1.cpu().float()
             xs_gen[out_start:out_end, t, 0, n_actions + 2] = id2.cpu().float()
             xs_gen[out_start:out_end, t, 0, n_actions + 3] = rank1.cpu().float()
