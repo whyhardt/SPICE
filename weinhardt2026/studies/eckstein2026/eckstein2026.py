@@ -25,6 +25,7 @@ generate_data = False
 N_REPEATS = 1
 
 path_data = 'weinhardt2026/studies/eckstein2026/data/eckstein2024.csv'
+# path_data = 'weinhardt2026/studies/eckstein2026/data/public_train.csv'
 path_spice = 'weinhardt2026/studies/eckstein2026/params/spice_eckstein2026.pkl'
 path_benchmark = 'weinhardt2026/studies/eckstein2026/params/benchmark_eckstein2026.pkl'
 path_gru = 'weinhardt2026/studies/eckstein2026/params/gru_eckstein2026.pkl'

@@ -15,7 +15,12 @@ METRIC_LABELS = {
     'total_reward': 'Total Reward',
     'win_stay': 'P(Stay | Win)',
     'lose_stay': 'P(Stay | Loss)',
+    'lose_shift': 'P(Shift | Loss)',
     'p_stay': 'P(Stay)',
+    'choice_entropy': 'Choice Entropy',
+    'early_reward': 'Early Reward (Q1)',
+    'late_reward': 'Late Reward (Q4)',
+    'learning_slope': 'Learning Slope',
 }
 
 
@@ -44,8 +49,12 @@ def _extract_choices_and_rewards(dataset: SpiceDataset):
 
 
 def _compute_metrics(choices, rewards):
-    """Compute behavioral metrics from choices and rewards arrays."""
+    """Compute behavioral metrics from choices and rewards arrays.
+
+    Returns per-session arrays for each metric.
+    """
     n_sessions = choices.shape[0]
+    n_trials = choices.shape[1]
 
     stays = (choices[:, 1:] == choices[:, :-1]).astype(float)
     prev_rewards = rewards[:, :-1]
@@ -59,6 +68,12 @@ def _compute_metrics(choices, rewards):
 
     win_stay = np.full(n_sessions, np.nan)
     lose_stay = np.full(n_sessions, np.nan)
+    lose_shift = np.full(n_sessions, np.nan)
+    choice_entropy = np.full(n_sessions, np.nan)
+    early_reward = np.full(n_sessions, np.nan)
+    late_reward = np.full(n_sessions, np.nan)
+    learning_slope = np.full(n_sessions, np.nan)
+
     for s in range(n_sessions):
         valid_t = ~np.isnan(prev_rewards[s]) & ~np.isnan(stays[s])
         wins = valid_t & (prev_rewards[s] > 0.5)
@@ -67,6 +82,23 @@ def _compute_metrics(choices, rewards):
             win_stay[s] = stays[s][wins].mean()
         if losses.sum() > 0:
             lose_stay[s] = stays[s][losses].mean()
+            lose_shift[s] = 1.0 - lose_stay[s]
+
+        # Choice entropy: -sum(p * log2(p)) over action frequencies
+        valid_choices = choices[s][~np.isnan(choices[s])]
+        if len(valid_choices) > 1:
+            _, counts = np.unique(valid_choices, return_counts=True)
+            probs = counts / counts.sum()
+            choice_entropy[s] = -np.sum(probs * np.log2(np.clip(probs, 1e-10, 1.0)))
+
+        # Early vs late reward (first and last quarter of valid trials)
+        valid_rewards = rewards[s][~np.isnan(rewards[s])]
+        n_valid = len(valid_rewards)
+        if n_valid >= 4:
+            q = n_valid // 4
+            early_reward[s] = valid_rewards[:q].mean()
+            late_reward[s] = valid_rewards[-q:].mean()
+            learning_slope[s] = late_reward[s] - early_reward[s]
 
     p_stay = np.nanmean(stays, axis=1)
 
@@ -75,7 +107,12 @@ def _compute_metrics(choices, rewards):
         'total_reward': total_reward,
         'win_stay': win_stay,
         'lose_stay': lose_stay,
+        'lose_shift': lose_shift,
         'p_stay': p_stay,
+        'choice_entropy': choice_entropy,
+        'early_reward': early_reward,
+        'late_reward': late_reward,
+        'learning_slope': learning_slope,
     }
 
 
@@ -129,6 +166,48 @@ def _plot_violins(all_metrics, output_dir):
     )
     plt.show()
     plt.close(fig)
+
+
+def _aggregate_metrics_per_participant(all_metrics, participant_ids, output_dir):
+    """Aggregate session-level metrics to per-participant means and save as CSV.
+
+    For each model (e.g. 'real', 'spice', 'benchmark'), produces a DataFrame
+    with one row per participant and one column per metric.
+
+    Args:
+        all_metrics: {model_name: {metric_name: (n_sessions,) array}}
+        participant_ids: {model_name: (n_sessions,) array}
+        output_dir: Directory for output CSVs.
+
+    Returns:
+        Dict mapping model names to per-participant DataFrames.
+    """
+    result = {}
+    for name in all_metrics:
+        if name not in participant_ids:
+            continue
+        pids = participant_ids[name]
+        unique_pids = np.unique(pids[~np.isnan(pids)])
+
+        rows = []
+        for pid in unique_pids:
+            mask = pids == pid
+            row = {'participant_id': int(pid)}
+            for metric, values in all_metrics[name].items():
+                vals = values[mask]
+                clean = vals[~np.isnan(vals)]
+                row[metric] = clean.mean() if len(clean) > 0 else np.nan
+            rows.append(row)
+
+        df = pd.DataFrame(rows)
+        result[name] = df
+
+        if output_dir is not None:
+            path = os.path.join(output_dir, f'behavioral_metrics_{name}.csv')
+            df.to_csv(path, index=False)
+            print(f"Saved per-participant metrics: {path}")
+
+    return result
 
 
 def analysis_generative_behavior(
@@ -203,5 +282,10 @@ def analysis_generative_behavior(
         df_similarity, df_spearman = compute_generative_comparison(
             all_metrics, participant_ids, output_dir,
         )
+
+    # Per-participant behavioral metrics (aggregated from sessions)
+    df_participants = _aggregate_metrics_per_participant(
+        all_metrics, participant_ids, output_dir,
+    )
 
     return df, df_similarity, df_spearman
