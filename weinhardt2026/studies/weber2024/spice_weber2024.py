@@ -9,6 +9,8 @@ CONFIG = SpiceConfig(
         'belief_update_caught': ('pe',),   # update when shield catches laser
         'belief_update_missed': ('pe',),   # update when shield misses laser
         # Dynamic learning rate: modulates gated output
+        # 'lr_update_caught': ('pe',),    # LR adapts when catching (tracking well)
+        # 'lr_update_missed':  ('pe',),    # LR decays when missing (tracking poorly)
         'lr_update_caught': (),    # LR adapts when catching (tracking well)
         'lr_update_missed':  (),    # LR decays when missing (tracking poorly)
     },
@@ -126,6 +128,8 @@ class SpiceModel(BaseModel):
             )
 
             spice_signals.logits[trial] = (1-alpha) * shield[trial] + alpha * self.state['belief_value']
+            # self.state['belief_value'] = (1-alpha) * shield[trial] + alpha * self.state['belief_value']
+            # spice_signals.logits[trial] = self.state['belief_value']
             
         spice_signals = self.post_forward_pass(spice_signals)
         return spice_signals.logits, self.get_state()

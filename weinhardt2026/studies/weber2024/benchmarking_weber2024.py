@@ -10,12 +10,31 @@ from tqdm import tqdm
 from spice import SpiceEstimator, SpiceDataset, csv_to_dataset, split_data_along_blockdim
 
 from weinhardt2026.studies.weber2024.spice_weber2024 import CONFIG
-from weinhardt2026.studies.weber2024.archive.benchmarking_weber2024 import angular_distance, move_toward
 
 
 # --- Constants ---
 
 MOVEMENT_SPEED = 1.0        # degrees per frame
+
+def angular_distance(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    """Shortest circular distance in degrees between two angles.
+
+    Handles values outside [0, 360) via modulo.
+    """
+    diff = (a - b) % 360
+    return torch.min(diff, 360 - diff)
+
+
+def move_toward(shield: torch.Tensor, laser: torch.Tensor, max_degrees: torch.Tensor) -> torch.Tensor:
+    """Move shield toward laser by up to max_degrees along shortest arc.
+
+    Returns new shield position (may be outside [0, 360)).
+    """
+    diff = (laser - shield % 360) % 360
+    direction = torch.where(diff <= 180, torch.ones_like(diff), -torch.ones_like(diff))
+    dist = angular_distance(shield, laser)
+    movement = torch.min(max_degrees, dist)
+    return shield + direction * movement
 CATCH_THRESHOLD = 10.0      # degrees — shield catches laser if angular distance <= this
 INITIAL_SHIELD = 360.0      # degrees (shield starting position each block)
 

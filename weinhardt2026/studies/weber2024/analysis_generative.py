@@ -8,7 +8,6 @@ import torch
 import matplotlib.pyplot as plt
 
 from spice import SpiceDataset
-from weinhardt2026.studies.weber2024.archive.benchmarking_weber2024 import angular_distance
 from weinhardt2026.studies.weber2024.benchmarking_weber2024 import (
     get_dataset, CATCH_THRESHOLD, _N_ACTIONS, _N_REWARDS, _AI_START, _AI_CAUGHT, _AI_DT,
 )

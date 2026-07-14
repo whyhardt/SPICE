@@ -112,6 +112,7 @@ def generate_figure4(study_cfg, estimator):
         results_csv_path=os.path.join(results_dir, study_cfg['beta_csv']),
         n_clusters=study_cfg['n_clusters'],
         output_dir=os.path.join(figures_dir, 'figure4'),
+        path_raw_data=study_cfg.get('data'),
     )
 
 

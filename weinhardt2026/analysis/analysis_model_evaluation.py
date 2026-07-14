@@ -287,33 +287,51 @@ def _compute_mse_metrics(
     predictions: torch.Tensor,
     targets: torch.Tensor,
     valid_mask: torch.Tensor,
+    loss_fn: Callable = None,
 ) -> dict:
     """Compute MSE, RMSE, MAE, R² from masked predictions and targets.
 
     Args:
         predictions: (B, T, W, A) raw model outputs.
-        targets: (B, T, W, A) ground truth.
+        targets: (B, T, W, F) ground truth. F may exceed A when a custom
+            loss_fn requires extra columns (e.g. clamping metadata).
         valid_mask: (B, T) bool mask for non-padded trials.
+        loss_fn: Optional loss function ``(prediction, target) → scalar``.
+            When provided, MSE is computed via this function and targets
+            may have more features than predictions. When ``None``
+            (default), plain MSE is used and targets must match
+            predictions in the last dimension.
 
     Returns:
         Dict with aggregate and per-session metrics.
     """
     n_sessions = predictions.shape[0]
     n_actions = predictions.shape[-1]
+    n_target_features = targets.shape[-1]
 
-    # Flatten valid predictions/targets
-    mask_expanded = valid_mask.unsqueeze(-1).unsqueeze(-1).expand_as(predictions)
-    pred_valid = predictions[mask_expanded].reshape(-1, n_actions)
-    tgt_valid = targets[mask_expanded].reshape(-1, n_actions)
+    # Flatten valid predictions
+    mask_pred = valid_mask.unsqueeze(-1).unsqueeze(-1).expand_as(predictions)
+    pred_valid = predictions[mask_pred].reshape(-1, n_actions)
 
-    # Aggregate metrics
-    errors = pred_valid - tgt_valid
-    mse = (errors ** 2).mean().item()
+    # Flatten valid targets (may have more features than predictions)
+    mask_tgt = valid_mask.unsqueeze(-1).unsqueeze(-1).expand(
+        *valid_mask.shape, predictions.shape[2], n_target_features)
+    tgt_valid = targets[mask_tgt].reshape(-1, n_target_features)
+
+    if loss_fn is not None:
+        mse = loss_fn(pred_valid, tgt_valid).item()
+        tgt_actual = tgt_valid[:, :n_actions]
+    else:
+        tgt_actual = tgt_valid
+        mse = ((pred_valid - tgt_actual) ** 2).mean().item()
+
+    # Derived metrics (always from raw prediction errors against actual targets)
+    errors = pred_valid - tgt_actual
     rmse = mse ** 0.5
     mae = errors.abs().mean().item()
 
-    ss_res = (errors ** 2).sum().item()
-    ss_tot = ((tgt_valid - tgt_valid.mean(dim=0)) ** 2).sum().item()
+    ss_res = mse * pred_valid.numel()
+    ss_tot = ((tgt_actual - tgt_actual.mean(dim=0)) ** 2).sum().item()
     r2 = 1 - ss_res / ss_tot if ss_tot > 0 else float('nan')
 
     # Per-session metrics
@@ -323,8 +341,11 @@ def _compute_mse_metrics(
         if s_mask.sum() == 0:
             continue
         s_pred = predictions[s, s_mask, 0]  # (n_valid, A)
-        s_tgt = targets[s, s_mask, 0]
-        mse_per_session[s] = ((s_pred - s_tgt) ** 2).mean()
+        s_tgt = targets[s, s_mask, 0]       # (n_valid, F)
+        if loss_fn is not None:
+            mse_per_session[s] = loss_fn(s_pred, s_tgt)
+        else:
+            mse_per_session[s] = ((s_pred - s_tgt) ** 2).mean()
 
     return {
         'mse': mse,
@@ -343,6 +364,8 @@ def analysis_model_evaluation_mse(
     gru_model: torch.nn.Module = None,
     output_dir: Optional[str] = None,
     verbose: bool = True,
+    loss_fn: Callable = None,
+    n_actions: int = None,
 ) -> pd.DataFrame:
     """Evaluate models on continuous prediction tasks using MSE-based metrics.
 
@@ -356,6 +379,13 @@ def analysis_model_evaluation_mse(
         gru_model: Fitted GRU nn.Module (optional).
         output_dir: If provided, save summary CSV and bar plot to this directory.
         verbose: Print results to console.
+        loss_fn: Optional loss function ``(prediction, target) → scalar``.
+            When provided, MSE is computed via this function (e.g.
+            ``clamped_angular_mse``). Defaults to plain MSE.
+        n_actions: Number of prediction target columns in ``dataset.ys``.
+            Required when ``loss_fn`` is provided and targets contain extra
+            metadata columns beyond the actual prediction targets. When
+            ``None`` (default), all target columns are used.
 
     Returns:
         DataFrame with MSE, RMSE, MAE, R², n_parameters per model.
@@ -375,7 +405,7 @@ def analysis_model_evaluation_mse(
             if hasattr(benchmark_model, 'count_parameters')
             else sum(p.numel() for p in benchmark_model.parameters())
         )
-        models['Benchmark'] = (_compute_mse_metrics(preds, targets, valid_mask), n_params)
+        models['Benchmark'] = (_compute_mse_metrics(preds, targets, valid_mask, loss_fn=loss_fn), n_params)
 
     # --- GRU model ---
     if gru_model is not None:
@@ -383,7 +413,7 @@ def analysis_model_evaluation_mse(
         gru_model.eval()
         preds = _get_predictions(gru_model, dataset)
         n_params = sum(p.numel() for p in gru_model.parameters())
-        models['GRU'] = (_compute_mse_metrics(preds, targets, valid_mask), n_params)
+        models['GRU'] = (_compute_mse_metrics(preds, targets, valid_mask, loss_fn=loss_fn), n_params)
 
     # --- SPICE model (RNN mode + SINDy mode) ---
     if spice_model is not None:
@@ -402,7 +432,7 @@ def analysis_model_evaluation_mse(
         for module in spice_model.get_modules():
             spice_rnn_params += sum(p.numel() for p in spice_model.model.submodules_rnn[module].parameters())
         spice_rnn_params += spice_model.model.embedding_size
-        models['SPICE-RNN'] = (_compute_mse_metrics(preds_rnn, targets, valid_mask), spice_rnn_params)
+        models['SPICE-RNN'] = (_compute_mse_metrics(preds_rnn, targets, valid_mask, loss_fn=loss_fn), spice_rnn_params)
 
         # SPICE (SINDy)
         print("Evaluating SPICE model...")
@@ -420,7 +450,7 @@ def analysis_model_evaluation_mse(
         unique_pairs = torch.unique(torch.stack([participant_ids, experiment_ids], dim=1), dim=0)
         unique_param_counts = spice_params_tensor[unique_pairs[:, 0], unique_pairs[:, 1]]
         spice_n_params = unique_param_counts.float().mean().item()
-        models['SPICE-EQ'] = (_compute_mse_metrics(preds_sindy, targets, valid_mask), spice_n_params)
+        models['SPICE-EQ'] = (_compute_mse_metrics(preds_sindy, targets, valid_mask, loss_fn=loss_fn), spice_n_params)
 
         spice_model.use_sindy(True)
 
@@ -428,8 +458,11 @@ def analysis_model_evaluation_mse(
     n_valid = valid_mask.sum().item()
 
     # Random baseline BIC (predict target mean → MSE = var(targets))
-    mask_expanded = valid_mask.unsqueeze(-1).unsqueeze(-1).expand_as(targets)
-    tgt_valid_all = targets[mask_expanded].reshape(-1, targets.shape[-1])
+    # When targets contain extra metadata columns, restrict to prediction targets
+    n_tgt = n_actions if n_actions is not None else targets.shape[-1]
+    tgt_for_bic = targets[..., :n_tgt]
+    mask_expanded = valid_mask.unsqueeze(-1).unsqueeze(-1).expand_as(tgt_for_bic)
+    tgt_valid_all = tgt_for_bic[mask_expanded].reshape(-1, n_tgt)
     mse_random = tgt_valid_all.var(dim=0).mean().item()
     bic_random = n_valid * (1 + math.log(2 * math.pi) + math.log(max(mse_random, 1e-30)))
 

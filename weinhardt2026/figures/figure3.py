@@ -129,9 +129,9 @@ def _plot_panel_a(ordered_studies, study_data, n_discrete, n_continuous):
             return study_idx + 1
         return study_idx
 
-    n_rows = 3
+    n_rows = 2
     fig, axes = plt.subplots(
-        n_rows, n_cols, figsize=(2.2 * n_total + 1, 7),
+        n_rows, n_cols, figsize=(2.2 * n_total + 1, 5),
         gridspec_kw={'width_ratios': width_ratios},
     )
     if n_cols == 1:
@@ -144,7 +144,6 @@ def _plot_panel_a(ordered_studies, study_data, n_discrete, n_continuous):
     perf_rows = [
         ('Predictive Performance', 'Predictive\nPerformance', 0),
         ('Model Selection', '$\\Delta$BIC\n(per trial)', 1),
-        ('Individual Differences', 'Spearman $\\rho$', 2),
     ]
 
     for row_idx, (title, ylabel, data_idx) in enumerate(perf_rows):

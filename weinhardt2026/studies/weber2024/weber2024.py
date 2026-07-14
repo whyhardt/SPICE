@@ -17,10 +17,11 @@ from weinhardt2026.analysis.analysis_model_evaluation import analysis_model_eval
 from weinhardt2026.utils.generation import generate_repeated
 
 
-train_spice = False
+train_spice = True
 train_gru = False
 train_benchmark = False
 
+generate_data = False
 N_REPEATS = 100
 
 truncate_dataset = True
@@ -169,19 +170,17 @@ estimator.print_spice_model(participant_id=participant_id+2)
 # ANALYSIS: MODEL EVALUATION (MSE)
 # -------------------------------------------------------------------------------------------
 
-# analysis_model_evaluation_mse expects targets and predictions to have the same
-# last dimension. Our ys has 5 columns (2 target + 3 loss metadata), so slice to
-# the first 2 columns for evaluation.
 eval_ds = dataset_test if dataset_test is not None else dataset
-eval_ds_sliced = SpiceDataset(eval_ds.xs, eval_ds.ys[:, :, :, :2], n_reward_features=2, continuous_action=True)
 
 df_mse = analysis_model_evaluation_mse(
-    dataset=eval_ds_sliced,
+    dataset=eval_ds,
     spice_model=estimator,
     benchmark_model=benchmark,
     gru_model=gru,
     output_dir='weinhardt2026/studies/weber2024/results',
     verbose=True,
+    loss_fn=clamped_angular_mse,
+    n_actions=2,
 )
 
 
@@ -434,49 +433,50 @@ plt.show()
 # GENERATIVE BENCHMARKING
 # -------------------------------------------------------------------------------------------
 
-# Generate behavior for benchmark model
-dataset_gen_benchmark = generate_repeated(
-    generate_behavior,
-    n_repeats=N_REPEATS,
-    model=benchmark,
-    dataset=dataset,
-)
+if generate_data:
+    # Generate behavior for benchmark model
+    dataset_gen_benchmark = generate_repeated(
+        generate_behavior,
+        n_repeats=N_REPEATS,
+        model=benchmark,
+        dataset=dataset,
+    )
 
-# Generate behavior for GRU
-gru.eval().to(torch.device('cpu'))
-dataset_gen_gru = generate_repeated(
-    generate_behavior,
-    n_repeats=N_REPEATS,
-    model=gru,
-    dataset=dataset,
-)
+    # Generate behavior for GRU
+    gru.eval().to(torch.device('cpu'))
+    dataset_gen_gru = generate_repeated(
+        generate_behavior,
+        n_repeats=N_REPEATS,
+        model=gru,
+        dataset=dataset,
+    )
 
-# Generate behavior for SPICE-RNN
-estimator.set_device(torch.device('cpu'))
-estimator.eval()
-estimator.use_sindy(False)
-dataset_gen_spice_rnn = generate_repeated(
-    generate_behavior,
-    n_repeats=N_REPEATS,
-    model=estimator,
-    dataset=dataset,
-)
+    # Generate behavior for SPICE-RNN
+    estimator.set_device(torch.device('cpu'))
+    estimator.eval()
+    estimator.use_sindy(False)
+    dataset_gen_spice_rnn = generate_repeated(
+        generate_behavior,
+        n_repeats=N_REPEATS,
+        model=estimator,
+        dataset=dataset,
+    )
 
-estimator.use_sindy(True)
-dataset_gen_spice_eq = generate_repeated(
-    generate_behavior,
-    n_repeats=N_REPEATS,
-    model=estimator,
-    dataset=dataset,
-)
+    estimator.use_sindy(True)
+    dataset_gen_spice_eq = generate_repeated(
+        generate_behavior,
+        n_repeats=N_REPEATS,
+        model=estimator,
+        dataset=dataset,
+    )
 
 
-# Generative analysis: compare real vs generated behavior
-analysis_generative_behavior(
-    dataset_real=dataset,
-    dataset_benchmark=dataset_gen_benchmark,
-    dataset_gru=dataset_gen_gru,
-    dataset_spice_rnn=dataset_gen_spice_rnn,
-    dataset_spice=dataset_gen_spice_eq,
-    output_dir=output_dir,
-)
+    # Generative analysis: compare real vs generated behavior
+    analysis_generative_behavior(
+        dataset_real=dataset,
+        dataset_benchmark=dataset_gen_benchmark,
+        dataset_gru=dataset_gen_gru,
+        dataset_spice_rnn=dataset_gen_spice_rnn,
+        dataset_spice=dataset_gen_spice_eq,
+        output_dir=output_dir,
+    )
