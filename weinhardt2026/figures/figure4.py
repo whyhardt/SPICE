@@ -1026,8 +1026,8 @@ def _plot_panel_g_ridgeline(coeffs_data, val_data, modules):
     # ── Ridgeline plot ──
     row_height = 1.0
     overlap = 0.4
+    has_se = f'{modules[0]}_se_coefficients' in coeffs_data
 
-    # Normalize coefficients per term for comparable ridge heights
     for i, (module, j, name, vtype, _) in enumerate(reversed(selected)):
         idx = n_terms - 1 - i  # plot bottom-to-top
         y_base = idx * (row_height - overlap)
@@ -1035,17 +1035,38 @@ def _plot_panel_g_ridgeline(coeffs_data, val_data, modules):
         coeffs = coeffs_data[f'{module}_mean_coefficients'][:, j]
         ip = coeffs_data[f'{module}_inclusion_probability'][:, j]
 
+        # SE across ensemble members (if available)
+        if has_se:
+            se = coeffs_data[f'{module}_se_coefficients'][:, j]
+        else:
+            se = np.zeros_like(coeffs)
+
         # Scale coefficient curve to fit within row_height
+        # Use a shared scale factor for mean and SE
         c_range = coeffs.max() - coeffs.min()
         if c_range > 0:
-            scaled = (coeffs - coeffs.min()) / c_range * row_height * 0.8
+            scale_factor = row_height * 0.8 / c_range
+            c_min = coeffs.min()
+            scaled = (coeffs - c_min) * scale_factor
+            scaled_lo = ((coeffs - se) - c_min) * scale_factor
+            scaled_hi = ((coeffs + se) - c_min) * scale_factor
         else:
             scaled = np.full_like(coeffs, row_height * 0.4)
+            scaled_lo = scaled.copy()
+            scaled_hi = scaled.copy()
 
         color = MODULE_COLORS_MORPH.get(module, '#888888')
         mean_ip = ip.mean()
 
-        # Fill under the curve
+        # Ensemble SE band (lighter, behind main fill)
+        if has_se and se.max() > 0:
+            ax_ridge.fill_between(step_values,
+                                  y_base + np.clip(scaled_lo, 0, None),
+                                  y_base + scaled_hi,
+                                  alpha=max(0.08, mean_ip * 0.2), color=color,
+                                  linewidth=0)
+
+        # Fill under the curve (mean)
         ax_ridge.fill_between(step_values, y_base, y_base + scaled,
                               alpha=max(0.15, mean_ip * 0.6), color=color,
                               linewidth=0)
