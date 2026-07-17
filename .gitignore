@@ -63,3 +63,6 @@ weinhardt2026/data/weber2024_raw
 *.json
 *.jsonl
 *.npz
+
+# Exceptions
+!figures/*.png
