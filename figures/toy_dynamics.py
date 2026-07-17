@@ -5,7 +5,7 @@ import numpy as np
 # Toy example: Three armed bandit data visualization
 np.random.seed(42)
 n_trials = 20
-n_actions = 3
+n_actions = 2
 linewidth = 10
 
 # Generate cue signal with jumps for different arms (will be set after actions are determined)

@@ -5,6 +5,7 @@ Panels (saved individually, one per cluster-representative participant):
   a) Discovered equations (rendered as text) — per participant
   b) Actual choices and rewards — per participant
   c) RNN vs SPICE-EQ action probabilities (overlaid) — per participant
+  d) Combined dynamics: P(action), V_reward, V_choice for item 0 — per participant
 
 Each panel saved as detailed + clean versions in figures/figure2/.
 """
@@ -15,6 +16,8 @@ import numpy as np
 import torch
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
+from matplotlib.lines import Line2D
+from scipy.spatial.distance import pdist, squareform
 
 from spice import SpiceEstimator, csv_to_dataset
 from weinhardt2026.figures.panel_utils import save_panel
@@ -151,6 +154,175 @@ def _run_forward(model, xs_single, n_valid, use_sindy):
 
     probs = torch.softmax(logits, dim=-1).detach().cpu().numpy()
     return probs
+
+
+def _run_forward_with_states(model, xs_single, n_valid, use_sindy):
+    """Run forward pass and record per-trial value_reward / value_choice for item 0.
+
+    Returns:
+        probs:  (n_valid, n_actions)
+        vr:     (n_valid, n_actions)  value_reward per item per trial
+        vc:     (n_valid, n_actions)  value_choice per item per trial
+    """
+    model.use_sindy = use_sindy
+    model.eval()
+
+    # We need per-trial states, so we hook into the forward pass.
+    # Run init manually, iterate trials, and record states.
+    with torch.no_grad():
+        spice_signals = model.init_forward_pass(xs_single, prev_state=None)
+        participant_embedding = model.participant_embedding(spice_signals.participant_ids)
+
+        vr_list, vc_list = [], []
+        for trial in spice_signals.trials:
+            # --- replicate the forward() body from workingmemory.SpiceModel ---
+            model.call_module(
+                key_module='value_reward_chosen', key_state='value_reward',
+                action_mask=spice_signals.actions[trial],
+                inputs=(spice_signals.feedback[trial],
+                        model.state['buffer_reward_1'],
+                        model.state['buffer_reward_2'],
+                        model.state['buffer_reward_3']),
+                participant_index=spice_signals.participant_ids,
+                participant_embedding=participant_embedding,
+            )
+            model.call_module(
+                key_module='value_reward_not_chosen', key_state='value_reward',
+                action_mask=1 - spice_signals.actions[trial],
+                inputs=(model.state['buffer_reward_1'],
+                        model.state['buffer_reward_2'],
+                        model.state['buffer_reward_3']),
+                participant_index=spice_signals.participant_ids,
+                participant_embedding=participant_embedding,
+            )
+            model.call_module(
+                key_module='value_choice_chosen', key_state='value_choice',
+                action_mask=spice_signals.actions[trial],
+                inputs=(model.state['buffer_action_1'],
+                        model.state['buffer_action_2'],
+                        model.state['buffer_action_3']),
+                participant_index=spice_signals.participant_ids,
+                participant_embedding=participant_embedding,
+            )
+            model.call_module(
+                key_module='value_choice_not_chosen', key_state='value_choice',
+                action_mask=1 - spice_signals.actions[trial],
+                inputs=(model.state['buffer_action_1'],
+                        model.state['buffer_action_2'],
+                        model.state['buffer_action_3']),
+                participant_index=spice_signals.participant_ids,
+                participant_embedding=participant_embedding,
+            )
+
+            # buffer updates
+            model.state['buffer_reward_3'] = (
+                model.state['buffer_reward_2'] * spice_signals.actions[trial]
+                + model.state['buffer_reward_3'] * (1 - spice_signals.actions[trial])
+            )
+            model.state['buffer_reward_2'] = (
+                model.state['buffer_reward_1'] * spice_signals.actions[trial]
+                + model.state['buffer_reward_2'] * (1 - spice_signals.actions[trial])
+            )
+            model.state['buffer_reward_1'] = (
+                torch.where(spice_signals.actions[trial] == 1, spice_signals.feedback[trial], 0)
+                + torch.where(spice_signals.actions[trial] == 0, model.state['buffer_reward_1'], 0)
+            )
+            model.state['buffer_action_3'] = model.state['buffer_action_2']
+            model.state['buffer_action_2'] = model.state['buffer_action_1']
+            model.state['buffer_action_1'] = spice_signals.actions[trial]
+
+            spice_signals.logits[trial] = model.state['value_reward'] + model.state['value_choice']
+
+            # Record states: shape (W=1, E, B=1, I) → mean over E → (I,)
+            vr_list.append(model.state['value_reward'][0, :, 0, :].mean(dim=0).cpu().numpy())
+            vc_list.append(model.state['value_choice'][0, :, 0, :].mean(dim=0).cpu().numpy())
+
+        spice_signals = model.post_forward_pass(spice_signals)
+
+    # Extract logits → probs
+    logits_out = spice_signals.logits
+    if logits_out.dim() == 5:
+        if model.batch_first:
+            logits = logits_out[:, 0, :n_valid, 0, :].mean(dim=0)
+        else:
+            logits = logits_out[:n_valid, 0, :, 0, :].mean(dim=1)
+    else:
+        logits = logits_out[0, :n_valid, 0, :]
+
+    probs = torch.softmax(logits, dim=-1).detach().cpu().numpy()
+    vr = np.stack(vr_list[:n_valid], axis=0)  # (n_valid, n_actions)
+    vc = np.stack(vc_list[:n_valid], axis=0)
+
+    return probs, vr, vc
+
+
+# ---------------------------------------------------------------------------
+# Automatic participant selection via structural distance
+# ---------------------------------------------------------------------------
+
+def select_distinctive_participants(model, n_select=3):
+    """Find n_select participants with maximally different sparsity patterns.
+
+    Uses ensemble-majority voting on presence masks, then greedy max-min
+    Hamming distance selection across all modules.
+
+    Returns:
+        List of participant IDs.
+    """
+    modules = model.get_modules()
+    P = next(iter(model.sindy_coefficients.values())).shape[1]
+
+    # Build binary signature vector per participant
+    sig_vectors = []
+    for pid in range(P):
+        vec = []
+        for m in modules:
+            pres = model.sindy_coefficients_presence[m]  # (E, P, X, C)
+            if isinstance(pres, torch.Tensor):
+                pres = pres.detach().cpu().numpy()
+            pres_pid = pres[:, pid, :, :].mean(axis=(0, 1))  # (C,)
+            vec.extend((pres_pid > 0.5).astype(float).tolist())
+        sig_vectors.append(vec)
+
+    sig_vectors = np.array(sig_vectors)  # (P, total_terms)
+
+    # Find unique signatures and pick one representative per cluster
+    sig_tuples = [tuple(v) for v in sig_vectors]
+    unique_sigs = {}
+    for pid, st in enumerate(sig_tuples):
+        if st not in unique_sigs:
+            unique_sigs[st] = pid  # first occurrence
+
+    rep_pids = list(unique_sigs.values())
+    rep_vecs = sig_vectors[rep_pids]
+
+    # Pairwise Hamming distance
+    dist_matrix = squareform(pdist(rep_vecs, metric='hamming'))
+
+    # Greedy max-min selection
+    n_reps = len(rep_pids)
+    # Start with the two most distant
+    max_dist, best_pair = 0, (0, 1)
+    for i in range(n_reps):
+        for j in range(i + 1, n_reps):
+            if dist_matrix[i, j] > max_dist:
+                max_dist = dist_matrix[i, j]
+                best_pair = (i, j)
+
+    selected = [best_pair[0], best_pair[1]]
+    for _ in range(n_select - 2):
+        best_k, best_min = -1, -1
+        for k in range(n_reps):
+            if k in selected:
+                continue
+            min_d = min(dist_matrix[k, s] for s in selected)
+            if min_d > best_min:
+                best_min = min_d
+                best_k = k
+        if best_k >= 0:
+            selected.append(best_k)
+
+    return [rep_pids[i] for i in selected]
 
 
 # ---------------------------------------------------------------------------
@@ -299,6 +471,118 @@ def _plot_panel_c_probs(dataset, model, participant_ids, session_idx, n_trials_s
     return fig
 
 
+def _plot_panel_d_dynamics(dataset, model, participant_ids, session_idx,
+                           n_trials_show, cluster_labels=None):
+    """Panel d: Actual data + model dynamics.
+
+    5 rows sharing trial axis per participant:
+      Row 0 — Reward (actual data, per-action traces in gold shades)
+      Row 1 — Action (actual data, step plot)
+      Row 2 — P(action 0)
+      Row 3 — V_reward (item 0)
+      Row 4 — V_choice (item 0)
+
+    Dashed = SPICE-RNN (thicker, brighter), solid = SPICE-EQ.
+    """
+    n_participants = len(participant_ids)
+    brick_red = '#c44e52'
+    lw = 2.2
+    gold_colors = ['#DAA520', '#FFD700']  # per-action reward colours
+
+    n_rows = 5
+    height_ratios = [0.35, 0.35, 1, 1, 1]
+
+    fig, axes = plt.subplots(
+        n_rows, n_participants, figsize=(5.5 * n_participants, 7),
+        sharex='col', squeeze=False,
+        gridspec_kw={'height_ratios': height_ratios},
+    )
+
+    row_labels = [
+        'Reward', 'Action',
+        'P(action 0)', r'$V_{reward}$  (item 0)', r'$V_{choice}$  (item 0)',
+    ]
+
+    for col, pid in enumerate(participant_ids):
+        xs_single, actions, rewards, n_valid = _extract_session_data(dataset, pid, session_idx)
+        n_show = min(n_trials_show, n_valid) if n_trials_show else n_valid
+        trials = np.arange(n_show)
+        acts_show = actions[:n_show]
+        rwds_show = rewards[:n_show]
+
+        # RNN and EQ forward passes
+        probs_rnn, vr_rnn, vc_rnn = _run_forward_with_states(model, xs_single, n_valid, False)
+        probs_eq, vr_eq, vc_eq = _run_forward_with_states(model, xs_single, n_valid, True)
+        probs_rnn, vr_rnn, vc_rnn = probs_rnn[:n_show], vr_rnn[:n_show], vc_rnn[:n_show]
+        probs_eq, vr_eq, vc_eq = probs_eq[:n_show], vr_eq[:n_show], vc_eq[:n_show]
+        n_actions = probs_rnn.shape[1]
+
+        # ── Row 0: Reward (actual data, single line) ──
+        ax = axes[0, col]
+        ax.plot(trials, rwds_show, color=gold_colors[0],
+                linewidth=3.0, alpha=0.85)
+        ax.set_ylim(-0.15, 1.15)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.grid(axis='y', alpha=0.12)
+
+        # ── Row 1: Action (actual data, step plot) ──
+        ax = axes[1, col]
+        ax.step(trials, acts_show + 1, where='mid',
+                color=brick_red, linewidth=3.0, alpha=0.85)
+        ax.set_ylim(0.4, n_actions + 0.6)
+        ax.set_yticks(range(1, n_actions + 1))
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+
+        # ── Rows 2–4: model dynamics ──
+        data_pairs = [
+            (probs_rnn[:, 0], probs_eq[:, 0]),
+            (vr_rnn[:, 0],    vr_eq[:, 0]),
+            (vc_rnn[:, 0],    vc_eq[:, 0]),
+        ]
+        for row_offset, (rnn_vals, eq_vals) in enumerate(data_pairs):
+            row = row_offset + 2
+            ax = axes[row, col]
+            # RNN: thicker and brighter than EQ
+            ax.plot(trials, rnn_vals, color=brick_red, linewidth=lw + 3,
+                    linestyle='--', alpha=0.55, zorder=1)
+            ax.plot(trials, eq_vals, color=brick_red, linewidth=lw,
+                    linestyle='-', alpha=0.9, zorder=2)
+            ax.spines['top'].set_visible(False)
+            ax.spines['right'].set_visible(False)
+            ax.grid(axis='y', alpha=0.12)
+
+            if row == 2:
+                ax.set_ylim(-0.05, 1.05)
+
+        # ── Per-column labels ──
+        for row in range(n_rows):
+            if col == 0:
+                axes[row, col].set_ylabel(row_labels[row], fontsize=10)
+            if row == 0:
+                if cluster_labels is not None:
+                    title = f"Cluster {cluster_labels[col]} — P{pid}"
+                else:
+                    title = f"Participant {pid}"
+                axes[row, col].set_title(title, fontsize=11, fontweight='bold')
+            if row == n_rows - 1:
+                axes[row, col].set_xlabel('Trial', fontsize=10)
+
+    # SPICE-RNN / SPICE-EQ legend (first column, row 2)
+    legend_elements = [
+        Line2D([0], [0], color=brick_red, linewidth=lw + 3, linestyle='--',
+               alpha=0.55, label='SPICE-RNN'),
+        Line2D([0], [0], color=brick_red, linewidth=lw, linestyle='-',
+               alpha=0.9, label='SPICE-EQ'),
+    ]
+    axes[2, 0].legend(handles=legend_elements, fontsize=8, loc='upper right',
+                      framealpha=0.8, borderpad=0.3)
+
+    fig.tight_layout()
+    return fig
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -306,17 +590,25 @@ def _plot_panel_c_probs(dataset, model, participant_ids, session_idx, n_trials_s
 def plot_figure2(
     estimator,
     dataset,
-    participant_ids,
+    participant_ids=None,
     cluster_labels=None,
     session_idx=None,
     output_dir='figures/figure2',
     n_trials_show=None,
+    n_select=3,
 ):
     """Create Figure 2 panels: Equation showcase.
+
+    If participant_ids is None, automatically selects n_select structurally
+    distinctive participants via max-min Hamming distance on sparsity patterns.
 
     Each panel saved as detailed + clean versions in output_dir.
     """
     model = estimator.model
+
+    if participant_ids is None:
+        participant_ids = select_distinctive_participants(model, n_select=n_select)
+        print(f"  Auto-selected participants (structural distance): {participant_ids}")
 
     # Panel a: Equations
     fig_a = _plot_panel_a_equations(estimator, participant_ids, cluster_labels)
@@ -329,5 +621,9 @@ def plot_figure2(
     # Panel c: Action probabilities
     fig_c = _plot_panel_c_probs(dataset, model, participant_ids, session_idx, n_trials_show, cluster_labels)
     save_panel(fig_c, output_dir, 'panel_c_action_probs')
+
+    # Panel d: Combined dynamics (P(action), V_reward, V_choice)
+    fig_d = _plot_panel_d_dynamics(dataset, model, participant_ids, session_idx, n_trials_show, cluster_labels)
+    save_panel(fig_d, output_dir, 'panel_d_dynamics')
 
     print(f"\nAll Figure 2 panels saved to {output_dir}/")

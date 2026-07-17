@@ -325,11 +325,12 @@ class SpiceEstimator(BaseEstimator):
         
         self.model.print(participant_id=participant_id, experiment_id=experiment_id)
 
-    def get_participant_embeddings(self) -> Dict:
+    def get_participant_embeddings(self, ensemble_id: int = 0) -> Dict:
         if hasattr(self.model, 'participant_embedding'):
-            participant_ids = torch.arange(self.n_participants, device=self.device, dtype=torch.int32).view(-1, 1)
-            embeddings = self.model.participant_embedding(participant_ids)
-            return {participant_id.item(): embeddings[participant_id, 0] for participant_id in participant_ids}
+            participant_ids = torch.arange(self.n_participants, device=self.device, dtype=torch.int32)
+            embeddings = self.model.participant_embedding(participant_ids)  # (E, P, D)
+            embeddings = embeddings[ensemble_id]  # (P, D)
+            return {pid: embeddings[pid] for pid in range(self.n_participants)}
         else:
             print(f'RNN model has no participant_embedding module.')
             return None

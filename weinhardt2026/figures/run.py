@@ -14,10 +14,11 @@ import torch
 
 from spice import SpiceEstimator, csv_to_dataset
 from spice.precoded import workingmemory
+from weinhardt2026.studies.eckstein2026 import spice_eckstein2026
 from weinhardt2026.figures.figure2 import plot_figure2
 from weinhardt2026.figures.figure3 import plot_figure3
 from weinhardt2026.figures.figure4 import plot_figure4
-from weinhardt2026.analysis.analysis_behavioral_clustering import analysis_behavioral_clustering
+from weinhardt2026.figures.figure5 import plot_figure5
 
 
 # ── Study registry ────────────────────────────────────────────────────
@@ -38,6 +39,26 @@ STUDY_REGISTRY = {
         'beta_csv': 'discrete_odds_ratio_results.csv',
         'n_clusters': 3,
         'n_trials_show': 100,
+        'stability_pattern': 'weinhardt2026/studies/dezfouli2019/params_array/spice_dezfouli2019_stability_[0-9].pkl',
+        'hpscan_csv': 'weinhardt2026/studies/dezfouli2019/results/hpscan_results.csv',
+        'model_kwargs': {'reward_binary': True},
+    },
+    'eckstein2026': {
+        'spice_class': spice_eckstein2026.SpiceModel,
+        'spice_config': spice_eckstein2026.CONFIG,
+        'n_actions': 4,
+        'polynomial_degree': 2,
+        'data': 'weinhardt2026/studies/eckstein2026/data/eckstein2026.csv',
+        'params': 'weinhardt2026/studies/eckstein2026/params/spice_eckstein2026.pkl',
+        'results_dir': 'weinhardt2026/studies/eckstein2026/results',
+        'figures_dir': 'weinhardt2026/studies/eckstein2026/figures',
+        'metrics_csv': 'behavioral_metrics_real.csv',
+        'beta_csv': 'continuous_effect_results_all.csv',
+        'n_clusters': 3,
+        'n_trials_show': 100,
+        # 'stability_pattern': 'weinhardt2026/studies/eckstein2026/params_array/spice_dezfouli2019_stability_[0-9].pkl',
+        # 'hpscan_csv': 'weinhardt2026/studies/dezfouli2019/results/hpscan_results.csv',
+        # 'model_kwargs': {'reward_binary': True},
     },
 }
 
@@ -64,30 +85,16 @@ def _load_estimator(study_cfg):
 
 
 def generate_figure2(study_cfg, estimator):
-    """Figure 2: Equation showcase for cluster-representative participants."""
-    results_dir = study_cfg['results_dir']
+    """Figure 2: Equation showcase for structurally distinctive participants."""
     figures_dir = study_cfg['figures_dir']
-    metrics_path = os.path.join(results_dir, study_cfg['metrics_csv'])
-
-    clustering = analysis_behavioral_clustering(
-        spice_model=estimator,
-        path_behavioral_metrics=metrics_path,
-        n_clusters=study_cfg['n_clusters'],
-        output_dir=results_dir,
-    )
 
     dataset = csv_to_dataset(file=study_cfg['data'])
     dataset.normalize_rewards()
 
-    n_clusters = study_cfg['n_clusters']
-    participant_ids = [clustering['nearest'][k] for k in range(1, n_clusters + 1)]
-    cluster_labels = list(range(1, n_clusters + 1))
-
     plot_figure2(
         estimator=estimator,
         dataset=dataset,
-        participant_ids=participant_ids,
-        cluster_labels=cluster_labels,
+        participant_ids=None,  # auto-select via structural distance
         session_idx=None,
         n_trials_show=study_cfg.get('n_trials_show'),
         output_dir=os.path.join(figures_dir, 'figure2'),
@@ -116,10 +123,35 @@ def generate_figure4(study_cfg, estimator):
     )
 
 
+def generate_figure5(study_cfg):
+    """Figure 5: Across-run stability analysis."""
+    from glob import glob
+    pattern = study_cfg.get('stability_pattern')
+    if not pattern:
+        print("  No stability_pattern configured for this study, skipping.")
+        return
+    pkl_paths = sorted(glob(pattern))
+    if not pkl_paths:
+        print(f"  No stability runs found matching {pattern}")
+        return
+
+    plot_figure5(
+        stability_pkl_paths=pkl_paths,
+        spice_class=study_cfg['spice_class'],
+        spice_config=study_cfg['spice_config'],
+        n_actions=study_cfg['n_actions'],
+        output_dir=os.path.join(study_cfg['figures_dir'], 'figure5'),
+        polynomial_degree=study_cfg.get('polynomial_degree', 2),
+        model_kwargs=study_cfg.get('model_kwargs'),
+        hpscan_csv=study_cfg.get('hpscan_csv'),
+    )
+
+
 FIGURE_GENERATORS = {
     '2': generate_figure2,
     '3': generate_figure3,
     '4': generate_figure4,
+    '5': generate_figure5,
 }
 
 
@@ -130,8 +162,10 @@ def main():
         epilog=__doc__,
     )
     parser.add_argument('--study', type=str, help='Study name (e.g. dezfouli2019)')
-    parser.add_argument('--figures', nargs='+', default=['2', '3', '4'],
+    parser.add_argument('--figures', nargs='+', default=['2', '3', '4', '5'],
                         help='Which figures to generate (default: all). E.g. --figures 2 4')
+    parser.add_argument('--params', type=str, default=None,
+                        help='Override params .pkl path (default: use study registry)')
     parser.add_argument('--list', action='store_true', help='List available studies')
     args = parser.parse_args()
 
@@ -147,14 +181,18 @@ def main():
     if args.study not in STUDY_REGISTRY:
         parser.error(f"Unknown study '{args.study}'. Available: {', '.join(STUDY_REGISTRY)}")
 
-    study_cfg = STUDY_REGISTRY[args.study]
+    study_cfg = dict(STUDY_REGISTRY[args.study])  # copy so we can override
+    if args.params is not None:
+        study_cfg['params'] = args.params
     print(f"Generating figures for: {args.study}")
+    print(f"Params: {study_cfg['params']}")
     print(f"Figures: {', '.join(args.figures)}")
     print(f"Output: {study_cfg['figures_dir']}/\n")
 
     # Only load the estimator if we need it (figures 2 and 4)
     estimator = None
     needs_estimator = any(f in ('2', '4') for f in args.figures)
+    no_estimator_figures = {'3', '5'}
     if needs_estimator:
         estimator = _load_estimator(study_cfg)
 
@@ -168,7 +206,7 @@ def main():
         print(f"{'='*60}")
 
         gen_fn = FIGURE_GENERATORS[fig_id]
-        if fig_id == '3':
+        if fig_id in no_estimator_figures:
             gen_fn(study_cfg)
         else:
             gen_fn(study_cfg, estimator)

@@ -32,6 +32,7 @@ Usage:
     coeffs = get_morphed_coefficients(result)
 """
 
+import math
 import os
 
 import numpy as np
@@ -39,7 +40,7 @@ import torch
 from sklearn.linear_model import LinearRegression
 
 from spice import SpiceEstimator
-from spice.resources.spice_training import _run_sindy_training
+from spice.resources.spice_training import _ridge_solve_sindy
 from spice.resources.spice_utils import SpiceDataset
 
 
@@ -309,6 +310,9 @@ def _run_morphing_single_member(
     n_steps: int,
     morphing_range_sd: float,
     ensemble_member: int,
+    n_pruning_rounds: int = 20,
+    pruning_threshold: float = 0.05,
+    alpha: float = 0.01,
     save_path: str = None,
     verbose: bool = True,
 ) -> dict:
@@ -344,34 +348,72 @@ def _run_morphing_single_member(
     # Step 3: Create expanded dataset (shared across members — same data)
     morphed_dataset = _create_morphed_dataset(dataset, n_participants, n_steps)
 
-    # Step 4: Run Stage 2 SINDy refit
+    # Step 4: Fast ridge-prune cycle
+    # Since we only need coefficient values and sparsity patterns (not a model
+    # for prediction), we skip SGD entirely and iterate: ridge → prune → ridge.
     morphed_model = morphed_estimator.model
     xs = morphed_dataset.xs
     ys = morphed_dataset.ys
     xs_5d = xs.unsqueeze(0)
     ys_5d = ys.unsqueeze(0)
 
-    threshold_pruning = estimator.sindy_threshold_pruning
-    if threshold_pruning is None:
-        threshold_pruning = 0.0
+    # Reset presence masks for full exploration (respect prior masks)
+    for module in morphed_model.get_modules():
+        morphed_model.sindy_coefficients_presence[module].fill_(True)
+        morphed_model.sindy_coefficients_presence[module] &= (
+            morphed_model.sindy_coefficients_prior_mask[module]
+        )
+        morphed_model.sindy_pruning_patience_counters[module].zero_()
 
-    _run_sindy_training(
-        model=morphed_model,
-        xs_train=xs_5d,
-        ys_train=ys_5d,
-        xs_train_original=xs,
-        ys_train_original=ys,
-        epochs=1000,
-        n_warmup_steps=100,
-        sindy_alpha=estimator.sindy_alpha,
-        sindy_pruning_frequency=estimator.sindy_pruning_frequency,
-        sindy_ensemble_pruning=None,  # disabled — E=1
-        sindy_threshold_pruning=threshold_pruning,
-        shooting_steps=estimator.sindy_shooting_steps,
-        sindy_ridge=estimator.sindy_ridge,
-        sindy_contraction_weight=estimator.sindy_contraction_weight,
-        verbose=verbose,
+    # Determine pruning threshold
+    total_terms = sum(
+        morphed_model.sindy_coefficients[m].shape[-1]
+        for m in morphed_model.submodules_rnn
     )
+    threshold = pruning_threshold
+
+    if verbose:
+        print(f"    Ridge-prune cycle: up to {n_pruning_rounds} rounds, "
+              f"threshold={threshold}, {total_terms} total terms")
+
+    for round_i in range(n_pruning_rounds):
+        # Ridge solve: closed-form optimal coefficients given current sparsity
+        success = _ridge_solve_sindy(morphed_model, xs_5d, ys_5d, alpha=alpha)
+        if not success:
+            if verbose:
+                print(f"    Ridge solve failed at round {round_i + 1}")
+            break
+
+        # Count total active entries across all participants (not union)
+        n_active = sum(
+            morphed_model.sindy_coefficients_presence[m].sum().item()
+            for m in morphed_model.submodules_rnn
+        )
+
+        # Mark terms below threshold (increments patience counter), then prune
+        # all terms whose counter reached 1 (i.e., below threshold this round).
+        morphed_model.sindy_coefficient_patience(threshold)
+        morphed_model.sindy_coefficient_pruning(patience=1, n_terms_pruning=total_terms)
+
+        n_active_after = sum(
+            morphed_model.sindy_coefficients_presence[m].sum().item()
+            for m in morphed_model.submodules_rnn
+        )
+
+        if verbose and (round_i + 1) % max(1, n_pruning_rounds // 10) == 0:
+            print(f"      Round {round_i + 1}/{n_pruning_rounds}: "
+                  f"{n_active} → {n_active_after} active coefficients")
+
+        pruned_frac = (n_active - n_active_after) / max(n_active, 1)
+        if pruned_frac < 0.01:
+            if verbose:
+                print(f"    Converged at round {round_i + 1} "
+                      f"({n_active_after} active coefficients, "
+                      f"{pruned_frac:.4%} pruned)")
+            break
+
+    # Final ridge solve with the discovered sparsity pattern
+    _ridge_solve_sindy(morphed_model, xs_5d, ys_5d, alpha=estimator.sindy_alpha)
 
     # Save individual member model if requested
     if save_path is not None:
@@ -397,6 +439,8 @@ def run_morphing(
     metric_values: np.ndarray,
     n_steps: int = 20,
     morphing_range_sd: float = 1.0,
+    n_pruning_rounds: int = 20,
+    pruning_threshold: float = 0.05,
     save_dir: str = None,
     verbose: bool = True,
 ) -> dict:
@@ -406,12 +450,19 @@ def run_morphing(
     direction is found independently per member. Results are aggregated across
     members to produce mean ± SE coefficient curves.
 
+    Uses a fast ridge-prune cycle instead of SGD:
+        ridge → prune → ridge → prune → ... → ridge
+    Each round is a closed-form solve, making the entire pipeline orders of
+    magnitude faster than SGD-based training.
+
     Args:
         estimator: Fitted SpiceEstimator with participant embeddings.
         dataset: Original SpiceDataset used for training.
         metric_values: Target metric per participant (e.g., avg_reward), shape (n_participants,).
         n_steps: Number of morphing steps (resolution of the morphing axis).
         morphing_range_sd: Range of morphing in units of SD of the projected embeddings.
+        n_pruning_rounds: Number of ridge-prune iterations for sparsity discovery.
+        pruning_threshold: Minimum coefficient magnitude to survive pruning.
         save_dir: Directory to save per-member morphed models. If None, does not save.
         verbose: Print progress.
 
@@ -455,6 +506,8 @@ def run_morphing(
             n_steps=n_steps,
             morphing_range_sd=morphing_range_sd,
             ensemble_member=e,
+            n_pruning_rounds=n_pruning_rounds,
+            pruning_threshold=pruning_threshold,
             save_path=save_path,
             verbose=verbose,
         )

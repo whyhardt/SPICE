@@ -122,7 +122,7 @@ def _plot_panel_b(coeff_df, presence_df, labels, modules_list, sort_values, sort
     """Heatmap: participants (rows, sorted by sort_values) x terms (cols sorted by |corr|),
     with sidebars showing sort variable, diagnosis density, and diagnosis labels."""
     from scipy.stats import spearmanr
-    DIAG_COLORS = {'Control': '#4daf4a', 'Bipolar': '#ff7f00', 'Depression': '#e41a1c'}
+    DIAG_COLORS = {'Control': "#23918B", 'Bipolar': "#7a00b3", 'Depression': "#ff48ff"}
 
     # ── Sort participants (rows) by sort_values ──
     sort_order = np.argsort(sort_values)[::-1]
@@ -830,13 +830,13 @@ def _load_morphing_data(results_dir):
     return coeffs_data, val_data
 
 
-def _select_varying_terms(coeffs_data, modules, min_coeff_range=0.01, min_ip_range=0.01):
-    """Select terms that vary meaningfully across morphing steps.
+def _select_varying_terms(coeffs_data, modules, max_terms=10):
+    """Select the top terms that vary most across morphing steps.
 
-    Returns list of (module, term_idx, term_name, variation_type) tuples,
-    sorted by module then by total coefficient range descending.
+    Returns list of (module, term_idx, term_name, variation_type, variation)
+    tuples, sorted by variation magnitude descending, capped at max_terms.
     """
-    selected = []
+    candidates = []
     for module in modules:
         mc = coeffs_data[f'{module}_mean_coefficients']  # (n_steps, n_terms)
         ip = coeffs_data[f'{module}_inclusion_probability']  # (n_steps, n_terms)
@@ -846,12 +846,14 @@ def _select_varying_terms(coeffs_data, modules, min_coeff_range=0.01, min_ip_ran
             coeff_range = mc[:, j].max() - mc[:, j].min()
             ip_range = ip[:, j].max() - ip[:, j].min()
 
-            if ip_range >= min_ip_range:
-                selected.append((module, j, str(names[j]), 'structural', coeff_range))
-            elif coeff_range >= min_coeff_range:
-                selected.append((module, j, str(names[j]), 'parametric', coeff_range))
+            vtype = 'structural' if ip_range > 0.01 else 'parametric'
+            candidates.append((module, j, str(names[j]), vtype, coeff_range))
 
-    # Sort: by module order, then by variation magnitude descending
+    # Sort by variation magnitude descending and take top max_terms
+    candidates.sort(key=lambda x: -x[4])
+    selected = candidates[:max_terms]
+
+    # Re-sort by module order for display grouping
     module_order = {m: i for i, m in enumerate(modules)}
     selected.sort(key=lambda x: (module_order.get(x[0], 99), -x[4]))
 
@@ -978,142 +980,165 @@ def _plot_panel_g_heatmap(coeffs_data, val_data, modules):
 
 
 def _plot_panel_g_ridgeline(coeffs_data, val_data, modules):
-    """Morphing panel: ridgeline plot of coefficient evolution.
+    """Morphing panel: heatmap mirroring panel b layout.
 
-    Each row shows one term's coefficient value as a filled curve along the
-    morphing axis, stacked vertically and grouped by module. Color encodes
-    the module. Inclusion probability modulates opacity.
+    Rows = morphing steps (sorted by projection, low→high avg_reward).
+    Left sidebar: avg_reward at each step.
+    Heatmaps: structural terms (varying IP) | gap | parametric terms (varying coeff).
+    Color = coefficient value, white = absent.
     """
+    from matplotlib.colors import LinearSegmentedColormap
+
     step_values = coeffs_data['step_values']
     n_steps = int(coeffs_data['n_steps'])
 
-    # Select varying terms
-    selected = _select_varying_terms(coeffs_data, modules)
-    if not selected:
-        print("  No varying terms found for morphing ridgeline.")
+    # Collect all terms, rank independently for each plot
+    all_terms_info = []
+    for module in modules:
+        mc = coeffs_data[f'{module}_mean_coefficients']
+        ip = coeffs_data[f'{module}_inclusion_probability']
+        names = coeffs_data[f'{module}_term_names']
+
+        for j in range(len(names)):
+            coeff_range = mc[:, j].max() - mc[:, j].min()
+            ip_range = ip[:, j].max() - ip[:, j].min()
+            mod_label = MODULE_DISPLAY_NAMES.get(module, module)
+            term_name = f'{mod_label}: {names[j]}'
+            all_terms_info.append((module, j, term_name, coeff_range, ip_range))
+
+    # Top 5 by IP range for structural, top 5 by coeff range for parametric
+    structural = sorted(all_terms_info, key=lambda x: -x[4])[:5]
+    parametric = sorted(all_terms_info, key=lambda x: -x[3])[:5]
+
+    n_struct = len(structural)
+    n_param = len(parametric)
+    if n_struct + n_param == 0:
+        print("  No varying terms found for morphing panel.")
         return None
 
-    n_terms = len(selected)
+    # Build heatmap matrices: (n_steps, n_terms)
+    all_terms = structural + parametric
+    n_total = len(all_terms)
+    coeff_matrix = np.zeros((n_steps, n_total))
+    ip_matrix = np.zeros((n_steps, n_total))
+    term_labels = []
+
+    for i, (module, j, name, _, _) in enumerate(all_terms):
+        coeff_matrix[:, i] = coeffs_data[f'{module}_mean_coefficients'][:, j]
+        ip_matrix[:, i] = coeffs_data[f'{module}_inclusion_probability'][:, j]
+        term_labels.append(name)
+
+    # Structural display: inclusion probability (0–1)
+    ip_display = ip_matrix[:, :n_struct]
+
+    # Parametric display: coefficient value, NaN where absent
+    active = coeff_matrix[ip_matrix > 0]
+    coeff_vmax = np.percentile(np.abs(active), 95) if len(active) > 0 else 1.0
+    coeff_display = np.where(ip_matrix[:, n_struct:] > 0,
+                             coeff_matrix[:, n_struct:], np.nan)
+
+    # Structural colormap: sequential (white → green)
+    cmap_struct = LinearSegmentedColormap.from_list('ip', [
+        (0.0, '#ffffff'),
+        (0.5, '#74c476'),
+        (1.0, '#006d2c'),
+    ])
+
+    # Parametric colormap: diverging (matching panel b)
+    cmap_param = LinearSegmentedColormap.from_list('fingerprint', [
+        (0.0,  '#2166ac'),
+        (0.35, '#67a9cf'),
+        (0.5,  '#d9d9d9'),
+        (0.65, '#ef8a62'),
+        (1.0,  '#b2182b'),
+    ])
+    cmap_param.set_bad('white')
+
+    # ── Layout: [avg_reward sidebar | structural | gap | parametric] ──
+    has_both = n_struct > 0 and n_param > 0
     has_validation = val_data is not None
 
-    # Layout: optional validation on top, ridgeline below
-    if has_validation:
-        fig, (ax_val, ax_ridge) = plt.subplots(
-            2, 1, figsize=(10, max(8, 2 + n_terms * 0.5)),
-            gridspec_kw={'height_ratios': [1, max(3, n_terms * 0.4)]})
+    if has_both:
+        fig, (ax_side, ax_struct, ax_gap, ax_param) = plt.subplots(
+            1, 4, figsize=(14, max(4, n_steps * 0.25)),
+            sharey=True,
+            gridspec_kw={'width_ratios': [2, max(1, n_struct), 0.3, max(1, n_param)],
+                         'wspace': 0.02})
+        ax_gap.set_visible(False)
+    elif n_struct > 0:
+        fig, (ax_side, ax_struct) = plt.subplots(
+            1, 2, figsize=(12, max(4, n_steps * 0.25)),
+            sharey=True, gridspec_kw={'width_ratios': [2, max(1, n_struct)], 'wspace': 0.02})
+        ax_param = None
     else:
-        fig, ax_ridge = plt.subplots(figsize=(10, max(6, n_terms * 0.5)))
-        ax_val = None
+        fig, (ax_side, ax_param) = plt.subplots(
+            1, 2, figsize=(12, max(4, n_steps * 0.25)),
+            sharey=True, gridspec_kw={'width_ratios': [2, max(1, n_param)], 'wspace': 0.02})
+        ax_struct = None
 
-    # ── Validation line plot ──
-    if ax_val is not None and has_validation:
-        mean = val_data['avg_reward_mean']
-        se = val_data['avg_reward_se']
-        ax_val.fill_between(step_values, mean - se, mean + se, alpha=0.3, color='#1f77b4')
-        ax_val.plot(step_values, mean, 'o-', color='#1f77b4', markersize=3, linewidth=1.5)
-        ax_val.set_ylabel('Avg. reward', fontsize=9)
-        ax_val.spines['top'].set_visible(False)
-        ax_val.spines['right'].set_visible(False)
-        ax_val.tick_params(labelsize=7)
-        ax_val.set_xticklabels([])
+    y_positions = np.arange(n_steps)
 
+    # ── 1. Avg reward sidebar ──
+    if has_validation:
+        avg_rewards = val_data['avg_reward_mean']
+    else:
+        # Fall back to step_values as proxy
+        avg_rewards = step_values
+
+    ax_side.barh(y_positions, avg_rewards, height=1.0, color='#555555',
+                 edgecolor='none', alpha=0.6)
+    ax_side.set_ylim(-0.5, n_steps - 0.5)
+    v_min, v_max = avg_rewards.min(), avg_rewards.max()
+    v_margin = (v_max - v_min) * 0.05
+    ax_side.set_xlim(v_max + v_margin, v_min - v_margin)
+    ax_side.set_xlabel('Avg Reward', fontsize=9)
+    ax_side.set_ylabel('Morphing steps (high → low avg. reward)', fontsize=10)
+    ax_side.set_yticks([])
+    ax_side.spines['top'].set_visible(False)
+    ax_side.spines['right'].set_visible(False)
+
+    # Correlation annotation
+    if has_validation:
         from scipy.stats import pearsonr
-        r, _ = pearsonr(step_values, mean)
-        ax_val.text(0.02, 0.9, f'r = {r:.3f}', transform=ax_val.transAxes, fontsize=8)
-        ax_val.set_title('g) Model Morphing along Avg. Reward', fontsize=12,
-                         fontweight='bold', loc='left')
+        r, _ = pearsonr(step_values, avg_rewards)
+        ax_side.text(0.95, 0.95, f'r = {r:.3f}', transform=ax_side.transAxes,
+                     fontsize=8, ha='right', va='top')
 
-    # ── Ridgeline plot ──
-    row_height = 1.0
-    overlap = 0.4
-    has_se = f'{modules[0]}_se_coefficients' in coeffs_data
+    # ── 2. Structural heatmap (inclusion probability) ──
+    im_struct = None
+    if ax_struct is not None and n_struct > 0:
+        im_struct = ax_struct.imshow(ip_display, aspect='auto',
+                                     interpolation='nearest', cmap=cmap_struct,
+                                     vmin=0, vmax=1, origin='lower')
+        ax_struct.set_xticks(np.arange(n_struct))
+        ax_struct.set_xticklabels([term_labels[i] for i in range(n_struct)],
+                                  rotation=90, fontsize=6, fontfamily='monospace')
+        ax_struct.set_xlabel('Structural', fontsize=9, fontweight='bold')
+        ax_struct.set_yticks([])
+        cbar_s = plt.colorbar(im_struct, ax=ax_struct, fraction=0.03, pad=0.01)
+        cbar_s.set_label('Inclusion Prob.', fontsize=8)
+        cbar_s.ax.tick_params(labelsize=7)
 
-    for i, (module, j, name, vtype, _) in enumerate(reversed(selected)):
-        idx = n_terms - 1 - i  # plot bottom-to-top
-        y_base = idx * (row_height - overlap)
+    # ── 3. Parametric heatmap (coefficient value) ──
+    im_param = None
+    if ax_param is not None and n_param > 0:
+        im_param = ax_param.imshow(coeff_display, aspect='auto',
+                                    interpolation='nearest', cmap=cmap_param,
+                                    vmin=-coeff_vmax, vmax=coeff_vmax,
+                                    origin='lower')
+        ax_param.set_xticks(np.arange(n_param))
+        ax_param.set_xticklabels([term_labels[n_struct + i] for i in range(n_param)],
+                                  rotation=90, fontsize=6, fontfamily='monospace')
+        ax_param.set_xlabel('Parametric', fontsize=9, fontweight='bold')
+        ax_param.set_yticks([])
+        cbar_p = plt.colorbar(im_param, ax=ax_param, fraction=0.03, pad=0.01)
+        cbar_p.set_label('Coefficient', fontsize=8)
+        cbar_p.ax.tick_params(labelsize=7)
 
-        coeffs = coeffs_data[f'{module}_mean_coefficients'][:, j]
-        ip = coeffs_data[f'{module}_inclusion_probability'][:, j]
-
-        # SE across ensemble members (if available)
-        if has_se:
-            se = coeffs_data[f'{module}_se_coefficients'][:, j]
-        else:
-            se = np.zeros_like(coeffs)
-
-        # Scale coefficient curve to fit within row_height
-        # Use a shared scale factor for mean and SE
-        c_range = coeffs.max() - coeffs.min()
-        if c_range > 0:
-            scale_factor = row_height * 0.8 / c_range
-            c_min = coeffs.min()
-            scaled = (coeffs - c_min) * scale_factor
-            scaled_lo = ((coeffs - se) - c_min) * scale_factor
-            scaled_hi = ((coeffs + se) - c_min) * scale_factor
-        else:
-            scaled = np.full_like(coeffs, row_height * 0.4)
-            scaled_lo = scaled.copy()
-            scaled_hi = scaled.copy()
-
-        color = MODULE_COLORS_MORPH.get(module, '#888888')
-        mean_ip = ip.mean()
-
-        # Ensemble SE band (lighter, behind main fill)
-        if has_se and se.max() > 0:
-            ax_ridge.fill_between(step_values,
-                                  y_base + np.clip(scaled_lo, 0, None),
-                                  y_base + scaled_hi,
-                                  alpha=max(0.08, mean_ip * 0.2), color=color,
-                                  linewidth=0)
-
-        # Fill under the curve (mean)
-        ax_ridge.fill_between(step_values, y_base, y_base + scaled,
-                              alpha=max(0.15, mean_ip * 0.6), color=color,
-                              linewidth=0)
-        ax_ridge.plot(step_values, y_base + scaled, color=color,
-                      linewidth=1.0, alpha=max(0.3, mean_ip))
-
-        # Baseline
-        ax_ridge.axhline(y_base, color='grey', linewidth=0.3, alpha=0.3)
-
-        # Term label
-        ax_ridge.text(step_values[0] - (step_values[-1] - step_values[0]) * 0.02,
-                      y_base + row_height * 0.3, name,
-                      fontsize=6, ha='right', va='center', fontfamily='monospace')
-
-    # Module boundaries and legend
-    prev_module = None
-    boundary_positions = []
-    for i, (module, _, _, _, _) in enumerate(selected):
-        idx = n_terms - 1 - i
-        if module != prev_module and prev_module is not None:
-            y_boundary = idx * (row_height - overlap) + row_height
-            boundary_positions.append(y_boundary)
-        prev_module = module
-
-    for yb in boundary_positions:
-        ax_ridge.axhline(yb, color='black', linewidth=0.8, alpha=0.4, linestyle='--')
-
-    ax_ridge.set_xlabel('Embedding projection (low → high avg. reward)', fontsize=9)
-    ax_ridge.set_yticks([])
-    ax_ridge.spines['top'].set_visible(False)
-    ax_ridge.spines['right'].set_visible(False)
-    ax_ridge.spines['left'].set_visible(False)
-
-    # Module legend
-    from matplotlib.patches import Patch
-    legend_elements = []
-    seen = set()
-    for module, _, _, _, _ in selected:
-        if module not in seen:
-            seen.add(module)
-            legend_elements.append(
-                Patch(facecolor=MODULE_COLORS_MORPH.get(module, '#888'),
-                      label=MODULE_DISPLAY_NAMES.get(module, module), alpha=0.6))
-    ax_ridge.legend(handles=legend_elements, fontsize=7, loc='upper right', framealpha=0.7)
-
-    if ax_val is None:
-        ax_ridge.set_title('g) Model Morphing along Avg. Reward', fontsize=12,
+    # Title
+    leftmost = ax_struct if (ax_struct is not None and n_struct > 0) else ax_param
+    if leftmost is not None:
+        leftmost.set_title('g) Model Morphing along Avg. Reward', fontsize=12,
                            fontweight='bold', loc='left')
 
     fig.tight_layout()

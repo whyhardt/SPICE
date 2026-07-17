@@ -1997,66 +1997,69 @@ def fit_spice(
         print("Losses:")
         batch_size = xs_train_5d.shape[1]
         
+        with torch.no_grad():
+            _, _, _, loss_train_rnn, loss_train_sindy = _run_joint_training(
+                model=model,
+                optimizer=optimizer,
+                xs_train=xs_train_5d,
+                ys_train=ys_train_5d,
+                dataset_test=dataset_train,
+
+                epochs=0,
+                n_warmup_steps=999,
+                batch_size=batch_size,
+                convergence_threshold=0,
+                n_steps=n_steps,
+                loss_fn=loss_fn,
+                loss_fn_kwargs=loss_fn_kwargs,
+
+                sindy_weight=1,
+                sindy_alpha=0,
+                sindy_threshold_pruning=None,
+                sindy_pruning_frequency=None,
+                sindy_ensemble_pruning=None,
+                sindy_population_pruning=None,
+
+                verbose=False,
+                keep_log=False,
+                path_save_checkpoints=None,
+            )
+           
         if dataset_test is not None:
-            with torch.no_grad():
-                _, _, _, loss_train_rnn, loss_train_sindy = _run_joint_training(
-                    model=model,
-                    optimizer=optimizer,
-                    xs_train=xs_train_5d,
-                    ys_train=ys_train_5d,
-                    dataset_test=dataset_train,
+            _, _, _, loss_test_rnn, loss_test_sindy = _run_joint_training(
+                model=model,
+                optimizer=optimizer,
+                xs_train=xs_train_5d,
+                ys_train=ys_train_5d,
+                dataset_test=dataset_test,
 
-                    epochs=0,
-                    n_warmup_steps=999,
-                    batch_size=batch_size,
-                    convergence_threshold=0,
-                    n_steps=n_steps,
-                    loss_fn=loss_fn,
-                    loss_fn_kwargs=loss_fn_kwargs,
+                epochs=0,
+                n_warmup_steps=999,
+                batch_size=batch_size,
+                convergence_threshold=0,
+                n_steps=n_steps,
+                loss_fn=loss_fn,
+                loss_fn_kwargs=loss_fn_kwargs,
 
-                    sindy_weight=1,
-                    sindy_alpha=0,
-                    sindy_threshold_pruning=None,
-                    sindy_pruning_frequency=None,
-                    sindy_ensemble_pruning=None,
-                    sindy_population_pruning=None,
+                sindy_weight=1,
+                sindy_alpha=0,
+                sindy_threshold_pruning=None,
+                sindy_pruning_frequency=None,
+                sindy_ensemble_pruning=None,
+                sindy_population_pruning=None,
 
-                    verbose=False,
-                    keep_log=False,
-                    path_save_checkpoints=None,
-                )
-                
-                _, _, _, loss_test_rnn, loss_test_sindy = _run_joint_training(
-                    model=model,
-                    optimizer=optimizer,
-                    xs_train=xs_train_5d,
-                    ys_train=ys_train_5d,
-                    dataset_test=dataset_test,
-
-                    epochs=0,
-                    n_warmup_steps=999,
-                    batch_size=batch_size,
-                    convergence_threshold=0,
-                    n_steps=n_steps,
-                    loss_fn=loss_fn,
-                    loss_fn_kwargs=loss_fn_kwargs,
-
-                    sindy_weight=1,
-                    sindy_alpha=0,
-                    sindy_threshold_pruning=None,
-                    sindy_pruning_frequency=None,
-                    sindy_ensemble_pruning=None,
-                    sindy_population_pruning=None,
-
-                    verbose=False,
-                    keep_log=False,
-                    path_save_checkpoints=None,
-                )
+                verbose=False,
+                keep_log=False,
+                path_save_checkpoints=None,
+            )
 
             msg_result = "\t         Training    Validation"
             msg_result += f"\n\tRNN      {loss_train_rnn:.5f}     {loss_test_rnn:.5f}"
             msg_result += f"\n\tSINDy    {loss_train_sindy:.5f}     {loss_test_sindy:.5f}"
-            
+        else:
+            msg_result = "\t         Training"
+            msg_result += f"\n\tRNN      {loss_train_rnn:.5f}"
+            msg_result += f"\n\tSINDy    {loss_train_sindy:.5f}"
         print(msg_result)
         print(status_lines)
 
