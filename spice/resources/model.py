@@ -100,13 +100,14 @@ class EnsembleRNNModule(nn.Module):
     Input:  (within_ts, ensemble, batch, n_items, features)
     Output: (within_ts, ensemble, batch, n_items, 1)
     """
-    def __init__(self, ensemble_size, input_size, embedding_size, dropout=0., compiled_forward=True, **kwargs):
+    def __init__(self, ensemble_size, input_size, embedding_size, dropout=0., compiled_forward=True, dt: float = 1., **kwargs):
         super().__init__()
- 
+
         proj_size = 8 + input_size + embedding_size
-       
+
         self._compile = compiled_forward
         self.dropout = nn.Dropout(p=dropout)
+        self.dt = dt
 
         # Linear projection: (E, proj_size, input_size)
         self.weight_linear = nn.Parameter(torch.empty(ensemble_size, proj_size, input_size+embedding_size+1))
@@ -147,7 +148,7 @@ class EnsembleRNNModule(nn.Module):
             n = torch.einsum('ego,ebo->ebg', self.weight_n, gi) + self.bias_n.unsqueeze(1)     # (E, B*I, 1)
 
             # New hidden state: bounded + learnable rescaling
-            h = h + n
+            h = h + self.dt * n
             # h_bounded = torch.nn.functional.tanh(h + n)     # (E, B*I, 1) in [-1, 1]
             # h = h_bounded * self.weight_out_scale           # (E, B*I, 1) rescaled by (E, 1, 1)
             
@@ -409,9 +410,18 @@ class BaseModel(nn.Module):
         # return ParameterModule(n_ensemble, n_participants, n_experiments)
         return nn.Parameter(torch.zeros((n_ensemble, n_participants, n_experiments)))
     
-    def setup_embedding(self, num_embeddings: int, embedding_size: int = None, dropout: float = 0., target_embedding_size_fusion: int = None, n_additional_inputs: int = 0):
+    def setup_embedding(
+        self, 
+        num_embeddings: int, 
+        embedding_size: int = None, 
+        dropout: float = None, 
+        target_embedding_size_fusion: int = None, 
+        n_additional_inputs: int = 0,
+        ):
         if embedding_size is None:
             embedding_size = self.embedding_size
+        if dropout is None:
+            dropout = self.dropout
         self.setup_embedding_fusion(embedding_size=embedding_size, target_embedding_size=embedding_size if target_embedding_size_fusion is None else target_embedding_size_fusion)
         return EnsembleEmbedding(self.ensemble_size, num_embeddings, embedding_size, dropout=dropout, n_additional_inputs=n_additional_inputs)
     
@@ -430,42 +440,51 @@ class BaseModel(nn.Module):
             self.setup_module(key_module=module, dropout=dropout)
     
     def setup_module(
-        self, 
-        key_module: str, 
+        self,
+        key_module: str,
         input_size: int = None,
         embedding_size: int = None,
-        dropout: float = 0., 
-        polynomial_degree: int = None, 
-        include_bias = True, 
+        dropout: float = None,
+        polynomial_degree: int = None,
+        include_bias = True,
         include_state = True,
         interaction_only = False,
+        dt: float = 1.,
         ):
         """This method creates the standard RNN-module used in computational discovery of cognitive dynamics
 
         Args:
             input_size (_type_): The number of inputs (excluding the memory state); Default to None -> takes input_size from SpiceConfig
             dropout (_type_): Dropout rate before output layer
+            dt: Physical time step this module's state update represents (default 1. = a unit
+                step, matching prior behavior). Both the RNN's residual update and the SINDy
+                fit/execution scale their increment by `dt`, so discovered coefficients read as
+                per-unit-time rates rather than per-step deltas that shrink as `dt` shrinks.
 
         Returns:
             torch.nn.Module: A torch module which can be called by one line and returns state update
         """
-        
+
         # GRU network
         if polynomial_degree is None:
             polynomial_degree = self.sindy_polynomial_degree
-        
+
         if embedding_size is None:
             embedding_size = self.embedding_size
-        
+
         if input_size is None:
             input_size = len(self.spice_config.library_setup[key_module])
+
+        if dropout is None:
+            dropout = self.dropout
         
-        self.submodules_rnn[key_module] = EnsembleRNNModule(ensemble_size=self.ensemble_size, input_size=input_size, embedding_size=embedding_size, dropout=dropout, compiled_forward=self.compiled_forward)
+        self.submodules_rnn[key_module] = EnsembleRNNModule(ensemble_size=self.ensemble_size, input_size=input_size, embedding_size=embedding_size, dropout=dropout, compiled_forward=self.compiled_forward, dt=dt)
         self.sindy_specs[key_module] = {}
         self.sindy_specs[key_module]['include_bias'] = include_bias
         self.sindy_specs[key_module]['interaction_only'] = interaction_only
         self.sindy_specs[key_module]['include_state'] = include_state
         self.sindy_specs[key_module]['polynomial_degree'] = polynomial_degree
+        self.sindy_specs[key_module]['dt'] = dt
         self.setup_sindy_coefficients(key_module=key_module, polynomial_degree=polynomial_degree)
         
         # set name of each input variable which are then used in the library as features
@@ -772,7 +791,8 @@ class BaseModel(nn.Module):
 
         # Compute predictions: library (W, E, B, I, C) @ coeffs (E, B, C) -> (W, E, B, I)
         # h_next_sindy = gamma * h_current + torch.einsum('webic,ebc->webi', library, sindy_coeffs)
-        h_next_sindy = h_current + torch.einsum('webic,ebc->webi', library, sindy_coeffs)
+        dt = self.sindy_specs[key_module].get('dt', 1.)
+        h_next_sindy = h_current + dt * torch.einsum('webic,ebc->webi', library, sindy_coeffs)
 
         return h_next_sindy
     
@@ -883,7 +903,8 @@ class BaseModel(nn.Module):
 
         # Reshape to (W, E, B, I, T)
         library = library.reshape(W, E, B, I, T)
-        target = h_next - h_current  # (W, E, B, I)
+        dt = self.sindy_specs[key_module].get('dt', 1.)
+        target = (h_next - h_current) / dt  # (W, E, B, I) -- per-unit-time rate, not per-step delta
 
         # Apply presence mask: zero out pruned library columns per (E, P, X) group
         # mask: (E, P, X, T) -> gather per-sample mask via participant/experiment ids

@@ -15,13 +15,18 @@ from weinhardt2026.studies.bruckner2025.benchmarking_bruckner2025 import (
 )
 from weinhardt2026.studies.bruckner2025.analysis_generative import analysis_generative_behavior
 from weinhardt2026.analysis.analysis_model_evaluation import analysis_model_evaluation_mse
+from weinhardt2026.analysis.analysis_coefficients_individuals import analysis_coefficients_individuals
 
 
 train_spice = False
 train_gru = False
 train_benchmark = False
 
+generate_data = False
 N_REPEATS = 100
+
+
+output_dir='weinhardt2026/studies/bruckner2025/results'
 
 # -------------------------------------------------------------------------------------------
 # DATALOADER
@@ -349,53 +354,73 @@ df_mse = analysis_model_evaluation_mse(
 # GENERATIVE BENCHMARKING
 # -------------------------------------------------------------------------------------------
 
-data_dir = 'weinhardt2026/studies/bruckner2025/data'
+if generate_data:
+    data_dir = 'weinhardt2026/studies/bruckner2025/data'
 
-# Generate behavior for GRU
-gru.eval().to(torch.device('cpu'))
-dataset_gen_gru = generate_repeated(
-    generate_behavior,
-    n_repeats=N_REPEATS,
-    model=gru,
-    dataset=dataset,
-)
+    # Generate behavior for GRU
+    gru.eval().to(torch.device('cpu'))
+    dataset_gen_gru = generate_repeated(
+        generate_behavior,
+        n_repeats=N_REPEATS,
+        model=gru,
+        dataset=dataset,
+    )
 
-# Generate behavior for Benchmark
-benchmark.eval().to(torch.device('cpu'))
-dataset_gen_bm = generate_repeated(
-    generate_behavior,
-    n_repeats=N_REPEATS,
-    model=benchmark,
-    dataset=dataset,
-)
+    # Generate behavior for Benchmark
+    benchmark.eval().to(torch.device('cpu'))
+    dataset_gen_bm = generate_repeated(
+        generate_behavior,
+        n_repeats=N_REPEATS,
+        model=benchmark,
+        dataset=dataset,
+    )
 
-# Generate behavior for SPICE-RNN
-estimator.model.to(torch.device('cpu'))
-estimator.use_sindy(False)
-estimator.eval()
-dataset_gen_spice_rnn = generate_repeated(
-    generate_behavior,
-    n_repeats=N_REPEATS,
-    model=estimator,
-    dataset=dataset,
-)
+    # Generate behavior for SPICE-RNN
+    estimator.model.to(torch.device('cpu'))
+    estimator.use_sindy(False)
+    estimator.eval()
+    dataset_gen_spice_rnn = generate_repeated(
+        generate_behavior,
+        n_repeats=N_REPEATS,
+        model=estimator,
+        dataset=dataset,
+    )
 
-# Generate behavior for SPICE (SINDy mode)
-estimator.use_sindy(True)
-estimator.eval()
-dataset_gen_spice = generate_repeated(
-    generate_behavior,
-    n_repeats=N_REPEATS,
-    model=estimator,
-    dataset=dataset,
-)
+    # Generate behavior for SPICE (SINDy mode)
+    estimator.use_sindy(True)
+    estimator.eval()
+    dataset_gen_spice = generate_repeated(
+        generate_behavior,
+        n_repeats=N_REPEATS,
+        model=estimator,
+        dataset=dataset,
+    )
 
-# Generative analysis: compare real vs generated behavior
-analysis_generative_behavior(
-    dataset_real=dataset,
-    dataset_benchmark=dataset_gen_bm,
-    dataset_gru=dataset_gen_gru,
-    dataset_spice_rnn=dataset_gen_spice_rnn,
-    dataset_spice=dataset_gen_spice,
-    output_dir='weinhardt2026/studies/bruckner2025/results',
+    # Generative analysis: compare real vs generated behavior
+    analysis_generative_behavior(
+        dataset_real=dataset,
+        dataset_benchmark=dataset_gen_bm,
+        dataset_gru=dataset_gen_gru,
+        dataset_spice_rnn=dataset_gen_spice_rnn,
+        dataset_spice=dataset_gen_spice,
+        output_dir=output_dir,
+    )
+    
+# -------------------------------------------------------------------------------------------
+# ANALYSIS: STRUCTURAL GROUP DIFFERENCES
+# -------------------------------------------------------------------------------------------
+
+analysis_coefficients_individuals(
+    spice_model=estimator,
+    path_data=path_data,
+    analysis='disc',
+    criterion='age_group',
+    reference=3,
+    output_dir=output_dir,
+    dataset_kwargs={
+        'df_choice':'b_t',
+        'df_feedback':'x_t',
+        'additional_inputs':CONFIG.additional_inputs,
+        'continuous_action':True,
+    }
 )

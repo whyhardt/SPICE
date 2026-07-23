@@ -1,0 +1,64 @@
+Mechanism RewC: immediate vs. recent reward:
+  value_reward_chosen          += 0.114 1 - 0.467 value_reward_chosen - 0.651 reward[t] + 0.463 reward[t-1] + 0.235 reward[t-2] + 0.125 value_reward_chosen*reward[t-3] + 0.148 reward[t]*reward[t-3]
+Mechanism RewC: baseline & nonlinear decay:
+  value_reward_chosen          += -0.695 1 - 0.564 value_reward_chosen + 0.267 reward[t-1] + 0.163 reward[t-2] + 0.137 reward[t-3] + 0.266 value_reward_chosen^2
+Mechanism RewC: distant reward consistency:
+  value_reward_chosen          += -0.201 1 - 0.07 reward[t] + 0.069 reward[t-3] - 0.067 value_reward_chosen*reward[t-1] + 0.084 value_reward_chosen*reward[t-3] + 0.115 reward[t]*reward[t-1] + 0.069 reward[t]*reward[t-2] - 0.139 reward[t-1]*reward[t-2] - 0.25 reward[t-1]*reward[t-3] - 0.317 reward[t-2]*reward[t-3]
+Mechanism RewC: immediate vs. recent reward (2):
+  value_reward_chosen          += 0.209 1 - 0.345 value_reward_chosen - 0.659 reward[t] + 0.442 reward[t-1] + 0.243 reward[t-2] + 0.099 value_reward_chosen*reward[t-3] - 0.343 reward[t-1]*reward[t-2]
+Mechanism RewC: reward suppression + gating:
+  value_reward_chosen          += -0.304 1 - 0.418 reward[t] - 0.251 value_reward_chosen*reward[t-1] + 0.066 value_reward_chosen*reward[t-2] + 0.294 value_reward_chosen*reward[t-3] + 0.106 reward[t]*reward[t-2] - 0.092 reward[t-1]*reward[t-3] - 0.19 reward[t-2]*reward[t-3]
+Mechanism RewC: reward consistency (t, t-1):
+  value_reward_chosen          += -0.126 reward[t] - 0.101 reward[t-1] + 0.103 reward[t-2] + 0.205 reward[t-3] - 0.105 value_reward_chosen*reward[t] + 0.119 value_reward_chosen*reward[t-3] + 0.666 reward[t]*reward[t-1] + 0.113 reward[t]*reward[t-2] - 0.109 reward[t-1]*reward[t-3]
+Mechanism RewC: baseline + reward consistency:
+  value_reward_chosen          += 0.4 1 - 0.298 value_reward_chosen + 0.109 value_reward_chosen*reward[t-1] + 0.082 value_reward_chosen*reward[t-2] + 0.343 reward[t]*reward[t-1] + 0.113 reward[t]*reward[t-2] - 0.106 reward[t-2]*reward[t-3]
+Mechanism RewC: reward history + consistency:
+  value_reward_chosen          += 0.466 1 - 0.102 value_reward_chosen - 0.497 reward[t] + 0.455 reward[t-1] + 0.242 reward[t-2] + 0.137 reward[t-3] + 0.211 reward[t]*reward[t-1] + 0.122 reward[t]*reward[t-2] - 0.216 reward[t-1]*reward[t-3] - 0.363 reward[t-2]*reward[t-3]
+Mechanism RewNC: persistence + recent suppression:
+  value_reward_not_chosen      += -0.921 value_reward_not_chosen - 0.356 reward[t-1]
+Mechanism RewNC: baseline & persistence:
+  value_reward_not_chosen      += -0.785 1 - 0.618 value_reward_not_chosen
+Mechanism RewNC: recent-reward gating:
+  value_reward_not_chosen      += -0.149 1 - 0.465 reward[t-1] + 0.194 reward[t-3] - 0.097 value_reward_not_chosen^2 - 0.509 value_reward_not_chosen*reward[t-1] + 0.344 value_reward_not_chosen*reward[t-3]
+Mechanism RewNC: distant-reward gating:
+  value_reward_not_chosen      += 0.376 reward[t-3] - 0.193 value_reward_not_chosen^2 + 0.656 value_reward_not_chosen*reward[t-3]
+Mechanism RewNC: nonlinear self-suppression:
+  value_reward_not_chosen      += -0.797 value_reward_not_chosen^2
+Mechanism RewNC: recent-reward gating (2):
+  value_reward_not_chosen      += 0.11 reward[t-2] + 0.103 value_reward_not_chosen^2 - 0.485 value_reward_not_chosen*reward[t-1] - 0.277 value_reward_not_chosen*reward[t-2] - 0.095 reward[t-1]*reward[t-3]
+Mechanism RewNC: mid-lag reward gating:
+  value_reward_not_chosen      += 0.111 value_reward_not_chosen + 0.111 reward[t-3] + 0.162 value_reward_not_chosen^2 - 0.152 value_reward_not_chosen*reward[t-1] + 0.655 value_reward_not_chosen*reward[t-2]
+Mechanism RewNC: nonlinear mid-lag gating:
+  value_reward_not_chosen      += -0.146 reward[t-1] + 0.396 value_reward_not_chosen^2 - 0.432 value_reward_not_chosen*reward[t-2] - 0.112 reward[t-1]*reward[t-2] - 0.114 reward[t-1]*reward[t-3] - 0.126 reward[t-2]*reward[t-3]
+Mechanism ChC: persistence + t-2 suppression:
+  value_choice_chosen          += -0.596 value_choice_chosen + 0.183 choice[t-1] - 0.634 choice[t-2] + 0.191 value_choice_chosen*choice[t-1] + 0.282 choice[t-1]*choice[t-2] - 0.158 choice[t-1]*choice[t-3] + 0.256 choice[t-2]*choice[t-3]
+Mechanism ChC: baseline + t-2 suppression:
+  value_choice_chosen          += -0.865 1 - 0.315 value_choice_chosen - 0.364 choice[t-2] + 0.134 choice[t-3]
+Mechanism ChC: strong persistence:
+  value_choice_chosen          += -0.886 value_choice_chosen - 0.294 choice[t-2] + 0.274 value_choice_chosen*choice[t-3]
+Mechanism ChC: immediate perseveration (t-1):
+  value_choice_chosen          += 0.953 choice[t-1] + 0.167 choice[t-3] - 0.189 choice[t-1]*choice[t-3]
+Mechanism ChC: baseline level:
+  value_choice_chosen          += 0.938 1 + 0.269 choice[t-1] - 0.204 choice[t-2]
+Mechanism ChC: persistence + gated t-1:
+  value_choice_chosen          += -0.824 value_choice_chosen - 0.135 choice[t-2] + 0.48 value_choice_chosen*choice[t-1] - 0.215 choice[t-1]*choice[t-2]
+Mechanism ChC: choice consistency (t-1, t-3):
+  value_choice_chosen          += -0.284 value_choice_chosen + 0.481 choice[t-1] - 0.163 choice[t-2] - 0.193 value_choice_chosen*choice[t-2] - 0.191 value_choice_chosen*choice[t-3] - 0.752 choice[t-1]*choice[t-3] + 0.133 choice[t-2]*choice[t-3]
+Mechanism ChC: baseline + t-2 suppression (2):
+  value_choice_chosen          += 0.524 1 - 0.393 value_choice_chosen - 0.496 choice[t-2] - 0.336 choice[t-3] + 0.162 value_choice_chosen*choice[t-2] + 0.426 choice[t-2]*choice[t-3]
+Mechanism ChNC: choice[t-2] suppression:
+  value_choice_not_chosen      += -0.485 value_choice_not_chosen - 0.796 choice[t-2] - 0.345 value_choice_not_chosen*choice[t-1]
+Mechanism ChNC: immediate choice-history (t-1):
+  value_choice_not_chosen      += -0.157 1 - 0.297 value_choice_not_chosen + 0.884 choice[t-1] + 0.155 choice[t-3] - 0.223 choice[t-1]*choice[t-2]
+Mechanism ChNC: baseline + consistency (t-1, t-2):
+  value_choice_not_chosen      += -0.565 1 - 0.566 value_choice_not_chosen - 0.101 choice[t-3] - 0.575 choice[t-1]*choice[t-2]
+Mechanism ChNC: baseline + consistency (t-2, t-3):
+  value_choice_not_chosen      += -0.511 1 - 0.508 value_choice_not_chosen - 0.197 choice[t-2] - 0.148 value_choice_not_chosen*choice[t-2] - 0.24 choice[t-1]*choice[t-2] + 0.375 choice[t-1]*choice[t-3] - 0.471 choice[t-2]*choice[t-3]
+Mechanism ChNC: choice contrast (t-1 vs t-2):
+  value_choice_not_chosen      += -0.593 value_choice_not_chosen + 0.457 choice[t-1] - 0.472 choice[t-2] - 0.193 value_choice_not_chosen*choice[t-2] - 0.155 choice[t-1]*choice[t-2] + 0.368 choice[t-2]*choice[t-3]
+Mechanism ChNC: strong persistence:
+  value_choice_not_chosen      += -0.835 value_choice_not_chosen - 0.223 value_choice_not_chosen^2 - 0.287 value_choice_not_chosen*choice[t-3] + 0.413 choice[t-1]*choice[t-3]
+Mechanism ChNC: choice consistency (t-1, t-3):
+  value_choice_not_chosen      += -0.376 1 - 0.429 value_choice_not_chosen + 0.288 choice[t-3] + 0.144 value_choice_not_chosen*choice[t-3] - 0.346 choice[t-1]*choice[t-2] - 0.654 choice[t-1]*choice[t-3] - 0.111 choice[t-2]*choice[t-3]
+Mechanism ChNC: baseline & persistence:
+  value_choice_not_chosen      += -0.585 1 - 0.621 value_choice_not_chosen - 0.109 choice[t-1] - 0.385 choice[t-2] - 0.102 choice[t-3] - 0.105 value_choice_not_chosen*choice[t-2] - 0.294 choice[t-2]*choice[t-3]

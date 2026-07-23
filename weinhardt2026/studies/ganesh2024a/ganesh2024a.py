@@ -15,10 +15,11 @@ from weinhardt2026.analysis.analysis_model_evaluation import analysis_model_eval
 from weinhardt2026.utils.generation import generate_repeated
 
 
-train_spice = False
+train_spice = True
 train_bay = False
 train_gru = False
 
+generate_data = False
 N_REPEATS = 100
 
 # -------------------------------------------------------------------------------------------
@@ -49,7 +50,6 @@ estimator = SpiceEstimator(
 
     epochs=1000,
     warmup_steps=500,
-    ensemble_size=1,
 
     device=device,
     verbose=True,
@@ -143,46 +143,47 @@ print(analysis_model_evaluation(
 data_dir = 'weinhardt2026/studies/ganesh2024a/data'
 output_dir = 'weinhardt2026/studies/ganesh2024a/results'
 
-estimator.eval()
-estimator.use_sindy(False)
-ds_spice_rnn = generate_repeated(
-    generate_behavior,
-    n_repeats=N_REPEATS,
-    dataset=dataset_train,
-    model=estimator,
-)
+if generate_data:
+    estimator.eval()
+    estimator.use_sindy(False)
+    ds_spice_rnn = generate_repeated(
+        generate_behavior,
+        n_repeats=N_REPEATS,
+        dataset=dataset_train,
+        model=estimator,
+    )
 
-estimator.use_sindy(True)
-ds_spice = generate_repeated(
-    generate_behavior,
-    n_repeats=N_REPEATS,
-    dataset=dataset_train,
-    model=estimator,
-)
+    estimator.use_sindy(True)
+    ds_spice = generate_repeated(
+        generate_behavior,
+        n_repeats=N_REPEATS,
+        dataset=dataset_train,
+        model=estimator,
+    )
 
-ds_benchmark = generate_repeated(
-    generate_behavior,
-    n_repeats=N_REPEATS,
-    dataset=dataset_train,
-    model=bay,
-)
+    ds_benchmark = generate_repeated(
+        generate_behavior,
+        n_repeats=N_REPEATS,
+        dataset=dataset_train,
+        model=bay,
+    )
 
-ds_gru = generate_repeated(
-    generate_behavior,
-    n_repeats=N_REPEATS,
-    dataset=dataset_train,
-    model=gru,
-)
+    ds_gru = generate_repeated(
+        generate_behavior,
+        n_repeats=N_REPEATS,
+        dataset=dataset_train,
+        model=gru,
+    )
 
-# -------------------------------------------------------------------------------------------
-# ANALYSIS: GENERATIVE BEHAVIOR
-# -------------------------------------------------------------------------------------------
+    # -------------------------------------------------------------------------------------------
+    # ANALYSIS: GENERATIVE BEHAVIOR
+    # -------------------------------------------------------------------------------------------
 
-analysis_generative_behavior(
-    path_data_real=path_data,
-    path_data_benchmark=ds_benchmark,
-    path_data_gru=ds_gru,
-    path_data_spice_rnn=ds_spice_rnn,
-    path_data_spice=ds_spice,
-    output_dir=output_dir,
-)
+    analysis_generative_behavior(
+        path_data_real=path_data,
+        path_data_benchmark=ds_benchmark,
+        path_data_gru=ds_gru,
+        path_data_spice_rnn=ds_spice_rnn,
+        path_data_spice=ds_spice,
+        output_dir=output_dir,
+    )

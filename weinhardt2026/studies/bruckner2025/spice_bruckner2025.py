@@ -53,7 +53,7 @@ class SpiceModel(BaseModel):
 
         # setup customized modules
         # anchor_update: 1 control signal (anchor_shift); no state in library (always reset to 0)
-        self.setup_module(key_module='anchor_update', dropout=self.dropout, include_state=False)
+        self.setup_module(key_module='anchor_update', include_state=False)
 
     def forward(self, inputs, prev_state=None):
 

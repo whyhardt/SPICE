@@ -1,0 +1,4 @@
+value_reward_chosen[t+1] = 1.0 value_reward_chosen[t]
+value_reward_not_chosen[t+1] = 1.0 value_reward_not_chosen[t]
+value_choice_chosen[t+1] = 1.0 value_choice_chosen[t]
+value_choice_not_chosen[t+1] = 1.0 value_choice_not_chosen[t]

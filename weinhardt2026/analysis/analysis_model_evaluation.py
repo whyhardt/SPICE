@@ -66,9 +66,85 @@ def get_scores(probs: torch.Tensor, targets: torch.Tensor, n_parameters: int) ->
 
     bic = bayesian_information_criterion(data=targets, probs=probs, n_parameters=n_parameters, nll=nll_sum)
     aic = akaike_information_criterion(data=targets, probs=probs, n_parameters=n_parameters, nll=nll_sum)
-    
-    
+
+
     return (nll_sum, aic, bic), nll
+
+
+def get_participant_experiment_groups(dataset: SpiceDataset) -> tuple[torch.Tensor, torch.Tensor]:
+    """Map each session to a (participant, experiment) group.
+
+    Sessions belonging to the same participant/experiment share the same
+    fitted parameters (per-subject benchmark parameters, or SPICE's
+    per-participant SINDy coefficients), so BIC/AIC must be computed per
+    group and then averaged across groups (see ``grouped_information_criteria``).
+
+    Returns:
+        unique_pairs: (G, 2) tensor of unique (participant_id, experiment_id) pairs.
+        group_index: (B,) tensor mapping each session to its row in unique_pairs.
+    """
+    participant_ids = dataset.xs[:, 0, 0, -1].long().cpu()
+    experiment_ids = dataset.xs[:, 0, 0, -2].long().cpu()
+    pair_ids = torch.stack([participant_ids, experiment_ids], dim=1)
+    unique_pairs, group_index = torch.unique(pair_ids, dim=0, return_inverse=True)
+    return unique_pairs, group_index
+
+
+def grouped_information_criteria(
+    nll_per_session: torch.Tensor,
+    n_trials_per_session: torch.Tensor,
+    group_index: torch.Tensor,
+    n_groups: int,
+    n_parameters_per_group: torch.Tensor,
+    n_actions_baseline: int,
+) -> dict:
+    """Compute BIC/AIC/ΔBIC-per-trial per (participant, experiment) group, then
+    summarize as mean ± std across groups.
+
+    Pooling NLL across the whole dataset while scaling the parameter count
+    with the number of subjects (as is correct for per-subject-fit models,
+    e.g. individually-fit benchmark parameters or SPICE's per-participant
+    SINDy coefficients) makes such models lose against a fixed-size
+    shared-weight model purely as dataset size grows, independent of actual
+    fit quality. Computing BIC per group with that group's own trial count
+    and own parameter count -- then averaging across groups -- removes that
+    scaling artifact.
+    """
+    # All grouping/reduction happens on CPU: inputs may come from a mix of
+    # devices (e.g. coefficients read off a CUDA model vs. CPU-side NLLs).
+    nll_per_session = nll_per_session.cpu()
+    n_trials_per_session = n_trials_per_session.float().cpu()
+    group_index = group_index.cpu()
+    n_parameters_per_group = n_parameters_per_group.float().cpu()
+
+    nll_group = torch.zeros(n_groups, dtype=nll_per_session.dtype).scatter_add_(0, group_index, nll_per_session)
+    n_trials_group = torch.zeros(n_groups).scatter_add_(0, group_index, n_trials_per_session)
+
+    valid = n_trials_group > 0
+    nll_group = nll_group[valid]
+    n_trials_group = n_trials_group[valid]
+    k_group = n_parameters_per_group[valid]
+
+    bic_group = 2 * nll_group + k_group * torch.log(n_trials_group)
+    aic_group = 2 * nll_group + 2 * k_group
+
+    nll_random_group = n_trials_group * math.log(n_actions_baseline)
+    bic_random_group = 2 * nll_random_group
+    delta_bic_per_trial_group = (bic_random_group - bic_group) / n_trials_group
+
+    def _mean_std(x: torch.Tensor) -> tuple[float, float]:
+        return x.mean().item(), (x.std().item() if x.numel() > 1 else 0.0)
+
+    bic_mean, bic_std = _mean_std(bic_group)
+    aic_mean, aic_std = _mean_std(aic_group)
+    dbic_mean, dbic_std = _mean_std(delta_bic_per_trial_group)
+
+    return {
+        'nll_total': nll_group.sum().item(),
+        'bic_mean': bic_mean, 'bic_std': bic_std,
+        'aic_mean': aic_mean, 'aic_std': aic_std,
+        'delta_bic_per_trial_mean': dbic_mean, 'delta_bic_per_trial_std': dbic_std,
+    }
 
 
 @torch.no_grad()
@@ -91,61 +167,15 @@ def analysis_model_evaluation(
             baseline in ΔBIC computation. Defaults to ``dataset.n_actions``.
             Set to a smaller value when some actions are excluded via
             ``trial_filter`` (e.g. n_actions-1 when filtering out waiting).
+
+    BIC/AIC/ΔBIC-per-trial are computed per (participant, experiment) group and
+    reported as mean ± std across groups -- see ``grouped_information_criteria``
+    for why a single dataset-pooled BIC is not a fair comparison across models
+    with different parameter-sharing structure.
     """
 
-    # ------------------------------------------------------------
-    # Compute choice probs
-    # ------------------------------------------------------------
-    
-    if benchmark_model is not None:
-        print("Computing choice probabilities with benchmark model...")
-        benchmark_parameters = benchmark_model.count_parameters() if hasattr(benchmark_model, 'count_parameters') else len([p for p in benchmark_model.parameters()])
-        benchmark_predictions, _ = benchmark_model(dataset.xs)
-        benchmark_choice_probs = get_choice_probs(benchmark_predictions).detach().cpu()
-    else:
-        benchmark_parameters = torch.nan
-        
-    # setup GRU model
-    if gru_model is not None:
-        print("Computing choice probabilities with GRU model...")
-        gru_model.eval()
-        gru_parameters = sum(p.numel() for p in gru_model.parameters())
-        gru_predictions, _ = gru_model(dataset.xs)
-        gru_choice_probs = get_choice_probs(gru_predictions).detach().cpu()
-    else:
-        gru_parameters = torch.nan
-        
-    # setup SPICE model
-    if spice_model is not None:
-        spice_parameters = spice_model.count_sindy_coefficients()
-        
-        spice_rnn_parameters = 0
-        for module in spice_model.get_modules():
-            spice_rnn_parameters += sum(p.numel() for p in spice_model.model.submodules_rnn[module].parameters())
-        spice_rnn_parameters += spice_model.model.embedding_size
-        
-        # use spice
-        print("Computing choice probabilities with SPICE model...")
-        spice_model.eval(use_sindy=True)
-        
-        spice_predictions, _ = spice_model(dataset.xs.to(spice_model.device))           
-        spice_choice_probs = get_choice_probs(spice_predictions.mean(dim=0)).detach().cpu()
-        
-        spice_model.use_sindy(False)
-        spice_model.model.init_state(batch_size=dataset.xs.shape[0])
-        spice_rnn_predictions, _ = spice_model(dataset.xs.to(spice_model.device))           
-        spice_rnn_choice_probs = get_choice_probs(spice_rnn_predictions.mean(dim=0)).detach().cpu()
-        spice_model.use_sindy(True)
-    else:
-        spice_parameters = torch.nan
-        spice_rnn_parameters = torch.nan
-        
-    # ------------------------------------------------------------
-    # Evaluation pipeline
-    # ------------------------------------------------------------
-    
-    scores = torch.zeros((4, 3))
-    metric_participant = torch.zeros((len(scores), len(dataset)))
+    unique_pairs, group_index = get_participant_experiment_groups(dataset)
+    n_groups = unique_pairs.shape[0]
 
     # Build valid-trial mask: non-NaN AND passes optional filter
     valid_mask = ~torch.isnan(dataset.xs[:, :, 0, 0])
@@ -156,93 +186,99 @@ def analysis_model_evaluation(
     targets_eval = dataset.ys.clone()
     targets_eval[~valid_mask] = float('nan')
 
-    considered_trials_participant = valid_mask.sum(dim=1)
+    considered_trials_participant = valid_mask.sum(dim=1).float()
     considered_trials = considered_trials_participant.sum()
 
-    # SPICE model
-    if spice_model is not None:
-        participant_ids = dataset.xs[:, 0, 0, -1].long().cpu()
-        experiment_ids = dataset.xs[:, 0, 0, -2].long().cpu()
+    n_actions_baseline = n_actions_random_baseline if n_actions_random_baseline is not None else dataset.n_actions
 
-        # Compute parameter stats over unique (participant, experiment) pairs, not sessions
-        unique_pairs = torch.unique(torch.stack([participant_ids, experiment_ids], dim=1), dim=0)
-        unique_param_counts = spice_parameters[unique_pairs[:, 0], unique_pairs[:, 1]]
-        spice_n_params_mean = unique_param_counts.mean().item()
-        spice_n_params_std = unique_param_counts.std().item() if len(unique_param_counts) > 1 else 0.0
+    # ------------------------------------------------------------
+    # Compute choice probs + per-group parameter counts
+    # ------------------------------------------------------------
+    models = {}
 
-        scores_spice, nll_per_sample = get_scores(targets=targets_eval, probs=spice_choice_probs, n_parameters=spice_n_params_mean)
-        scores[3] += torch.tensor(scores_spice)
-        metric_participant[3] = nll_per_sample.sum(dim=-1).nansum(dim=1)[..., 0]
-
-        scores_spice_rnn, nll_per_sample = get_scores(targets=targets_eval, probs=spice_rnn_choice_probs, n_parameters=spice_rnn_parameters)
-        scores[2] += torch.tensor(scores_spice_rnn)
-        metric_participant[2] = nll_per_sample.sum(dim=-1).nansum(dim=1)[..., 0]
-    else:
-        spice_n_params_mean = torch.nan
-        spice_n_params_std = 0.0
-        
-    # Benchmark model
     if benchmark_model is not None:
-        scores_benchmark, nll_per_sample = get_scores(targets=targets_eval, probs=benchmark_choice_probs, n_parameters=benchmark_parameters)
-        scores[0] += torch.tensor(scores_benchmark)
-        metric_participant[0] = nll_per_sample.sum(dim=-1).nansum(dim=1)[..., 0]
-        
-    # GRU model
+        print("Computing choice probabilities with benchmark model...")
+        benchmark_parameters = benchmark_model.count_parameters() if hasattr(benchmark_model, 'count_parameters') else len([p for p in benchmark_model.parameters()])
+        benchmark_predictions, _ = benchmark_model(dataset.xs)
+        benchmark_choice_probs = get_choice_probs(benchmark_predictions).detach().cpu()
+        models['Benchmark'] = (benchmark_choice_probs, torch.full((n_groups,), float(benchmark_parameters)))
+
+    # setup GRU model
     if gru_model is not None:
-        scores_gru, nll_per_sample = get_scores(targets=targets_eval, probs=gru_choice_probs, n_parameters=gru_parameters)
-        scores[1] += torch.tensor(scores_gru)
-        metric_participant[1] = nll_per_sample.sum(dim=-1).nansum(dim=1)[..., 0]
-        
+        print("Computing choice probabilities with GRU model...")
+        gru_model.eval()
+        gru_parameters = sum(p.numel() for p in gru_model.parameters())
+        gru_predictions, _ = gru_model(dataset.xs)
+        gru_choice_probs = get_choice_probs(gru_predictions).detach().cpu()
+        models['GRU'] = (gru_choice_probs, torch.full((n_groups,), float(gru_parameters)))
+
+    # setup SPICE model
+    if spice_model is not None:
+        spice_parameters = spice_model.count_sindy_coefficients()  # (P, X)
+
+        spice_rnn_parameters = 0
+        for module in spice_model.get_modules():
+            spice_rnn_parameters += sum(p.numel() for p in spice_model.model.submodules_rnn[module].parameters())
+        spice_rnn_parameters += spice_model.model.embedding_size
+
+        # use spice
+        print("Computing choice probabilities with SPICE model...")
+        spice_model.eval(use_sindy=True)
+
+        spice_predictions, _ = spice_model(dataset.xs.to(spice_model.device))
+        spice_choice_probs = get_choice_probs(spice_predictions.mean(dim=0)).detach().cpu()
+
+        spice_model.use_sindy(False)
+        spice_model.model.init_state(batch_size=dataset.xs.shape[0])
+        spice_rnn_predictions, _ = spice_model(dataset.xs.to(spice_model.device))
+        spice_rnn_choice_probs = get_choice_probs(spice_rnn_predictions.mean(dim=0)).detach().cpu()
+        spice_model.use_sindy(True)
+
+        models['SPICE-RNN'] = (spice_rnn_choice_probs, torch.full((n_groups,), float(spice_rnn_parameters)))
+        # Per-participant/experiment active coefficient counts -- these are
+        # genuinely independent per-group parameters, unlike SPICE-RNN's shared weights.
+        models['SPICE-EQ'] = (spice_choice_probs, spice_parameters[unique_pairs[:, 0], unique_pairs[:, 1]].float())
+
     # ------------------------------------------------------------
-    # Post processing
+    # Evaluate each model
     # ------------------------------------------------------------
+    rows = {}
+    for name, (probs, n_parameters_per_group) in models.items():
+        nll = -log_likelihood(data=targets_eval, probs=probs)
+        nll_per_session = nll.sum(dim=-1).nansum(dim=1)[..., 0]
 
-    # compute trial-level metrics (and NLL -> Likelihood)
-    # scores = scores / considered_trials
-    avg_trial_likelihood = torch.exp(-scores[:, 0] / considered_trials)
+        trial_lik = torch.exp(-nll_per_session.sum() / considered_trials).item()
+        trial_lik_participant = np.exp(-nll_per_session.numpy() / considered_trials_participant.numpy())
+        trial_lik_std = trial_lik_participant.std()
 
-    avg_trial_likelihood_participant = np.exp(- metric_participant / considered_trials_participant)
-    avg_trial_likelihood_participant_std = avg_trial_likelihood_participant.std(dim=1)
+        info = grouped_information_criteria(
+            nll_per_session=nll_per_session,
+            n_trials_per_session=considered_trials_participant,
+            group_index=group_index,
+            n_groups=n_groups,
+            n_parameters_per_group=n_parameters_per_group,
+            n_actions_baseline=n_actions_baseline,
+        )
 
-    # compute average number of parameters
-    n_parameters = torch.tensor([
-        benchmark_parameters,
-        gru_parameters,
-        spice_rnn_parameters,
-        spice_n_params_mean,
-        ])
-    n_parameters_std = torch.tensor([
-        0,
-        0,
-        0,
-        spice_n_params_std,
-    ])
+        rows[name] = {
+            'Trial Lik.': trial_lik,
+            '(std)': trial_lik_std,
+            'n_parameters': n_parameters_per_group.mean().item(),
+            'n_parameters (std)': n_parameters_per_group.std().item() if n_parameters_per_group.numel() > 1 else 0.0,
+            'NLL': info['nll_total'],
+            'AIC': info['aic_mean'],
+            'AIC (std)': info['aic_std'],
+            'BIC': info['bic_mean'],
+            'BIC (std)': info['bic_std'],
+            'ΔBIC/trial': info['delta_bic_per_trial_mean'],
+            'ΔBIC/trial (std)': info['delta_bic_per_trial_std'],
+        }
 
-    scores = torch.concatenate((
-        avg_trial_likelihood.reshape(-1, 1), 
-        avg_trial_likelihood_participant_std.reshape(-1, 1), 
-        n_parameters.reshape(-1, 1), 
-        n_parameters_std.reshape(-1, 1),
-        scores[:, :1], 
-        scores[:, 1:],
-        ), dim=1)
-    
     # ------------------------------------------------------------
     # Printing model performance table
     # ------------------------------------------------------------
 
-    df = pd.DataFrame(
-        data=scores,
-        index=['Benchmark', 'GRU', 'SPICE-RNN', 'SPICE-EQ'],
-        columns = ('Trial Lik.', '(std)', 'n_parameters', '(std)', 'NLL', 'AIC', 'BIC'),
-        )
-
-    # ΔBIC/trial: anchored to random-choice baseline (0 parameters)
-    n_actions_baseline = n_actions_random_baseline if n_actions_random_baseline is not None else dataset.n_actions
-    n_trials = considered_trials.item()
-    nll_random = n_trials * math.log(n_actions_baseline)
-    bic_random = 2 * nll_random  # 0 parameters → penalty = 0
-    df['ΔBIC/trial'] = (bic_random - df['BIC'].astype(float)) / n_trials
+    df = pd.DataFrame(rows).T.reindex(['Benchmark', 'GRU', 'SPICE-RNN', 'SPICE-EQ'])
 
     if verbose:
         print(df)
@@ -400,11 +436,14 @@ def analysis_model_evaluation_mse(
         print("Evaluating benchmark model...")
         benchmark_model.eval()
         preds = _get_predictions(benchmark_model, dataset)
-        n_params = (
-            benchmark_model.count_parameters()
-            if hasattr(benchmark_model, 'count_parameters')
-            else sum(p.numel() for p in benchmark_model.parameters())
-        )
+        if hasattr(benchmark_model, 'count_parameters'):
+            n_params = benchmark_model.count_parameters()
+        else:
+            n_params = sum(p.numel() for p in benchmark_model.parameters())
+            if getattr(benchmark_model, 'n_participants', 1) > 1:
+                # Fall back assumes per-participant nn.Parameters (shape (n_participants,));
+                # report the per-participant count, not the total across all participants.
+                n_params /= benchmark_model.n_participants
         models['Benchmark'] = (_compute_mse_metrics(preds, targets, valid_mask, loss_fn=loss_fn), n_params)
 
     # --- GRU model ---

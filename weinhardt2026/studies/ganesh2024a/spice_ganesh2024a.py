@@ -25,19 +25,12 @@ class SpiceModel(BaseModel):
     def __init__(self, deterministic_perception=False, **kwargs):
         super().__init__(**kwargs)
         
-        self.dropout = 0.1
         self.deterministic_perception = deterministic_perception
         
-        self.participant_embedding = self.setup_embedding(num_embeddings=self.n_participants, embedding_size=self.embedding_size, dropout=self.dropout)
+        self.participant_embedding = self.setup_embedding(num_embeddings=self.n_participants)
         
         # perception: signed contr_diff → sigmoid
-        self.setup_module(key_module='perception_certainty', input_size=1, include_state=False, dropout=self.dropout)
-        # chosen item: learns from reward, modulated by certainty
-        self.setup_module(key_module='reward_learning_chosen', input_size=2, dropout=self.dropout)
-        # unchosen item: forgetting/persistence dynamics, modulated by certainty
-        self.setup_module(key_module='reward_learning_unchosen', input_size=1, dropout=self.dropout)
-        # choice persistance module
-        self.setup_module(key_module='choice_persistance', input_size=3, dropout=self.dropout)
+        self.setup_module(key_module='perception_certainty', input_size=1, include_state=False)
         
     def forward(self, inputs, state = None):
         spice_signals = self.init_forward_pass(inputs, state)
@@ -66,23 +59,12 @@ class SpiceModel(BaseModel):
         for trial in spice_signals.trials:
             
             # --- Perception: p(left=low) for current trial ---
-            certainty_current = self.call_module(
+            certainty_current = torch.nn.functional.sigmoid(self.call_module(
                 key_module='perception_certainty',
-                inputs=contr_diff_current[trial],#.abs(),
+                inputs=contr_diff_current[trial].abs(),#  contr_diff_current[trial].abs(),
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embeddings,
-                activation_rnn=torch.nn.functional.sigmoid,
-                # activation_rnn=torch.nn.functional.tanh,
-            )
-            
-            certainty_next = self.call_module(
-                key_module='perception_certainty',
-                inputs=contr_diff_next[trial],#.abs(),
-                participant_index=spice_signals.participant_ids,
-                participant_embedding=participant_embeddings,
-                activation_rnn=torch.nn.functional.sigmoid,
-                # activation_rnn=torch.nn.functional.tanh,
-            )
+            ))
 
             # --- Reward learning with explicit chosen/unchosen split ---
             # Hard masks use the deterministic item space action (ground truth mapping).
@@ -112,6 +94,13 @@ class SpiceModel(BaseModel):
                 participant_embedding=participant_embeddings,
             )
             
+            certainty_next = torch.nn.functional.sigmoid(self.call_module(
+                key_module='perception_certainty',
+                inputs=contr_diff_next[trial].abs(), # contr_diff_next[trial].abs(),
+                participant_index=spice_signals.participant_ids,
+                participant_embedding=participant_embeddings,
+            ))
+            
             # Choice persistance
             self.call_module(
                 key_module='choice_persistance',
@@ -126,12 +115,11 @@ class SpiceModel(BaseModel):
             )
             
             # --- Decision: soft-map item values to action space ---
-                        
+            
             logits_contrast = self.state['value_reward_contrast'] + self.state['value_choice_contrast']
             
             # deriving p(left=low) from contrast-difference-based certainty to assign learned reward values to given options; range=(0.5, 1.0)
             # TODO: add sign information about contrast difference
-            # certainty_next = (certainty_next + 1) / 2
             certainty_next = certainty_next / 2 + 0.5
             mixed_logits_item_space = logits_contrast * certainty_next + logits_contrast.flip(-1) * (1 - certainty_next)
             

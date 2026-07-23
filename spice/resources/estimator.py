@@ -12,6 +12,7 @@ from copy import copy
 from .spice_training import fit_spice, cross_entropy_loss
 from .model import BaseModel
 from .spice_utils import SpiceConfig, SpiceDataset
+from .sindy_compression import CompressedSpiceModel, compress_sindy_equations as _compress_sindy_equations
 
 
 warnings.filterwarnings("ignore")
@@ -186,6 +187,7 @@ class SpiceEstimator(BaseEstimator):
         self.spice_config = spice_config
         self.spice_class = spice_class
         self.spice_features = None
+        self.kwargs_spice_class = kwargs_spice_class
         self.model = spice_class(
             n_actions=n_actions,
             n_participants=n_participants,
@@ -342,6 +344,44 @@ class SpiceEstimator(BaseEstimator):
     
     def count_sindy_coefficients(self):
         return self.model.count_sindy_coefficients()
+
+    def compress_sindy_equations(self, K: int = None, method: str = "nmf_per_module", **method_kwargs) -> CompressedSpiceModel:
+        """Fit a reparameterization of this model's per-participant SINDy coefficients.
+
+        Many SINDy terms co-vary strongly across participants -- they are not
+        independent axes of individual difference, just different symptoms of
+        the same underlying trait. This factors the (participant x term)
+        coefficient matrix into a population-average equation shared by
+        everyone, plus a handful of numbers per participant (loadings on
+        shared "mechanisms"). Returns a `CompressedSpiceModel` exposing
+        `.print_population()`, `.print_mechanisms()`, and
+        `.print_participant(participant_id)` for compact symbolic equations,
+        and `.apply(estimator)` as a context manager to temporarily run
+        inference with the compressed coefficients.
+
+        Args:
+            K: number of shared mechanisms. Ignored for the default method
+                (and "family"), which take a per-module `K_per_module` in
+                `method_kwargs` instead.
+            method: "nmf_per_module" (default) -- sign-split NMF fit
+                independently within each module's own term block. Chosen
+                after comparing dense SVD, joint/per-module sparse
+                dictionary learning, joint NMF, and a hand-classified
+                term-family basis: it wins on predictive cost, genuine
+                usage sparsity, mechanism compactness, and localization,
+                without hand-classifying anything. See
+                `spice.resources.sindy_compression` module docstring for
+                the other methods and their tradeoffs.
+            method_kwargs: forwarded to the fitting method, e.g.
+                `K_per_module`, `alpha_W`, `alpha_H` for the default method.
+
+        This only fits and prints the reparameterization -- it does not
+        evaluate predictive performance, and does not pick hyperparameters
+        for you. See `weinhardt2026.analysis.analysis_coefficient_compression`
+        for a train-selected/test-confirmed hyperparameter search that
+        measures the held-out predictive cost of compression.
+        """
+        return _compress_sindy_equations(self, K, method=method, **method_kwargs)
        
     def get_modules(self):
         return self.model.get_modules()
@@ -371,6 +411,7 @@ class SpiceEstimator(BaseEstimator):
             use_sindy=True,
             device=self.model.device,
             embedding_size=self.model.embedding_size,
+            **self.kwargs_spice_class,
             )
         
         for module in self.get_modules():

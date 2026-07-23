@@ -5,18 +5,27 @@ For each checkpoint, computes:
   - Mean number of active SINDy coefficients per participant
 
 Usage:
-    python -m weinhardt2026.analysis.analysis_sparsity_hpscan
+    python weinhardt2026/analysis/analysis_sparsity_hpscan.py
 """
 
 import os
 import re
+import sys
 from glob import glob
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import torch
 
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
+
 from spice import SpiceEstimator, csv_to_dataset, split_data_along_blockdim
+from weinhardt2026.analysis.analysis_model_evaluation import (
+    get_participant_experiment_groups,
+    grouped_information_criteria,
+)
 
 
 @torch.no_grad()
@@ -59,7 +68,9 @@ def analysis_sparsity_hpscan(
     -------
     pd.DataFrame
         Rows = HP configurations, columns include threshold, test,
-        trial_likelihood, NLL, n_params_mean, n_params_std.
+        trial_likelihood, NLL, BIC(_std), AIC(_std), delta_bic_per_trial(_std),
+        n_params_mean, n_params_std. BIC/AIC are computed per (participant,
+        experiment) group and reported as mean ± std across groups.
     """
     if device is None:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -73,6 +84,10 @@ def analysis_sparsity_hpscan(
     ys_test = dataset_test.ys.cpu()
     valid = ~torch.isnan(dataset_test.xs[:, :, 0, 0])
     n_valid = valid.sum().item()
+    n_trials_per_session = valid.sum(dim=1).float()
+
+    unique_pairs, group_index = get_participant_experiment_groups(dataset_test)
+    n_groups = unique_pairs.shape[0]
 
     # ── Find and parse checkpoint files ───────────────────────────────
     pkl_paths = sorted(glob(pkl_pattern))
@@ -128,10 +143,11 @@ def analysis_sparsity_hpscan(
         )
         estimator.load_spice(path)
 
-        # ── Coefficient count ─────────────────────────────────────────
+        # ── Coefficient count (per participant/experiment group actually in the test set) ──
         n_params = estimator.count_sindy_coefficients()  # (P, X)
-        n_params_mean = n_params.float().mean().item()
-        n_params_std = n_params.float().std().item()
+        n_params_per_group = n_params[unique_pairs[:, 0], unique_pairs[:, 1]].float()
+        n_params_mean = n_params_per_group.mean().item()
+        n_params_std = n_params_per_group.std().item() if n_params_per_group.numel() > 1 else 0.0
 
         # ── Hold-out trial likelihood (SINDy autoregressive) ──────────
         estimator.model.eval()
@@ -148,17 +164,36 @@ def analysis_sparsity_hpscan(
         nll = -torch.nansum(ll).item()
         trial_lik = np.exp(-nll / n_valid)
 
-        # BIC = 2*NLL + k*ln(n)
-        bic = 2 * nll + n_params_mean * np.log(n_valid)
+        # BIC/AIC computed per (participant, experiment) group -- using that
+        # group's own trial count and own coefficient count -- then averaged
+        # across groups. Pooling NLL across the whole test set while scaling
+        # k with the number of participants (as is correct here, since each
+        # participant has independently active SINDy coefficients) would make
+        # the penalty grow with dataset size regardless of fit quality; see
+        # grouped_information_criteria for the full rationale.
+        nll_per_session = (-ll).nansum(dim=1)  # (B,)
+        info = grouped_information_criteria(
+            nll_per_session=nll_per_session,
+            n_trials_per_session=n_trials_per_session,
+            group_index=group_index,
+            n_groups=n_groups,
+            n_parameters_per_group=n_params_per_group,
+            n_actions_baseline=n_actions,
+        )
 
         rows.append({
             'threshold': threshold,
             'test': test_val,
-            'trial_likelihood': trial_lik,
-            'NLL': nll,
-            'BIC': bic,
             'n_params_mean': n_params_mean,
             'n_params_std': n_params_std,
+            'trial_likelihood': trial_lik,
+            'NLL': nll,
+            'BIC': info['bic_mean'],
+            'BIC_std': info['bic_std'],
+            'AIC': info['aic_mean'],
+            'AIC_std': info['aic_std'],
+            'delta_bic_per_trial': info['delta_bic_per_trial_mean'],
+            'delta_bic_per_trial_std': info['delta_bic_per_trial_std'],
             'path': os.path.basename(path),
         })
 
@@ -171,8 +206,16 @@ def analysis_sparsity_hpscan(
 # ── Standalone execution ─────────────────────────────────────────────
 
 if __name__ == '__main__':
-    from spice.precoded import workingmemory
-
+    
+    # SPICE
+    from spice.precoded.workingmemory import SpiceModel, CONFIG
+    # from weinhardt2026.studies.dezfouli2019.spice_dezfouli2019 import SpiceModel, CONFIG
+    model_kwargs = {'reward_binary': True}
+    # Dataset
+    data_path = 'weinhardt2026/studies/dezfouli2019/data/dezfouli2019.csv'
+    n_actions = 2
+    test_blocks = (3,6,9)
+    
     params_dir = 'weinhardt2026/studies/dezfouli2019/params_array'
     pkl_pattern = os.path.join(params_dir, 'spice_dezfouli2019_*.pkl')
 
@@ -181,13 +224,13 @@ if __name__ == '__main__':
 
     df = analysis_sparsity_hpscan(
         pkl_pattern=pkl_pattern,
-        spice_class=workingmemory.SpiceModel,
-        spice_config=workingmemory.CONFIG,
-        n_actions=2,
-        data_path='weinhardt2026/studies/dezfouli2019/data/dezfouli2019.csv',
-        test_blocks=(3, 6, 9),
+        spice_class=SpiceModel,
+        spice_config=CONFIG,
+        n_actions=n_actions,
+        data_path=data_path,
+        test_blocks=test_blocks,
         polynomial_degree=2,
-        model_kwargs={'reward_binary': True},
+        model_kwargs=model_kwargs,
     )
 
     if len(df) > 0:

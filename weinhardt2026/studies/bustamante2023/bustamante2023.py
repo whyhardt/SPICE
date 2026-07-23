@@ -20,6 +20,7 @@ train_spice = False
 train_mvt = False
 train_gru = False
 
+generate_data = False
 N_REPEATS = 100
 
 # -------------------------------------------------------------------------------------------
@@ -167,48 +168,49 @@ print(analysis_model_evaluation(
 data_dir = 'weinhardt2026/studies/bustamante2023/data'
 output_dir = 'weinhardt2026/studies/bustamante2023/results'
 
-estimator.use_sindy(False)
-ds_spice_rnn = generate_repeated(
-    generate_behavior,
-    n_repeats=N_REPEATS,
-    dataset=dataset_train,
-    model=estimator,
-)
+if generate_data:
+    estimator.use_sindy(False)
+    ds_spice_rnn = generate_repeated(
+        generate_behavior,
+        n_repeats=N_REPEATS,
+        dataset=dataset_train,
+        model=estimator,
+    )
 
-estimator.use_sindy(True)
-ds_spice = generate_repeated(
-    generate_behavior,
-    n_repeats=N_REPEATS,
-    dataset=dataset_train,
-    model=estimator,
-)
+    estimator.use_sindy(True)
+    ds_spice = generate_repeated(
+        generate_behavior,
+        n_repeats=N_REPEATS,
+        dataset=dataset_train,
+        model=estimator,
+    )
 
-ds_benchmark = generate_repeated(
-    generate_behavior,
-    n_repeats=N_REPEATS,
-    dataset=dataset_train,
-    model=mvt,
-)
+    ds_benchmark = generate_repeated(
+        generate_behavior,
+        n_repeats=N_REPEATS,
+        dataset=dataset_train,
+        model=mvt,
+    )
 
-ds_gru = generate_repeated(
-    generate_behavior,
-    n_repeats=N_REPEATS,
-    dataset=dataset_train,
-    model=gru,
-)
+    ds_gru = generate_repeated(
+        generate_behavior,
+        n_repeats=N_REPEATS,
+        dataset=dataset_train,
+        model=gru,
+    )
 
-# -------------------------------------------------------------------------------------------
-# ANALYSIS: GENERATIVE BEHAVIOR
-# -------------------------------------------------------------------------------------------
+    # -------------------------------------------------------------------------------------------
+    # ANALYSIS: GENERATIVE BEHAVIOR
+    # -------------------------------------------------------------------------------------------
 
-analysis_generative_behavior(
-    path_data_real=f'{data_dir}/bustamante2023.csv',
-    path_data_benchmark=ds_benchmark,
-    path_data_gru=ds_gru,
-    path_data_spice_rnn=ds_spice_rnn,
-    path_data_spice=ds_spice,
-    output_dir=output_dir,
-)
+    analysis_generative_behavior(
+        path_data_real=f'{data_dir}/bustamante2023.csv',
+        path_data_benchmark=ds_benchmark,
+        path_data_gru=ds_gru,
+        path_data_spice_rnn=ds_spice_rnn,
+        path_data_spice=ds_spice,
+        output_dir=output_dir,
+    )
 
 
 # -------------------------------------------------------------------------------------------

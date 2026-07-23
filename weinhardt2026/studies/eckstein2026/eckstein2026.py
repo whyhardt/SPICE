@@ -9,7 +9,7 @@ import torch
 from spice import SpiceEstimator
 from weinhardt2026.studies.eckstein2026.spice_eckstein2026 import SpiceModel, CONFIG
 from weinhardt2026.utils.benchmarking_gru import GRUModel, training
-from weinhardt2026.studies.eckstein2026.benchmarking_eckstein2026 import Castro2025Model, get_dataset, generate_behavior
+from weinhardt2026.studies.eckstein2026.benchmarking_eckstein2026 import Castro2025Model, RWForgettingChoiceModel, get_dataset, generate_behavior
 from weinhardt2026.studies.eckstein2026.analysis_generative import analysis_generative_behavior
 from weinhardt2026.analysis.analysis_model_evaluation import analysis_model_evaluation
 from weinhardt2026.analysis.analysis_coefficients_distributions import analysis_coefficients_distributions
@@ -18,13 +18,13 @@ from weinhardt2026.utils.generation import generate_repeated
 
 
 train_spice = False
-train_benchmark = False
+train_benchmark = True
 train_gru = False
 
 generate_data = False
 N_REPEATS = 1
 
-path_data = 'weinhardt2026/studies/eckstein2026/data/eckstein2024.csv'
+path_data = 'weinhardt2026/studies/eckstein2026/data/eckstein2026.csv'
 # path_data = 'weinhardt2026/studies/eckstein2026/data/public_train.csv'
 path_spice = 'weinhardt2026/studies/eckstein2026/params/spice_eckstein2026.pkl'
 path_benchmark = 'weinhardt2026/studies/eckstein2026/params/benchmark_eckstein2026.pkl'
@@ -72,7 +72,13 @@ else:
 # CASTRO2025 BENCHMARK MODEL
 # -------------------------------------------------------------------------------------------
 
-benchmark = Castro2025Model(
+# benchmark = Castro2025Model(
+#     n_participants=dataset_train.n_participants,
+#     n_actions=dataset_train.n_actions,
+#     batch_first=True,
+# )
+
+benchmark = RWForgettingChoiceModel(
     n_participants=dataset_train.n_participants,
     n_actions=dataset_train.n_actions,
     batch_first=True,

@@ -30,12 +30,6 @@ class SpiceModel(BaseModel):
         
         # set up the participant-embedding layer
         self.participant_embedding = self.setup_embedding(self.n_participants, self.embedding_size, dropout=dropout)
-        self.experiment_embedding = self.setup_embedding(self.n_experiments, 1)
-                
-        # set up the submodules
-        self.setup_module(key_module='value_reward_chosen', input_size=1, embedding_size=self.embedding_size+1, dropout=dropout)
-        self.setup_module(key_module='value_reward_not_chosen', input_size=0, embedding_size=self.embedding_size+1, dropout=dropout)
-        self.setup_module(key_module='value_choice', input_size=1, embedding_size=self.embedding_size+1, dropout=dropout)
         
     def forward(self, inputs, prev_state=None):
         """Forward pass of the RNN
@@ -50,7 +44,6 @@ class SpiceModel(BaseModel):
         
         # We compute now the participant embeddings and inverse noise temperatures before the for-loop because they are anyways time-invariant
         participant_embedding = self.participant_embedding(spice_signals.participant_ids)
-        experiment_embedding = self.experiment_embedding(spice_signals.experiment_ids)
         
         for timestep in spice_signals.trials:
             
@@ -63,7 +56,6 @@ class SpiceModel(BaseModel):
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
                 experiment_index=spice_signals.experiment_ids,
-                experiment_embedding=experiment_embedding,
                 )
 
             self.call_module(
@@ -74,7 +66,6 @@ class SpiceModel(BaseModel):
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
                 experiment_index=spice_signals.experiment_ids,
-                experiment_embedding=experiment_embedding,
                 )
 
             # updates for value_choice
@@ -86,7 +77,6 @@ class SpiceModel(BaseModel):
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
                 experiment_index=spice_signals.experiment_ids,
-                experiment_embedding=experiment_embedding,
                 )
             
             # Now keep track of the logit in the output array
