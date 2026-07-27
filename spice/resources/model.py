@@ -450,6 +450,7 @@ class BaseModel(nn.Module):
         include_state = True,
         interaction_only = False,
         dt: float = 1.,
+        within_trial_timesteps: bool = False,
         ):
         """This method creates the standard RNN-module used in computational discovery of cognitive dynamics
 
@@ -460,6 +461,11 @@ class BaseModel(nn.Module):
                 step, matching prior behavior). Both the RNN's residual update and the SINDy
                 fit/execution scale their increment by `dt`, so discovered coefficients read as
                 per-unit-time rates rather than per-step deltas that shrink as `dt` shrinks.
+            within_trial_timesteps: Whether this module's dynamics evolve over within-trial
+                timesteps (W axis) rather than across trials (T axis). Default False (a trial
+                module: one update per trial). SINDy refit shoots each module along its own
+                axis, so a within-trial module (e.g. evidence accumulation) is fit over W and
+                a trial module (e.g. an RL value) over T.
 
         Returns:
             torch.nn.Module: A torch module which can be called by one line and returns state update
@@ -485,6 +491,7 @@ class BaseModel(nn.Module):
         self.sindy_specs[key_module]['include_state'] = include_state
         self.sindy_specs[key_module]['polynomial_degree'] = polynomial_degree
         self.sindy_specs[key_module]['dt'] = dt
+        self.sindy_specs[key_module]['within_trial_timesteps'] = within_trial_timesteps
         self.setup_sindy_coefficients(key_module=key_module, polynomial_degree=polynomial_degree)
         
         # set name of each input variable which are then used in the library as features
@@ -592,13 +599,18 @@ class BaseModel(nn.Module):
                 if activation_rnn is not None:
                     next_value = activation_rnn(next_value)
                 if self.ridge_mode:
-                    # direct ridge solve for sindy coefficients
+                    # direct ridge solve for sindy coefficients. h_current must be
+                    # the per-step preceding value (value[-1] for w=0, next_value[w-1]
+                    # for w>0), matching compute_sindy_loss_for_module below --
+                    # `value` alone is the constant state entering this call, wrong
+                    # for every w>0 whenever W>1 (within-trial dynamics).
+                    value_0 = value[-1].unsqueeze(0) if value is not None else torch.zeros(1, E, B, I, device=self.device)
                     success = self.sindy_ridge_solve(
                         key_module=key_module,
                         participant_ids=participant_index,
                         experiment_ids=experiment_index,
                         h_next=next_value,
-                        h_current=value,
+                        h_current=torch.concat((value_0, next_value[:-1])),
                         controls=inputs,
                     )
                     if not success:
@@ -636,7 +648,7 @@ class BaseModel(nn.Module):
             and participant_index is not None
             ):
             action_mask_2d = action_mask[-1] if action_mask is not None and action_mask.dim() >= 4 else action_mask
-            value_0 = value[-1].unsqueeze(0) if value is not None else torch.zeros(W, E, B, I, device=self.device)
+            value_0 = value[-1].unsqueeze(0) if value is not None else torch.zeros(1, E, B, I, device=self.device)
             sindy_loss_reg, sindy_loss_fit = self.compute_sindy_loss_for_module(
                     module_name=key_module,
                     h_current=torch.concat((value_0, next_value[:-1])),
@@ -844,10 +856,16 @@ class BaseModel(nn.Module):
             polynomial_degree=polynomial_degree,
         )  # [W, E, B, I]
 
-        # Decoupled losses: detach opposite side so gradients flow to one param set only
-        diff_reg = (h_next_rnn - h_next_sindy) ** 2  # full gradients
+        # Decoupled losses: detach opposite side so gradients flow to one param set only.
+        # Both h_next_rnn and h_next_sindy are h_current + dt*(...), so their raw
+        # difference carries a factor of dt that gets squared away to dt^2 -- for
+        # dt << 1 this silently attenuates sindy_weight by ~dt^2, well below any
+        # value tuned for dt=1 modules. Divide by dt first to compare in rate space,
+        # consistent with sindy_ridge_solve's target normalization.
+        dt = self.sindy_specs[module_name].get('dt', 1.)
+        diff_reg = ((h_next_rnn - h_next_sindy) / dt) ** 2  # full gradients
         # diff_reg = (h_next_rnn - h_next_sindy.detach()) ** 2  # gradients → RNN only
-        diff_fit = (h_next_rnn.detach() - h_next_sindy) ** 2  # gradients → SINDy coefficients only
+        diff_fit = ((h_next_rnn.detach() - h_next_sindy) / dt) ** 2  # gradients → SINDy coefficients only
 
         if action_mask is not None:
             masked_diff_reg = torch.where(action_mask == 1, diff_reg, 0)
@@ -901,10 +919,11 @@ class BaseModel(nn.Module):
             library=self.sindy_candidate_terms[key_module],
         )  # (W, E*B, I, T)
 
-        # Reshape to (W, E, B, I, T)
-        library = library.reshape(W, E, B, I, T)
+        # Reshape to (W, E, B, I, T). float64: condition numbers of 1e8-1e13 are
+        # routine here, and float32 can misreport such matrices as singular.
+        library = library.reshape(W, E, B, I, T).double()
         dt = self.sindy_specs[key_module].get('dt', 1.)
-        target = (h_next - h_current) / dt  # (W, E, B, I) -- per-unit-time rate, not per-step delta
+        target = ((h_next - h_current) / dt).double()  # (W, E, B, I) -- per-unit-time rate, not per-step delta
 
         # Apply presence mask: zero out pruned library columns per (E, P, X) group
         # mask: (E, P, X, T) -> gather per-sample mask via participant/experiment ids
@@ -946,7 +965,7 @@ class BaseModel(nn.Module):
         has_data = sample_count.reshape(E, P, X) > 0  # (E, P, X)
 
         # Add ridge penalty: alpha * diag(degree_weights) + eps*I for numerical stability
-        penalty_diag = torch.diag(alpha * self.sindy_degree_weights[key_module])  # (T, T)
+        penalty_diag = torch.diag(alpha * self.sindy_degree_weights[key_module]).double()  # (T, T)
         penalty_diag += 1e-4 * torch.eye(T, device=library.device, dtype=library.dtype)
         AtA_accum = AtA_accum + penalty_diag  # broadcasts over (E, P, X)
 

@@ -671,6 +671,55 @@ def _vectorize_state_sequential(
     return state_trajectories, nan_mask
 
 
+def _flatten_state_trajectories_onestep(
+    xs_train: torch.Tensor,
+    state_trajectories: dict,
+    nan_mask: torch.Tensor,
+) -> tuple:
+    """
+    Flatten (W, T) state trajectories into independent one-step (T'=1, W'=1)
+    pseudo-sessions, so every within-trial and across-trial transition becomes
+    its own teacher-forced one-step regression sample -- regardless of whether
+    a given model's sequential structure lives in W (e.g. a within-trial DDM,
+    W>1 T=1) or T (standard multi-trial models, W=1 T>1). Feeding the result
+    into _run_shooting_epoch_vectorized with K=1 then does genuine one-step
+    fitting: init_forward_pass() seeds state from the given prev_state whenever
+    it's not None, bypassing memory_state-based initialization entirely, so each
+    pseudo-session's teacher-forced h_current is used as-is instead of being
+    overwritten by the model's own default initial value.
+
+    Args:
+        xs_train: 5D tensor (E, B, T, W, F)
+        state_trajectories: Dict[state_key -> (W, E, B, T+1, I)] from
+            _vectorize_state_sequential
+        nan_mask: (B, T) boolean validity mask
+
+    Returns:
+        Tuple of (xs_flat, state_trajectories_flat, nan_mask_flat, B_flat):
+        - xs_flat: (E, B*T*W, 1, 1, F)
+        - state_trajectories_flat: Dict[state_key -> (1, E, B*T*W, 2, I)]
+        - nan_mask_flat: (B*T*W, 1)
+        - B_flat: number of flattened pseudo-sessions
+    """
+    E, B, T, W, F = xs_train.shape
+
+    xs_flat = xs_train.reshape(E, B * T * W, F).unsqueeze(2).unsqueeze(2)  # (E, B*T*W, 1, 1, F)
+
+    state_trajectories_flat = {}
+    for s, traj in state_trajectories.items():
+        # h_current[w, t] = traj[w-1, t] for w>0, traj[-1, t-1] for w=0 (t-1=0 -> initial state)
+        h_current = torch.cat((traj[-1:, :, :, :-1], traj[:-1, :, :, 1:]), dim=0)  # (W, E, B, T, I)
+        h_next = traj[:, :, :, 1:]  # (W, E, B, T, I)
+        I = traj.shape[-1]
+        h_current_flat = h_current.permute(1, 2, 3, 0, 4).reshape(E, B * T * W, I)
+        h_next_flat = h_next.permute(1, 2, 3, 0, 4).reshape(E, B * T * W, I)
+        state_trajectories_flat[s] = torch.stack((h_current_flat, h_next_flat), dim=2).unsqueeze(0)  # (1, E, B*T*W, 2, I)
+
+    nan_mask_flat = nan_mask.unsqueeze(-1).expand(-1, -1, W).reshape(B * T * W).unsqueeze(-1)  # (B*T*W, 1)
+
+    return xs_flat, state_trajectories_flat, nan_mask_flat, B * T * W
+
+
 def _run_shooting_epoch_vectorized(
     model: BaseModel,
     optimizer: torch.optim.Optimizer,
@@ -681,7 +730,6 @@ def _run_shooting_epoch_vectorized(
     K: int,
     batch_sessions: torch.Tensor,
     sindy_alpha: float = None,
-    contraction_weight: float = 0.0,
 ) -> float:
     """Vectorized shooting epoch: fold all windows into the batch dimension.
 
@@ -702,9 +750,6 @@ def _run_shooting_epoch_vectorized(
         K: Shooting window size
         batch_sessions: Session indices for this batch (tensor)
         sindy_alpha: L1 penalty strength (None or 0 = disabled)
-        contraction_weight: Jacobian contraction penalty weight (0 = disabled).
-            Penalizes |d(h_next)/d(h_current)| > 1 per state to prevent
-            error amplification in autoregressive rollout.
 
     Returns:
         Mean loss over all valid steps
@@ -736,12 +781,6 @@ def _run_shooting_epoch_vectorized(
     #         for s, v in current_state.items()
     #     }
 
-    # Enable gradients on logit states for Jacobian contraction penalty
-    if contraction_weight > 0:
-        for s_key in model.spice_config.states_in_logit:
-            if s_key in current_state:
-                current_state[s_key] = current_state[s_key].detach().requires_grad_(True)
-
     model.zero_grad()
     total_loss = torch.tensor(0.0, device=model.device)
     n_valid_steps = 0
@@ -762,14 +801,6 @@ def _run_shooting_epoch_vectorized(
         # Gather xs for this step: (E, B_eff, W, F) → insert T=1 → (E, B_eff, 1, W, F)
         xs_step = xs_train[:, session_idx, t_k_safe].unsqueeze(2).to(model.device)
 
-        # Save references to current state for Jacobian computation
-        if contraction_weight > 0:
-            prev_state_refs = {
-                s_key: current_state[s_key]
-                for s_key in model.spice_config.states_in_logit
-                if s_key in current_state
-            }
-
         if state_noise_std > 0:
             current_state = {
                 s: v + state_noise_std * torch.randn_like(v)
@@ -787,28 +818,6 @@ def _run_shooting_epoch_vectorized(
             mask = valid.view(1, 1, -1, 1).expand_as(pred)
             diff = (pred - target) ** 2
             step_loss = step_loss + (diff * mask).sum() / mask.sum().clamp(min=1)
-
-        # Jacobian contraction penalty: penalize |d(h_next)/d(h_current)| > 1
-        if contraction_weight > 0 and prev_state_refs:
-            contraction_loss = torch.tensor(0.0, device=model.device)
-            n_jac = 0
-            for s_key, h_in in prev_state_refs.items():
-                h_out = next_state[s_key]
-                # Diagonal Jacobian: d(h_out[w,e,b,i])/d(h_in[w,e,b,i])
-                # Since items are independent, grad_outputs=ones gives per-element derivatives
-                jac = torch.autograd.grad(
-                    outputs=h_out,
-                    inputs=h_in,
-                    grad_outputs=torch.ones_like(h_out),
-                    create_graph=True,
-                    retain_graph=True,
-                )[0]  # same shape as h_in: (W, E, B_eff, I)
-                mask_j = valid.view(1, 1, -1, 1).expand_as(jac)
-                jac_penalty = torch.relu(jac.abs() - 1.0) ** 2
-                contraction_loss = contraction_loss + (jac_penalty * mask_j).sum() / mask_j.sum().clamp(min=1)
-                n_jac += 1
-            if n_jac > 0:
-                step_loss = step_loss + contraction_weight * contraction_loss / n_jac
 
         total_loss = total_loss + step_loss
         n_valid_steps += 1
@@ -850,7 +859,6 @@ def _run_sindy_training(
     sindy_pruning_terms: int = None,
     shooting_steps: int = 20,
     sindy_ridge: bool = True,
-    sindy_contraction_weight: float = 0.0,
     verbose: bool = True,
     ):
 
@@ -933,20 +941,20 @@ def _run_sindy_training(
                 * model.sindy_coefficients_prior_mask[module].float()
             )
 
-        # Build multi-step shooting windows (same as Stage 2.2)
-        K_21 = 1  #shooting_steps
-        if K_21 > 1:
-            n_windows_21 = T // K_21
-            window_starts_k1 = [i * K_21 for i in range(n_windows_21)]
-            if T % K_21 > 0 and T > K_21:
-                window_starts_k1.append(T - K_21)
-            elif T % K_21 > 0 and T <= K_21:
-                window_starts_k1 = [0]
-                K_21 = T
-        else:
-            window_starts_k1 = list(range(T))
+        # Genuine one-step (dw=1) fitting: flatten every (w, t) transition into
+        # its own independent T'=1, W'=1 pseudo-session, so K=1 here means one
+        # teacher-forced step regardless of whether this model's sequential
+        # structure lives in W (within-trial dynamics) or T (across-trial).
+        xs_21, state_trajectories_21, nan_mask_21, B_21 = _flatten_state_trajectories_onestep(
+            xs_train, state_trajectories, nan_mask,
+        )
+        K_21 = 1
+        window_starts_21 = [0]
 
-        # Ridge solve with L2 penalty to initialize coefficients
+        # Ridge solve with L2 penalty to initialize coefficients. Uses the
+        # original (non-flattened) xs_train -- sindy_ridge_solve's h_current is
+        # already the per-step preceding value regardless of how many within-trial
+        # steps a single forward call spans, so this is already one-step-correct.
         ridge_success_21 = _ridge_solve_sindy(model, xs_train, ys_train)
 
         model.fit_sindy = False
@@ -955,17 +963,17 @@ def _run_sindy_training(
             rnn_module.eval()
 
         if ridge_success_21:
-            # Evaluate ridge solution with K-step shooting loss
+            # Evaluate ridge solution with the flattened one-step loss
             with torch.no_grad():
                 ridge_loss_21 = _run_shooting_epoch_vectorized(
                     model=model,
                     optimizer=None,
-                    xs_train=xs_train,
-                    state_trajectories=state_trajectories,
-                    nan_mask=nan_mask,
-                    window_starts=window_starts_k1,
+                    xs_train=xs_21,
+                    state_trajectories=state_trajectories_21,
+                    nan_mask=nan_mask_21,
+                    window_starts=window_starts_21,
                     K=K_21,
-                    batch_sessions=torch.arange(B),
+                    batch_sessions=torch.arange(B_21),
                     sindy_alpha=sindy_alpha,
                 )
             if verbose:
@@ -982,12 +990,12 @@ def _run_sindy_training(
 
         lr_boost_end = 0  # epoch at which post-pruning LR boost expires
 
-        batch_size_sessions = B
+        batch_size_sessions = B_21
         while True:
             try:
                 pbar = tqdm(range(epochs))
                 for epoch in pbar:
-                    session_perm = torch.randperm(B)
+                    session_perm = torch.randperm(B_21)
 
                     # LR schedule: warmup -> base, boost after pruning
                     if epoch == n_warmup_steps:
@@ -1001,16 +1009,16 @@ def _run_sindy_training(
                     loss_epoch = 0.0
                     n_batches = 0
 
-                    for b_start in range(0, B, batch_size_sessions):
-                        b_end = min(b_start + batch_size_sessions, B)
+                    for b_start in range(0, B_21, batch_size_sessions):
+                        b_end = min(b_start + batch_size_sessions, B_21)
                         batch_sessions = session_perm[b_start:b_end]
                         loss_e = _run_shooting_epoch_vectorized(
                             model=model,
                             optimizer=optimizer_21,
-                            xs_train=xs_train,
-                            state_trajectories=state_trajectories,
-                            nan_mask=nan_mask,
-                            window_starts=window_starts_k1,
+                            xs_train=xs_21,
+                            state_trajectories=state_trajectories_21,
+                            nan_mask=nan_mask_21,
+                            window_starts=window_starts_21,
                             K=K_21,
                             batch_sessions=batch_sessions,
                             sindy_alpha=sindy_alpha,
@@ -1071,16 +1079,6 @@ def _run_sindy_training(
                 torch.cuda.empty_cache()
                 batch_size_sessions = max(1, batch_size_sessions // 2)
 
-    # ── Stage 2.2: Coefficient estimation (K=shooting_steps, no pruning) ──
-    if verbose:
-        terminal_width = _get_terminal_width()
-        print("\n" + "=" * terminal_width)
-        if shooting_steps > 1:
-            print(f"Stage 2.2: SINDy coefficient estimation (multi-step shooting, K={shooting_steps})")
-        else:
-            print("Stage 2.2: SINDy coefficient estimation (one-step-ahead)")
-        print("=" * terminal_width)
-
     # Switch to full (non-bootstrapped) data with per-member targets
     if xs_train_original is not None and E > 1:
         if verbose:
@@ -1108,6 +1106,21 @@ def _run_sindy_training(
             K = T
     else:
         window_starts = list(range(T))
+
+    if verbose:
+        terminal_width = _get_terminal_width()
+        print("\n" + "=" * terminal_width)
+        # K here is the across-trial rollout horizon (clamped to T, the number of
+        # outer trials) -- it says nothing about within-trial resolution. Any
+        # within-trial (W) dynamics are already rolled out autoregressively
+        # inside each of these K forward calls (see call_module's SINDy branch),
+        # so a model with T=1 and W>1 (e.g. this study) still gets full W-length
+        # supervision per step even though K clamps to 1.
+        if K > 1:
+            print(f"Stage 2.2: SINDy coefficient estimation (multi-step shooting across trials, K={K}, W={W})")
+        else:
+            print(f"Stage 2.2: SINDy coefficient estimation (one-step-ahead across trials, W={W})")
+        print("=" * terminal_width)
 
     # Re-initialize coefficients within discovered support
     for module in model.get_modules():
@@ -1195,7 +1208,6 @@ def _run_sindy_training(
                         K=K,
                         batch_sessions=batch_sessions,
                         sindy_alpha=None,  # unpenalized
-                        contraction_weight=sindy_contraction_weight,
                     )
                     loss_epoch += loss_e
                     n_batches += 1
@@ -1748,7 +1760,6 @@ def fit_spice(
     sindy_refit: bool = True,
     sindy_ridge: bool = True,
     sindy_shooting_steps: int = 20,
-    sindy_contraction_weight: float = 0.0,
 
     verbose: bool = True,
     keep_log: bool = False,
@@ -1983,7 +1994,6 @@ def fit_spice(
             sindy_pruning_terms=sindy_pruning_terms,
             shooting_steps=sindy_shooting_steps,
             sindy_ridge=sindy_ridge,
-            sindy_contraction_weight=sindy_contraction_weight,
             verbose=verbose,
         )
         

@@ -74,7 +74,6 @@ class SpiceEstimator(BaseEstimator):
         sindy_refit: Optional[bool] = True,  # Enable Stage 2 Training (SINDy refit on frozen RNN parameters)
         sindy_ridge: Optional[bool] = True,  # Use ridge regression initialization in Stage 2.2 (falls back to SGD on failure)
         sindy_shooting_steps: Optional[int] = 100,  # Multi-step shooting horizon for Stage 2 (1 = one-step-ahead)
-        sindy_contraction_weight: Optional[float] = 0.0,  # Jacobian contraction penalty weight for Stage 2.2 (0 = disabled)
 
         verbose: Optional[bool] = False,
         keep_log: Optional[bool] = False,
@@ -168,7 +167,6 @@ class SpiceEstimator(BaseEstimator):
         self.sindy_refit = sindy_refit
         self.sindy_ridge = sindy_ridge
         self.sindy_shooting_steps = sindy_shooting_steps
-        self.sindy_contraction_weight = sindy_contraction_weight
         
         # Data parameters
         self.n_actions = n_actions
@@ -272,7 +270,6 @@ class SpiceEstimator(BaseEstimator):
             sindy_refit=self.sindy_refit,
             sindy_ridge=self.sindy_ridge,
             sindy_shooting_steps=self.sindy_shooting_steps,
-            sindy_contraction_weight=self.sindy_contraction_weight,
 
             verbose=self.verbose,
             keep_log=self.keep_log,
@@ -411,6 +408,7 @@ class SpiceEstimator(BaseEstimator):
             use_sindy=True,
             device=self.model.device,
             embedding_size=self.model.embedding_size,
+            compiled_forward=self.model.compiled_forward,
             **self.kwargs_spice_class,
             )
         
