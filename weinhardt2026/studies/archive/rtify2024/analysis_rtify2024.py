@@ -86,11 +86,11 @@ def plot_summary(
     true_threshold: float = None,
     output_path: str = None,
 ):
-    """One figure, three subplots: drift/evidence traces, decision boundary
-    (+/-threshold), RT distribution. Drift and boundary subplots: one color per
-    participant, one linestyle per role (true=dotted, rnn=dashed, sindy=solid).
-    RT subplot: one color per role (true=blue, rnn=orange, sindy=red), pooled
-    across participants.
+    """One figure, four subplots: drift (rate), evidence (accumulator), decision
+    boundary (+/-threshold), RT distribution. Drift/evidence/boundary subplots:
+    one color per participant, one linestyle per role (true=dotted, rnn=dashed,
+    sindy=solid). RT subplot: one color per role (true=blue, rnn=orange,
+    sindy=red), pooled across participants.
 
     `true_threshold`: the constant boundary value passed to `simulate_ddm` (only
     meaningful if `collapsing_bound_rate=0` there -- pass None to skip the true
@@ -110,24 +110,25 @@ def plot_summary(
     participant_colors = plt.cm.tab10.colors
 
     # --- run the model once in RNN mode, once in SINDy mode ---
-    predictions, drifts, thresholds = {}, {}, {}
+    predictions, drifts, evidences, thresholds = {}, {}, {}, {}
     has_boundary_module = False
     for key, use_sindy in (('rnn', False), ('sindy', True)):
         estimator.use_sindy(use_sindy)
         prediction, state = estimator.model(xs)
         predictions[key] = prediction.mean(dim=0)  # [B, 1, W, 2]
         drifts[key] = state['drift'][..., 0:1].mean(dim=1).squeeze(-1)  # [max_steps, B]
-        if 'boundary' in state:
+        evidences[key] = state['evidence'][..., 0:1].mean(dim=1).squeeze(-1)  # [max_steps, B]
+        if 'threshold_raw' in state:
             has_boundary_module = True
-            thresholds[key] = torch.nn.functional.softplus(state['boundary'][..., 0:1]).mean(dim=1).squeeze(-1)
+            thresholds[key] = torch.nn.functional.softplus(state['threshold_raw'][..., 0:1]).mean(dim=1).squeeze(-1)
     estimator.use_sindy(prev_use_sindy)
 
-    fig, (ax_drift, ax_boundary, ax_rt) = plt.subplots(1, 3, figsize=(18, 4))
+    fig, (ax_drift, ax_evidence, ax_boundary, ax_rt) = plt.subplots(1, 4, figsize=(22, 4))
 
     participant_col = xs[:, 0, 0, -1]
     ground_truth_drift = xs[:, 0, :, 2].transpose(0, 1)  # [W, B] -- true (possibly flipping) stimulus
 
-    # --- left: example drift/evidence traces (color = participant, linestyle = role) ---
+    # --- drift: example rate traces (color = participant, linestyle = role) ---
     for i, pid in enumerate(participant_ids):
         pcolor = participant_colors[i % len(participant_colors)]
         idx = (participant_col == pid).nonzero(as_tuple=True)[0][:n_examples]
@@ -144,9 +145,26 @@ def plot_summary(
 
     ax_drift.axhline(0, color='gray', linewidth=0.5)
     ax_drift.set_xlabel('Time (s)')
-    ax_drift.set_ylabel('Drift')
+    ax_drift.set_ylabel('Drift (rate)')
 
-    # --- middle: decision boundary (+/-threshold), same color/linestyle convention ---
+    # --- evidence: the accumulator. No ground-truth line -- simulate_ddm
+    # doesn't store the true simulated evidence trajectory, only the
+    # observed choice/RT and the (possibly flipping) stimulus/drift signal
+    # already shown in the drift subplot. ---
+    for i, pid in enumerate(participant_ids):
+        pcolor = participant_colors[i % len(participant_colors)]
+        idx = (participant_col == pid).nonzero(as_tuple=True)[0][:n_examples]
+        for trial_idx in idx:
+            for key in ('rnn', 'sindy'):
+                e = evidences[key][:, trial_idx].cpu().numpy()
+                time_axis = (torch.arange(1, len(e) + 1, device=xs.device) * dt).cpu().numpy()
+                ax_evidence.plot(time_axis, e, color=pcolor, linestyle=linestyles[key], alpha=0.7)
+
+    ax_evidence.axhline(0, color='gray', linewidth=0.5)
+    ax_evidence.set_xlabel('Time (s)')
+    ax_evidence.set_ylabel('Evidence (accumulator)')
+
+    # --- decision boundary (+/-threshold), same color/linestyle convention ---
     if has_boundary_module:
         for i, pid in enumerate(participant_ids):
             pcolor = participant_colors[i % len(participant_colors)]
@@ -184,7 +202,12 @@ def plot_summary(
     signed_rt_obs = None
     bins = np.linspace(-max_steps * dt, max_steps * dt, 2 * max_steps + 1)
 
-    for key in ('rnn', 'sindy'):
+    if estimator.sindy_weight == 0 and not estimator.sindy_refit:
+        spice_models = ('rnn',)
+    else:
+        spice_models = ('rnn', 'sindy')
+        
+    for key in spice_models:
         p_up = predictions[key][:, 0, :, 0]
         p_down = predictions[key][:, 0, :, 1]
         is_up, rt = is_up_obs, rt_obs
@@ -200,9 +223,9 @@ def plot_summary(
         rt_pred = (sampled_bin.float() + 0.5) * dt
         signed_rt_pred = torch.where(is_up_pred, rt_pred, -rt_pred).cpu().numpy()
 
-        ax_rt.hist(signed_rt_pred, bins=bins, alpha=0.5, density=True, label=key, color=colors[key])
-
-    ax_rt.hist(signed_rt_obs, bins=bins, alpha=0.5, density=True, label='true', color=colors['true'])
+        ax_rt.hist(signed_rt_pred, bins=50, range=(-t_max, t_max), alpha=0.5, density=True, label=key, color=colors[key])
+    
+    ax_rt.hist(signed_rt_obs, bins=50, range=(-t_max, t_max), alpha=0.5, density=True, label='true', color=colors['true'])
     ax_rt.set_xlabel('Signed RT (s); sign = boundary')
     ax_rt.set_ylabel('Density')
     ax_rt.legend()

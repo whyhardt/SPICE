@@ -16,6 +16,7 @@ def simulate_ddm(
     non_decision_time: float = 0.2,
     flip_time_range: tuple = None,
     participant_id: int = 0,
+    block_id: int = 0,
     device=None,
 ) -> SpiceDataset:
     """One general ground-truth simulator: a two-boundary accumulator with each
@@ -96,7 +97,7 @@ def simulate_ddm(
     xs[:, :, 3] = torch.arange(max_steps, device=device) * dt  # time_elapsed (additional_input, fed to drift)
     xs[:, :, 4] = 0  # time_trial metadata slot (unused)
     xs[:, :, 5] = 0
-    xs[:, :, 6] = 0
+    xs[:, :, 6] = block_id
     xs[:, :, 7] = 0
     xs[:, :, 8] = participant_id
 
@@ -114,24 +115,46 @@ def simulate_ddm(
     return SpiceDataset(xs, ys, n_reward_features=0)
 
 def get_dataset(
-    drift_rates: list[float], 
+    drift_rates,
     collapsing_bound_rate: list[float],
     leak: list[float],
     flip_time_range: list[float],
-    n_trials: int, 
-    t_max: float, 
-    max_steps: int, 
+    n_trials: int,
+    t_max: float,
+    max_steps: int,
     device: torch.device,
     ):
+    """
+    drift_rates: (n_participants,) for one stimulus condition per participant
+        (backward compatible), or (n_participants, n_blocks) for multiple
+        within-participant stimulus conditions -- each participant sees
+        `n_blocks` different drift_rate/stimulus values across separate
+        blocks, breaking the stimulus/participant-identity confound that a
+        single fixed value per participant can't (every block shares the
+        same participant_id but gets its own block index and n_trials trials).
+    n_trials: trials PER BLOCK (not per participant).
+    """
     dt = t_max / max_steps
-    
+
+    if isinstance(drift_rates, (float, int)):
+        drift_rates = [[drift_rates]]
+    drift_rates = torch.as_tensor(drift_rates)
+    if drift_rates.dim() == 1:
+        drift_rates = drift_rates.unsqueeze(1)  # (n_participants, 1): one block, matches old behavior
+    n_participants, n_blocks = drift_rates.shape
+
+    if isinstance(collapsing_bound_rate, (float, int)):
+        collapsing_bound_rate = [collapsing_bound_rate] * n_participants
+    if isinstance(leak, (float, int)):
+        leak = [leak] * n_participants
+
     datasets = [
         simulate_ddm(
             n_trials=n_trials,
             t_max=t_max,
             max_steps=max_steps,
 
-            drift_rate=rate,
+            drift_rate=drift_rates[i, b].item(),
             diffusion_rate=1.0,
             leak=leak[i],
             threshold=1.0,
@@ -140,9 +163,11 @@ def get_dataset(
             flip_time_range=flip_time_range,
 
             participant_id=i,
+            block_id=b,
             device=device,
         )
-        for i, rate in enumerate(drift_rates)
+        for i in range(n_participants)
+        for b in range(n_blocks)
     ]
     xs = torch.cat([d.xs for d in datasets], dim=0)
     ys = torch.cat([d.ys for d in datasets], dim=0)

@@ -5,16 +5,23 @@ from spice import SpiceConfig, BaseModel
 CONFIG = SpiceConfig(
     library_setup={
         'drift': [
-            'stimulus', 
+            'stimulus',
             ],
-        'boundary': [ 
-            'time_elapsed',
-            ],
+        # 'evidence': [
+        #     'drift',
+        #     ],
+        # 'threshold_raw': [
+        #     'time_elapsed',
+        #     ],
     },
     memory_state={
-        'drift': None,
-        'boundary': None,
+        'drift': None,     # learnable initial drift rate -- a genuine parameter
+        'evidence': 0.0,   # always starts at 0: no information accumulated yet
+        'threshold_raw': None,
     },
+    states_in_logit=[
+        'drift',
+    ],
     additional_inputs=('stimulus', 'time_elapsed'),
 )
 
@@ -22,12 +29,13 @@ CONFIG = SpiceConfig(
 class DDMRNN(BaseModel):
     """Two-boundary DDM with a hazard-based (RTify-style) decision-time likelihood."""
 
-    def __init__(self, dt: float = 0.05, **kwargs):
+    def __init__(self, dt: float = 0.05, non_decision_time: float = 0.2, **kwargs):
         super().__init__(**kwargs)
 
         self.dt = dt
+        self.non_decision_time = non_decision_time
 
-        self.hazard_threshold = torch.nn.Parameter(torch.tensor(0.))
+        # self.threshold_raw = torch.nn.Parameter(torch.tensor(0.))
         self.participant_embedding = self.setup_embedding(self.n_participants, self.embedding_size, dropout=self.dropout)
 
         # Re-setup with dt: BaseModel's automatic setup_modules_from_config() already
@@ -36,25 +44,45 @@ class DDMRNN(BaseModel):
         # discovered coefficients read as per-second rates rather than per-step deltas
         # that shrink as `max_steps` grows.
         self.setup_module(key_module='drift', dt=self.dt, dropout=self.dropout, within_trial_timesteps=True)
-        self.setup_module(key_module='boundary', include_state=False, dt=self.dt, dropout=self.dropout, within_trial_timesteps=True)
+        
+        # include_state=True: evidence's own value is a valid SINDy regressor,
+        # so a self-coefficient a=1-dt*l can be discovered -- a=1 is a perfect
+        # integrator, a<1 is leak, both expressible by the same equation
+        # instead of a hand-designed decay parameter. Leak belongs on evidence
+        # (the thing that decays back toward 0), not on drift (the rate).
+        # include_bias=False: without this, a constant contribution to
+        # evidence's increment is collinear with drift whenever drift is
+        # ~constant (b*drift and c*1 give the identical evidence trajectory),
+        # so training has no pressure to route the true rate through drift at
+        # all -- it can bake it into evidence's own bias term instead, leaving
+        # drift free to be arbitrary. Removing the bias forces any systematic
+        # drive through drift specifically. polynomial_degree=2 (not 1): every
+        # remaining candidate (evidence, drift, evidence^2, evidence*drift,
+        # drift^2) still genuinely depends on evidence's/drift's actual values,
+        # so this doesn't reopen a bypass -- capping at degree=1 just because
+        # the synthetic ground truth here is linear would assume the answer
+        # instead of letting SPICE discover whatever structure the data has.
+        # self.setup_module(key_module='evidence', include_state=True, include_bias=False, dt=self.dt, dropout=self.dropout, within_trial_timesteps=True, polynomial_degree=2)
+        
+        # self.setup_module(key_module='threshold_raw', include_state=False, dt=self.dt, dropout=self.dropout, within_trial_timesteps=True)
         
     def forward(self, inputs: torch.Tensor, prev_state: torch.Tensor = None):
         spice_signals = self.init_forward_pass(inputs, prev_state)
 
         participant_embedding = self.participant_embedding(spice_signals.participant_ids)
 
-        # No non-decision-time shift: the decision process runs over the full
-        # max_steps range from t=0. True RTs include a real ndt offset (see
-        # simulate_ddm), so a handful of trials with true RT < ndt will have
-        # their earliest bins essentially unreachable -- accepted tradeoff for
-        # a model with no input-length-dependent special-casing, which lets
-        # any W-length window (not just a full max_steps trial) be run through
-        # forward() directly, e.g. for one-step or partial-rollout SINDy fitting.
+        # Non-decision time is applied only to the final output below, never to
+        # the internal computation: drift/evidence/threshold always run over
+        # the full input range unchanged, so self.state[...] stays full-length
+        # and forward() stays input-length-agnostic (any W-length window still
+        # works for Stage 2's one-step/rollout fitting). The decision process
+        # accumulates on its own internal clock starting at t=0 regardless of
+        # ndt; only the reported response time is shifted by a constant delay.
 
         # Single outer trial (T=1): additional_inputs are [W=max_steps, E, B, 1].
         # One call_module invocation lets the RNN process the whole within-trial
         # sequence internally (its own compiled loop over W), instead of us looping.
-        stimulus = spice_signals.additional_inputs['stimulus'][0]
+        stimulus = spice_signals.additional_inputs['stimulus'][0] 
         time_elapsed = spice_signals.additional_inputs['time_elapsed'][0]
 
         self.call_module(
@@ -66,28 +94,49 @@ class DDMRNN(BaseModel):
                 ),
             participant_index=spice_signals.participant_ids,
             participant_embedding=participant_embedding,
-        )  # self.state['drift']: [W=max_steps, E, B, n_items]
-        
-        self.call_module(
-            key_module='boundary',
-            key_state='boundary',
-            action_mask=None,
-            inputs=(
-                time_elapsed,
-                ),
-            participant_index=spice_signals.participant_ids,
-            participant_embedding=participant_embedding,
-        )  # self.state['boundary']: [W=max_steps, E, B, n_items]
+        )  # self.state['drift']: [W=max_steps, E, B, n_items] -- the drift rate
 
-        # `drift` *is* the evidence: no separate external integration step. Its own
-        # residual state already accumulates (h[t+1] = h[t] + dt*n[t], now dt-scaled
-        # via setup_module(dt=...)); "leak" is whatever self-coefficient SINDy finds
-        # on drift[t] itself, not a separately hand-designed decay parameter.
-        drift = self.state['drift'][..., 0:1]  # single accumulator: [W, E, B, 1]
-        threshold = torch.nn.functional.softplus(self.state['boundary'][..., 0:1])
+        # evidence accumulates dt*drift[t] each step, starting from a fixed 0
+        # (memory_state=0.0, never learnable). drift's full trajectory is
+        # already computed above, so this is a second independent vectorized
+        # call, not a step-by-step Python loop -- drift doesn't depend on
+        # evidence, so there's no feedback coupling forcing interleaving.
+        # self.call_module(
+        #     key_module='evidence',
+        #     key_state='evidence',
+        #     action_mask=None,
+        #     inputs=(
+        #         self.state['drift'],
+        #         ),
+        #     participant_index=spice_signals.participant_ids,
+        #     participant_embedding=participant_embedding,
+        # )  # self.state['evidence']: [W=max_steps, E, B, n_items]
+        self.state['evidence'] = self.dt * torch.cumsum(self.state['drift'], dim=0)
 
-        p_stop_up = torch.sigmoid(drift - threshold)
-        p_stop_down = torch.sigmoid(-drift - threshold)
+        # boundary_updates = self.call_module(
+        #     key_module='threshold_raw',
+        #     # key_state='threshold_raw',
+        #     action_mask=None,
+        #     inputs=(
+        #         time_elapsed,
+        #         ),
+        #     participant_index=spice_signals.participant_ids,
+        #     participant_embedding=participant_embedding,
+        # )
+
+        evidence = self.state['evidence'][..., 0:1]  # single accumulator: [W, E, B, 1]
+        # boundary was called with key_state=None, so self.state['threshold_raw'] still
+        # holds the learned initial value (untouched by call_module) rather than
+        # the zero it would've been reset to -- combine it with the state-blind
+        # cumulative update here, then write the combined trajectory back so
+        # get_state() reports what's actually used (plotting, Stage 2 SINDy
+        # refit's _vectorize_state_sequential both read state['threshold_raw']).
+        # self.state['threshold_raw'] = self.state['threshold_raw'] + boundary_updates
+        threshold = torch.nn.functional.softplus(self.state['threshold_raw'][..., 0:1])
+        # threshold = torch.nn.functional.softplus(self.threshold_raw)
+
+        p_stop_up = torch.sigmoid(evidence - threshold)
+        p_stop_down = torch.sigmoid(-evidence - threshold)
 
         p_stop = p_stop_up + p_stop_down - p_stop_up * p_stop_down
 
@@ -106,6 +155,17 @@ class DDMRNN(BaseModel):
         p_decision_up = p_decision_up / (total + 1e-8)
         p_decision_down = p_decision_down / (total + 1e-8)
 
+        # Shift the reported response time by a constant non-decision delay --
+        # output only, self.state[...] above is untouched. Drops the last
+        # ndt_bins bins to keep the array length fixed (negligible probability
+        # mass lost for the slowest responses, as long as ndt << t_max).
+        W = p_decision_up.shape[0]
+        ndt_bins = min(max(int(round(self.non_decision_time / self.dt)), 0), W - 1)
+        if ndt_bins > 0:
+            pad = torch.zeros(ndt_bins, *p_decision_up.shape[1:], device=self.device, dtype=p_decision_up.dtype)
+            p_decision_up = torch.cat((pad, p_decision_up[:-ndt_bins]), dim=0)
+            p_decision_down = torch.cat((pad, p_decision_down[:-ndt_bins]), dim=0)
+
         # [W, E, B, 1] -> [E, B, 1(T), W, 2]: genuine per-timestep (up, down)
         # probabilities, no replication across a dummy axis -- O(max_steps) per
         # session, not O(max_steps^2). This also keeps `forward()` cheap enough
@@ -117,7 +177,7 @@ class DDMRNN(BaseModel):
         return output, self.get_state()
 
 
-def make_ddm_loss():
+def make_ddm_loss(drift_smoothness_weight: float = 0.):
     """Joint negative log-likelihood of (choice, RT) under the two-boundary hazard model.
 
     Both `prediction` and `target` are per-timestep: `prediction[..., w, :]` =
@@ -125,11 +185,25 @@ def make_ddm_loss():
     exactly the (boundary, bin) pair actually observed for that trial, 0 elsewhere.
     Rows with no indicator (every `w` except the observed one) carry no loss --
     only the one row per trial matching the observed outcome contributes.
+
+    drift_smoothness_weight: penalizes drift's within-trial variation around
+    its own first-step value (mean((drift[t]-drift[0])^2)). `evidence`'s
+    within-trial shape can only vary if `drift` genuinely varies (evidence is
+    a deterministic cumsum of drift), so this directly discourages the RNN
+    from finding a "ramp" or "decay" explanation instead of the true
+    roughly-constant one, unless the data actually forces `drift` to move.
+    Requires `model` in loss_fn_kwargs (see rtify2024.py).
     """
 
-    def loss_fn(prediction: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    def loss_fn(prediction: torch.Tensor, target: torch.Tensor, model=None) -> torch.Tensor:
         p_obs = (prediction * target).sum(dim=-1)
         valid = target.sum(dim=-1) > 0.5
-        return -torch.log(p_obs[valid].clamp_min(1e-8)).mean()
+        loss = -torch.log(p_obs[valid].clamp_min(1e-8)).mean()
+
+        if drift_smoothness_weight > 0 and model is not None:
+            drift = model.state['drift']
+            loss = loss + drift_smoothness_weight * ((drift - drift[0:1]) ** 2).mean()
+
+        return loss
 
     return loss_fn

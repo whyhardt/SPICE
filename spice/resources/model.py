@@ -100,7 +100,7 @@ class EnsembleRNNModule(nn.Module):
     Input:  (within_ts, ensemble, batch, n_items, features)
     Output: (within_ts, ensemble, batch, n_items, 1)
     """
-    def __init__(self, ensemble_size, input_size, embedding_size, dropout=0., compiled_forward=True, dt: float = 1., **kwargs):
+    def __init__(self, ensemble_size, input_size, embedding_size, dropout=0., compiled_forward=True, dt: float = 1., include_state: bool = True, **kwargs):
         super().__init__()
 
         proj_size = 8 + input_size + embedding_size
@@ -108,6 +108,7 @@ class EnsembleRNNModule(nn.Module):
         self._compile = compiled_forward
         self.dropout = nn.Dropout(p=dropout)
         self.dt = dt
+        self.include_state = include_state
 
         # Linear projection: (E, proj_size, input_size)
         self.weight_linear = nn.Parameter(torch.empty(ensemble_size, proj_size, input_size+embedding_size+1))
@@ -133,14 +134,18 @@ class EnsembleRNNModule(nn.Module):
         W, E, B, I, F = inputs.shape
 
         x = inputs.reshape(W, E, B * I, F)                          # (W, E, B*I, F)
-        h = state[-1].contiguous().reshape(E, B * I, 1) if state is not None else torch.zeros(E, B * I, 1, device=inputs.device)
+        h = state[-1].contiguous().reshape(E, B * I, 1) if self.include_state and state is not None else torch.zeros(E, B * I, 1, device=inputs.device)
 
         # GRU cell over within-trial timesteps
         outputs = []
         for t in range(W):
-            
-            # Non-linear projection via einsum
-            x_t = torch.concat((x[t], h), dim=-1)
+
+            # include_state=False: this module's own state is never a valid
+            # input to its dynamics -- not just at the first within-trial step
+            # but at every step, so a W>1 module doesn't silently become
+            # self-referential after step 0 while its output still accumulates.
+            h_in = h if self.include_state else torch.zeros_like(h)
+            x_t = torch.concat((x[t], h_in), dim=-1)
             gi = torch.einsum('eoi,ebi->ebo', self.weight_linear, x_t) + self.bias_linear.unsqueeze(1)  # (E, B*I, proj)
             gi = self.dropout(torch.nn.functional.gelu(gi))
             
@@ -484,7 +489,7 @@ class BaseModel(nn.Module):
         if dropout is None:
             dropout = self.dropout
         
-        self.submodules_rnn[key_module] = EnsembleRNNModule(ensemble_size=self.ensemble_size, input_size=input_size, embedding_size=embedding_size, dropout=dropout, compiled_forward=self.compiled_forward, dt=dt)
+        self.submodules_rnn[key_module] = EnsembleRNNModule(ensemble_size=self.ensemble_size, input_size=input_size, embedding_size=embedding_size, dropout=dropout, compiled_forward=self.compiled_forward, dt=dt, include_state=include_state)
         self.sindy_specs[key_module] = {}
         self.sindy_specs[key_module]['include_bias'] = include_bias
         self.sindy_specs[key_module]['interaction_only'] = interaction_only
@@ -1108,7 +1113,7 @@ class BaseModel(nn.Module):
             # TODO: REMOVE IF NOT HELPING TO RECOVER ASYM LEARNING!!!
             # -------------------------------------------------------
             degree_weights = torch.ones_like(degree_weights)
-            
+
             # Compute weighted coefficient penalty for each term
             # For each coefficient, penalty = (degree + 1) * |coeff|^norm
             # degree_weights already contains (degree + 1) for each term

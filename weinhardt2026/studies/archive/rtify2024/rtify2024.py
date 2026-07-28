@@ -68,7 +68,11 @@ path_spice = 'weinhardt2026/studies/archive/rtify2024/params/rtify2024.pkl'
 max_steps = 100
 t_max = 5.0
 dt = t_max / max_steps
-n_trials = 1000
+
+n_participants = 100
+n_blocks = 5      # within-participant stimulus conditions, breaks the
+                  # stimulus/participant-identity confound (see conversation)
+n_trials = 200    # trials PER BLOCK (n_blocks * n_trials = 1000 per participant, same total as before)
 
 device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 
@@ -81,13 +85,12 @@ device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cp
 #                                  possible flip and the flip stops mattering)
 #   leak=1.0                    -- leaky (vs. perfect) integration
 #   collapsing_bound_rate=0.3   -- urgency-like shrinking boundary
-drift_rates = [0.5, 0.7, 1.0]
-n_participants = len(drift_rates)
+drift_rates = torch.rand(n_participants, n_blocks)
 
 dataset_train, dataset_test, info_dataset = get_dataset(
-    drift_rates=[0.5, 0.7, 1.0],
-    collapsing_bound_rate=[0., 0., 0.],
-    leak=[0., 0., 0.],
+    drift_rates=drift_rates,
+    collapsing_bound_rate=0.,
+    leak=0.,
     flip_time_range=None,
     
     n_trials=n_trials,
@@ -102,29 +105,31 @@ print(f"Estimated non-decision time: {info_dataset['non_decision_time']:.3f}s")
 estimator = SpiceEstimator(
     spice_class=DDMRNN,
     spice_config=CONFIG,
-    kwargs_spice_class={'dt': dt},
+    kwargs_spice_class={'dt': dt, 'non_decision_time': 0.2},
     n_reward_features=0,
-
+    
     n_actions=2,
     n_participants=n_participants,
 
-    loss_fn=make_ddm_loss(),
+    loss_fn=make_ddm_loss(drift_smoothness_weight=0),
     loss_fn_kwargs={},
-
-    sindy_weight=0.01,
-    sindy_alpha=0.0001,
+    # l2_rnn=1e-4,
+    
+    sindy_weight=1e-2,
+    sindy_alpha=1e-4,
     sindy_threshold_pruning=0.05,
     sindy_ensemble_pruning=0.7,
     sindy_refit=True,
     
-    epochs=0,
+    epochs=1000,
     warmup_steps=500,
     
     device=device,
     verbose=True,
     save_path_spice=path_spice,
-    compiled_forward=False,
+    compiled_forward=True,
 )
+estimator.loss_fn_kwargs['model'] = estimator.model  # drift_smoothness_weight needs model.state['drift']
 
 if estimator.epochs == 0:
     estimator.load_spice(path_spice)
@@ -139,4 +144,10 @@ print(evaluate(estimator, dataset_test, dt, max_steps))
 
 print_spice_models(estimator, participant_ids=(0, 2))
 
-plot_summary(estimator, dataset_test, dt, t_max, max_steps, participant_ids=(0, 2), true_threshold=1.0)
+plot_summary(estimator, dataset_test, dt, t_max, max_steps, participant_ids=(0, 2), true_threshold=1.0, output_path='weinhardt2026/studies/archive/rtify2024/results')
+
+print("Learnable initial value for threshold:")
+print(torch.nn.functional.softplus(estimator.model.learnable_initial_values['threshold_raw'].mean(dim=0)).detach().cpu().numpy())
+
+print("Learnable initial value for drift:")
+print(estimator.model.learnable_initial_values['drift'].mean(dim=0).detach().cpu().numpy())

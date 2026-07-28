@@ -301,8 +301,14 @@ def _run_batch_training(
     if n_steps is None:
         n_steps = xs.shape[2]
 
-    model.init_state(batch_size=B, within_ts=xs.shape[3])
-    state = model.get_state(detach=True)
+    # state=None on the first chunk so init_forward_pass applies learnable
+    # per-participant initial values (model.py's else-branch there is the only
+    # place that reads them) -- pre-populating via init_state()/get_state()
+    # here would always hand forward() a non-None prev_state, permanently
+    # bypassing that branch and leaving learnable_initial_values disconnected
+    # from the loss. Later BPTT-truncation chunks (t>0) still carry the real
+    # previous state forward as before.
+    state = None
 
     loss_batch = 0
     iterations = 0
@@ -311,8 +317,8 @@ def _run_batch_training(
         xs_step = xs[:, :, t:t+n_steps]
         ys_step = ys[:, :, t:t+n_steps]
 
-        state = model.get_state(detach=True)
         ys_pred, _ = model(xs_step, state)
+        state = model.get_state(detach=True)
 
         # Mask out padding (NaN values)
         # xs_step is 5D: (E, B, T_out, T_in, F)
@@ -976,9 +982,20 @@ def _run_sindy_training(
                     batch_sessions=torch.arange(B_21),
                     sindy_alpha=sindy_alpha,
                 )
-            if verbose:
+            # A closed-form solve can "succeed" (no LinAlgError) while still
+            # producing coefficients that are non-finite once evaluated --
+            # don't hand those to SGD as a starting point.
+            if not math.isfinite(ridge_loss_21):
+                ridge_success_21 = False
+            elif verbose:
                 print(f"Ridge initialization succeeded (K={K_21} loss: {ridge_loss_21:.7f}). Running SGD refinement...")
-        else:
+
+        if not ridge_success_21:
+            for module in model.get_modules():
+                model.sindy_coefficients[module].data = (
+                    torch.randn_like(model.sindy_coefficients[module].data) * 0.001
+                    * model.sindy_coefficients_prior_mask[module].float()
+                )
             if verbose:
                 print("Ridge initialization failed. Starting from random init.")
 
@@ -1152,9 +1169,21 @@ def _run_sindy_training(
                     batch_sessions=torch.arange(B),
                     sindy_alpha=sindy_alpha,
                 )
-            if verbose:
+            # A closed-form solve can "succeed" (no LinAlgError) while still
+            # producing a coefficient set that's unstable under the K-step
+            # rollout used to evaluate it -- e.g. a self-coefficient a>0 blows
+            # up to inf/NaN over many steps even though the linear solve
+            # itself was well-posed. Treat that the same as an outright ridge
+            # failure rather than handing NaN-producing coefficients to SGD.
+            if not math.isfinite(ridge_loss):
+                ridge_success = False
+                ridge_fail_reason = f"solved but produced a non-finite loss (K={K}: {ridge_loss})"
+            elif verbose:
                 print(f"Ridge regression succeeded (K={K} loss: {ridge_loss:.7f}). Running SGD refinement...")
         else:
+            ridge_fail_reason = "failed"
+
+        if not ridge_success:
             # Re-initialize coefficients since ridge may have partially written
             for module in model.get_modules():
                 model.sindy_coefficients[module].data = (
@@ -1162,7 +1191,7 @@ def _run_sindy_training(
                     * model.sindy_coefficients_presence[module].float()
                 )
             if verbose:
-                print("Ridge regression failed. Falling back to full SGD...")
+                print(f"Ridge regression {ridge_fail_reason}. Falling back to full SGD...")
 
     if not ridge_success:
         sgd_epochs = epochs
