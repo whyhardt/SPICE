@@ -59,7 +59,7 @@ from spice import SpiceEstimator, SpiceDataset
 from weinhardt2026.studies.archive.rtify2024.spice_rtify2024 import CONFIG, DDMRNN, make_ddm_loss
 from weinhardt2026.studies.archive.rtify2024.benchmark_rtify2024 import get_dataset
 from weinhardt2026.studies.archive.rtify2024.analysis_rtify2024 import (
-    decode_choice_rt, estimate_non_decision_time, evaluate, print_spice_models, plot_summary,
+    evaluate, print_spice_models, plot_summary,
 )
 
 
@@ -75,7 +75,7 @@ n_trials = 1000
 
 # spice training settings
 epochs=1000  # enables stage 1 training; if epochs=0 -> load existing model from path_spice
-sindy_refit=True  # enables stage 2 training; if epochs=0 and sindy_refit=False -> skip estimator.fit() and go directly to analysis
+sindy_refit=False  # enables stage 2 training; if epochs=0 and sindy_refit=False -> skip estimator.fit() and go directly to analysis
 
 
 device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
@@ -94,8 +94,8 @@ drift_rates = torch.rand(n_participants)
 dataset_train, dataset_test, info_dataset = get_dataset(
     drift_rates=drift_rates,
     collapsing_bound_rate=0.,
-    leak=0.,
-    flip_time_range=None,
+    leak=0.,  
+    flip_time_range=None,  # (0.3, 0.7)
     
     n_trials=n_trials,
     max_steps=max_steps,
@@ -117,8 +117,10 @@ estimator = SpiceEstimator(
 
     loss_fn=make_ddm_loss(),
     
-    sindy_weight=1e-2,
-    sindy_alpha=1e-4,
+    ensemble_size=1,  # default: 10; only useful with SINDy fitting (i.e. sindy_weight>0; sindy_refit=True)
+    
+    sindy_weight=0,  # default: 1e-2; increase training speed -> sindy_weight=0 -> skips joint training in stage 1
+    sindy_alpha=1e-4,  # try with higher values to increase simplification pressure on SINDy and therefore on the RNN
     sindy_threshold_pruning=0.05,
     sindy_ensemble_pruning=0.7,
     sindy_refit=sindy_refit,

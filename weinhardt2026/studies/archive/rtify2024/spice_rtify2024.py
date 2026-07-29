@@ -7,7 +7,7 @@ CONFIG = SpiceConfig(
         'drift': [
             'stimulus',
             ],
-        # 'evidence': [
+        # 'integrator': [
         #     'drift',
         #     ],
         # 'threshold_raw': [
@@ -62,7 +62,7 @@ class DDMRNN(BaseModel):
         # so this doesn't reopen a bypass -- capping at degree=1 just because
         # the synthetic ground truth here is linear would assume the answer
         # instead of letting SPICE discover whatever structure the data has.
-        # self.setup_module(key_module='evidence', include_state=True, include_bias=False, dt=self.dt, dropout=self.dropout, within_trial_timesteps=True, polynomial_degree=2)
+        # self.setup_module(key_module='integrator', include_state=True, include_bias=False, dt=self.dt, dropout=self.dropout, within_trial_timesteps=True, polynomial_degree=2)
         
         # self.setup_module(key_module='threshold_raw', include_state=False, dt=self.dt, dropout=self.dropout, within_trial_timesteps=True)
         
@@ -102,7 +102,7 @@ class DDMRNN(BaseModel):
         # call, not a step-by-step Python loop -- drift doesn't depend on
         # evidence, so there's no feedback coupling forcing interleaving.
         # self.call_module(
-        #     key_module='evidence',
+        #     key_module='integrator',
         #     key_state='evidence',
         #     action_mask=None,
         #     inputs=(
