@@ -75,7 +75,7 @@ n_trials = 1000
 
 # spice training settings
 epochs=1000  # enables stage 1 training; if epochs=0 -> load existing model from path_spice
-sindy_refit=False  # enables stage 2 training; if epochs=0 and sindy_refit=False -> skip estimator.fit() and go directly to analysis
+sindy_refit=True  # enables stage 2 training; if epochs=0 and sindy_refit=False -> skip estimator.fit() and go directly to analysis
 
 
 device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
@@ -116,11 +116,12 @@ estimator = SpiceEstimator(
     n_participants=n_participants,
 
     loss_fn=make_ddm_loss(),
+    loss_fn_kwargs={},
     
     ensemble_size=1,  # default: 10; only useful with SINDy fitting (i.e. sindy_weight>0; sindy_refit=True)
     
-    sindy_weight=0,  # default: 1e-2; increase training speed -> sindy_weight=0 -> skips joint training in stage 1
-    sindy_alpha=1e-4,  # try with higher values to increase simplification pressure on SINDy and therefore on the RNN
+    sindy_weight=1e-2,  # default: 1e-2; increase training speed -> sindy_weight=0 -> skips joint training in stage 1
+    sindy_alpha=1e-3,  # default: 1e-4; try with higher values to increase simplification pressure on SINDy and therefore on the RNN
     sindy_threshold_pruning=0.05,
     sindy_ensemble_pruning=0.7,
     sindy_refit=sindy_refit,
