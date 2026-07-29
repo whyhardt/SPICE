@@ -48,10 +48,6 @@ class SpiceEstimator(BaseEstimator):
         learning_rate: Optional[float] = 1e-2,
         convergence_threshold: Optional[float] = 0,
         device: Optional[torch.device] = torch.device('cpu'),
-        lr_warmup_factor: Optional[float] = 1.,
-        lr_boost_factor_rnn: Optional[float] = 1.,
-        lr_boost_factor_sindy: Optional[float] = 1.,
-        lr_boost_duration_frac: Optional[float] = 0.1,
         ensemble_size: Optional[int] = 10,
         l2_rnn: Optional[float] = 0,
         dropout: Optional[float] = 0.1,
@@ -66,9 +62,7 @@ class SpiceEstimator(BaseEstimator):
         sindy_library_polynomial_degree: Optional[int] = 2,
         sindy_pruning_frequency: Optional[int] = 100,  # Epochs between pruning events
         sindy_threshold_pruning: Optional[float] = 0.01,  # Optional per-member threshold pruning (None to disable)
-        sindy_ensemble_pruning: Optional[float] = 0.5,  # Ensemble t-test significance level (primary pruning mechanism)
-        sindy_ensemble_pruning_mode: Optional[str] = 'ratio',  # 'ci' for CI test, 'ratio' for ensemble ratio test
-        sindy_population_pruning: Optional[float] = None,  # Optional cross-participant filter (0-1)
+        sindy_ensemble_pruning: Optional[float] = 0.5,  # Minimum ensemble ratio for a term to survive (primary pruning mechanism)
         sindy_pruning_terms: Optional[int] = None, # Number of pruned terms per pruning event (Defaults to None: Computed automatically such that n_coefficients can reach 0 within 'epochs-epochs_warmup' epochs)
         sindy_reconditioning_epochs: Optional[int] = 3,  # Pure SINDy SGD epochs after ridge recalibration
         sindy_refit: Optional[bool] = True,  # Enable Stage 2 Training (SINDy refit on frozen RNN parameters)
@@ -99,10 +93,6 @@ class SpiceEstimator(BaseEstimator):
             learning_rate: Learning rate for RNN parameters.
             convergence_threshold: Early stopping threshold (0 = disabled).
             device: Compute device (default: 'cpu').
-            lr_warmup_factor: RNN LR multiplier at start of training (default 10). Set to 1.0 to disable warmup.
-            lr_boost_factor_rnn: RNN LR multiplier after pruning (default 1.0 = no boost).
-            lr_boost_factor_sindy: SINDy LR multiplier after pruning (default 10.0).
-            lr_boost_duration_frac: Fraction of sindy_pruning_frequency for boost duration (default 0.1).
             ensemble_size: Number of independent RNN ensemble members.
             l2_rnn: L2 weight decay for RNN parameters.
             dropout: Dropout rate in GRU modules.
@@ -112,11 +102,10 @@ class SpiceEstimator(BaseEstimator):
             sindy_alpha: Degree-weighted L1 penalty strength.
             sindy_library_polynomial_degree: Max polynomial degree for SINDy candidate library.
             sindy_pruning_frequency: Epochs between pruning events.
-            sindy_threshold_pruning: Minimum effect size delta for CI test (None = disabled).
-            sindy_ensemble_pruning: Confidence level for ensemble CI test (e.g. 0.05),
-                or minimum ensemble ratio for ratio test (e.g. 0.6). Primary pruning mechanism.
-            sindy_ensemble_pruning_mode: 'ci' for CI test (default), 'ratio' for ensemble ratio test.
-            sindy_population_pruning: Cross-participant presence threshold 0-1 (None = disabled).
+            sindy_threshold_pruning: Minimum |coefficient| for a member to count as
+                supporting a term in the ensemble ratio test (None = disabled).
+            sindy_ensemble_pruning: Minimum fraction of ensemble members that must
+                exceed sindy_threshold_pruning for a term to survive. Primary pruning mechanism.
             sindy_reconditioning_epochs: Pure SINDy SGD epochs after ridge recalibration to warm-start the optimizer (0 = disable).
             sindy_ridge: Use closed-form ridge regression to initialize SINDy coefficients in Stage 2.2.
                 Falls back to SGD on failure. Set False to use pure SGD. (default: True)
@@ -138,10 +127,6 @@ class SpiceEstimator(BaseEstimator):
         self.batch_size = batch_size
         self.learning_rate = learning_rate
         self.convergence_threshold = convergence_threshold
-        self.lr_warmup_factor = lr_warmup_factor
-        self.lr_boost_factor_rnn = lr_boost_factor_rnn
-        self.lr_boost_factor_sindy = lr_boost_factor_sindy
-        self.lr_boost_duration_frac = lr_boost_duration_frac
         self.device = device
         self.verbose = verbose
         self.keep_log = keep_log
@@ -159,9 +144,7 @@ class SpiceEstimator(BaseEstimator):
         self.sindy_library_polynomial_degree = sindy_library_polynomial_degree
         self.sindy_pruning_frequency = sindy_pruning_frequency
         self.sindy_threshold_pruning = sindy_threshold_pruning
-        self.sindy_population_pruning = sindy_population_pruning
         self.sindy_ensemble_pruning = sindy_ensemble_pruning
-        self.sindy_ensemble_pruning_mode = sindy_ensemble_pruning_mode
         self.sindy_pruning_terms = sindy_pruning_terms
         self.sindy_reconditioning_epochs = sindy_reconditioning_epochs
         self.sindy_refit = sindy_refit
@@ -250,10 +233,6 @@ class SpiceEstimator(BaseEstimator):
             batch_size=self.batch_size,
             n_steps=self.n_steps_per_call,
 
-            lr_warmup_factor=self.lr_warmup_factor,
-            lr_boost_factor_rnn=self.lr_boost_factor_rnn,
-            lr_boost_factor_sindy=self.lr_boost_factor_sindy,
-            lr_boost_duration_frac=self.lr_boost_duration_frac,
             convergence_threshold=self.convergence_threshold,
             loss_fn=self.loss_fn,
             loss_fn_kwargs = self.loss_fn_kwargs,
@@ -263,8 +242,6 @@ class SpiceEstimator(BaseEstimator):
             sindy_pruning_frequency=self.sindy_pruning_frequency,
             sindy_threshold_pruning=self.sindy_threshold_pruning,
             sindy_ensemble_pruning=self.sindy_ensemble_pruning,
-            sindy_ensemble_pruning_mode=self.sindy_ensemble_pruning_mode,
-            sindy_population_pruning=self.sindy_population_pruning,
             sindy_pruning_terms=self.sindy_pruning_terms,
             sindy_reconditioning_epochs=self.sindy_reconditioning_epochs,
             sindy_refit=self.sindy_refit,

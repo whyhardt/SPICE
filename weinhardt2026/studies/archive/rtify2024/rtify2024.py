@@ -65,14 +65,18 @@ from weinhardt2026.studies.archive.rtify2024.analysis_rtify2024 import (
 
 path_spice = 'weinhardt2026/studies/archive/rtify2024/params/rtify2024.pkl'
 
+# simulation settings
 max_steps = 100
 t_max = 5.0
 dt = t_max / max_steps
 
-n_participants = 100
-n_blocks = 5      # within-participant stimulus conditions, breaks the
-                  # stimulus/participant-identity confound (see conversation)
-n_trials = 200    # trials PER BLOCK (n_blocks * n_trials = 1000 per participant, same total as before)
+n_participants = 3
+n_trials = 1000
+
+# spice training settings
+epochs=1000  # enables stage 1 training; if epochs=0 -> load existing model from path_spice
+sindy_refit=True  # enables stage 2 training; if epochs=0 and sindy_refit=False -> skip estimator.fit() and go directly to analysis
+
 
 device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 
@@ -85,7 +89,7 @@ device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cp
 #                                  possible flip and the flip stops mattering)
 #   leak=1.0                    -- leaky (vs. perfect) integration
 #   collapsing_bound_rate=0.3   -- urgency-like shrinking boundary
-drift_rates = torch.rand(n_participants, n_blocks)
+drift_rates = torch.rand(n_participants)
 
 dataset_train, dataset_test, info_dataset = get_dataset(
     drift_rates=drift_rates,
@@ -111,17 +115,15 @@ estimator = SpiceEstimator(
     n_actions=2,
     n_participants=n_participants,
 
-    loss_fn=make_ddm_loss(drift_smoothness_weight=0),
-    loss_fn_kwargs={},
-    # l2_rnn=1e-4,
+    loss_fn=make_ddm_loss(),
     
     sindy_weight=1e-2,
     sindy_alpha=1e-4,
     sindy_threshold_pruning=0.05,
     sindy_ensemble_pruning=0.7,
-    sindy_refit=True,
+    sindy_refit=sindy_refit,
     
-    epochs=1000,
+    epochs=epochs,
     warmup_steps=500,
     
     device=device,
@@ -129,7 +131,6 @@ estimator = SpiceEstimator(
     save_path_spice=path_spice,
     compiled_forward=True,
 )
-estimator.loss_fn_kwargs['model'] = estimator.model  # drift_smoothness_weight needs model.state['drift']
 
 if estimator.epochs == 0:
     estimator.load_spice(path_spice)

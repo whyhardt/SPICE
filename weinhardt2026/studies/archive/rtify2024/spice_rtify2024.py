@@ -177,7 +177,7 @@ class DDMRNN(BaseModel):
         return output, self.get_state()
 
 
-def make_ddm_loss(drift_smoothness_weight: float = 0.):
+def make_ddm_loss():
     """Joint negative log-likelihood of (choice, RT) under the two-boundary hazard model.
 
     Both `prediction` and `target` are per-timestep: `prediction[..., w, :]` =
@@ -185,25 +185,12 @@ def make_ddm_loss(drift_smoothness_weight: float = 0.):
     exactly the (boundary, bin) pair actually observed for that trial, 0 elsewhere.
     Rows with no indicator (every `w` except the observed one) carry no loss --
     only the one row per trial matching the observed outcome contributes.
-
-    drift_smoothness_weight: penalizes drift's within-trial variation around
-    its own first-step value (mean((drift[t]-drift[0])^2)). `evidence`'s
-    within-trial shape can only vary if `drift` genuinely varies (evidence is
-    a deterministic cumsum of drift), so this directly discourages the RNN
-    from finding a "ramp" or "decay" explanation instead of the true
-    roughly-constant one, unless the data actually forces `drift` to move.
-    Requires `model` in loss_fn_kwargs (see rtify2024.py).
     """
 
-    def loss_fn(prediction: torch.Tensor, target: torch.Tensor, model=None) -> torch.Tensor:
+    def loss_fn(prediction: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         p_obs = (prediction * target).sum(dim=-1)
         valid = target.sum(dim=-1) > 0.5
         loss = -torch.log(p_obs[valid].clamp_min(1e-8)).mean()
-
-        if drift_smoothness_weight > 0 and model is not None:
-            drift = model.state['drift']
-            loss = loss + drift_smoothness_weight * ((drift - drift[0:1]) ** 2).mean()
-
         return loss
 
     return loss_fn

@@ -9,7 +9,6 @@ from tqdm import tqdm
 from torch.utils.data import DataLoader, RandomSampler
 from typing import Tuple, Union, Optional
 import shutil
-from scipy.stats import t as t_dist
 from torch.nn.functional import mse_loss  # using standard mse loss for spice should be fine most of the time
 
 from .model import BaseModel
@@ -163,99 +162,6 @@ def _print_training_status(
     print(msg, flush=True)
     
     return current_line_count
-
-
-class SpiceLRScheduler:
-    """
-    Unified LR scheduler for SPICE training with warmup and post-pruning boosts.
-
-    Manages separate schedules for RNN (param_groups[1]) and SINDy (param_groups[0]):
-
-    - Warmup: RNN LR starts at warmup_factor * base_lr, linearly decays to base_lr
-      over n_warmup_steps. SINDy LR is unchanged during warmup.
-    - Post-pruning boost: After a pruning event, RNN and SINDy LRs are temporarily
-      multiplied by their respective boost factors for boost_duration epochs,
-      then return to their base rates.
-
-    Args:
-        optimizer: Optimizer with param_groups[0]=SINDy, param_groups[1]=RNN.
-        n_warmup_steps: Number of warmup epochs for RNN LR ramp-down.
-        warmup_factor: RNN LR multiplier at start (linearly decays to 1.0).
-            Set to 1.0 to disable warmup.
-        boost_factor_rnn: RNN LR multiplier after pruning (1.0 = no boost).
-        boost_factor_sindy: SINDy LR multiplier after pruning (default 10.0:
-            0.001 -> 0.01, matching previous hardcoded behavior).
-        boost_duration_frac: Fraction of sindy_pruning_frequency for boost
-            duration (default 0.1).
-        sindy_pruning_frequency: Epochs between pruning events (used to
-            compute boost duration).
-    """
-    def __init__(self, optimizer, n_warmup_steps=0, warmup_factor=10.,
-                 boost_factor_rnn=1., boost_factor_sindy=10.,
-                 boost_duration_frac=0.1, sindy_pruning_frequency=100):
-        self.optimizer = optimizer
-        self.n_warmup_steps = n_warmup_steps
-        self.warmup_factor = warmup_factor
-        self.boost_factor_rnn = boost_factor_rnn
-        self.boost_factor_sindy = boost_factor_sindy
-        self.boost_duration = max(1, int(boost_duration_frac * sindy_pruning_frequency))
-
-        # Store base LRs
-        self._has_sindy = len(optimizer.param_groups) > 1
-        if self._has_sindy:
-            self.base_lr_sindy = optimizer.param_groups[0]['lr']
-            self.base_lr_rnn = optimizer.param_groups[1]['lr']
-        else:
-            self.base_lr_rnn = optimizer.param_groups[0]['lr']
-            self.base_lr_sindy = None
-
-        # Apply initial warmup LR
-        if n_warmup_steps > 0 and warmup_factor != 1.:
-            self._rnn_pg['lr'] = self.base_lr_rnn * warmup_factor
-
-        # Boost state
-        self._boost_end = 0
-
-    @property
-    def _rnn_pg(self):
-        return self.optimizer.param_groups[1] if self._has_sindy else self.optimizer.param_groups[0]
-
-    @property
-    def _sindy_pg(self):
-        return self.optimizer.param_groups[0] if self._has_sindy else None
-
-    def step(self, epoch):
-        """Update LRs for the current epoch (warmup interpolation + boost expiry)."""
-        # Warmup: linearly interpolate RNN LR from warmup_factor*base to base
-        if epoch < self.n_warmup_steps and self.warmup_factor != 1.:
-            frac = epoch / max(1, self.n_warmup_steps)
-            factor = self.warmup_factor + (1. - self.warmup_factor) * frac
-            self._rnn_pg['lr'] = self.base_lr_rnn * factor
-        elif epoch == self.n_warmup_steps and self.warmup_factor != 1.:
-            self._rnn_pg['lr'] = self.base_lr_rnn
-
-        # Boost expiry
-        if self._boost_end > 0 and epoch >= self._boost_end:
-            self._rnn_pg['lr'] = self.base_lr_rnn
-            if self._sindy_pg is not None:
-                self._sindy_pg['lr'] = self.base_lr_sindy
-            self._boost_end = 0
-
-    def notify_pruning(self, epoch):
-        """Activate post-pruning LR boost for both param groups."""
-        if self.boost_factor_rnn != 1.:
-            self._rnn_pg['lr'] = self.base_lr_rnn * self.boost_factor_rnn
-        if self._sindy_pg is not None and self.boost_factor_sindy != 1.:
-            self._sindy_pg['lr'] = self.base_lr_sindy * self.boost_factor_sindy
-        self._boost_end = epoch + self.boost_duration
-
-    def get_lr(self):
-        """Retrieve current learning rates for all parameter groups."""
-        return [group['lr'] for group in self.optimizer.param_groups]
-
-    def get_last_lr(self):
-        """Retrieve current learning rates for all parameter groups."""
-        return [group['lr'] for group in self.optimizer.param_groups]
 
 
 def cross_entropy_loss(prediction: torch.Tensor, target: torch.Tensor, label_smoothing=0.) -> torch.Tensor:
@@ -460,7 +366,6 @@ def _ensemble_pruning(
     sindy_threshold_pruning: float,
     verbose: bool,
     n_terms_pruning: int = None,
-    sindy_ensemble_pruning_mode: str = 'ci',
 ):
     """Ensemble-based pruning with optional rate limiting.
 
@@ -468,30 +373,18 @@ def _ensemble_pruning(
         n_terms_pruning: Max terms to prune per event (across all modules).
             When set, only the smallest-magnitude candidates are pruned.
             None = no limit (prune all that fail the test).
-        sindy_ensemble_pruning_mode: 'ci' for minimum-effect CI test (default),
-            'ratio' for ensemble ratio test.
     """
     pruned = False
     module_list = list(model.submodules_rnn.keys())
 
-    if sindy_ensemble_pruning_mode == 'ratio':
-        ensemble_test_fn = _ensemble_ratio_test
-        ensemble_test_kwargs = dict(
-            threshold=sindy_threshold_pruning or 0.0,
-            ratio=sindy_ensemble_pruning,
-        )
-    else:
-        ensemble_test_fn = _minimum_effect_ci_test
-        ensemble_test_kwargs = dict(
-            alpha=sindy_ensemble_pruning,
-            delta=sindy_threshold_pruning or 0.0,
-        )
+    ensemble_test_kwargs = dict(
+        threshold=sindy_threshold_pruning or 0.0,
+        ratio=sindy_ensemble_pruning,
+    )
 
     confidence_masks = _compute_pruning_masks(
         model,
-        ensemble_test_fn=ensemble_test_fn,
         ensemble_test_kwargs=ensemble_test_kwargs,
-        participant_threshold=None,
         verbose=verbose,
     )
 
@@ -860,7 +753,6 @@ def _run_sindy_training(
     sindy_alpha: float = None,
     sindy_pruning_frequency: int = None,
     sindy_ensemble_pruning: float = None,
-    sindy_ensemble_pruning_mode: str = 'ci',
     sindy_threshold_pruning: float = None,
     sindy_pruning_terms: int = None,
     shooting_steps: int = 20,
@@ -1071,7 +963,6 @@ def _run_sindy_training(
                                     sindy_threshold_pruning=sindy_threshold_pruning,
                                     n_terms_pruning=sindy_pruning_terms,
                                     verbose=verbose,
-                                    sindy_ensemble_pruning_mode=sindy_ensemble_pruning_mode,
                                 )
                             elif sindy_threshold_pruning is not None and sindy_threshold_pruning > 0:
                                 model.sindy_coefficient_pruning(patience=sindy_pruning_frequency, n_terms_pruning=sindy_pruning_terms)
@@ -1286,18 +1177,11 @@ def _run_joint_training(
     loss_fn: callable = cross_entropy_loss,
     loss_fn_kwargs: dict = {},
 
-    lr_warmup_factor: float = 10.,
-    lr_boost_factor_rnn: float = 1.,
-    lr_boost_factor_sindy: float = 10.,
-    lr_boost_duration_frac: float = 0.1,
-
     sindy_weight: float = 0,
     sindy_alpha: float = 0,
     sindy_pruning_frequency: int = None,
     sindy_threshold_pruning: float = None,
     sindy_ensemble_pruning: float = None,
-    sindy_ensemble_pruning_mode: str = 'ci',
-    sindy_population_pruning: float = None,
     sindy_pruning_terms: int = None,
     sindy_reconditioning_epochs: int = 3,
 
@@ -1330,15 +1214,6 @@ def _run_joint_training(
         dataloader_test = DataLoader(dataset_test, batch_size=len(dataset_test))
 
     warmup_scaler_sindy_weight = _setup_warmup_scaler(n_warmup_steps=n_warmup_steps, exp_max=5)
-    # lr_scheduler = SpiceLRScheduler(
-    #     optimizer=optimizer,
-    #     n_warmup_steps=n_warmup_steps,
-    #     warmup_factor=lr_warmup_factor,
-    #     boost_factor_rnn=lr_boost_factor_rnn,
-    #     boost_factor_sindy=lr_boost_factor_sindy,
-    #     boost_duration_frac=lr_boost_duration_frac,
-    #     sindy_pruning_frequency=sindy_pruning_frequency if sindy_pruning_frequency else 100,
-    # )
     lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, 
         mode='min', 
@@ -1477,7 +1352,6 @@ def _run_joint_training(
                                 sindy_threshold_pruning=sindy_threshold_pruning,
                                 n_terms_pruning=sindy_pruning_terms,
                                 verbose=verbose,
-                                sindy_ensemble_pruning_mode=sindy_ensemble_pruning_mode,
                                 )
 
                         elif sindy_threshold_pruning is not None and sindy_threshold_pruning > 0:
@@ -1488,10 +1362,6 @@ def _run_joint_training(
                         # Reset coefficients + optimizer state, ridge solve + reconditioning
                         # if pruned:
                         #     _ridge_recalibrate_sindy(model, xs_train, ys_train, optimizer, n_reconditioning_epochs=sindy_reconditioning_epochs)
-
-                        # LR boost after pruning event
-                        # if pruned:
-                        #     lr_scheduler.notify_pruning(n_calls_to_train_model)
 
             # Check convergence
             dloss = last_loss - (loss_test_rnn if dataloader_test is not None else loss_train)
@@ -1534,56 +1404,6 @@ def _run_joint_training(
     return model, optimizer, loss_train, loss_test_rnn, loss_test_sindy
 
 
-def _minimum_effect_ci_test(
-    coefficients: torch.Tensor,
-    presence: torch.Tensor,
-    alpha: float = 0.05,
-    delta: float = 0.0,
-) -> torch.Tensor:
-    """
-    Minimum-effect confidence interval test on absolute coefficient values.
-
-    Tests whether the ensemble mean of |coefficient| is confidently above
-    delta: mean(|coeff|) - t_crit * SE(|coeff|) > delta.
-
-    Operating on absolute values makes the test sign-agnostic: a term where
-    half the ensemble learns +0.3 and half learns -0.3 will survive (all
-    members agree the magnitude is non-zero), whereas testing raw values
-    would cancel them out and incorrectly prune the term.
-
-    Pruned coefficients are treated as zero estimates, so terms only found by
-    a few ensemble members are naturally penalized.
-
-    Args:
-        coefficients: [E, P, X, terms] raw coefficient values
-        presence: [E, P, X, terms] boolean presence mask
-        alpha: confidence level (default: 0.05)
-        delta: minimum effect size threshold (default: 0.0)
-
-    Returns:
-        [P, X, terms] boolean mask — True where term passes the CI test
-    """
-
-    effective_coeffs = (coefficients * presence.float()).detach().abs()
-    E = effective_coeffs.shape[0]
-
-    mean = effective_coeffs.mean(dim=0)                # [P, X, terms]
-    std = effective_coeffs.std(dim=0, correction=1)    # [P, X, terms]
-    se = std / (E ** 0.5)
-
-    t_critical = t_dist.ppf(1 - alpha / 2, df=E - 1)
-
-    # CI lower bound for mean(|coeff|) must exceed delta
-    ci_lower = mean - t_critical * se
-    significant = ci_lower > delta
-
-    # Require at least 2 active ensemble members for a valid test
-    n_active = presence.float().sum(dim=0)
-    significant = significant & (n_active >= 2)
-
-    return significant
-
-
 def _ensemble_ratio_test(
     coefficients: torch.Tensor,
     presence: torch.Tensor,
@@ -1619,22 +1439,20 @@ def _ensemble_ratio_test(
 
 def _compute_ensemble_masks(
     model: BaseModel,
-    test_fn: callable = _minimum_effect_ci_test,
     verbose: bool = True,
     **test_fn_kwargs,
 ) -> dict:
     """
-    Per-participant ensemble confidence filtering.
+    Per-participant ensemble confidence filtering via the ensemble ratio test.
 
-    For each (participant, experiment, term), applies a statistical test
-    across ensemble members to determine if the term is robustly identified.
+    For each (participant, experiment, term), tests whether a sufficient
+    fraction of ensemble members agree the term is non-zero.
 
     Args:
         model: trained model with SINDy coefficients
-        test_fn: statistical test function with signature
-                 (coefficients [E,P,X,T], presence [E,P,X,T], **kwargs) -> [P,X,T] bool
         verbose: print filtering results
-        **test_fn_kwargs: keyword arguments passed to test_fn
+        **test_fn_kwargs: keyword arguments passed to _ensemble_ratio_test
+            (threshold, ratio)
 
     Returns:
         Dict mapping module names to [P, X, terms] boolean masks
@@ -1648,7 +1466,7 @@ def _compute_ensemble_masks(
         coeffs = model.sindy_coefficients[module].detach()
         presence = model.sindy_coefficients_presence[module]
 
-        mask = test_fn(coeffs, presence, **test_fn_kwargs)
+        mask = _ensemble_ratio_test(coeffs, presence, **test_fn_kwargs)
         ensemble_masks[module] = mask
 
         if verbose:
@@ -1660,103 +1478,31 @@ def _compute_ensemble_masks(
     return ensemble_masks
 
 
-def _compute_participant_masks(
-    ensemble_masks: dict,
-    confidence_threshold: float,
-    n_participants: int,
-    n_experiments: int,
-    verbose: bool = True,
-) -> dict:
-    """
-    Cross-participant confidence filtering on (optionally ensemble-filtered) masks.
-    
-    A term passes if it is present in at least
-    (confidence_threshold * n_participants * n_experiments) participant-experiment slots.
-
-    Args:
-        ensemble_masks: {module: [P, X, terms] bool} per-participant masks
-        confidence_threshold: required fraction of (P * X) slots (0-1)
-        n_participants: number of participants
-        n_experiments: number of experiments
-        verbose: print filtering results
-
-    Returns:
-        Dict mapping module names to [terms] boolean masks
-    """
-    confidence_masks = {}
-    min_occurrences = int(confidence_threshold * n_participants * n_experiments)
-
-    if verbose:
-        print(f"Participant confidence filtering (threshold={confidence_threshold}, min_occurrences={min_occurrences}):")
-
-    for module, mask in ensemble_masks.items():
-        # mask: [P, X, terms] -> sum across P and X -> [terms]
-        participant_presence = mask.float().sum(dim=0).sum(dim=0)  # (terms,)
-        global_mask = participant_presence >= min_occurrences  # (terms,)
-        # Intersect: term must be significant for this participant AND common enough globally
-        confidence_masks[module] = mask & global_mask.unsqueeze(0).unsqueeze(0)  # (P, X, terms)
-
-        if verbose:
-            n_before = mask.sum().item()
-            n_after = confidence_masks[module].sum().item()
-            n_global = global_mask.sum().item()
-            print(f"\t{module}: {n_before} -> {n_after} (participant, experiment, term) slots ({n_global} global terms)")
-
-    return confidence_masks
-
-
 def _compute_pruning_masks(
     model: BaseModel,
-    ensemble_alpha: float = None,
-    ensemble_delta: float = 0.0,
-    participant_threshold: float = None,
-    ensemble_test_fn: callable = _minimum_effect_ci_test,
     ensemble_test_kwargs: dict = None,
     verbose: bool = True,
 ) -> dict:
     """
-    Two-level confidence filtering: ensemble filtering -> participant filtering.
+    Ensemble ratio-test filtering per (participant, experiment, term).
 
     Args:
         model: trained model with SINDy coefficients
-        ensemble_alpha: confidence level for ensemble CI test (None to skip)
-        ensemble_delta: minimum effect size for ensemble CI test (default: 0.0)
-        participant_threshold: required fraction of (P * X) slots (None to skip)
-        ensemble_test_fn: statistical test function for ensemble filtering
-        ensemble_test_kwargs: keyword arguments passed to the test function.
-            If None, defaults to {'alpha': ensemble_alpha, 'delta': ensemble_delta}
-            for backward compatibility with the CI test.
+        ensemble_test_kwargs: keyword arguments passed to _ensemble_ratio_test
+            (threshold, ratio). None skips ensemble filtering.
         verbose: print filtering results
 
     Returns:
         Dict mapping module names to [P, X, terms] boolean masks
     """
-    # Step 1: Ensemble filtering (per participant)
-    if ensemble_alpha is not None or ensemble_test_kwargs is not None:
-        if ensemble_test_kwargs is None:
-            ensemble_test_kwargs = dict(alpha=ensemble_alpha, delta=ensemble_delta)
-        ensemble_masks = _compute_ensemble_masks(
-            model, test_fn=ensemble_test_fn, verbose=verbose,
-            **ensemble_test_kwargs,
-        )
-    else:
-        # No ensemble filtering — term is present for (P, X) if any ensemble member has it
-        ensemble_masks = {
-            module: model.sindy_coefficients_presence[module].any(dim=0)
-            for module in model.submodules_rnn
-        }
+    if ensemble_test_kwargs is not None:
+        return _compute_ensemble_masks(model, verbose=verbose, **ensemble_test_kwargs)
 
-    # Step 2: Participant filtering (global)
-    if participant_threshold is not None and participant_threshold > 0:
-        confidence_masks = _compute_participant_masks(
-            ensemble_masks, participant_threshold, model.n_participants, model.n_experiments, verbose=verbose
-        )
-    else:
-        # No participant filtering — keep terms that pass ensemble filter for any (P, X)
-        # confidence_masks = {module: mask.any(dim=1).any(dim=1).unsqueeze(1).unsqueeze(1) for module, mask in ensemble_masks.items()}
-        confidence_masks = ensemble_masks
-        
-    return confidence_masks
+    # No ensemble filtering — term is present for (P, X) if any ensemble member has it
+    return {
+        module: model.sindy_coefficients_presence[module].any(dim=0)
+        for module in model.submodules_rnn
+    }
 
 
 def fit_spice(
@@ -1772,18 +1518,11 @@ def fit_spice(
     loss_fn: callable = cross_entropy_loss,
     loss_fn_kwargs: dict = {},
 
-    lr_warmup_factor: float = 10.,
-    lr_boost_factor_rnn: float = 1.,
-    lr_boost_factor_sindy: float = 10.,
-    lr_boost_duration_frac: float = 0.1,
-    
     sindy_weight: float = 0.,
     sindy_alpha: float = 0.,
     sindy_pruning_frequency: int = 1,
     sindy_threshold_pruning: float = None,
     sindy_ensemble_pruning: float = None,
-    sindy_ensemble_pruning_mode: str = 'ci',
-    sindy_population_pruning: float = None,
     sindy_pruning_terms: int = None,
     sindy_reconditioning_epochs: int = 3,
     sindy_refit: bool = True,
@@ -1822,29 +1561,16 @@ def fit_spice(
         n_steps: BPTT truncation length
         convergence_threshold: Early stopping threshold
         loss_fn: Loss function for behavioral prediction
-        lr_warmup_factor: RNN LR multiplier at start of training (default 10).
-            LR linearly decays from warmup_factor * base_lr to base_lr over
-            n_warmup_steps. Set to 1.0 to disable warmup.
-        lr_boost_factor_rnn: RNN LR multiplier after pruning (default 1.0 = no boost)
-        lr_boost_factor_sindy: SINDy LR multiplier after pruning (default 10.0)
-        lr_boost_duration_frac: Fraction of sindy_pruning_frequency for boost
-            duration (default 0.1)
         sindy_weight: λ_sindy regularization strength
         sindy_alpha: Degree-weighted L1 penalty strength
-        sindy_threshold_pruning: Minimum effect size (delta) for the CI test.
-            When sindy_ensemble_pruning is set, this serves as the delta threshold.
-            When sindy_ensemble_pruning is None, falls back to per-member hard
+        sindy_threshold_pruning: Minimum |coefficient| for a member to count as
+            supporting a term in the ensemble ratio test. When
+            sindy_ensemble_pruning is None, falls back to per-member hard
             thresholding. (None or 0 to disable; default: None)
         sindy_pruning_frequency: Epochs between pruning events
-        sindy_ensemble_pruning: Confidence level for ensemble CI test (e.g. 0.05),
-            or minimum ensemble ratio for ratio test (e.g. 0.6).
-            Primary pruning mechanism. None to disable.
-        sindy_ensemble_pruning_mode: Ensemble pruning strategy. 'ci' for
-            minimum-effect CI test (default), 'ratio' for ensemble ratio test
-            (prune if fewer than sindy_ensemble_pruning fraction of members
-            have |coeff| > sindy_threshold_pruning).
-        sindy_population_pruning: Optional participant presence threshold (0-1).
-            None to disable.
+        sindy_ensemble_pruning: Minimum fraction of ensemble members that must
+            exceed sindy_threshold_pruning for a term to survive (ensemble
+            ratio test). Primary pruning mechanism. None to disable.
         sindy_reconditioning_epochs: Number of pure SINDy SGD epochs after each
             ridge recalibration to warm-start the optimizer. Uses one-shot
             gradient seeding on the first epoch. (default: 3, 0 to disable)
@@ -1883,16 +1609,11 @@ def fit_spice(
         # Pruning details
         pruning_details = []
         if sindy_ensemble_pruning is not None:
-            if sindy_ensemble_pruning_mode == 'ratio':
-                pruning_details.append(f"ratio test ratio={sindy_ensemble_pruning}")
-            else:
-                pruning_details.append(f"CI test alpha={sindy_ensemble_pruning}")
+            pruning_details.append(f"ratio test ratio={sindy_ensemble_pruning}")
             if sindy_threshold_pruning is not None and sindy_threshold_pruning > 0:
                 pruning_details.append(f"delta={sindy_threshold_pruning}")
         elif sindy_threshold_pruning is not None and sindy_threshold_pruning > 0:
             pruning_details.append(f"threshold={sindy_threshold_pruning} (per-member)")
-        if sindy_population_pruning is not None and sindy_population_pruning > 0:
-            pruning_details.append(f"participant threshold={sindy_population_pruning}")
         if pruning_details:
             print(f"\tPruning (every {sindy_pruning_frequency} epochs): {', '.join(pruning_details)}")
         else:
@@ -1955,19 +1676,12 @@ def fit_spice(
                     loss_fn=loss_fn,
                     loss_fn_kwargs=loss_fn_kwargs,
 
-                    lr_warmup_factor=lr_warmup_factor,
-                    lr_boost_factor_rnn=lr_boost_factor_rnn,
-                    lr_boost_factor_sindy=lr_boost_factor_sindy,
-                    lr_boost_duration_frac=lr_boost_duration_frac,
-                    
                     sindy_weight=sindy_weight,
                     sindy_alpha=sindy_alpha,
                     sindy_threshold_pruning=sindy_threshold_pruning,
                     sindy_pruning_frequency=sindy_pruning_frequency,
                     sindy_ensemble_pruning=sindy_ensemble_pruning,
-                    sindy_ensemble_pruning_mode=sindy_ensemble_pruning_mode,
                     sindy_pruning_terms=sindy_pruning_terms,
-                    sindy_population_pruning=sindy_population_pruning,
                     sindy_reconditioning_epochs=sindy_reconditioning_epochs,
 
                     verbose=verbose,
@@ -2018,7 +1732,6 @@ def fit_spice(
             sindy_alpha=sindy_alpha,
             sindy_pruning_frequency=sindy_pruning_frequency,
             sindy_ensemble_pruning=sindy_ensemble_pruning,
-            sindy_ensemble_pruning_mode=sindy_ensemble_pruning_mode,
             sindy_threshold_pruning=sindy_threshold_pruning,
             sindy_pruning_terms=sindy_pruning_terms,
             shooting_steps=sindy_shooting_steps,
@@ -2057,7 +1770,6 @@ def fit_spice(
                 sindy_threshold_pruning=None,
                 sindy_pruning_frequency=None,
                 sindy_ensemble_pruning=None,
-                sindy_population_pruning=None,
 
                 verbose=False,
                 keep_log=False,
@@ -2085,7 +1797,6 @@ def fit_spice(
                 sindy_threshold_pruning=None,
                 sindy_pruning_frequency=None,
                 sindy_ensemble_pruning=None,
-                sindy_population_pruning=None,
 
                 verbose=False,
                 keep_log=False,

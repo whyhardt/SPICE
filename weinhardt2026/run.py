@@ -37,21 +37,15 @@ if __name__=='__main__':
     parser.add_argument('--loss_kwargs', type=json.loads, default='{"label_smoothing": 0.01}', help='Learning rate')
     parser.add_argument('--ensemble', type=int, default=10, help='Number of independent members in the ensemble setup')
     parser.add_argument('--embedding', type=int, default=8, help='Embedding size of participants')
-    parser.add_argument('--lr_warmup_factor', type=float, default=1., help='RNN LR multiplier at start of training (1.0 = no warmup)')
-    parser.add_argument('--lr_boost_rnn', type=float, default=1., help='RNN LR multiplier after pruning (1.0 = no boost)')
-    parser.add_argument('--lr_boost_sindy', type=float, default=1., help='SINDy LR multiplier after pruning')
-    parser.add_argument('--lr_boost_duration', type=float, default=0.1, help='Fraction of pruning_frequency for boost duration')
 
     # SINDy training parameters
     parser.add_argument('--sindy_skip_refit', action='store_false', help='Refits the SINDy coefficients in Stage 2 training (default: True)')
     parser.add_argument('--shooting_steps', type=int, default=100, help='Multi-step shooting horizon for Stage 2 SINDy refit (1=one-step-ahead, default: 100)')
     parser.add_argument('--sindy_weight', type=float, default=0.01, help='Weight for SINDy regularization during RNN training')
     parser.add_argument('--sindy_alpha', type=float, default=0.0001, help='Degree-weighted coefficient penalty strength (ridge alpha)')
-    parser.add_argument('--pruning_method', type=str, default='ratio', help='Pruning method for ensemble pruning. Defaults to "ratio". Alternatively "ci".')
-    parser.add_argument('--pruning_test', type=float, default=0.5, help='Ensemble pruning test threshold (recommended: ci -> 0.05; ratio -> 0.7)')
+    parser.add_argument('--pruning_test', type=float, default=0.5, help='Minimum fraction of ensemble members that must exceed pruning_threshold for a term to survive (ensemble ratio test)')
     parser.add_argument('--pruning_threshold', type=float, default=0.01, help='Significance threshold value for SINDy coefficients')
     parser.add_argument('--pruning_frequency', type=int, default=100, help='Epochs between pruning events')
-    parser.add_argument('--pruning_population', type=float, default=None, help='Percentage of participants which have to have a term active in order to keep it.')
     parser.add_argument('--pruning_terms', type=int, default=None, help='Max terms pruned per event. None=auto-compute so coefficients can reach 0 within training.')
     
     # Data setup parameters
@@ -179,20 +173,14 @@ if __name__=='__main__':
         loss_fn_kwargs=args.loss_kwargs,
         dropout=0.1,
         embedding_size=args.embedding,
-        lr_warmup_factor=args.lr_warmup_factor,
-        lr_boost_factor_rnn=args.lr_boost_rnn,
-        lr_boost_factor_sindy=args.lr_boost_sindy,
-        lr_boost_duration_frac=args.lr_boost_duration,
 
         # sindy fitting parameters
         sindy_weight=args.sindy_weight,
         sindy_alpha=args.sindy_alpha,
         sindy_library_polynomial_degree=2,
-        sindy_ensemble_pruning_mode=args.pruning_method,
         sindy_pruning_frequency=args.pruning_frequency,
         sindy_threshold_pruning=args.pruning_threshold,
         sindy_ensemble_pruning=args.pruning_test,
-        sindy_population_pruning=args.pruning_population,
         sindy_pruning_terms=args.pruning_terms,
         sindy_shooting_steps=args.shooting_steps,
         sindy_ridge=True,

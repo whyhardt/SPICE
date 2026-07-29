@@ -122,17 +122,23 @@ Roughly in order — see git history / prior conversation for exact diffs:
    future work in this codebase: don't pattern-match a `dt`-fix from one
    context to another without re-deriving whether the quantity in question
    is a rate (dt-independent) or a delta (dt-dependent).**
-8. **Experimental design fix**: the original setup had exactly one fixed
-   stimulus/drift-rate value per participant — stimulus was perfectly
-   confounded with participant identity, making it impossible to distinguish
-   "drift tracks stimulus" from "drift is an arbitrary per-participant
-   constant." Fixed by introducing within-participant multi-block design: 5
-   blocks (stimulus conditions) per participant, 200 trials each, drift rates
-   drawn independently at random per (participant, block) —
-   `drift_rates = torch.rand(n_participants, n_blocks)`. Implemented in
-   `simulate_ddm`'s new `block_id` parameter and `get_dataset`'s support for
-   2D `drift_rates`. Smoke-tested for correctness of ID generation only — not
-   yet run through the actual fitting pipeline at scale.
+8. **Experimental design change, tried and reverted**: the original setup had
+   exactly one fixed stimulus/drift-rate value per participant — stimulus was
+   perfectly confounded with participant identity. Tried a within-participant
+   multi-block design (5 stimulus conditions per participant, 200 trials each,
+   `drift_rates = torch.rand(n_participants, n_blocks)`) to break the
+   confound. **Result: no improvement** — the fitted model produced the same
+   decay/ramp drift dynamics as before. Reverted back to the simple one
+   condition per participant design (`drift_rates = torch.rand(n_participants)`,
+   `n_trials=1000` per participant); the multi-block plumbing in
+   `simulate_ddm`/`get_dataset` (`block_id` parameter, 2D `drift_rates`
+   support) was removed rather than left dormant.
+9. **Drift smoothness regularization removed.** `drift_smoothness_weight` in
+   `make_ddm_loss` (and the `loss_fn_kwargs['model']` plumbing it needed) has
+   been deleted entirely, not just disabled. Decision going forward: the
+   identifiability problem should be addressed through experimental design
+   appropriate for flexible model-discovery approaches, not by adding prior
+   assumptions/penalties into the loss.
 
 ## Open problem: identifiability
 
@@ -150,35 +156,43 @@ the true, roughly-constant drift. This was tested two ways:
   and inverted result: participant 0's true-lower drift rate ended up higher
   than participant 2's true-higher drift rate in the recovered model.
 - **A smoothness penalty** (`drift_smoothness_weight` in `make_ddm_loss`,
-  penalizing `mean((drift[t]-drift[0])**2)`) was added but tested at too weak
-  a magnitude (`1e-2`) to matter — a loss-magnitude check showed its
-  contribution (~1e-3–5e-3) was three orders of magnitude smaller than the
-  behavioral loss (~4.4). **Not yet re-tested at a meaningfully larger
-  weight** (currently disabled, `drift_smoothness_weight=0`, in
-  `rtify2024.py`).
+  penalizing `mean((drift[t]-drift[0])**2)`) was tried and removed. It was
+  never validated at a meaningful strength (only tested at `1e-2`, three
+  orders of magnitude too weak to affect the loss), and the decision was made
+  to not pursue this direction further: the identifiability problem should
+  be solved through experimental design appropriate for flexible
+  model-discovery approaches, not by adding prior-assumption penalties into
+  the loss. The code for this has been deleted, not just disabled.
+- **A within-participant multi-block redesign** (multiple stimulus/drift
+  conditions per participant, breaking the stimulus/participant-identity
+  confound) was implemented and tested at full scale. **Result: no
+  improvement** — the fitted model produced the same decay/ramp drift
+  dynamics as the original single-condition design. This has been reverted;
+  the study is back to one fixed drift-rate condition per participant.
 
-The most recent attempt to address this at the data level (not the loss
-level) is the within-participant multi-block redesign (item 8 above): by
-giving each participant multiple different stimulus/drift conditions, the
-model can no longer explain participant-level variation as "each participant
-has one arbitrary constant drift" — only a genuine stimulus→drift mapping can
-explain variation *within* a participant across blocks. **This has not yet
-been validated at full scale** (only smoke-tested for correct ID plumbing,
-not run through `rtify2024.py`'s actual fit/evaluate/plot pipeline).
+Net result: neither of the two approaches tried so far (a loss-side
+smoothness prior, a data-side multi-block design) fixed identifiability.
+Both are now removed/reverted, and the codebase is back to its simplest form
+for whoever picks this up next.
 
 ### Suggested next steps for whoever picks this up
 
-1. Run the full pipeline with the new multi-block dataset and check whether
-   `print_spice_models`/`plot_summary`'s drift panel now tracks the true
-   per-block stimulus value, rather than looking like a per-participant
-   constant with decay/ramp artifacts.
-2. If identifiability is still poor, try a much larger
-   `drift_smoothness_weight` (e.g. 1–10, not 1e-2) and check the loss
-   magnitude balance again before concluding it doesn't help.
-3. Consider whether `threshold_raw`'s learnable per-participant initial value
+1. The stimulus/participant-identity confound is not the only design axis
+   worth reconsidering — investigate what specifically makes drift/threshold
+   under-determined given the hazard/survival likelihood (e.g., does adding
+   trial-level variation *within* the same condition, rather than
+   block-level conditions, help more? Does the amount of overlap between
+   drift trajectories across participants matter?).
+2. Consider whether `threshold_raw`'s learnable per-participant initial value
    should be more constrained (e.g. shared/fixed across participants) — the
    multiplicative degeneracy with `drift` may still be partially open even
    with the intercept/bias fixes already in place.
+3. Given both attempted fixes failed, it may be worth stepping back and
+   checking whether the decay/ramp trajectories found by the RNN are
+   *provably* equally likely under the model (a real identifiability
+   result), rather than just an optimization artifact — e.g. by directly
+   comparing the fitted model's log-likelihood on ground-truth-trajectory
+   constrained drift vs. its own found solution.
 
 ## Known framework-level caveat
 
