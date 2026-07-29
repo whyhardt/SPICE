@@ -112,7 +112,8 @@ class DDMRNN(BaseModel):
         #     participant_embedding=participant_embedding,
         # )  # self.state['evidence']: [W=max_steps, E, B, n_items]
         self.state['evidence'] = self.dt * torch.cumsum(self.state['drift'], dim=0)
-
+        evidence = self.state['evidence'][..., 0:1]  # single accumulator: [W, E, B, 1]
+        
         # boundary_updates = self.call_module(
         #     key_module='threshold_raw',
         #     # key_state='threshold_raw',
@@ -123,8 +124,7 @@ class DDMRNN(BaseModel):
         #     participant_index=spice_signals.participant_ids,
         #     participant_embedding=participant_embedding,
         # )
-
-        evidence = self.state['evidence'][..., 0:1]  # single accumulator: [W, E, B, 1]
+        
         # boundary was called with key_state=None, so self.state['threshold_raw'] still
         # holds the learned initial value (untouched by call_module) rather than
         # the zero it would've been reset to -- combine it with the state-blind
