@@ -3,65 +3,59 @@ import torch
 from spice import SpiceEstimator, SpiceDataset
 
 
-def _sanitize_predictions(p_up: torch.Tensor, p_down: torch.Tensor, label: str = '') -> tuple:
-    """Drop trials with non-finite or degenerate (all-zero) predicted probabilities.
-
-    A discovered SINDy equation is fit for one-step accuracy via ridge regression;
-    nothing guarantees it stays bounded when iterated `max_steps` times (unlike the
-    RNN, which was trained end-to-end and empirically stays well-behaved). If an
-    equation diverges under rollout, `evidence` can hit +/-inf and the hazard math
-    downstream produces NaN -- this excludes those trials rather than crashing
-    (e.g. inside `torch.distributions.Categorical`) or silently corrupting stats.
-    """
-    total = p_up.sum(dim=-1) + p_down.sum(dim=-1)
-    good = torch.isfinite(p_up).all(dim=-1) & torch.isfinite(p_down).all(dim=-1) & (total > 0)
-    n_bad = int((~good).sum().item())
-    if n_bad > 0:
-        print(f"{label}: excluded {n_bad}/{p_up.shape[0]} trials with non-finite/degenerate probabilities "
-              f"(likely SINDy rollout instability)")
-    return p_up[good], p_down[good], good
-
-
 def decode_choice_rt(ys: torch.Tensor, dt: float) -> tuple:
-    """Recover (is_up, rt_seconds) from the per-timestep one-hot indicator target."""
-    bin_up = ys[..., 0].argmax(dim=-1)
-    bin_down = ys[..., 1].argmax(dim=-1)
-    is_up = ys[..., 0].sum(dim=-1) > 0.5
-    rt_bin = torch.where(is_up, bin_up, bin_down)
-    rt_seconds = (rt_bin.float() + 0.5) * dt
+    """Recover (is_up, rt_seconds) from the per-trial per-step one-hot target.
+
+    `ys`: (..., T, 3) -- [no_decision, up, down] per step; the first step where column 1 or 2
+    is set is the trial's decision step (steps after are masked-out zeros, per
+    benchmark_rtify2024_f.py). Returns the RAW (non_decision_time-free) decision time --
+    callers add non_decision_time themselves when they need a real-world-comparable RT (see
+    module docstring in benchmark_rtify2024_f.py for why that split exists).
+    """
+    is_decision = (ys[..., 1] + ys[..., 2]) > 0.5  # [..., T]
+    bin_idx = is_decision.float().argmax(dim=-1)  # first True index
+    is_up = ys[..., 1].gather(-1, bin_idx.unsqueeze(-1)).squeeze(-1) > 0.5
+    rt_seconds = (bin_idx.float() + 0.5) * dt
     return is_up, rt_seconds
 
 
-def estimate_non_decision_time(rt_seconds: torch.Tensor, quantile: float = 0.05, safety_margin: float = 0.9) -> float:
-    """Data-derived non-decision-time estimate: a low quantile of observed RTs.
+def _step_probs_to_marginal(logits: torch.Tensor) -> tuple:
+    """[..., T, 3] raw per-step [no_decision, up, down] logits -> per-step CONDITIONAL
+    probabilities (softmax) -> marginal (survival-weighted) p_up/p_down, purely for
+    post-hoc reporting/plotting (not used anywhere in training).
 
-    Standard practice (e.g. EZ-diffusion): the fastest responses are assumed to be
-    close to pure sensory/motor delay, so a low percentile of the RT distribution
-    is a reasonable fixed Ter estimate -- cheaper and more stable than learning it
-    jointly with the evidence-accumulation dynamics.
+    survival[t] = P(not yet decided before step t) = cumulative product of
+    p_no_decision_cond over steps < t (1.0 at t=0, nothing decided yet).
     """
-    return torch.quantile(rt_seconds.flatten(), quantile).item() * safety_margin
+    step_probs = torch.softmax(logits, dim=-1)
+    p_no_decision_cond = step_probs[..., 0]
+    p_up_cond = step_probs[..., 1]
+    p_down_cond = step_probs[..., 2]
+
+    ones = torch.ones_like(p_no_decision_cond[..., :1])
+    survival = torch.cumprod(torch.cat((ones, p_no_decision_cond[..., :-1]), dim=-1), dim=-1)
+
+    return survival * p_up_cond, survival * p_down_cond
 
 
 @torch.no_grad()
-def evaluate(estimator: SpiceEstimator, dataset: SpiceDataset, dt: float, max_steps: int) -> dict:
+def evaluate(estimator: SpiceEstimator, dataset: SpiceDataset, dt: float, max_steps: int, non_decision_time: float = 0.0) -> dict:
     estimator.model.eval()
     xs = dataset.xs.to(estimator.model.device)
     ys = dataset.ys.to(estimator.model.device)
 
-    prediction, _ = estimator.model(xs)
-    prediction = prediction.mean(dim=0)  # average over ensemble: [B, 1, W, 2]
+    logits, _ = estimator.model(xs)
+    logits = logits.mean(dim=0)[:, :, 0, :]  # average over ensemble, drop W=1: [B, T, 3]
 
-    p_up = prediction[:, 0, :, 0]
-    p_down = prediction[:, 0, :, 1]
-    is_up, rt_obs = decode_choice_rt(ys[:, 0], dt)
-    p_up, p_down, good = _sanitize_predictions(p_up, p_down, label='evaluate')
-    is_up, rt_obs = is_up[good], rt_obs[good]
+    p_up, p_down = _step_probs_to_marginal(logits)
+
+    is_up_obs, rt_obs_raw = decode_choice_rt(ys[:, :, 0], dt)
+    rt_obs = rt_obs_raw + non_decision_time
 
     pred_choice = p_up.sum(dim=-1) > p_down.sum(dim=-1)
-    accuracy = (pred_choice == is_up).float().mean().item()
+    accuracy = (pred_choice == is_up_obs).float().mean().item()
 
-    bins = torch.arange(max_steps, device=p_up.device, dtype=p_up.dtype) * dt + dt / 2
+    bins = torch.arange(max_steps, device=p_up.device, dtype=p_up.dtype) * dt + dt / 2 + non_decision_time
     rt_pred_mean = ((p_up + p_down) * bins).sum(dim=-1).mean().item()
     rt_obs_mean = rt_obs.mean().item()
 
@@ -75,6 +69,141 @@ def print_spice_models(estimator: SpiceEstimator, participant_ids=(0, 1)):
 
 
 @torch.no_grad()
+def plot_participant_fit(
+    estimator: SpiceEstimator,
+    dataset: SpiceDataset,
+    dt: float,
+    t_max: float,
+    participant_id: int,
+    non_decision_time: float = 0.0,
+    use_sindy: bool = False,
+    output_path: str = None,
+):
+    """One participant: observed RT histogram (signed, density-normalized) vs. the model's own
+    predicted per-bin likelihood, overlaid as a red line -- up on the positive side, down on
+    the negative side. The likelihood is the analytic marginal (survival-weighted per-step
+    conditional probabilities, see `_step_probs_to_marginal`) -- exact, no sampling -- so this
+    is a more direct fit check than a histogram of simulated trajectories.
+    """
+    import matplotlib.pyplot as plt
+
+    estimator.model.eval()
+    xs = dataset.xs.to(estimator.model.device)
+    ys = dataset.ys.to(estimator.model.device)
+    prev_use_sindy = estimator.model.use_sindy
+    estimator.use_sindy(use_sindy)
+
+    logits, _ = estimator.model(xs)
+    logits = logits.mean(dim=0)[:, :, 0, :]  # [B, T, 3]
+    estimator.use_sindy(prev_use_sindy)
+
+    participant_col = xs[:, 0, 0, -1]
+    idx = (participant_col == participant_id).nonzero(as_tuple=True)[0]
+    if len(idx) == 0:
+        raise ValueError(f"No trials found for participant {participant_id}")
+
+    is_up_obs, rt_obs_raw = decode_choice_rt(ys[idx][:, :, 0], dt)
+    rt_obs = rt_obs_raw + non_decision_time
+    signed_rt_obs = torch.where(is_up_obs, rt_obs, -rt_obs).cpu().numpy()
+
+    # `drift`/`evidence` are deterministic given a participant's (constant) stimulus, so every
+    # trial belonging to `participant_id` shares the exact same predicted trajectory.
+    trial_idx = idx[0]
+    max_steps = logits.shape[1]
+    p_up, p_down = _step_probs_to_marginal(logits[trial_idx])
+    p_up, p_down = p_up.cpu().numpy(), p_down.cpu().numpy()
+
+    time_axis = (torch.arange(max_steps, dtype=torch.float32) * dt + dt / 2).numpy() + non_decision_time
+
+    fig, ax = plt.subplots(figsize=(7, 4))
+    ax.hist(signed_rt_obs, bins=50, range=(-t_max, t_max), density=True, alpha=0.5, color='tab:blue', label='observed RTs')
+    ax.plot(time_axis, p_up / dt, color='red', label='model likelihood (up/down)')
+    ax.plot(-time_axis, p_down / dt, color='red')
+    ax.axvline(0, color='gray', linewidth=0.5)
+    ax.set_xlabel('Signed RT (s); sign = boundary')
+    ax.set_ylabel('Density')
+    ax.set_title(f'Participant {participant_id} ({"sindy" if use_sindy else "rnn"})')
+    ax.legend()
+    fig.tight_layout()
+
+    if output_path is not None:
+        fig.savefig(output_path)
+    plt.show()
+
+    return fig
+
+
+@torch.no_grad()
+def _rollout_state_trajectory(model, xs: torch.Tensor) -> dict:
+    """Recover the full per-trial drift/evidence/threshold/logits history by calling `model()`
+    once per trial-step and reading `get_state()` (plus the step's own return value) after
+    each call -- a single batched `model(xs)` call only returns the LAST step's state snapshot
+    (`self.state` is overwritten every iteration of `forward()`'s trial loop). State carries
+    correctly across calls via `prev_state`, so rolling step-by-step and concatenating
+    reconstructs the exact same per-step values a single within-forward() loop would see.
+
+    `logits` is captured straight from each step's own model() return value -- NOT re-derived
+    from evidence/threshold via a hand-rolled formula in analysis code, which is what
+    previously went silently stale (see _simulate_trial_by_trial's docstring).
+
+    rtify2024_f's DDMRNN has no scalar `evidence`/softplus(`threshold_raw`) state -- `evidence`
+    is a full probability density over a grid (`state['evidence_pdf']`), and `threshold` is
+    bounded via sigmoid, not softplus. `model.mean_evidence()`/`model.effective_threshold()`
+    read the model's own definitions of those (its density's mean, its actual bounded
+    threshold) rather than re-deriving them here -- same anti-staleness reasoning as `logits`.
+    """
+    T = xs.shape[1]
+    state = None
+    history = {'drift': [], 'evidence': [], 'threshold': [], 'logits': []}
+    for t in range(T):
+        logits_t, state = model(xs[:, t:t + 1], state)
+        history['drift'].append(state['drift'][..., 0:1])
+        history['evidence'].append(model.mean_evidence().unsqueeze(-1))
+        history['threshold'].append(model.effective_threshold().unsqueeze(-1))
+        history['logits'].append(logits_t[:, :, 0, 0, :])  # [E, B, 3] -- this step's T=1, W=1 squeezed out
+
+    trajectory = {key: torch.cat(values, dim=0) for key, values in history.items() if key != 'logits'}
+    trajectory['logits'] = torch.stack(history['logits'], dim=0)  # [T, E, B, 3]
+    return trajectory
+
+
+@torch.no_grad()
+def _simulate_trial_by_trial(logits: torch.Tensor) -> tuple:
+    """RL-agent-style stepwise simulation: at each step, sample one of [no_decision, up, down]
+    from the model's own per-step conditional probabilities -- `no_decision` continues the
+    episode, `up`/`down` ends it. This replays forward()'s own generative process directly.
+
+    `logits`: [max_steps, B, 3] -- raw per-step logits straight from the model's own forward()
+    (via _rollout_state_trajectory), softmaxed here to get probabilities. Deliberately NOT
+    re-derived from evidence/threshold via a hand-rolled formula: an earlier version of this
+    function hardcoded rtify2024_d's softmax([threshold, evidence, -evidence]) hazard, which
+    silently went stale the moment spice_rtify2024_f.py switched to a Gaussian-CDF hazard --
+    the simulated RT distribution quietly kept sampling from the wrong (old) formula while
+    training (which reads the model's actual logits) was fine. Reading logits straight from
+    the model avoids that class of bug regardless of what the hazard formula is.
+
+    Returns (decided_bin, decided_up, decided): all [B]. `decided` is False for trials that
+    never leave `no_decision` within the horizon -- mirrors simulate_ddm's own handling of
+    timeouts (dropped, not force-assigned).
+    """
+    max_steps, n_trials, _ = logits.shape
+    probs = torch.softmax(logits, dim=-1)
+
+    decided_bin = torch.zeros(n_trials, dtype=torch.long, device=logits.device)
+    decided_up = torch.zeros(n_trials, dtype=torch.bool, device=logits.device)
+    decided = torch.zeros(n_trials, dtype=torch.bool, device=logits.device)
+
+    for t in range(max_steps):
+        choice = torch.multinomial(probs[t], num_samples=1).squeeze(-1)  # 0=no_decision, 1=up, 2=down
+        stop_now = ~decided & (choice != 0)
+        decided_bin[stop_now] = t
+        decided_up[stop_now] = choice[stop_now] == 1
+        decided = decided | stop_now
+
+    return decided_bin, decided_up, decided
+
+
+@torch.no_grad()
 def plot_summary(
     estimator: SpiceEstimator,
     dataset: SpiceDataset,
@@ -84,21 +213,18 @@ def plot_summary(
     participant_ids=(0, 1),
     n_examples: int = 3,
     true_threshold: float = None,
+    non_decision_time: float = 0.0,
     output_path: str = None,
 ):
     """One figure, four subplots: drift (rate), evidence (accumulator), decision
     boundary (+/-threshold), RT distribution. Drift/evidence/boundary subplots:
     one color per participant, one linestyle per role (true=dotted, rnn=dashed,
     sindy=solid). RT subplot: one color per role (true=blue, rnn=orange,
-    sindy=red), pooled across participants.
-
-    `true_threshold`: the constant boundary value passed to `simulate_ddm` (only
-    meaningful if `collapsing_bound_rate=0` there -- pass None to skip the true
-    boundary reference line if the ground truth is actually collapsing).
+    sindy=red), pooled across participants, sampled trial-by-trial via
+    `_simulate_trial_by_trial`.
     """
     import matplotlib.pyplot as plt
     import matplotlib.lines as mlines
-    import numpy as np
 
     estimator.model.eval()
     xs = dataset.xs.to(estimator.model.device)
@@ -110,23 +236,21 @@ def plot_summary(
     participant_colors = plt.cm.tab10.colors
 
     # --- run the model once in RNN mode, once in SINDy mode ---
-    predictions, drifts, evidences, thresholds = {}, {}, {}, {}
-    has_boundary_module = False
+    drifts, evidences, thresholds, logits_traj = {}, {}, {}, {}
+    has_boundary_module = True  # CONFIG always has a threshold_raw module in this study
     for key, use_sindy in (('rnn', False), ('sindy', True)):
         estimator.use_sindy(use_sindy)
-        prediction, state = estimator.model(xs)
-        predictions[key] = prediction.mean(dim=0)  # [B, 1, W, 2]
-        drifts[key] = state['drift'][..., 0:1].mean(dim=1).squeeze(-1)  # [max_steps, B]
-        evidences[key] = state['evidence'][..., 0:1].mean(dim=1).squeeze(-1)  # [max_steps, B]
-        if 'threshold_raw' in state:
-            has_boundary_module = True
-            thresholds[key] = torch.nn.functional.softplus(state['threshold_raw'][..., 0:1]).mean(dim=1).squeeze(-1)
+        trajectory = _rollout_state_trajectory(estimator.model, xs)
+        drifts[key] = trajectory['drift'][..., 0].mean(dim=1)      # [max_steps, B]
+        evidences[key] = trajectory['evidence'][..., 0].mean(dim=1)  # [max_steps, B]
+        thresholds[key] = trajectory['threshold'][..., 0].mean(dim=1)  # [max_steps, B]
+        logits_traj[key] = trajectory['logits'].mean(dim=1)  # [max_steps, B, 3]
     estimator.use_sindy(prev_use_sindy)
 
     fig, (ax_drift, ax_evidence, ax_boundary, ax_rt) = plt.subplots(1, 4, figsize=(22, 4))
 
     participant_col = xs[:, 0, 0, -1]
-    ground_truth_drift = xs[:, 0, :, 2].transpose(0, 1)  # [W, B] -- true (possibly flipping) stimulus
+    ground_truth_drift = xs[:, :, 0, 3].transpose(0, 1)  # [T, B] -- true (possibly flipping) stimulus
 
     # --- drift: example rate traces (color = participant, linestyle = role) ---
     for i, pid in enumerate(participant_ids):
@@ -147,10 +271,8 @@ def plot_summary(
     ax_drift.set_xlabel('Time (s)')
     ax_drift.set_ylabel('Drift (rate)')
 
-    # --- evidence: the accumulator. No ground-truth line -- simulate_ddm
-    # doesn't store the true simulated evidence trajectory, only the
-    # observed choice/RT and the (possibly flipping) stimulus/drift signal
-    # already shown in the drift subplot. ---
+    # --- evidence: the accumulator. No ground-truth line -- simulate_ddm doesn't store the
+    # true simulated evidence trajectory, only the observed choice/RT and the stimulus. ---
     for i, pid in enumerate(participant_ids):
         pcolor = participant_colors[i % len(participant_colors)]
         idx = (participant_col == pid).nonzero(as_tuple=True)[0][:n_examples]
@@ -184,9 +306,6 @@ def plot_summary(
     ax_boundary.set_xlabel('Time (s)')
     ax_boundary.set_ylabel('Boundary (+/-threshold)')
 
-    # Two-part legend (color -> participant, linestyle -> role) shown once, on the
-    # drift subplot; role legend uses black proxy lines since linestyle, not
-    # color, carries the meaning there. Same convention applies to both subplots.
     participant_handles = [
         mlines.Line2D([], [], color=participant_colors[i % len(participant_colors)], label=f'participant {pid}')
         for i, pid in enumerate(participant_ids)
@@ -198,33 +317,33 @@ def plot_summary(
     ax_drift.legend(handles=participant_handles + role_handles, fontsize='small')
 
     # --- right: RT distribution ---
-    is_up_obs, rt_obs = decode_choice_rt(ys[:, 0], dt)
-    signed_rt_obs = None
-    bins = np.linspace(-max_steps * dt, max_steps * dt, 2 * max_steps + 1)
+    is_up_obs, rt_obs_raw = decode_choice_rt(ys[:, :, 0], dt)
+    signed_rt_obs = torch.where(is_up_obs, rt_obs_raw + non_decision_time, -(rt_obs_raw + non_decision_time)).cpu().numpy()
 
     if estimator.sindy_weight == 0 and not estimator.sindy_refit:
         spice_models = ('rnn',)
     else:
         spice_models = ('rnn', 'sindy')
-        
+
     for key in spice_models:
-        p_up = predictions[key][:, 0, :, 0]
-        p_down = predictions[key][:, 0, :, 1]
-        is_up, rt = is_up_obs, rt_obs
-        p_up, p_down, good = _sanitize_predictions(p_up, p_down, label=f'plot_summary[{key}]')
-        is_up, rt = is_up[good], rt[good]
-        p_decision = p_up + p_down
+        logits_key = logits_traj[key]
+        finite = torch.isfinite(logits_key).all(dim=(0, 2))
+        n_bad = int((~finite).sum().item())
+        if n_bad > 0:
+            print(f"plot_summary[{key}]: excluded {n_bad}/{finite.shape[0]} trials with non-finite "
+                  f"logits trajectory (likely SINDy rollout instability)")
 
-        if signed_rt_obs is None:
-            signed_rt_obs = torch.where(is_up, rt, -rt).cpu().numpy()
+        decided_bin, decided_up, decided = _simulate_trial_by_trial(logits_key[:, finite])
+        n_timeout = int((~decided).sum().item())
+        if n_timeout > 0:
+            print(f"plot_summary[{key}]: dropped {n_timeout}/{decided.shape[0]} trials with no decision "
+                  f"within the {max_steps}-step horizon (timeout)")
 
-        sampled_bin = torch.distributions.Categorical(probs=p_decision.clamp_min(1e-8)).sample()
-        is_up_pred = torch.rand(p_decision.shape[0], device=p_decision.device) < (p_up.sum(dim=-1) / p_decision.sum(dim=-1).clamp_min(1e-8))
-        rt_pred = (sampled_bin.float() + 0.5) * dt
-        signed_rt_pred = torch.where(is_up_pred, rt_pred, -rt_pred).cpu().numpy()
+        rt_pred = (decided_bin[decided].float() + 0.5) * dt + non_decision_time
+        signed_rt_pred = torch.where(decided_up[decided], rt_pred, -rt_pred).cpu().numpy()
 
         ax_rt.hist(signed_rt_pred, bins=50, range=(-t_max, t_max), alpha=0.5, density=True, label=key, color=colors[key])
-    
+
     ax_rt.hist(signed_rt_obs, bins=50, range=(-t_max, t_max), alpha=0.5, density=True, label='true', color=colors['true'])
     ax_rt.set_xlabel('Signed RT (s); sign = boundary')
     ax_rt.set_ylabel('Density')

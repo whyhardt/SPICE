@@ -1,6 +1,7 @@
 import torch
 from spice import SpiceDataset
 
+from weinhardt2026.studies.archive.rtify2024.analysis_rtify2024 import decode_choice_rt, estimate_non_decision_time
 
 def simulate_ddm(
     n_trials: int = 1000,
@@ -12,34 +13,35 @@ def simulate_ddm(
     threshold: float = 1.0,
     collapsing_bound_rate: float = 0.0,
     threshold_min: float = 0.1,
+    non_decision_time: float = 0.2,
     flip_time_range: tuple = None,
     participant_id: int = 0,
     device=None,
 ) -> SpiceDataset:
-    """Ground-truth simulator -- identical accumulator dynamics to
-    rtify2024_c/benchmark_rtify2024_c.py. Only the OUTPUT format changes, to match the
-    per-step [no_decision, up, down] cross-entropy training scheme (see
-    spice_rtify2024_f.py's DDMRNN docstring):
+    """One general ground-truth simulator: a two-boundary accumulator with each
+    generalization toggled by its own parameter, all defaulting to "off" so this
+    reduces to the plain DDM unless you explicitly turn something on.
 
         dE/dt = -leak*E + drift(t) + diffusion*xi(t)
         threshold(t) = max(threshold - collapsing_bound_rate*t, threshold_min)
 
-    xs: (n_trials, max_steps, 1, 10) -- [action_0, action_1, action_2 (unused placeholders;
-        NaN after a trial's decision step, matching SPICE's `_run_batch_training` masking
-        convention: `mask = ~isnan(xs[..., :n_actions])`), stimulus, time_elapsed, time_trial
-        (metadata, unused), trial, block, experiment, participant].
-    ys: (n_trials, max_steps, 1, 3) -- per-step one-hot [no_decision, up, down]: 1 in column 0
-        for every step before the decision, 1 in column 1 or 2 at the exact decision step,
-        all-zero (masked out via xs, ignored by the loss) after.
+    - `leak=0` -> perfect integrator (no leak).
+    - `flip_time_range=None` -> drift(t) is constant at `drift_rate` (no flip). Given
+      a range (as a fraction of `t_max`), drift(t) = +drift_rate before a per-trial
+      random flip time drawn from that range, -drift_rate after -- the classic
+      change-of-mind / reversal paradigm. A perfect (leak=0) integrator carries a
+      large pre-flip evidence pileup that takes a long time to unwind after the
+      flip; a leaky one forgets stale evidence faster and can change its mind sooner.
+    - `collapsing_bound_rate=0` -> constant threshold (no collapsing bound).
 
-    Unlike rtify2024_c, this ys does NOT bake in `non_decision_time` -- it encodes the raw
-    (undelayed) accumulator decision step, matching the model's own undelayed per-step
-    prediction. `non_decision_time` is purely a reporting-time addition applied downstream, in
-    analysis_rtify2024_f.py, when converting a decoded step back to a real-world RT for
-    plotting -- both the "true" and the model-simulated RT get it added the same way there.
-    This is a synthetic identity-check study with a known ground-truth non_decision_time, so
-    there's no need to estimate it from data the way `estimate_non_decision_time` would for
-    real behavioral RTs.
+    The (possibly flipping) drift value is also what's fed to the model as
+    `stimulus` -- the participant directly observes it, same as in a real experiment.
+
+    xs: (n_trials, 1, max_steps, 9) -- [action_0, action_1 (unused), stimulus,
+        time_elapsed, time_trial (metadata, unused), trial, block, experiment, participant].
+    ys: (n_trials, 1, max_steps, 2) -- one-hot indicator over (boundary, RT bin):
+        ys[i, w, 0] = 1 iff trial i's observed decision is (up, bin w); ys[i, w, 1]
+        likewise for "down". Exactly one of the `2 * max_steps` entries is 1 per trial.
     """
     if device is None:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -73,8 +75,12 @@ def simulate_ddm(
     first_lower = torch.where(has_lower, lower_mask.int().argmax(dim=1), torch.full_like(has_lower, max_steps, dtype=torch.long))
 
     decision_step = torch.minimum(first_upper, first_lower)
-    # Trials that never cross a boundary within t_max are timeouts -- drop them, same as
-    # rtify2024_c, rather than fabricating a censored decision step.
+    # Trials that never cross a boundary within t_max are timeouts/non-responses --
+    # drop them rather than fabricating a censored RT (forcing them into one bin
+    # creates an artificial delta-spike in the "observed" distribution). A leaky
+    # accumulator with a strong leak relative to threshold/t_max can genuinely fail
+    # to resolve often; if that fraction is large, `leak`/`threshold`/`t_max` are
+    # likely mismatched for the task, not just a detail to paper over.
     responded = decision_step < max_steps
     n_valid = int(responded.sum().item())
     if n_valid < n_trials:
@@ -83,39 +89,29 @@ def simulate_ddm(
     choice = (first_upper <= first_lower).long()[responded]
     decision_step = decision_step[responded]
     drift_t = drift_t[responded]
+    response_time = decision_step.float() * dt + non_decision_time
+
+    xs = torch.zeros(n_valid, max_steps, 9, device=device)
+    xs[:, :, 2] = drift_t
+    xs[:, :, 3] = torch.arange(max_steps, device=device) * dt  # time_elapsed (additional_input, fed to drift)
+    xs[:, :, 4] = 0  # time_trial metadata slot (unused)
+    xs[:, :, 5] = 0
+    xs[:, :, 6] = 0
+    xs[:, :, 7] = 0
+    xs[:, :, 8] = participant_id
+
+    rt_bin = torch.clamp((response_time / dt).long(), 0, max_steps - 1)
+    row_idx = torch.arange(n_valid, device=device)
     is_up = choice == 1
 
-    xs = torch.zeros(n_valid, max_steps, 10, device=device)
-    xs[:, :, 3] = drift_t
-    xs[:, :, 4] = torch.arange(max_steps, device=device) * dt  # time_elapsed (additional_input, fed to drift)
-    xs[:, :, 5] = 0  # time_trial metadata slot (unused)
-    xs[:, :, 6] = torch.arange(max_steps, device=device)  # trial metadata: per-step trial index
-    xs[:, :, 7] = 0
-    xs[:, :, 8] = 0
-    xs[:, :, 9] = participant_id
+    ys = torch.zeros(n_valid, max_steps, 2, device=device)
+    ys[row_idx[is_up], rt_bin[is_up], 0] = 1.
+    ys[row_idx[~is_up], rt_bin[~is_up], 1] = 1.
 
-    step_idx = torch.arange(max_steps, device=device).unsqueeze(0)  # [1, max_steps]
-    decision_step_col = decision_step.unsqueeze(1)  # [n_valid, 1]
-    before_decision = step_idx < decision_step_col
-    at_decision = step_idx == decision_step_col
-    after_decision = step_idx > decision_step_col
-
-    ys = torch.zeros(n_valid, max_steps, 3, device=device)
-    ys[:, :, 0] = before_decision.float()
-    ys[:, :, 1] = (at_decision & is_up.unsqueeze(1)).float()
-    ys[:, :, 2] = (at_decision & ~is_up.unsqueeze(1)).float()
-
-    # NaN the action-placeholder columns for steps after the decision -- the standard SPICE
-    # masking convention (_run_batch_training) drops these from the loss entirely, so a
-    # trial's episode "ends" at its decision step exactly like a variable-length bandit session.
-    for c in range(3):
-        xs[:, :, c] = torch.where(after_decision, torch.full_like(xs[:, :, c], float('nan')), xs[:, :, c])
-
-    xs = xs.unsqueeze(2)  # (n_valid, max_steps, 1, 10)
-    ys = ys.unsqueeze(2)  # (n_valid, max_steps, 1, 3)
+    xs = xs.unsqueeze(1)  # (n_valid, 1, max_steps, 9)
+    ys = ys.unsqueeze(1)  # (n_valid, 1, max_steps, 2)
 
     return SpiceDataset(xs, ys, n_reward_features=0)
-
 
 def get_dataset(
     drift_rates,
@@ -129,6 +125,8 @@ def get_dataset(
     ):
     """drift_rates: (n_participants,) -- one fixed stimulus/drift-rate condition
     per participant. n_trials: trials per participant."""
+    dt = t_max / max_steps
+
     if isinstance(drift_rates, (float, int)):
         drift_rates = [drift_rates]
     n_participants = len(drift_rates)
@@ -149,6 +147,7 @@ def get_dataset(
             leak=leak[i],
             threshold=1.0,
             collapsing_bound_rate=collapsing_bound_rate[i],
+            non_decision_time=0.2,
             flip_time_range=flip_time_range,
 
             participant_id=i,
@@ -160,4 +159,10 @@ def get_dataset(
     ys = torch.cat([d.ys for d in datasets], dim=0)
     dataset = SpiceDataset(xs, ys, n_reward_features=0)
 
-    return dataset, dataset
+    _, rt_train = decode_choice_rt(dataset.ys[:, 0], dt)
+    non_decision_time = estimate_non_decision_time(rt_train)
+    
+    info_dataset = {}
+    info_dataset['non_decision_time'] = non_decision_time
+    
+    return dataset, dataset, info_dataset

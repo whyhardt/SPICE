@@ -981,7 +981,7 @@ class BaseModel(nn.Module):
                 self.sindy_coefficients[key_module].data.copy_(coefficients)
             else:
                 coefficients = torch.linalg.solve(AtA_accum[has_data], Atb_accum[has_data]).squeeze(-1)
-                self.sindy_coefficients[key_module].data[has_data] = coefficients
+                self.sindy_coefficients[key_module].data[has_data] = coefficients.to(self.sindy_coefficients[key_module].dtype)
         except torch.linalg.LinAlgError:
             return False
 
