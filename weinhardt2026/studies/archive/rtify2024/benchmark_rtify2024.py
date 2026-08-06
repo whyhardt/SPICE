@@ -2,6 +2,28 @@ import torch
 from spice import SpiceDataset
 
 
+DDM_PARAMETERS = {
+    'drift_rates': [0.5, 0.75, 1.0, 0.5, 0.5, 0.5, 0.75, 0.75, 0.75],
+    'collapsing_bound_rate': 0.,
+    'leak': 0.,
+    'flip_time_range': None,
+    'drift_update_kwargs': [
+        dict(c_linear=0, c_quadratic=0),
+        dict(c_linear=0, c_quadratic=0),
+        dict(c_linear=0, c_quadratic=0),
+        dict(c_linear=1.0, c_quadratic=0),
+        dict(c_linear=0, c_quadratic=0.75),
+        dict(c_linear=1.0, c_quadratic=-0.5),
+        dict(c_linear=-1.0, c_quadratic=0),
+        dict(c_linear=0, c_quadratic=-0.5),
+        dict(c_linear=1.0, c_quadratic=-0.5),
+        ],
+    }
+
+def update_drift(drift, c_constant, c_linear=0, c_quadratic=0):
+    return c_constant + c_linear * drift + c_quadratic * (drift ** 2)
+
+
 def simulate_ddm(
     n_trials: int = 1000,
     t_max: float = 5.0,
@@ -9,10 +31,11 @@ def simulate_ddm(
     drift_rate: float = 1.0,
     diffusion_rate: float = 1.0,
     leak: float = 0.0,
-    threshold: float = 1.0,
+    threshold: float = 3.0,
     collapsing_bound_rate: float = 0.0,
     threshold_min: float = 0.1,
     flip_time_range: tuple = None,
+    drift_update_kwargs: dict = {},
     participant_id: int = 0,
     device=None,
 ) -> SpiceDataset:
@@ -46,27 +69,42 @@ def simulate_ddm(
 
     dt = t_max / max_steps
 
-    if flip_time_range is None:
-        drift_t = torch.full((n_trials, max_steps), drift_rate, device=device)
-    else:
+    stimulus_t = torch.full((n_trials, max_steps), 1, device=device)
+    drift_t = torch.full((n_trials, max_steps), drift_rate, device=device)
+    threshold_t = torch.full((n_trials, max_steps), threshold, device=device)
+    evidence_t = torch.full((n_trials, max_steps), 0., device=device)
+    
+    if flip_time_range is not None:
         flip_frac = torch.empty(n_trials, device=device).uniform_(*flip_time_range)
         flip_step = (flip_frac * max_steps).long().clamp(1, max_steps - 1)
         time_idx = torch.arange(max_steps, device=device).unsqueeze(0)  # [1, max_steps]
-        drift_t = torch.where(time_idx < flip_step.unsqueeze(1), drift_rate, -drift_rate)  # [n_trials, max_steps]
+        stimulus_t = torch.where(time_idx < flip_step.unsqueeze(1), -1, 1)  # [n_trials, max_steps]
+        drift_t = drift_t * stimulus_t  # [n_trials, max_steps]
 
     noise = torch.randn(n_trials, max_steps, device=device)
     decay = max(1. - leak * dt, 0.)
 
+    drift_step = drift_t[:, 0].clone()
     evidence_step = torch.zeros(n_trials, device=device)
-    evidence = torch.zeros(n_trials, max_steps, device=device)
     for w in range(max_steps):
-        evidence_step = decay * evidence_step + drift_t[:, w] * dt + diffusion_rate * (dt ** 0.5) * noise[:, w]
-        evidence[:, w] = evidence_step
+        # Euler-integrated relaxation (dx = dt * (f(x) - x)) toward update_drift's fixed point,
+        # rather than iterating the map directly -- the latter converges in a handful of steps
+        # regardless of dt/max_steps, collapsing any c_linear/c_quadratic feedback into an
+        # apparently-instant jump instead of a trajectory spread over the trial.
+        drift_target = update_drift(
+            drift_step,
+            drift_update_kwargs.get('c_constant', drift_rate),
+            drift_update_kwargs.get('c_linear', 0),
+            drift_update_kwargs.get('c_quadratic', 0),
+            )
+        drift_step = drift_step + dt * (drift_target - drift_step)
+        drift_t[:, w] = drift_step
+        threshold_t[:, w] = max(threshold - collapsing_bound_rate * w * dt, threshold_min)
+        evidence_t[:, w] = decay * evidence_step + drift_t[:, w] * dt + diffusion_rate * (dt ** 0.5) * noise[:, w]
+        evidence_step = evidence_t[:, w]
 
-    threshold_t = torch.clamp(threshold - collapsing_bound_rate * torch.arange(max_steps, device=device) * dt, min=threshold_min)  # [max_steps]
-
-    upper_mask = evidence >= threshold_t.unsqueeze(0)
-    lower_mask = evidence <= -threshold_t.unsqueeze(0)
+    upper_mask = evidence_t >= threshold_t
+    lower_mask = evidence_t <= -threshold_t
     has_upper = upper_mask.any(dim=1)
     has_lower = lower_mask.any(dim=1)
     first_upper = torch.where(has_upper, upper_mask.int().argmax(dim=1), torch.full_like(has_upper, max_steps, dtype=torch.long))
@@ -82,17 +120,23 @@ def simulate_ddm(
 
     choice = (first_upper <= first_lower).long()[responded]
     decision_step = decision_step[responded]
+    stimulus_t = stimulus_t[responded]
     drift_t = drift_t[responded]
+    threshold_t = threshold_t[responded]
+    evidence_t = evidence_t[responded]
     is_up = choice == 1
 
-    xs = torch.zeros(n_valid, max_steps, 10, device=device)
-    xs[:, :, 3] = drift_t
+    xs = torch.zeros(n_valid, max_steps, 13, device=device)
+    xs[:, :, 3] = stimulus_t
     xs[:, :, 4] = torch.arange(max_steps, device=device) * dt  # time_elapsed (additional_input, fed to drift)
-    xs[:, :, 5] = 0  # time_trial metadata slot (unused)
-    xs[:, :, 6] = torch.arange(max_steps, device=device)  # trial metadata: per-step trial index
-    xs[:, :, 7] = 0
-    xs[:, :, 8] = 0
-    xs[:, :, 9] = participant_id
+    xs[:, :, 5] = drift_t
+    xs[:, :, 6] = threshold_t
+    xs[:, :, 7] = evidence_t 
+    xs[:, :, 8] = 0  # time_trial metadata slot (unused)
+    xs[:, :, 9] = torch.arange(max_steps, device=device)  # trial metadata: per-step trial index
+    xs[:, :, 10] = 0
+    xs[:, :, 11] = 0
+    xs[:, :, 12] = participant_id
 
     step_idx = torch.arange(max_steps, device=device).unsqueeze(0)  # [1, max_steps]
     decision_step_col = decision_step.unsqueeze(1)  # [n_valid, 1]
@@ -114,7 +158,8 @@ def simulate_ddm(
     xs = xs.unsqueeze(2)  # (n_valid, max_steps, 1, 10)
     ys = ys.unsqueeze(2)  # (n_valid, max_steps, 1, 3)
 
-    return SpiceDataset(xs, ys, n_reward_features=0)
+    dataset = SpiceDataset(xs, ys, n_reward_features=0)
+    return dataset
 
 
 def get_dataset(
@@ -122,6 +167,7 @@ def get_dataset(
     collapsing_bound_rate: list[float],
     leak: list[float],
     flip_time_range: list[float],
+    drift_update_kwargs: list[dict],
     n_trials: int,
     t_max: float,
     max_steps: int,
@@ -137,6 +183,8 @@ def get_dataset(
         collapsing_bound_rate = [collapsing_bound_rate] * n_participants
     if isinstance(leak, (float, int)):
         leak = [leak] * n_participants
+    if isinstance(drift_update_kwargs, dict):
+        drift_update_kwargs = [drift_update_kwargs]* n_participants
 
     datasets = [
         simulate_ddm(
@@ -150,6 +198,7 @@ def get_dataset(
             threshold=1.0,
             collapsing_bound_rate=collapsing_bound_rate[i],
             flip_time_range=flip_time_range,
+            drift_update_kwargs=drift_update_kwargs[i],
 
             participant_id=i,
             device=device,

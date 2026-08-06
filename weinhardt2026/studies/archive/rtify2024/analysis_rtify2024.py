@@ -133,6 +133,111 @@ def plot_participant_fit(
     return fig
 
 
+def _participant_legend_label(pid: int, ddm_parameters: dict) -> str:
+    """Format a legend entry for participant `pid` from DDM_PARAMETERS (drift_rates +
+    drift_update_kwargs), so plotted lines can be tied back to the ground-truth generative
+    settings without re-deriving them.
+    """
+    drift_rates = ddm_parameters['drift_rates']
+    if isinstance(drift_rates, (float, int)):
+        drift_rates = [drift_rates]
+    drift_update_kwargs = ddm_parameters.get('drift_update_kwargs', {})
+    if isinstance(drift_update_kwargs, dict):
+        drift_update_kwargs = [drift_update_kwargs] * len(drift_rates)
+
+    kwargs = drift_update_kwargs[pid]
+    c_linear = kwargs.get('c_linear', 0)
+    c_quadratic = kwargs.get('c_quadratic', 0)
+    return f'P{pid}: drift={drift_rates[pid]:.2f}, c_lin={c_linear:.2f}, c_quad={c_quadratic:.2f}'
+
+
+@torch.no_grad()
+def plot_dataset_variables(
+    dataset: SpiceDataset,
+    dt: float,
+    t_max: float,
+    ddm_parameters: dict,
+    participant_ids=None,
+    output_path: str = None,
+):
+    """One figure, four subplots -- drift, threshold, evidence, RT distribution -- read
+    directly off a dataset's raw simulated columns (xs[...,3]=drift, xs[...,5]=threshold,
+    xs[...,6]=evidence; see benchmark_rtify2024.simulate_ddm), with no model/estimator
+    involved (unlike plot_summary/plot_participant_fit). One line per participant, colored
+    consistently across all four subplots; the legend labels each participant using its
+    DDM_PARAMETERS (drift_rate + drift_update_kwargs) rather than a bare participant index.
+    """
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    xs = dataset.xs
+    ys = dataset.ys
+    participant_col = xs[:, 0, 0, -1]  # last xs column = participant id (see simulate_ddm)
+
+    if participant_ids is None:
+        participant_ids = sorted(int(p) for p in participant_col.unique().tolist())
+
+    participant_colors = plt.cm.tab10.colors
+    max_steps = xs.shape[1]
+    time_axis = (torch.arange(1, max_steps + 1) * dt).numpy()
+
+    fig, (ax_drift, ax_threshold, ax_evidence, ax_rt) = plt.subplots(1, 4, figsize=(22, 4))
+
+    for i, pid in enumerate(participant_ids):
+        color = participant_colors[i % len(participant_colors)]
+        label = _participant_legend_label(pid, ddm_parameters)
+        idx = (participant_col == pid).nonzero(as_tuple=True)[0]
+
+        # drift/threshold are deterministic per participant/step; evidence is per-trial noisy
+        # -- averaged across the participant's trials here to get one representative line each.
+        drift_mean = xs[idx, :, 0, 5].mean(dim=0).cpu().numpy()
+        threshold_mean = xs[idx, :, 0, 6].mean(dim=0).cpu().numpy()
+        evidence_mean = xs[idx, :, 0, 7].mean(dim=0).cpu().numpy()
+
+        ax_drift.plot(time_axis, drift_mean, color=color, label=label)
+        ax_threshold.plot(time_axis, threshold_mean, color=color, label=label)
+        ax_threshold.plot(time_axis, -threshold_mean, color=color)
+        ax_evidence.plot(time_axis, evidence_mean, color=color, label=label)
+
+        # RT distribution as a line (density curve from a fixed-bin histogram, no bars),
+        # signed by choice (up positive, down negative) -- matches plot_summary's convention.
+        is_up, rt = decode_choice_rt(ys[idx][:, :, 0], dt)
+        signed_rt = torch.where(is_up, rt, -rt).cpu().numpy()
+        bins = np.linspace(-t_max, t_max, 51)
+        density, edges = np.histogram(signed_rt, bins=bins, density=True)
+        centers = (edges[:-1] + edges[1:]) / 2
+        ax_rt.plot(centers, density, color=color, label=label)
+
+    ax_drift.axhline(0, color='gray', linewidth=0.5)
+    ax_drift.set_xlabel('Time (s)')
+    ax_drift.set_ylabel('Drift (rate)')
+    ax_drift.set_title('Drift')
+    ax_drift.legend(fontsize='small')
+
+    ax_threshold.axhline(0, color='gray', linewidth=0.5)
+    ax_threshold.set_xlabel('Time (s)')
+    ax_threshold.set_ylabel('Threshold (+/-)')
+    ax_threshold.set_title('Threshold')
+
+    ax_evidence.axhline(0, color='gray', linewidth=0.5)
+    ax_evidence.set_xlabel('Time (s)')
+    ax_evidence.set_ylabel('Evidence (accumulator, mean)')
+    ax_evidence.set_title('Evidence')
+
+    ax_rt.set_xlabel('Signed RT (s); sign = boundary')
+    ax_rt.set_ylabel('Density')
+    ax_rt.set_title('RT distribution')
+
+    fig.tight_layout()
+
+    if output_path is not None:
+        fig.savefig(output_path)
+
+    plt.show()
+
+    return fig
+
+
 @torch.no_grad()
 def _rollout_state_trajectory(model, xs: torch.Tensor) -> dict:
     """Recover the full per-trial drift/evidence/threshold/logits history by calling `model()`
@@ -226,6 +331,11 @@ def plot_summary(
     import matplotlib.pyplot as plt
     import matplotlib.lines as mlines
 
+    if estimator.sindy_weight == 0 and not estimator.sindy_refit:
+        spice_models = ('rnn',)
+    else:
+        spice_models = ('rnn', 'sindy')
+    
     estimator.model.eval()
     xs = dataset.xs.to(estimator.model.device)
     ys = dataset.ys.to(estimator.model.device)
@@ -238,7 +348,8 @@ def plot_summary(
     # --- run the model once in RNN mode, once in SINDy mode ---
     drifts, evidences, thresholds, logits_traj = {}, {}, {}, {}
     has_boundary_module = True  # CONFIG always has a threshold_raw module in this study
-    for key, use_sindy in (('rnn', False), ('sindy', True)):
+    for key in spice_models:
+        use_sindy = key == 'sindy'
         estimator.use_sindy(use_sindy)
         trajectory = _rollout_state_trajectory(estimator.model, xs)
         drifts[key] = trajectory['drift'][..., 0].mean(dim=1)      # [max_steps, B]
@@ -247,22 +358,20 @@ def plot_summary(
         logits_traj[key] = trajectory['logits'].mean(dim=1)  # [max_steps, B, 3]
     estimator.use_sindy(prev_use_sindy)
 
-    fig, (ax_drift, ax_evidence, ax_boundary, ax_rt) = plt.subplots(1, 4, figsize=(22, 4))
+    fig, (ax_drift, ax_boundary, ax_rt) = plt.subplots(1, 3, figsize=(22, 3))
 
     participant_col = xs[:, 0, 0, -1]
-    ground_truth_drift = xs[:, :, 0, 3].transpose(0, 1)  # [T, B] -- true (possibly flipping) stimulus
-
+    ground_truth_drift = xs[:, :, 0, 5].transpose(0, 1)  # [T, B] -- true (possibly flipping) drift rate
+    ground_truth_boundary = xs[:, :, 0, 6].transpose(0, 1)  # [T, B] -- true (possibly changing) boundary
+    
     # --- drift: example rate traces (color = participant, linestyle = role) ---
     for i, pid in enumerate(participant_ids):
         pcolor = participant_colors[i % len(participant_colors)]
         idx = (participant_col == pid).nonzero(as_tuple=True)[0][:n_examples]
         for trial_idx in idx:
             time_axis_true = (torch.arange(1, ground_truth_drift.shape[0] + 1, device=xs.device) * dt).cpu().numpy()
-            ax_drift.plot(
-                time_axis_true, ground_truth_drift[:, trial_idx].cpu().numpy(),
-                color=pcolor, linestyle=linestyles['true'], alpha=0.7,
-            )
-            for key in ('rnn', 'sindy'):
+            ax_drift.plot(time_axis_true, ground_truth_drift[:, trial_idx].cpu().numpy(), color=pcolor, linestyle=linestyles['true'], alpha=0.7)
+            for key in spice_models:
                 d = drifts[key][:, trial_idx].cpu().numpy()
                 time_axis = (torch.arange(1, len(d) + 1, device=xs.device) * dt).cpu().numpy()
                 ax_drift.plot(time_axis, d, color=pcolor, linestyle=linestyles[key], alpha=0.7)
@@ -271,40 +380,22 @@ def plot_summary(
     ax_drift.set_xlabel('Time (s)')
     ax_drift.set_ylabel('Drift (rate)')
 
-    # --- evidence: the accumulator. No ground-truth line -- simulate_ddm doesn't store the
-    # true simulated evidence trajectory, only the observed choice/RT and the stimulus. ---
-    for i, pid in enumerate(participant_ids):
-        pcolor = participant_colors[i % len(participant_colors)]
-        idx = (participant_col == pid).nonzero(as_tuple=True)[0][:n_examples]
-        for trial_idx in idx:
-            for key in ('rnn', 'sindy'):
-                e = evidences[key][:, trial_idx].cpu().numpy()
-                time_axis = (torch.arange(1, len(e) + 1, device=xs.device) * dt).cpu().numpy()
-                ax_evidence.plot(time_axis, e, color=pcolor, linestyle=linestyles[key], alpha=0.7)
-
-    ax_evidence.axhline(0, color='gray', linewidth=0.5)
-    ax_evidence.set_xlabel('Time (s)')
-    ax_evidence.set_ylabel('Evidence (accumulator)')
-
     # --- decision boundary (+/-threshold), same color/linestyle convention ---
     if has_boundary_module:
         for i, pid in enumerate(participant_ids):
             pcolor = participant_colors[i % len(participant_colors)]
             idx = (participant_col == pid).nonzero(as_tuple=True)[0][:n_examples]
             for trial_idx in idx:
-                for key in ('rnn', 'sindy'):
-                    th = thresholds[key][:, trial_idx].cpu().numpy()
-                    time_axis = (torch.arange(1, len(th) + 1, device=xs.device) * dt).cpu().numpy()
-                    ax_boundary.plot(time_axis, th, color=pcolor, linestyle=linestyles[key], alpha=0.7)
-                    ax_boundary.plot(time_axis, -th, color=pcolor, linestyle=linestyles[key], alpha=0.7)
-
-    if true_threshold is not None:
-        ax_boundary.axhline(true_threshold, color=colors['true'], linestyle=linestyles['true'], alpha=0.7)
-        ax_boundary.axhline(-true_threshold, color=colors['true'], linestyle=linestyles['true'], alpha=0.7)
+                time_axis = (torch.arange(1, len(ground_truth_boundary) + 1, device=xs.device) * dt).cpu().numpy()
+                ax_boundary.plot(time_axis_true, ground_truth_boundary[:, trial_idx].cpu().numpy(), color=pcolor, linestyle=linestyles['true'], alpha=0.7)
+                for key in spice_models:
+                    d = thresholds[key][:, trial_idx].cpu().numpy()
+                    time_axis = (torch.arange(1, len(d) + 1, device=xs.device) * dt).cpu().numpy()
+                    ax_boundary.plot(time_axis, d, color=pcolor, linestyle=linestyles[key], alpha=0.7)
 
     ax_boundary.axhline(0, color='gray', linewidth=0.5)
     ax_boundary.set_xlabel('Time (s)')
-    ax_boundary.set_ylabel('Boundary (+/-threshold)')
+    ax_boundary.set_ylabel('Boundary')
 
     participant_handles = [
         mlines.Line2D([], [], color=participant_colors[i % len(participant_colors)], label=f'participant {pid}')
@@ -319,11 +410,6 @@ def plot_summary(
     # --- right: RT distribution ---
     is_up_obs, rt_obs_raw = decode_choice_rt(ys[:, :, 0], dt)
     signed_rt_obs = torch.where(is_up_obs, rt_obs_raw + non_decision_time, -(rt_obs_raw + non_decision_time)).cpu().numpy()
-
-    if estimator.sindy_weight == 0 and not estimator.sindy_refit:
-        spice_models = ('rnn',)
-    else:
-        spice_models = ('rnn', 'sindy')
 
     for key in spice_models:
         logits_key = logits_traj[key]

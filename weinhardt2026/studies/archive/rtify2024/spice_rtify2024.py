@@ -7,36 +7,45 @@ from spice import SpiceConfig, BaseModel
 
 CONFIG = SpiceConfig(
     # library_setup declares which SINDy-fittable RNN submodules exist. DDMRNN.forward() calls
-    # this 'drift' submodule every step via call_module(inputs=(stimulus,), ...) -- drift is a
-    # learned function of 'stimulus', not a fixed scalar (see forward()'s per-step call_module
-    # block). 'stimulus' here is the only candidate input this submodule's tiny polynomial RNN
-    # is allowed to read.
+    # both submodules every step via call_module():
+    #   'drift'         <- ('stimulus',)     -- drift = f(stimulus)
+    #   'threshold_raw' <- ('time_elapsed',) -- boundary = g(time_elapsed), a genuinely dynamic
+    #                        (e.g. collapsing) bound instead of a fixed-per-participant scalar.
+    # 'time_elapsed', not 'threshold_values' (the ground-truth trajectory benchmark_rtify2024.py
+    # also exposes for plotting/comparison) -- feeding the true trajectory in would let the
+    # model just copy the answer instead of discovering the collapsing-bound *shape* itself.
     library_setup={
         'drift': [
             'stimulus',
+            ],
+        'threshold_raw': [
+            'time_elapsed',
             ],
     },
     # Both entries are None -> BaseModel creates a genuine nn.Parameter (one learnable scalar
     # per participant, per ensemble member) for each, rather than treating it as a fixed
     # constant. See docs/training.md: a concrete float here (e.g. 'drift': 0.5) would freeze
     # the value with no gradient -- exactly the mistake rtify2024_c made when it hardcoded
-    # these for its "assume ground truth" diagnostic run. For 'drift', this is just the
-    # INITIAL value the 'drift' submodule starts from at step 0 -- every step after that,
-    # call_module() overwrites self.state['drift'] with the submodule's own output.
+    # these for its "assume ground truth" diagnostic run. For both, this is just the INITIAL
+    # value its submodule starts from at step 0 -- every step after that, call_module()
+    # overwrites self.state[...] with that submodule's own output.
     memory_state={
         'drift': None,          # initial drift rate before the 'drift' submodule starts updating it
-        'threshold_raw': None,  # pre-transform threshold; DDMRNN.effective_threshold() maps this
-                                 # through a bounded sigmoid (not softplus, see that method's docstring)
+        'threshold_raw': None,  # initial pre-transform threshold before the 'threshold_raw' submodule
+                                 # starts updating it; DDMRNN.effective_threshold() maps the current
+                                 # value through a bounded sigmoid (not softplus, see that method's docstring)
     },
     # Cosmetic/interpretability metadata only in this model (which state(s) "drive" the
     # decision) -- DDMRNN.forward() builds its own logits directly and doesn't consult this list.
     states_in_logit=[
         'drift',
+        'threshold_raw',
     ],
-    # Must match benchmark_rtify2024_f.py's xs column layout (stimulus, time_elapsed are read
-    # out of xs by init_forward_pass() into spice_signals.additional_inputs) even though this
-    # particular forward() doesn't use spice_signals.additional_inputs at all.
-    additional_inputs=('stimulus', 'time_elapsed'),
+    # Must match benchmark_rtify2024.py's xs column layout (stimulus, time_elapsed, plus the
+    # ground-truth drift/threshold/evidence trajectories, read out of xs by init_forward_pass()
+    # into spice_signals.additional_inputs). The latter three are for analysis/plotting
+    # comparison only -- forward() never reads them (see library_setup's comment above).
+    additional_inputs=('stimulus', 'time_elapsed', 'drift_values', 'threshold_values', 'evidence_values'),
 )
 
 
@@ -150,6 +159,128 @@ class DDMRNN(BaseModel):
         # not a fixed per-participant scalar -- setup_module()/call_module() need a participant
         # embedding to condition that submodule on who's currently being simulated.
         self.participant_embedding = self.setup_embedding(self.n_participants, self.embedding_size, dropout=self.dropout)
+    
+    def forward(self, inputs: torch.Tensor, prev_state: torch.Tensor = None):
+        # Standard SPICE boilerplate: unpacks `inputs` into spice_signals (actions, additional
+        # inputs, participant/block/trial ids, a pre-zeroed logits buffer), and either restores
+        # `self.state` from `prev_state` (mid-sequence BPTT-truncation chunk) or initializes it
+        # fresh from CONFIG.memory_state + this model's learnable_initial_values (first chunk).
+        spice_signals = self.init_forward_pass(inputs, prev_state)
+
+        # W = within-trial timesteps (always 1 here -- this study uses the T=step/W=1 axis
+        # reframing shared by rtify2024_b through _f, where the "outer" trial axis T actually
+        # indexes DDM discretization steps, not separate behavioral trials).
+        # E = ensemble size (1 in every config in this study -- SINDy ensembling isn't used).
+        # B = batch size, i.e. number of (synthetic) trials being processed in parallel.
+        W, E, B = self.state['drift'].shape[0], self.state['drift'].shape[1], self.state['drift'].shape[2]
+        assert W == 1, "DDMRNN assumes the T=step/W=1 trial-axis reframing used throughout rtify2024_b/c/d/e/f."
+        G = self.x_grid.shape[0]  # number of grid points
+
+        # On the very first chunk of a sequence (prev_state is None), inject the initial
+        # density -- a fresh delta spike at 0 for every (ensemble, batch) trial -- as an
+        # ADDITIONAL entry in self.state alongside 'drift'/'threshold_raw' (which
+        # init_forward_pass already populated above). On later BPTT chunks, self.state was
+        # already restored wholesale from prev_state, so 'evidence_pdf' carries over correctly
+        # without needing to be touched here. Also re-init if 'evidence_pdf' is simply absent:
+        # generic state-vectorization helpers (e.g. _vectorize_state_sequential, used during
+        # SINDy refit) only carry forward CONFIG.memory_state keys ('drift', 'threshold_raw')
+        # between steps and pass a non-None-but-evidence_pdf-less prev_state -- 'drift' doesn't
+        # depend on evidence_pdf (only on 'stimulus'), so resetting it there is harmless for
+        # that pathway's purposes.
+        if prev_state is None or 'evidence_pdf' not in self.state:
+            self.state['evidence_pdf'] = self.initial_pdf.view(1, 1, 1, G).expand(W, E, B, G).clone()
+
+        # Both `drift` and `threshold` are now computed fresh every step inside the loop below,
+        # via their own call_module()s -- neither is step-invariant anymore, so nothing about
+        # them gets hoisted out of the loop the way threshold's absorption weights used to be.
+        participant_embedding = self.participant_embedding(spice_signals.participant_ids)
+
+        # Main loop: one DDM discretization step per iteration (spice_signals.trials is
+        # arange(T), T = max_steps for a full, un-chunked call). No loop over
+        # ensemble/participant/trial anywhere in here -- every operation inside is a single
+        # batched call covering every (W, E, B) trial at once.
+        for timestep in spice_signals.trials:
+            pdf = self.state['evidence_pdf']  # [1, E, B, G] -- density BEFORE this step, already
+                                               # conditional on survival up to (not including) this step
+
+            # Compute this step's drift from this step's stimulus via the learned RNN
+            # submodule -- call_module() writes its result straight into self.state['drift'].
+            stimulus = spice_signals.additional_inputs['stimulus'][timestep]  # [W, E, B, 1]
+            self.call_module(
+                key_module='drift',
+                key_state='drift',
+                action_mask=None,
+                inputs=(stimulus,),
+                participant_index=spice_signals.participant_ids,
+                participant_embedding=participant_embedding,
+            )
+            drift = self.state['drift'][..., 0]  # [W, E, B] -- this step's drift rate
+            drift_shift = drift * self.dt        # [W, E, B] -- this step's mean evidence displacement
+
+            # Same pattern for the boundary: this step's (pre-transform) threshold from this
+            # step's time_elapsed via the learned 'threshold_raw' submodule -- e.g. a collapsing
+            # bound is now something the model can DISCOVER as a function of elapsed time,
+            # rather than something hardcoded as a fixed per-participant scalar.
+            time_elapsed = spice_signals.additional_inputs['time_elapsed'][timestep]  # [W, E, B, 1]
+            self.call_module(
+                key_module='threshold_raw',
+                key_state='threshold_raw',
+                action_mask=None,
+                inputs=(time_elapsed,),
+                participant_index=spice_signals.participant_ids,
+                participant_embedding=participant_embedding,
+            )
+            threshold = self.effective_threshold()  # [W, E, B] -- this step's boundary magnitude
+
+            # Soft absorption weights, recomputed every step now that threshold can move.
+            # sigmoid((x - threshold)/temperature) is ~0 for x far below threshold, ~1 for x far
+            # above it, and transitions smoothly across ~1 grid cell right at the boundary -- a
+            # differentiable stand-in for the hard indicator "x >= threshold".
+            x_row = self.x_grid.view(1, 1, 1, G)  # [1, 1, 1, G], broadcasts against threshold's [W, E, B]
+            absorb_up = torch.sigmoid((x_row - threshold.unsqueeze(-1)) / self.absorb_temperature)     # [W, E, B, G]
+            absorb_down = torch.sigmoid((-x_row - threshold.unsqueeze(-1)) / self.absorb_temperature)  # [W, E, B, G]
+            # A grid point survives this step only if it's absorbed by NEITHER boundary.
+            survive_weight = (1. - absorb_up) * (1. - absorb_down)  # [W, E, B, G]
+
+            # --- 1. Diffuse + drift-shift the density (spread, then shift) ---
+            # Spread: convolve every trial's density with the SAME small fixed kernel in one
+            # call -- valid because sigma (and hence this kernel) doesn't depend on drift/
+            # participant/trial at all. conv1d needs a [N, C, L] input; flatten (W=1, E, B)
+            # into one batch axis N and treat the grid axis G as the 1D spatial length L.
+            pdf_flat = pdf.reshape(1 * E * B, 1, G)
+            pdf_spread = F.conv1d(pdf_flat, self.diffusion_kernel, padding=self.kernel_radius).reshape(1, E, B, G)
+            # Shift: translate each trial's (now-spread) density by its own drift*dt, all in
+            # one batched call -- see _shift_pdf's docstring for why grid_sample handles the
+            # "different shift per trial" part without a Python loop.
+            pdf_diffused = self._shift_pdf(pdf_spread, drift_shift)  # [1, E, B, G]
+
+            # --- 2. Absorb whatever density crossed a boundary this step ---
+            # Total probability mass (out of the surviving population) that landed past each
+            # boundary after diffusing -- this directly IS the per-step conditional [up]/[down]
+            # probability, no separate hazard-rate formula needed.
+            absorbed_up = (pdf_diffused * absorb_up).sum(dim=-1)      # [1, E, B]
+            absorbed_down = (pdf_diffused * absorb_down).sum(dim=-1)  # [1, E, B]
+            # Density that survived both boundaries this step -- not yet renormalized.
+            interior = pdf_diffused * survive_weight                  # [1, E, B, G]
+            p_no_decision = interior.sum(dim=-1)                      # [1, E, B]
+
+            # These three sum to (very close to) 1 by construction: every unit of density
+            # either got absorbed up, absorbed down, or stayed interior. log(), not softmax --
+            # cross_entropy_loss applies its own log_softmax internally, and softmax(log(p)) == p
+            # exactly when p already sums to 1, so this is the correct "raw logits" to hand it.
+            probs = torch.stack((p_no_decision, absorbed_up, absorbed_down), dim=-1)  # [1, E, B, 3]
+            spice_signals.logits[timestep] = torch.log(probs.clamp_min(1e-8))
+
+            # --- 3. Renormalize the surviving density for the next step ---
+            # `interior` currently holds "probability of (this evidence value) AND (survived)".
+            # Dividing by its own total turns it back into "probability of (this evidence value)
+            # GIVEN survived" -- the correct conditional distribution to diffuse again next step.
+            self.state['evidence_pdf'] = interior / interior.sum(dim=-1, keepdim=True).clamp_min(1e-8)
+
+        # Standard SPICE boilerplate: permutes the logits tensor back to the (E, B, T, W, A)
+        # layout the rest of the framework (loss functions, evaluation code) expects.
+        return self.post_forward_pass(spice_signals).logits, self.get_state()
+
 
     def effective_threshold(self) -> torch.Tensor:
         """The actual decision boundary magnitude, read from the raw learnable parameter.
@@ -212,109 +343,8 @@ class DDMRNN(BaseModel):
         coord_y = torch.zeros_like(coord_x)
         grid = torch.stack((coord_x, coord_y), dim=-1).unsqueeze(1)  # [N, 1, G, 2]
 
-        shifted = F.grid_sample(pdf_flat, grid, mode='bilinear', padding_mode='zeros', align_corners=True)  # [N, 1, 1, G]
+        # cuDNN's grid_sampler kernel rejects this shape (H=1) with CUDNN_STATUS_NOT_SUPPORTED
+        # regardless of contiguity, so force PyTorch's native CUDA kernel for this call.
+        with torch.backends.cudnn.flags(enabled=False):
+            shifted = F.grid_sample(pdf_flat, grid, mode='bilinear', padding_mode='zeros', align_corners=True)  # [N, 1, 1, G]
         return shifted.reshape(*leading_shape, G)
-
-    def forward(self, inputs: torch.Tensor, prev_state: torch.Tensor = None):
-        # Standard SPICE boilerplate: unpacks `inputs` into spice_signals (actions, additional
-        # inputs, participant/block/trial ids, a pre-zeroed logits buffer), and either restores
-        # `self.state` from `prev_state` (mid-sequence BPTT-truncation chunk) or initializes it
-        # fresh from CONFIG.memory_state + this model's learnable_initial_values (first chunk).
-        spice_signals = self.init_forward_pass(inputs, prev_state)
-
-        # W = within-trial timesteps (always 1 here -- this study uses the T=step/W=1 axis
-        # reframing shared by rtify2024_b through _f, where the "outer" trial axis T actually
-        # indexes DDM discretization steps, not separate behavioral trials).
-        # E = ensemble size (1 in every config in this study -- SINDy ensembling isn't used).
-        # B = batch size, i.e. number of (synthetic) trials being processed in parallel.
-        W, E, B = self.state['drift'].shape[0], self.state['drift'].shape[1], self.state['drift'].shape[2]
-        assert W == 1, "DDMRNN assumes the T=step/W=1 trial-axis reframing used throughout rtify2024_b/c/d/e/f."
-        G = self.x_grid.shape[0]  # number of grid points
-
-        # On the very first chunk of a sequence (prev_state is None), inject the initial
-        # density -- a fresh delta spike at 0 for every (ensemble, batch) trial -- as an
-        # ADDITIONAL entry in self.state alongside 'drift'/'threshold_raw' (which
-        # init_forward_pass already populated above). On later BPTT chunks, self.state was
-        # already restored wholesale from prev_state, so 'evidence_pdf' carries over correctly
-        # without needing to be touched here.
-        if prev_state is None:
-            self.state['evidence_pdf'] = self.initial_pdf.view(1, 1, 1, G).expand(W, E, B, G).clone()
-
-        threshold = self.effective_threshold()  # [W, E, B] -- this trial's boundary magnitude
-        # `drift` itself is now computed by call_module() fresh every step below (from
-        # 'stimulus' via the learned 'drift' RNN submodule), not read once here -- only
-        # `threshold` stays step-invariant, so only it gets hoisted out of the loop.
-        participant_embedding = self.participant_embedding(spice_signals.participant_ids)
-
-        # Precompute the soft absorption weight for every grid point, ONCE per forward() call
-        # (not per step) -- valid because `threshold` doesn't change across the max_steps loop
-        # in this constant-threshold setup. sigmoid((x - threshold)/temperature) is ~0 for x far
-        # below threshold, ~1 for x far above it, and transitions smoothly across ~1 grid cell
-        # right at the boundary -- a differentiable stand-in for the hard indicator "x >= threshold".
-        x_row = self.x_grid.view(1, 1, 1, G)  # [1, 1, 1, G], broadcasts against threshold's [W, E, B]
-        absorb_up = torch.sigmoid((x_row - threshold.unsqueeze(-1)) / self.absorb_temperature)     # [W, E, B, G]
-        absorb_down = torch.sigmoid((-x_row - threshold.unsqueeze(-1)) / self.absorb_temperature)  # [W, E, B, G]
-        # A grid point survives this step only if it's absorbed by NEITHER boundary.
-        survive_weight = (1. - absorb_up) * (1. - absorb_down)  # [W, E, B, G]
-
-        # Main loop: one DDM discretization step per iteration (spice_signals.trials is
-        # arange(T), T = max_steps for a full, un-chunked call). No loop over
-        # ensemble/participant/trial anywhere in here -- both operations inside are single
-        # batched calls covering every (W, E, B) trial at once.
-        for timestep in spice_signals.trials:
-            pdf = self.state['evidence_pdf']  # [1, E, B, G] -- density BEFORE this step, already
-                                               # conditional on survival up to (not including) this step
-
-            # Compute this step's drift from this step's stimulus via the learned RNN
-            # submodule -- call_module() writes its result straight into self.state['drift'].
-            stimulus = spice_signals.additional_inputs['stimulus'][timestep]  # [W, E, B, 1]
-            self.call_module(
-                key_module='drift',
-                key_state='drift',
-                action_mask=None,
-                inputs=(stimulus,),
-                participant_index=spice_signals.participant_ids,
-                participant_embedding=participant_embedding,
-            )
-            drift = self.state['drift'][..., 0]  # [W, E, B] -- this step's drift rate
-            drift_shift = drift * self.dt        # [W, E, B] -- this step's mean evidence displacement
-
-            # --- 1. Diffuse + drift-shift the density (spread, then shift) ---
-            # Spread: convolve every trial's density with the SAME small fixed kernel in one
-            # call -- valid because sigma (and hence this kernel) doesn't depend on drift/
-            # participant/trial at all. conv1d needs a [N, C, L] input; flatten (W=1, E, B)
-            # into one batch axis N and treat the grid axis G as the 1D spatial length L.
-            pdf_flat = pdf.reshape(1 * E * B, 1, G)
-            pdf_spread = F.conv1d(pdf_flat, self.diffusion_kernel, padding=self.kernel_radius).reshape(1, E, B, G)
-            # Shift: translate each trial's (now-spread) density by its own drift*dt, all in
-            # one batched call -- see _shift_pdf's docstring for why grid_sample handles the
-            # "different shift per trial" part without a Python loop.
-            pdf_diffused = self._shift_pdf(pdf_spread, drift_shift)  # [1, E, B, G]
-
-            # --- 2. Absorb whatever density crossed a boundary this step ---
-            # Total probability mass (out of the surviving population) that landed past each
-            # boundary after diffusing -- this directly IS the per-step conditional [up]/[down]
-            # probability, no separate hazard-rate formula needed.
-            absorbed_up = (pdf_diffused * absorb_up).sum(dim=-1)      # [1, E, B]
-            absorbed_down = (pdf_diffused * absorb_down).sum(dim=-1)  # [1, E, B]
-            # Density that survived both boundaries this step -- not yet renormalized.
-            interior = pdf_diffused * survive_weight                  # [1, E, B, G]
-            p_no_decision = interior.sum(dim=-1)                      # [1, E, B]
-
-            # These three sum to (very close to) 1 by construction: every unit of density
-            # either got absorbed up, absorbed down, or stayed interior. log(), not softmax --
-            # cross_entropy_loss applies its own log_softmax internally, and softmax(log(p)) == p
-            # exactly when p already sums to 1, so this is the correct "raw logits" to hand it.
-            probs = torch.stack((p_no_decision, absorbed_up, absorbed_down), dim=-1)  # [1, E, B, 3]
-            spice_signals.logits[timestep] = torch.log(probs.clamp_min(1e-8))
-
-            # --- 3. Renormalize the surviving density for the next step ---
-            # `interior` currently holds "probability of (this evidence value) AND (survived)".
-            # Dividing by its own total turns it back into "probability of (this evidence value)
-            # GIVEN survived" -- the correct conditional distribution to diffuse again next step.
-            self.state['evidence_pdf'] = interior / interior.sum(dim=-1, keepdim=True).clamp_min(1e-8)
-
-        # Standard SPICE boilerplate: permutes the logits tensor back to the (E, B, T, W, A)
-        # layout the rest of the framework (loss functions, evaluation code) expects.
-        return self.post_forward_pass(spice_signals).logits, self.get_state()
-

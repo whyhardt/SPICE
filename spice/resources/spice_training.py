@@ -742,6 +742,59 @@ def _run_shooting_epoch_vectorized(
     return 0.0
 
 
+def _run_shooting_eval_batched(
+    model: BaseModel,
+    xs_train: torch.Tensor,
+    state_trajectories: dict,
+    nan_mask: torch.Tensor,
+    window_starts: list,
+    K: int,
+    B_total: int,
+    sindy_alpha: float,
+    batch_size_sessions: int = None,
+) -> tuple:
+    """No-grad ridge-solution evaluation over all B_total sessions, chunked and with
+    automatic OOM backoff -- mirrors the batching/backoff the SGD loops right after each
+    call site already do. The plain `batch_sessions=torch.arange(B_total)` single-shot
+    call this replaces has no such backoff, so on models with a large per-session state
+    (e.g. DDMRNN's evidence_pdf grid) it can OOM outright on datasets the subsequent
+    (batched) SGD loop handles fine. Returns (mean_loss, safe_batch_size) so the caller
+    can seed the SGD loop's batch size with a value already known to fit.
+    """
+    if batch_size_sessions is None or batch_size_sessions > B_total:
+        batch_size_sessions = B_total
+
+    while True:
+        try:
+            loss_total = 0.0
+            n_batches = 0
+            for b_start in range(0, B_total, batch_size_sessions):
+                b_end = min(b_start + batch_size_sessions, B_total)
+                batch_sessions = torch.arange(b_start, b_end)
+                loss_e = _run_shooting_epoch_vectorized(
+                    model=model,
+                    optimizer=None,
+                    xs_train=xs_train,
+                    state_trajectories=state_trajectories,
+                    nan_mask=nan_mask,
+                    window_starts=window_starts,
+                    K=K,
+                    batch_sessions=batch_sessions,
+                    sindy_alpha=sindy_alpha,
+                )
+                loss_total += loss_e
+                n_batches += 1
+            return (loss_total / n_batches if n_batches > 0 else 0.0), batch_size_sessions
+        except (torch.cuda.OutOfMemoryError, RuntimeError) as e:
+            if _check_cuda_oom(e):
+                raise
+            if batch_size_sessions <= 1:
+                raise RuntimeError(f"Automatic batch size probing was unsuccessful for shooting evaluation. Current batch size is {batch_size_sessions} but could still not be started. Please try again with a smaller ensemble size (current: {model.ensemble_size}).")
+            model.zero_grad(set_to_none=True)
+            torch.cuda.empty_cache()
+            batch_size_sessions = max(1, batch_size_sessions // 2)
+
+
 def _run_sindy_training(
     model: BaseModel,
     xs_train: torch.Tensor,
@@ -860,19 +913,20 @@ def _run_sindy_training(
         for rnn_module in model.submodules_rnn.values():
             rnn_module.eval()
 
+        batch_size_sessions = B_21
         if ridge_success_21:
             # Evaluate ridge solution with the flattened one-step loss
             with torch.no_grad():
-                ridge_loss_21 = _run_shooting_epoch_vectorized(
+                ridge_loss_21, batch_size_sessions = _run_shooting_eval_batched(
                     model=model,
-                    optimizer=None,
                     xs_train=xs_21,
                     state_trajectories=state_trajectories_21,
                     nan_mask=nan_mask_21,
                     window_starts=window_starts_21,
                     K=K_21,
-                    batch_sessions=torch.arange(B_21),
+                    B_total=B_21,
                     sindy_alpha=sindy_alpha,
+                    batch_size_sessions=batch_size_sessions,
                 )
             # A closed-form solve can "succeed" (no LinAlgError) while still
             # producing coefficients that are non-finite once evaluated --
@@ -899,7 +953,6 @@ def _run_sindy_training(
 
         lr_boost_end = 0  # epoch at which post-pruning LR boost expires
 
-        batch_size_sessions = B_21
         while True:
             try:
                 pbar = tqdm(range(epochs))
@@ -1039,6 +1092,7 @@ def _run_sindy_training(
 
     # ── Ridge regression (closed-form one-step solve) ──
     ridge_success = False
+    batch_size_sessions = B
     if sindy_ridge:
         ridge_success = _ridge_solve_sindy(model, xs_train, ys_train)
         if ridge_success:
@@ -1049,16 +1103,16 @@ def _run_sindy_training(
             for rnn_module in model.submodules_rnn.values():
                 rnn_module.eval()
             with torch.no_grad():
-                ridge_loss = _run_shooting_epoch_vectorized(
+                ridge_loss, batch_size_sessions = _run_shooting_eval_batched(
                     model=model,
-                    optimizer=None,
                     xs_train=xs_train,
                     state_trajectories=state_trajectories,
                     nan_mask=nan_mask,
                     window_starts=window_starts,
                     K=K,
-                    batch_sessions=torch.arange(B),
+                    B_total=B,
                     sindy_alpha=sindy_alpha,
+                    batch_size_sessions=batch_size_sessions,
                 )
             # A closed-form solve can "succeed" (no LinAlgError) while still
             # producing a coefficient set that's unstable under the K-step
@@ -1100,7 +1154,6 @@ def _run_sindy_training(
     for rnn_module in model.submodules_rnn.values():
         rnn_module.eval()
 
-    batch_size_sessions = B
     while True:
         try:
             pbar = tqdm(range(sgd_epochs))
