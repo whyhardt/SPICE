@@ -1,7 +1,8 @@
 """Analyze hyperparameter scan over pruning_threshold × pruning_test.
 
-For each checkpoint, computes:
-  - Hold-out trial likelihood (SINDy autoregressive on test blocks)
+For each checkpoint, computes (SINDy autoregressive):
+  - In-sample trial likelihood/NLL/BIC/AIC on training data, plus the
+    hold-out equivalents on test blocks (suffixed `_test`)
   - Mean number of active SINDy coefficients per participant
 
 Usage:
@@ -14,6 +15,7 @@ import sys
 from glob import glob
 from pathlib import Path
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
@@ -68,9 +70,11 @@ def analysis_sparsity_hpscan(
     -------
     pd.DataFrame
         Rows = HP configurations, columns include threshold, test,
-        trial_likelihood, NLL, BIC(_std), AIC(_std), delta_bic_per_trial(_std),
-        n_params_mean, n_params_std. BIC/AIC are computed per (participant,
-        experiment) group and reported as mean ± std across groups.
+        trial_likelihood, NLL, BIC(_std), AIC(_std), delta_bic_per_trial(_std)
+        (all computed in-sample on training data), plus hold-out equivalents
+        on test_blocks suffixed `_test`, and n_params_mean, n_params_std.
+        BIC/AIC are computed per (participant, experiment) group and reported
+        as mean ± std across groups.
     """
     if device is None:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -78,7 +82,7 @@ def analysis_sparsity_hpscan(
     # ── Load and split data ───────────────────────────────────────────
     dataset = csv_to_dataset(file=data_path)
     dataset.normalize_rewards()
-    _, dataset_test = split_data_along_blockdim(dataset, test_blocks)
+    dataset_train, dataset_test = split_data_along_blockdim(dataset, test_blocks)
 
     xs_test = dataset_test.xs.to(device)
     ys_test = dataset_test.ys.cpu()
@@ -88,6 +92,16 @@ def analysis_sparsity_hpscan(
 
     unique_pairs, group_index = get_participant_experiment_groups(dataset_test)
     n_groups = unique_pairs.shape[0]
+
+    # ── Training data (for BIC/AIC, which should reflect in-sample fit) ─
+    xs_train = dataset_train.xs.to(device)
+    ys_train = dataset_train.ys.cpu()
+    valid_train = ~torch.isnan(dataset_train.xs[:, :, 0, 0])
+    n_valid_train = valid_train.sum().item()
+    n_trials_per_session_train = valid_train.sum(dim=1).float()
+
+    unique_pairs_train, group_index_train = get_participant_experiment_groups(dataset_train)
+    n_groups_train = unique_pairs_train.shape[0]
 
     # ── Find and parse checkpoint files ───────────────────────────────
     pkl_paths = sorted(glob(pkl_pattern))
@@ -148,6 +162,7 @@ def analysis_sparsity_hpscan(
         n_params_per_group = n_params[unique_pairs[:, 0], unique_pairs[:, 1]].float()
         n_params_mean = n_params_per_group.mean().item()
         n_params_std = n_params_per_group.std().item() if n_params_per_group.numel() > 1 else 0.0
+        n_params_per_group_train = n_params[unique_pairs_train[:, 0], unique_pairs_train[:, 1]].float()
 
         # ── Hold-out trial likelihood (SINDy autoregressive) ──────────
         estimator.model.eval()
@@ -181,19 +196,47 @@ def analysis_sparsity_hpscan(
             n_actions_baseline=n_actions,
         )
 
+        # ── In-sample likelihood on training data (for BIC/AIC) ────────
+        logits_train, _ = estimator.model(xs_train)
+        probs_train = torch.softmax(logits_train.mean(dim=0), dim=-1).cpu()
+        probs_train = probs_train.clamp(eps, 1 - eps)
+        ll_train = (ys_train * torch.log(probs_train)).sum(dim=-1).sum(dim=-1)  # (B, T)
+        ll_train = ll_train.where(valid_train, torch.tensor(float('nan')))
+        nll_per_session_train = (-ll_train).nansum(dim=1)  # (B,)
+
+        nll_train = -torch.nansum(ll_train).item()
+        trial_lik_train = np.exp(-nll_train / n_valid_train)
+
+        info_train = grouped_information_criteria(
+            nll_per_session=nll_per_session_train,
+            n_trials_per_session=n_trials_per_session_train,
+            group_index=group_index_train,
+            n_groups=n_groups_train,
+            n_parameters_per_group=n_params_per_group_train,
+            n_actions_baseline=n_actions,
+        )
+
         rows.append({
             'threshold': threshold,
             'test': test_val,
             'n_params_mean': n_params_mean,
             'n_params_std': n_params_std,
-            'trial_likelihood': trial_lik,
-            'NLL': nll,
-            'BIC': info['bic_mean'],
-            'BIC_std': info['bic_std'],
-            'AIC': info['aic_mean'],
-            'AIC_std': info['aic_std'],
-            'delta_bic_per_trial': info['delta_bic_per_trial_mean'],
-            'delta_bic_per_trial_std': info['delta_bic_per_trial_std'],
+            'trial_likelihood': trial_lik_train,
+            'NLL': nll_train,
+            'BIC': info_train['bic_mean'],
+            'BIC_std': info_train['bic_std'],
+            'AIC': info_train['aic_mean'],
+            'AIC_std': info_train['aic_std'],
+            'delta_bic_per_trial': info_train['delta_bic_per_trial_mean'],
+            'delta_bic_per_trial_std': info_train['delta_bic_per_trial_std'],
+            'trial_likelihood_test': trial_lik,
+            'NLL_test': nll,
+            'BIC_test': info['bic_mean'],
+            'BIC_test_std': info['bic_std'],
+            'AIC_test': info['aic_mean'],
+            'AIC_test_std': info['aic_std'],
+            'delta_bic_per_trial_test': info['delta_bic_per_trial_mean'],
+            'delta_bic_per_trial_test_std': info['delta_bic_per_trial_std'],
             'path': os.path.basename(path),
         })
 
@@ -203,23 +246,74 @@ def analysis_sparsity_hpscan(
     return df
 
 
+def plot_hpscan_heatmaps(df, output_path):
+    """Save a 2×3 grid of heatmaps: rows = train/test, columns = n_params,
+    trial_likelihood, BIC. Cell values are annotated; axes are threshold
+    (rows) × test (columns) of the HP scan grid.
+    """
+    metrics = [
+        ('n_params_mean', 'Parameter Count'),
+        ('trial_likelihood', 'Trial Likelihood'),
+        ('BIC', 'BIC'),
+    ]
+    splits = [('', 'Training'), ('_test', 'Test')]
+
+    thresholds = sorted(df['threshold'].unique())
+    test_vals = sorted(df['test'].unique())
+
+    fig, axes = plt.subplots(2, 3, figsize=(15, 9))
+
+    for row, (suffix, split_label) in enumerate(splits):
+        for col, (metric, metric_label) in enumerate(metrics):
+            ax = axes[row, col]
+            column = metric if metric == 'n_params_mean' else f'{metric}{suffix}'
+            pivot = df.pivot(index='threshold', columns='test', values=column)
+            pivot = pivot.reindex(index=thresholds, columns=test_vals)
+
+            im = ax.imshow(pivot.values, aspect='auto', cmap='viridis')
+            ax.set_xticks(range(len(test_vals)))
+            ax.set_xticklabels(test_vals)
+            ax.set_yticks(range(len(thresholds)))
+            ax.set_yticklabels(thresholds)
+            ax.set_xlabel('test')
+            ax.set_ylabel('threshold')
+            ax.set_title(f'{split_label}: {metric_label}')
+            fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+
+            for i in range(pivot.shape[0]):
+                for j in range(pivot.shape[1]):
+                    value = pivot.values[i, j]
+                    if not np.isnan(value):
+                        ax.text(j, i, f'{value:.3g}', ha='center', va='center',
+                                 color='white', fontsize=8)
+
+    fig.tight_layout()
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    fig.savefig(output_path, dpi=150)
+    plt.close(fig)
+
+
 # ── Standalone execution ─────────────────────────────────────────────
 
 if __name__ == '__main__':
+
+    study = 'eckstein2026'
+    from weinhardt2026.studies.eckstein2026.spice_eckstein2026 import SpiceModel, CONFIG
+    n_actions = 4
+    test_blocks = (2,)
+
+    # study = 'dezfouli2019'
+    # from spice.precoded.workingmemory import SpiceModel, CONFIG
+    # n_actions = 2
+    # test_blocks = (3,6,9)
     
-    # SPICE
-    from spice.precoded.workingmemory import SpiceModel, CONFIG
-    # from weinhardt2026.studies.dezfouli2019.spice_dezfouli2019 import SpiceModel, CONFIG
     model_kwargs = {'reward_binary': True}
     # Dataset
-    data_path = 'weinhardt2026/studies/dezfouli2019/data/dezfouli2019.csv'
-    n_actions = 2
-    test_blocks = (3,6,9)
-    
-    params_dir = 'weinhardt2026/studies/dezfouli2019/params_array'
-    pkl_pattern = os.path.join(params_dir, 'spice_dezfouli2019_*.pkl')
+    data_path = f'weinhardt2026/studies/{study}/data/{study}.csv'
+    params_dir = f'weinhardt2026/studies/{study}/params_array'
+    pkl_pattern = os.path.join(params_dir, f'spice_{study}_*.pkl')
 
-    print("Hyperparameter scan analysis: dezfouli2019")
+    print(f"Hyperparameter scan analysis: {study}")
     print("=" * 60)
 
     df = analysis_sparsity_hpscan(
@@ -240,10 +334,13 @@ if __name__ == '__main__':
         print(df.to_string(index=False, float_format='{:.4f}'.format))
 
         # Save results
-        output_path = os.path.join(
-            'weinhardt2026/studies/dezfouli2019/results',
-            'hpscan_results.csv',
-        )
+        results_dir = f'weinhardt2026/studies/{study}/results'
+        output_path = os.path.join(results_dir, 'hpscan_results.csv')
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
         df.to_csv(output_path, index=False)
         print(f"\nSaved to {output_path}")
+
+        # Save heatmap figure
+        figure_path = os.path.join(results_dir, 'hpscan_heatmaps.png')
+        plot_hpscan_heatmaps(df, figure_path)
+        print(f"Saved heatmaps to {figure_path}")

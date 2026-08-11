@@ -72,17 +72,17 @@ else:
 # CASTRO2025 BENCHMARK MODEL
 # -------------------------------------------------------------------------------------------
 
-# benchmark = Castro2025Model(
-#     n_participants=dataset_train.n_participants,
-#     n_actions=dataset_train.n_actions,
-#     batch_first=True,
-# )
-
-benchmark = RWForgettingChoiceModel(
+benchmark = Castro2025Model(
     n_participants=dataset_train.n_participants,
     n_actions=dataset_train.n_actions,
     batch_first=True,
 )
+
+# benchmark = RWForgettingChoiceModel(
+#     n_participants=dataset_train.n_participants,
+#     n_actions=dataset_train.n_actions,
+#     batch_first=True,
+# )
 
 if train_benchmark:
     optimizer = torch.optim.Adam(params=benchmark.parameters(), lr=0.01)

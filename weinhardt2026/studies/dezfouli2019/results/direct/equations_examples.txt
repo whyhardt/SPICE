@@ -1,0 +1,18 @@
+--- participant 0 ---
+value_reward_chosen[t+1]     = 1.0 value_reward_chosen[t] + -1.137 reward[t] + 2.177 reward[t-2] + 1.479 reward[t-3] + -1.513 value_reward_chosen*reward[t] + -1.785 value_reward_chosen*reward[t-1] 
+value_reward_not_chosen[t+1] = 1.0 value_reward_not_chosen[t] 
+value_choice_chosen[t+1]     = 1.0 value_choice_chosen[t] 
+value_choice_not_chosen[t+1] = 1.0 value_choice_not_chosen[t] + -1.461 choice[t-2] 
+
+--- participant 1 ---
+value_reward_chosen[t+1]     = 1.0 value_reward_chosen[t] + 2.637 reward[t-1] + 1.134 reward[t-2] + 0.658 reward[t-3] + -0.884 value_reward_chosen*reward[t] 
+value_reward_not_chosen[t+1] = -0.21 value_reward_not_chosen[t] 
+value_choice_chosen[t+1]     = 1.0 value_choice_chosen[t] 
+value_choice_not_chosen[t+1] = 1.0 value_choice_not_chosen[t] + -0.787 choice[t-1] + -1.195 choice[t-1]*choice[t-2] + -0.999 choice[t-1]*choice[t-3] 
+
+--- participant 2 ---
+value_reward_chosen[t+1]     = 1.0 value_reward_chosen[t] 
+value_reward_not_chosen[t+1] = 1.0 value_reward_not_chosen[t] 
+value_choice_chosen[t+1]     = 1.0 value_choice_chosen[t] 
+value_choice_not_chosen[t+1] = 1.0 value_choice_not_chosen[t] + 0.544 choice[t-1] + -1.213 choice[t-2] + 0.047 value_choice_not_chosen*choice[t-2] 
+
