@@ -95,7 +95,7 @@ class ThresholdFunction(torch.autograd.Function):
         return grads, None, None, None, None, None, None
 
 
-class DDMRNN(BaseModel):
+class SpiceDDM(BaseModel):
 
     def __init__(
         self,
@@ -303,7 +303,7 @@ if __name__=='__main__':
     
     spice_estimator = SpiceEstimator(
         spice_config=SPICE_CONFIG,
-        spice_class=DDMRNN,
+        spice_class=SpiceDDM,
         kwargs_spice_class={
             'max_steps': dataset.xs.shape[2],
             't_max': t_max,

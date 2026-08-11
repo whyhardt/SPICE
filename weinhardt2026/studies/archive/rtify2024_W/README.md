@@ -17,7 +17,7 @@ equally well. As of this handover, it's the latter — see "Open problem" below.
 
 | File | Role |
 |---|---|
-| `spice_rtify2024.py` | `CONFIG`, `DDMRNN` (the fitted model), `make_ddm_loss` |
+| `spice_rtify2024.py` | `CONFIG`, `SpiceDDM` (the fitted model), `make_ddm_loss` |
 | `benchmark_rtify2024.py` | `simulate_ddm` (ground truth generator), `get_dataset` |
 | `analysis_rtify2024.py` | `decode_choice_rt`, `estimate_non_decision_time`, `evaluate`, `print_spice_models`, `plot_summary` |
 | `rtify2024.py` | the pipeline: build dataset → fit → evaluate → plot |

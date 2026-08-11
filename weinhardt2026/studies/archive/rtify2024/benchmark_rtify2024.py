@@ -20,8 +20,8 @@ DDM_PARAMETERS = {
         ],
     }
 
-def update_drift(drift, c_constant, c_linear=0, c_quadratic=0):
-    return c_constant + c_linear * drift + c_quadratic * (drift ** 2)
+def update_drift(drift, c0, c1=0, c2=0):
+    return c0 + c1 * drift + c2 * (drift ** 2)
 
 
 def simulate_ddm(
@@ -42,7 +42,7 @@ def simulate_ddm(
     """Ground-truth simulator -- identical accumulator dynamics to
     rtify2024_c/benchmark_rtify2024_c.py. Only the OUTPUT format changes, to match the
     per-step [no_decision, up, down] cross-entropy training scheme (see
-    spice_rtify2024_f.py's DDMRNN docstring):
+    spice_rtify2024_f.py's SpiceDDM docstring):
 
         dE/dt = -leak*E + drift(t) + diffusion*xi(t)
         threshold(t) = max(threshold - collapsing_bound_rate*t, threshold_min)
@@ -93,9 +93,9 @@ def simulate_ddm(
         # apparently-instant jump instead of a trajectory spread over the trial.
         drift_target = update_drift(
             drift_step,
-            drift_update_kwargs.get('c_constant', drift_rate),
-            drift_update_kwargs.get('c_linear', 0),
-            drift_update_kwargs.get('c_quadratic', 0),
+            drift_update_kwargs.get('c0', drift_rate),
+            drift_update_kwargs.get('c1', 0),
+            drift_update_kwargs.get('c2', 0),
             )
         drift_step = drift_step + dt * (drift_target - drift_step)
         drift_t[:, w] = drift_step
@@ -168,10 +168,12 @@ def get_dataset(
     leak: list[float],
     flip_time_range: list[float],
     drift_update_kwargs: list[dict],
+    threshold: float,
     n_trials: int,
     t_max: float,
     max_steps: int,
     device: torch.device,
+    **kwargs,
     ):
     """drift_rates: (n_participants,) -- one fixed stimulus/drift-rate condition
     per participant. n_trials: trials per participant."""
@@ -195,7 +197,7 @@ def get_dataset(
             drift_rate=drift_rates[i],
             diffusion_rate=1.0,
             leak=leak[i],
-            threshold=1.0,
+            threshold=threshold,
             collapsing_bound_rate=collapsing_bound_rate[i],
             flip_time_range=flip_time_range,
             drift_update_kwargs=drift_update_kwargs[i],

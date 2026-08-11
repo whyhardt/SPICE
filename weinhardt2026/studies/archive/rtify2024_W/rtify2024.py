@@ -39,7 +39,7 @@ offset, so a handful of trials with RT < ndt land in bins the model can't reach 
 an accepted tradeoff for a model with no input-length-dependent special-casing.
 
 Module layout (matching other studies' convention):
-    spice_rtify2024.py     -- CONFIG, DDMRNN, make_ddm_loss (the model)
+    spice_rtify2024.py     -- CONFIG, SpiceDDM, make_ddm_loss (the model)
     benchmark_rtify2024.py -- simulate_ddm (ground truth), get_dataset
     analysis_rtify2024.py  -- decode_choice_rt, estimate_non_decision_time,
                               _sanitize_predictions, evaluate, print_spice_models, plot_summary
@@ -56,7 +56,7 @@ import torch
 
 from spice import SpiceEstimator, SpiceDataset
 
-from weinhardt2026.studies.archive.rtify2024.spice_rtify2024 import CONFIG, DDMRNN, make_ddm_loss
+from weinhardt2026.studies.archive.rtify2024.spice_rtify2024 import CONFIG, SpiceDDM, make_ddm_loss
 from weinhardt2026.studies.archive.rtify2024.benchmark_rtify2024 import get_dataset
 from weinhardt2026.studies.archive.rtify2024.analysis_rtify2024 import (
     evaluate, print_spice_models, plot_summary, plot_participant_fit
@@ -108,7 +108,7 @@ dataset_train, dataset_test, info_dataset = get_dataset(
 print(f"Estimated non-decision time: {info_dataset['non_decision_time']:.3f}s")
 
 estimator = SpiceEstimator(
-    spice_class=DDMRNN,
+    spice_class=SpiceDDM,
     spice_config=CONFIG,
     kwargs_spice_class={'dt': dt, 'non_decision_time': 0.2},
     n_reward_features=0,

@@ -6,7 +6,7 @@ from spice import SpiceConfig, BaseModel
 
 
 CONFIG = SpiceConfig(
-    # library_setup declares which SINDy-fittable RNN submodules exist. DDMRNN.forward() calls
+    # library_setup declares which SINDy-fittable RNN submodules exist. SpiceDDM.forward() calls
     # both submodules every step via call_module():
     #   'drift'         <- ('stimulus',)     -- drift = f(stimulus)
     #   'threshold_raw' <- ('time_elapsed',) -- boundary = g(time_elapsed), a genuinely dynamic
@@ -31,12 +31,12 @@ CONFIG = SpiceConfig(
     # overwrites self.state[...] with that submodule's own output.
     memory_state={
         'drift': None,          # initial drift rate before the 'drift' submodule starts updating it
-        'threshold_raw': None,  # initial pre-transform threshold before the 'threshold_raw' submodule
-                                 # starts updating it; DDMRNN.effective_threshold() maps the current
+        'threshold_raw': None,#None,  # initial pre-transform threshold before the 'threshold_raw' submodule
+                                 # starts updating it; SpiceDDM.effective_threshold() maps the current
                                  # value through a bounded sigmoid (not softplus, see that method's docstring)
     },
     # Cosmetic/interpretability metadata only in this model (which state(s) "drive" the
-    # decision) -- DDMRNN.forward() builds its own logits directly and doesn't consult this list.
+    # decision) -- SpiceDDM.forward() builds its own logits directly and doesn't consult this list.
     states_in_logit=[
         'drift',
         'threshold_raw',
@@ -49,7 +49,7 @@ CONFIG = SpiceConfig(
 )
 
 
-class DDMRNN(BaseModel):
+class SpiceDDM(BaseModel):
     """Two-boundary DDM whose state is the actual (discretized) probability DENSITY over
     evidence -- not a single scalar trajectory -- evolved via the Fokker-Planck / Kolmogorov
     forward equation, with absorbing boundaries at +/-threshold.
@@ -155,6 +155,8 @@ class DDMRNN(BaseModel):
         self.register_buffer('diffusion_kernel', diffusion_kernel.view(1, 1, -1))  # conv1d weight shape [out_ch, in_ch, K]
         self.kernel_radius = kernel_radius
 
+        self.setup_module(key_module='drift', dt=dt)#, include_state=False)
+        
         # Drift is computed by a real learned RNN submodule (drift = f(stimulus)) each step,
         # not a fixed per-participant scalar -- setup_module()/call_module() need a participant
         # embedding to condition that submodule on who's currently being simulated.
@@ -173,7 +175,7 @@ class DDMRNN(BaseModel):
         # E = ensemble size (1 in every config in this study -- SINDy ensembling isn't used).
         # B = batch size, i.e. number of (synthetic) trials being processed in parallel.
         W, E, B = self.state['drift'].shape[0], self.state['drift'].shape[1], self.state['drift'].shape[2]
-        assert W == 1, "DDMRNN assumes the T=step/W=1 trial-axis reframing used throughout rtify2024_b/c/d/e/f."
+        assert W == 1, "SpiceDDM assumes the T=step/W=1 trial-axis reframing used throughout rtify2024_b/c/d/e/f."
         G = self.x_grid.shape[0]  # number of grid points
 
         # On the very first chunk of a sequence (prev_state is None), inject the initial

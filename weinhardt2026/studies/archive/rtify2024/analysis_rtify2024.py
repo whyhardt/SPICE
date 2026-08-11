@@ -1,3 +1,4 @@
+import numpy as np
 import torch
 
 from spice import SpiceEstimator, SpiceDataset
@@ -76,14 +77,21 @@ def plot_participant_fit(
     t_max: float,
     participant_id: int,
     non_decision_time: float = 0.0,
-    use_sindy: bool = False,
     output_path: str = None,
+    dataset_empirical: SpiceDataset = None,
 ):
     """One participant: observed RT histogram (signed, density-normalized) vs. the model's own
     predicted per-bin likelihood, overlaid as a red line -- up on the positive side, down on
     the negative side. The likelihood is the analytic marginal (survival-weighted per-step
     conditional probabilities, see `_step_probs_to_marginal`) -- exact, no sampling -- so this
     is a more direct fit check than a histogram of simulated trajectories.
+
+    dataset_empirical: optional, a second (typically much larger, e.g. 100k trials) dataset
+        simulated from the SAME true generative parameters as `dataset` -- e.g. via a second
+        `get_dataset(..., n_trials=100_000, ...)` call in the caller. Plotted as a fine-binned
+        density line alongside the (usually much smaller) `dataset`-derived "observed RTs"
+        histogram, so histogram sampling noise in `dataset` can be told apart from genuine
+        model misfit against the model's analytic likelihood curve.
     """
     import matplotlib.pyplot as plt
 
@@ -91,10 +99,15 @@ def plot_participant_fit(
     xs = dataset.xs.to(estimator.model.device)
     ys = dataset.ys.to(estimator.model.device)
     prev_use_sindy = estimator.model.use_sindy
-    estimator.use_sindy(use_sindy)
-
-    logits, _ = estimator.model(xs)
-    logits = logits.mean(dim=0)[:, :, 0, :]  # [B, T, 3]
+    
+    estimator.use_sindy(False)
+    logits_rnn, _ = estimator.model(xs)
+    logits_rnn = logits_rnn.mean(dim=0)[:, :, 0, :]  # [B, T, 3]
+    
+    estimator.use_sindy(True)
+    logits_sindy, _ = estimator.model(xs)
+    logits_sindy = logits_sindy.mean(dim=0)[:, :, 0, :]  # [B, T, 3]
+    
     estimator.use_sindy(prev_use_sindy)
 
     participant_col = xs[:, 0, 0, -1]
@@ -109,20 +122,40 @@ def plot_participant_fit(
     # `drift`/`evidence` are deterministic given a participant's (constant) stimulus, so every
     # trial belonging to `participant_id` shares the exact same predicted trajectory.
     trial_idx = idx[0]
-    max_steps = logits.shape[1]
-    p_up, p_down = _step_probs_to_marginal(logits[trial_idx])
-    p_up, p_down = p_up.cpu().numpy(), p_down.cpu().numpy()
+    max_steps = logits_rnn.shape[1]
+    p_up_rnn, p_down_rnn = _step_probs_to_marginal(logits_rnn[trial_idx])
+    p_up_rnn, p_down_rnn = p_up_rnn.cpu().numpy(), p_down_rnn.cpu().numpy()
+    p_up_sindy, p_down_sindy = _step_probs_to_marginal(logits_sindy[trial_idx])
+    p_up_sindy, p_down_sindy = p_up_sindy.cpu().numpy(), p_down_sindy.cpu().numpy()
 
     time_axis = (torch.arange(max_steps, dtype=torch.float32) * dt + dt / 2).numpy() + non_decision_time
 
     fig, ax = plt.subplots(figsize=(7, 4))
-    ax.hist(signed_rt_obs, bins=50, range=(-t_max, t_max), density=True, alpha=0.5, color='tab:blue', label='observed RTs')
-    ax.plot(time_axis, p_up / dt, color='red', label='model likelihood (up/down)')
-    ax.plot(-time_axis, p_down / dt, color='red')
+
+    if dataset_empirical is not None:
+        xs_emp = dataset_empirical.xs.to(estimator.model.device)
+        ys_emp = dataset_empirical.ys.to(estimator.model.device)
+        participant_col_emp = xs_emp[:, 0, 0, -1]
+        idx_emp = (participant_col_emp == participant_id).nonzero(as_tuple=True)[0]
+        if len(idx_emp) == 0:
+            raise ValueError(f"No trials found for participant {participant_id} in dataset_empirical")
+        is_up_emp, rt_emp_raw = decode_choice_rt(ys_emp[idx_emp][:, :, 0], dt)
+        rt_emp = rt_emp_raw + non_decision_time
+        signed_rt_emp = torch.where(is_up_emp, rt_emp, -rt_emp).cpu().numpy()
+        bins_emp = np.linspace(-t_max, t_max, 201)
+        density_emp, edges_emp = np.histogram(signed_rt_emp, bins=bins_emp, density=True)
+        centers_emp = (edges_emp[:-1] + edges_emp[1:]) / 2
+        ax.plot(centers_emp, density_emp, color='tab:blue', linewidth=1.5,
+                label=f'empirical density (n={len(idx_emp)})')
+
+    ax.plot(time_axis, p_up_rnn / dt, color='tab:orange', label='SPICE-RNN likelihood (up/down)')
+    ax.plot(-time_axis, p_down_rnn / dt, color='tab:orange')
+    ax.plot(time_axis, p_up_sindy / dt, color='tab:red', label='SPICE-EQ likelihood (up/down)')
+    ax.plot(-time_axis, p_down_sindy / dt, color='tab:red')
     ax.axvline(0, color='gray', linewidth=0.5)
     ax.set_xlabel('Signed RT (s); sign = boundary')
     ax.set_ylabel('Density')
-    ax.set_title(f'Participant {participant_id} ({"sindy" if use_sindy else "rnn"})')
+    ax.set_title(f'Participant {participant_id}')
     ax.legend()
     fig.tight_layout()
 
@@ -158,6 +191,7 @@ def plot_dataset_variables(
     t_max: float,
     ddm_parameters: dict,
     participant_ids=None,
+    non_decision_time: float = 0.0,
     output_path: str = None,
 ):
     """One figure, four subplots -- drift, threshold, evidence, RT distribution -- read
@@ -196,12 +230,12 @@ def plot_dataset_variables(
 
         ax_drift.plot(time_axis, drift_mean, color=color, label=label)
         ax_threshold.plot(time_axis, threshold_mean, color=color, label=label)
-        ax_threshold.plot(time_axis, -threshold_mean, color=color)
         ax_evidence.plot(time_axis, evidence_mean, color=color, label=label)
 
         # RT distribution as a line (density curve from a fixed-bin histogram, no bars),
         # signed by choice (up positive, down negative) -- matches plot_summary's convention.
-        is_up, rt = decode_choice_rt(ys[idx][:, :, 0], dt)
+        is_up, rt_raw = decode_choice_rt(ys[idx][:, :, 0], dt)
+        rt = rt_raw + non_decision_time
         signed_rt = torch.where(is_up, rt, -rt).cpu().numpy()
         bins = np.linspace(-t_max, t_max, 51)
         density, edges = np.histogram(signed_rt, bins=bins, density=True)
@@ -213,16 +247,22 @@ def plot_dataset_variables(
     ax_drift.set_ylabel('Drift (rate)')
     ax_drift.set_title('Drift')
     ax_drift.legend(fontsize='small')
+    drift_bottom, drift_top = ax_drift.get_ylim()
+    ax_drift.set_ylim(bottom=max(drift_bottom, -10), top=min(drift_top, 10))
 
     ax_threshold.axhline(0, color='gray', linewidth=0.5)
     ax_threshold.set_xlabel('Time (s)')
     ax_threshold.set_ylabel('Threshold (+/-)')
     ax_threshold.set_title('Threshold')
+    threshold_top = min(ax_threshold.get_ylim()[1], 10)
+    ax_threshold.set_ylim(bottom=-threshold_top, top=threshold_top)
 
     ax_evidence.axhline(0, color='gray', linewidth=0.5)
     ax_evidence.set_xlabel('Time (s)')
     ax_evidence.set_ylabel('Evidence (accumulator, mean)')
     ax_evidence.set_title('Evidence')
+    evidence_bottom, evidence_top = ax_evidence.get_ylim()
+    ax_evidence.set_ylim(bottom=max(evidence_bottom, -10), top=min(evidence_top, 10))
 
     ax_rt.set_xlabel('Signed RT (s); sign = boundary')
     ax_rt.set_ylabel('Density')
@@ -251,7 +291,7 @@ def _rollout_state_trajectory(model, xs: torch.Tensor) -> dict:
     from evidence/threshold via a hand-rolled formula in analysis code, which is what
     previously went silently stale (see _simulate_trial_by_trial's docstring).
 
-    rtify2024_f's DDMRNN has no scalar `evidence`/softplus(`threshold_raw`) state -- `evidence`
+    rtify2024_f's SpiceDDM has no scalar `evidence`/softplus(`threshold_raw`) state -- `evidence`
     is a full probability density over a grid (`state['evidence_pdf']`), and `threshold` is
     bounded via sigmoid, not softplus. `model.mean_evidence()`/`model.effective_threshold()`
     read the model's own definitions of those (its density's mean, its actual bounded

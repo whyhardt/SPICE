@@ -232,6 +232,7 @@ class BaseModel(nn.Module):
         self.n_sessions = n_participants * n_experiments
         self.use_sindy = use_sindy
         self.ridge_mode = False
+        self._ridge_accumulators = {}
         self.n_items = n_items if n_items is not None else n_actions
         self.ensemble_size = ensemble_size
         self.compiled_forward = compiled_forward
@@ -604,13 +605,13 @@ class BaseModel(nn.Module):
                 if activation_rnn is not None:
                     next_value = activation_rnn(next_value)
                 if self.ridge_mode:
-                    # direct ridge solve for sindy coefficients. h_current must be
-                    # the per-step preceding value (value[-1] for w=0, next_value[w-1]
-                    # for w>0), matching compute_sindy_loss_for_module below --
+                    # Accumulate this chunk's normal-equation contribution for sindy coefficients.
+                    # h_current must be the per-step preceding value (value[-1] for w=0,
+                    # next_value[w-1] for w>0), matching compute_sindy_loss_for_module below --
                     # `value` alone is the constant state entering this call, wrong
                     # for every w>0 whenever W>1 (within-trial dynamics).
                     value_0 = value[-1].unsqueeze(0) if value is not None else torch.zeros(1, E, B, I, device=self.device)
-                    success = self.sindy_ridge_solve(
+                    self.sindy_ridge_accumulate(
                         key_module=key_module,
                         participant_ids=participant_index,
                         experiment_ids=experiment_index,
@@ -618,8 +619,6 @@ class BaseModel(nn.Module):
                         h_current=torch.concat((value_0, next_value[:-1])),
                         controls=inputs,
                     )
-                    if not success:
-                        self._ridge_solve_success = False
             
             if self.use_sindy:
                 # Get SINDy module prediction — operates per within-trial step
@@ -866,7 +865,7 @@ class BaseModel(nn.Module):
         # difference carries a factor of dt that gets squared away to dt^2 -- for
         # dt << 1 this silently attenuates sindy_weight by ~dt^2, well below any
         # value tuned for dt=1 modules. Divide by dt first to compare in rate space,
-        # consistent with sindy_ridge_solve's target normalization.
+        # consistent with sindy_ridge_accumulate's target normalization.
         dt = self.sindy_specs[module_name].get('dt', 1.)
         diff_reg = ((h_next_rnn - h_next_sindy) / dt) ** 2  # full gradients
         # diff_reg = (h_next_rnn - h_next_sindy.detach()) ** 2  # gradients → RNN only
@@ -887,13 +886,25 @@ class BaseModel(nn.Module):
 
         return sindy_loss_reg, sindy_loss_fit
     
-    def sindy_ridge_solve(self, key_module: str, participant_ids: torch.Tensor, experiment_ids: torch.Tensor,
-                          h_next: torch.Tensor, h_current: torch.Tensor, controls: torch.Tensor,
-                          ridge_alpha: float = None) -> bool:
-        """Ridge-solve SINDy coefficients for one module using accumulated normal equations.
+    def reset_ridge_accumulators(self) -> None:
+        """Clear accumulated ridge normal equations for all modules.
 
-        Builds the polynomial library from (h_current, controls), accumulates A^T A and A^T b
-        per (participant, experiment) group via scatter, adds a ridge penalty, and solves.
+        Call once before the first chunk of a new (possibly multi-chunk) ridge solve --
+        see sindy_ridge_accumulate/sindy_ridge_finalize.
+        """
+        self._ridge_accumulators = {}
+
+    def sindy_ridge_accumulate(self, key_module: str, participant_ids: torch.Tensor, experiment_ids: torch.Tensor,
+                          h_next: torch.Tensor, h_current: torch.Tensor, controls: torch.Tensor) -> None:
+        """Accumulate one chunk's normal-equation contribution toward key_module's ridge solve.
+
+        Builds the polynomial library from (h_current, controls) for this chunk and scatter-adds
+        its A^T A / A^T b contributions into self._ridge_accumulators[key_module], per
+        (participant, experiment) group. Calling this repeatedly over chunks of a dataset (each
+        with reset_ridge_accumulators() called once beforehand) and then sindy_ridge_finalize()
+        is mathematically equivalent to solving on the whole dataset at once, but never needs to
+        materialize the full dataset's forward pass in memory simultaneously -- necessary for
+        architectures with large per-sample state (e.g. SpiceDDM's evidence_pdf grid).
 
         Args:
             key_module: Module name (key in sindy_coefficients).
@@ -902,16 +913,11 @@ class BaseModel(nn.Module):
             h_next: (W, E, B, I) RNN target states.
             h_current: (W, E, B, I) current states (or None → zeros).
             controls: (W, E, B, I, n_controls) control signals.
-            ridge_alpha: Ridge penalty strength. Defaults to self.sindy_alpha.
-
-        Returns:
-            True if the solve succeeded, False if it failed (e.g. singular matrix).
         """
         W, E, B, I = h_next.shape
         P = self.n_participants
         X = self.n_experiments
         T = self.sindy_coefficients[key_module].shape[-1]
-        alpha = ridge_alpha if ridge_alpha is not None else self.sindy_alpha
 
         if h_current is None:
             h_current = torch.zeros_like(h_next)
@@ -952,26 +958,55 @@ class BaseModel(nn.Module):
         AtA_samples = library.transpose(-2, -1) @ library  # (E, B, T, T)
         Atb_samples = library.transpose(-2, -1) @ target   # (E, B, T, 1)
 
-        # Scatter-accumulate into (E, n_groups, T, T) and (E, n_groups, T, 1)
-        # Expand group_ids to broadcast: (E, B) -> (E, B, 1, 1)
+        # Scatter-accumulate into this module's persistent (E, n_groups, T, T) / (E, n_groups, T, 1)
+        # accumulators, creating them on first use. Expand group_ids to broadcast: (E, B) -> (E, B, 1, 1)
         group_idx = group_ids.unsqueeze(-1).unsqueeze(-1)  # (E, B, 1, 1)
 
-        AtA_accum = torch.zeros(E, n_groups, T, T, device=library.device, dtype=library.dtype)
-        Atb_accum = torch.zeros(E, n_groups, T, 1, device=library.device, dtype=library.dtype)
-        sample_count = torch.zeros(E, n_groups, device=library.device, dtype=library.dtype)
+        accum = self._ridge_accumulators.get(key_module)
+        if accum is None:
+            accum = {
+                'AtA': torch.zeros(E, n_groups, T, T, device=library.device, dtype=library.dtype),
+                'Atb': torch.zeros(E, n_groups, T, 1, device=library.device, dtype=library.dtype),
+                'count': torch.zeros(E, n_groups, device=library.device, dtype=library.dtype),
+            }
+            self._ridge_accumulators[key_module] = accum
 
-        AtA_accum.scatter_add_(1, group_idx.expand_as(AtA_samples), AtA_samples)
-        Atb_accum.scatter_add_(1, group_idx.expand_as(Atb_samples), Atb_samples)
-        sample_count.scatter_add_(1, group_ids, torch.ones_like(group_ids, dtype=library.dtype))
+        accum['AtA'].scatter_add_(1, group_idx.expand_as(AtA_samples), AtA_samples)
+        accum['Atb'].scatter_add_(1, group_idx.expand_as(Atb_samples), Atb_samples)
+        accum['count'].scatter_add_(1, group_ids, torch.ones_like(group_ids, dtype=library.dtype))
 
-        # Reshape to (E, P, X, T, T) and (E, P, X, T, 1)
-        AtA_accum = AtA_accum.reshape(E, P, X, T, T)
-        Atb_accum = Atb_accum.reshape(E, P, X, T, 1)
-        has_data = sample_count.reshape(E, P, X) > 0  # (E, P, X)
+    def sindy_ridge_finalize(self, key_module: str, ridge_alpha: float = None) -> bool:
+        """Solve the ridge-regularized normal equations accumulated via sindy_ridge_accumulate.
+
+        Adds the ridge penalty to the accumulated A^T A, solves per (participant, experiment)
+        group, and writes the result into self.sindy_coefficients[key_module]. Call once per
+        module after all chunks of a solve have been accumulated.
+
+        Args:
+            key_module: Module name (key in sindy_coefficients).
+            ridge_alpha: Ridge penalty strength. Defaults to self.sindy_alpha.
+
+        Returns:
+            True if the solve succeeded, False if it failed (e.g. singular matrix). True if no
+            data was accumulated for this module (nothing to solve).
+        """
+        accum = self._ridge_accumulators.get(key_module)
+        if accum is None:
+            return True
+
+        P = self.n_participants
+        X = self.n_experiments
+        T = self.sindy_coefficients[key_module].shape[-1]
+        E = accum['AtA'].shape[0]
+        alpha = ridge_alpha if ridge_alpha is not None else self.sindy_alpha
+
+        AtA_accum = accum['AtA'].reshape(E, P, X, T, T)
+        Atb_accum = accum['Atb'].reshape(E, P, X, T, 1)
+        has_data = accum['count'].reshape(E, P, X) > 0  # (E, P, X)
 
         # Add ridge penalty: alpha * diag(degree_weights) + eps*I for numerical stability
         penalty_diag = torch.diag(alpha * self.sindy_degree_weights[key_module]).double()  # (T, T)
-        penalty_diag += 1e-4 * torch.eye(T, device=library.device, dtype=library.dtype)
+        penalty_diag += 1e-4 * torch.eye(T, device=AtA_accum.device, dtype=AtA_accum.dtype)
         AtA_accum = AtA_accum + penalty_diag  # broadcasts over (E, P, X)
 
         # Solve; return False on failure (singular matrix, etc.)
@@ -989,7 +1024,8 @@ class BaseModel(nn.Module):
         self.sindy_coefficients[key_module].data *= self.sindy_coefficients_presence[key_module].float()
 
         return True
-        
+
+
     def sindy_coefficient_pruning(self, patience: int = 1, n_terms_pruning: int = None):
         """
         Apply hard thresholding to SINDy coefficients with patience counter.

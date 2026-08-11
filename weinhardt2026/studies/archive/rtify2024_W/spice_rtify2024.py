@@ -26,7 +26,7 @@ CONFIG = SpiceConfig(
 )
 
 
-class DDMRNN(BaseModel):
+class SpiceDDM(BaseModel):
     """Two-boundary DDM with a hazard-based (RTify-style) decision-time likelihood."""
 
     def __init__(self, dt: float = 0.05, non_decision_time: float = 0.2, **kwargs):

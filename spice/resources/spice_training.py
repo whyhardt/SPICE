@@ -164,14 +164,26 @@ def _print_training_status(
     return current_line_count
 
 
-def cross_entropy_loss(prediction: torch.Tensor, target: torch.Tensor, label_smoothing=0.) -> torch.Tensor:
-    """Wrapper for torch's cross entropy loss which does all the reshaping when getting SpiceDataset.ys tensors as predicitons and targets."""
+def cross_entropy_loss(
+    prediction: torch.Tensor,
+    target: torch.Tensor,
+    label_smoothing=0.,
+    weight: torch.Tensor = None,
+    ) -> torch.Tensor:
+    """Wrapper for torch's cross entropy loss which does all the reshaping when getting SpiceDataset.ys tensors as predicitons and targets.
+
+    weight: Optional per-category loss weighting, shape (C,) or (1, C) -- passed straight
+        through to torch.nn.functional.cross_entropy's own `weight` argument.
+    """
     n_actions = target.shape[-1]
-    
+
     prediction = prediction.reshape(-1, n_actions)
     target = torch.argmax(target.reshape(-1, n_actions), dim=1)
-    
-    return torch.nn.functional.cross_entropy(prediction, target, label_smoothing=label_smoothing)
+
+    if weight is not None:
+        weight = weight.reshape(-1).to(device=prediction.device, dtype=prediction.dtype)
+
+    return torch.nn.functional.cross_entropy(prediction, target, weight=weight, label_smoothing=label_smoothing)
 
 
 def _setup_warmup_scaler(n_warmup_steps: int, exp_max: float = 1) -> torch.Tensor:
@@ -449,9 +461,13 @@ def _ridge_solve_sindy(
     Lightweight ridge solve: snap SINDy coefficients to their MSE-optimal
     values without touching the optimizer state.
 
-    Runs a frozen RNN forward pass over flattened (trial, session) pairs.
-    Inside each call_module(), sindy_ridge_solve() accumulates per-participant
-    normal equations and solves in closed form.
+    Runs a frozen RNN forward pass over flattened (trial, session) pairs, chunked with
+    automatic OOM backoff (mirrors _run_shooting_eval_batched) -- a single-shot pass over the
+    whole flattened dataset can OOM outright on models with large per-sample state (e.g.
+    SpiceDDM's evidence_pdf grid), even though the batched SGD loop elsewhere handles the same
+    dataset fine. Inside each call_module(), sindy_ridge_accumulate() scatter-adds this chunk's
+    contribution to each module's per-participant normal equations; sindy_ridge_finalize()
+    solves them once all chunks have been accumulated.
 
     Returns:
         True if the ridge solve succeeded for all modules, False otherwise.
@@ -463,28 +479,60 @@ def _ridge_solve_sindy(
     prev_sindy_alpha = model.sindy_alpha
     if alpha is not None:
         model.sindy_alpha = alpha
-    
+
     model.eval(use_sindy=False)
     input_state_buffer, _, xs_flat, _ = _vectorize_state(model, xs_train, ys_train)
 
-    model._ridge_solve_success = True
+    flat_total = xs_flat.shape[1]
+    chunk_size = flat_total
+
+    # torch.compile's graph for each RNN submodule is specialized to the batch shape(s) it was
+    # first traced with (the single full-flat_total shape from the pre-chunking code path).
+    # Re-tracing it against a second, smaller chunk shape here (from OOM backoff, or an
+    # unevenly-divisible final chunk) has been observed to hit a Triton kernel launch bug
+    # ("invalid argument"). Ridge solves are infrequent and already run under no_grad, so
+    # correctness matters far more than speed here -- run the uncompiled path instead.
+    prev_compile_flags = {name: m._compile for name, m in model.submodules_rnn.items()}
+    for rnn_module in model.submodules_rnn.values():
+        rnn_module._compile = False
 
     with torch.no_grad():
         model.ridge_mode = True
         model.train(use_sindy=True)
         for rnn_module in model.submodules_rnn.values():
             rnn_module.eval()
-        initial_state = {s: t.clone() for s, t in input_state_buffer.items()}
-        model(xs_flat.to(model.device), initial_state)
 
-    success = model._ridge_solve_success
+        while True:
+            try:
+                model.reset_ridge_accumulators()
+                for start in range(0, flat_total, chunk_size):
+                    end = min(start + chunk_size, flat_total)
+                    chunk_state = {s: t[:, :, start:end].clone() for s, t in input_state_buffer.items()}
+                    model(xs_flat[:, start:end].to(model.device), chunk_state)
+                break
+            except (torch.cuda.OutOfMemoryError, RuntimeError) as e:
+                if _check_cuda_oom(e):
+                    raise
+                if chunk_size <= 1:
+                    raise RuntimeError(f"Automatic batch size probing was unsuccessful for the SINDy ridge solve. Current chunk size is {chunk_size} but could still not be started. Please try again with a smaller ensemble size (current: {model.ensemble_size}).")
+                model.zero_grad(set_to_none=True)
+                torch.cuda.empty_cache()
+                chunk_size = max(1, chunk_size // 2)
+
+        success = all(
+            model.sindy_ridge_finalize(module_name)
+            for module_name in model.submodules_rnn.keys()
+        )
+
+    for name, rnn_module in model.submodules_rnn.items():
+        rnn_module._compile = prev_compile_flags[name]
 
     model.ridge_mode = prev_ridge_mode
     if was_training:
         model.train(use_sindy=prev_use_sindy)
     else:
         model.eval(use_sindy=prev_use_sindy)
-        
+
     model.sindy_alpha = prev_sindy_alpha
 
     return success
@@ -757,7 +805,7 @@ def _run_shooting_eval_batched(
     automatic OOM backoff -- mirrors the batching/backoff the SGD loops right after each
     call site already do. The plain `batch_sessions=torch.arange(B_total)` single-shot
     call this replaces has no such backoff, so on models with a large per-session state
-    (e.g. DDMRNN's evidence_pdf grid) it can OOM outright on datasets the subsequent
+    (e.g. SpiceDDM's evidence_pdf grid) it can OOM outright on datasets the subsequent
     (batched) SGD loop handles fine. Returns (mean_loss, safe_batch_size) so the caller
     can seed the SGD loop's batch size with a value already known to fit.
     """
@@ -903,7 +951,7 @@ def _run_sindy_training(
         window_starts_21 = [0]
 
         # Ridge solve with L2 penalty to initialize coefficients. Uses the
-        # original (non-flattened) xs_train -- sindy_ridge_solve's h_current is
+        # original (non-flattened) xs_train -- sindy_ridge_accumulate's h_current is
         # already the per-step preceding value regardless of how many within-trial
         # steps a single forward call spans, so this is already one-step-correct.
         ridge_success_21 = _ridge_solve_sindy(model, xs_train, ys_train)
