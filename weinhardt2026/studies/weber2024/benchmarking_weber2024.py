@@ -250,7 +250,7 @@ class ChangePointModel(torch.nn.Module):
 
     def count_parameters(self) -> int:
         """Free parameters per participant: p_cp + stochasticity_sd."""
-        return 2 * self.n_participants
+        return 2
 
 
 # --- Loss function with physical speed clamping ---

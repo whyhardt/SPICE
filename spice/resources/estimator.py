@@ -372,6 +372,7 @@ class SpiceEstimator(BaseEstimator):
         
         # Infer ensemble_size from saved coefficient shape: (E, P, X, terms)
         self.model.ensemble_size = loaded_parameters['model']['sindy_coefficients.'+next(iter(self.model.submodules_rnn))].shape[0]
+        self.ensemble_size = self.model.ensemble_size
         
         self.model = self.spice_class(
             spice_config=self.spice_config,
