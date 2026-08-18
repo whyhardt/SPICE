@@ -91,14 +91,9 @@ def plot_across_models(df: pd.DataFrame, output_dir: str, edge_alpha_w, edge_alp
     ax.grid(alpha=0.3)
 
     ax = axes[2]
-    ax.scatter(best_rows["train_dbic_per_trial"], best_rows["test_dbic_per_trial"], s=60, alpha=0.7)
-    lims = [
-        min(best_rows["train_dbic_per_trial"].min(), best_rows["test_dbic_per_trial"].min()),
-        max(best_rows["train_dbic_per_trial"].max(), best_rows["test_dbic_per_trial"].max()),
-    ]
-    ax.plot(lims, lims, "--", color="gray", alpha=0.5, linewidth=1)
+    ax.scatter(best_rows["train_dbic_per_trial"], best_rows["test_trial_lik"], s=60, alpha=0.7)
     ax.set_xlabel("train ΔBIC/trial (selection)")
-    ax.set_ylabel("test ΔBIC/trial (confirmation)")
+    ax.set_ylabel("test trial likelihood (confirmation)")
     ax.set_title("Train/test calibration across models")
     ax.grid(alpha=0.3)
 
@@ -175,7 +170,7 @@ def main():
         best_idx = df["train_dbic_per_trial"].idxmax()
         best = df.loc[best_idx]
         print(f"  -> best this model: alpha_W={best['alpha_W']:g}, alpha_H={best['alpha_H']:g}, "
-              f"train_dbic/trial={best['train_dbic_per_trial']:.4f}, test_dbic/trial={best['test_dbic_per_trial']:.4f}")
+              f"train_dbic/trial={best['train_dbic_per_trial']:.4f}, test_lik={best['test_trial_lik']:.4f}")
 
         del estimator
 

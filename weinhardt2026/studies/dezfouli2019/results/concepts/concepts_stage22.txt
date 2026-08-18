@@ -1,0 +1,32 @@
+complexity weight 800.0, shooting K=20
+shooting loss 1.7355573 -> 0.2890273 (epoch 88)
+
+value_reward_chosen  (T=17, K=4)
+  C0  used by  832/1010 (82.4%)  theta = -0.988 +/- 0.331
+       +0.682 reward[t] -0.620 reward[t-1] -0.286 reward[t-2] -0.111 reward[t]*reward[t-2] -0.239 reward[t]*reward[t-3]
+  C3  used by  572/1010 (56.6%)  theta = -0.770 +/- 0.592
+       -0.505 1 +0.753 value_reward_chosen -0.213 reward[t-3] -0.208 value_reward_chosen^2 +0.184 value_reward_chosen*reward[t] -0.150 value_reward_chosen*reward[t-1] -0.077 value_reward_chosen*reward[t-2] +0.160 reward[t-1]*reward[t-3]
+  C1  used by    5/1010 ( 0.5%)  theta = -1.016 +/- 0.531
+       +1.000 value_reward_chosen*reward[t-3]
+  [dropped]  {reward[t]*reward[t-1]}
+
+value_reward_not_chosen  (T=12, K=1)
+  C0  used by  685/1010 (67.8%)  theta = -0.639 +/- 0.541
+       +0.616 1 +0.764 value_reward_not_chosen +0.106 reward[t-1] -0.076 reward[t-3] +0.100 value_reward_not_chosen^2 -0.076 value_reward_not_chosen*reward[t-3]
+
+value_choice_chosen  (T=12, K=3)
+  C2  used by  497/1010 (49.2%)  theta = +0.353 +/- 0.641  [SIGN CONFLICT]
+       +0.890 1 -0.456 choice[t-3]
+  C0  used by  443/1010 (43.9%)  theta = -0.706 +/- 0.480
+       +0.884 value_choice_chosen -0.365 value_choice_chosen*choice[t-1] -0.244 value_choice_chosen*choice[t-3] +0.162 choice[t-1]*choice[t-3]
+  C1  used by  358/1010 (35.4%)  theta = -1.373 +/- 0.504
+       -0.302 choice[t-1] +0.807 choice[t-2] +0.170 value_choice_chosen*choice[t-2] -0.387 choice[t-1]*choice[t-2] -0.277 choice[t-2]*choice[t-3]
+
+value_choice_not_chosen  (T=12, K=3)
+  C1  used by  944/1010 (93.5%)  theta = -0.792 +/- 0.880  [SIGN CONFLICT]
+       +0.216 value_choice_not_chosen +0.546 choice[t-1] +0.626 value_choice_not_chosen*choice[t-1] +0.454 choice[t-1]*choice[t-2] +0.237 choice[t-2]*choice[t-3]
+  C0  used by  474/1010 (46.9%)  theta = -0.002 +/- 0.348  [SIGN CONFLICT]
+       +0.968 1 -0.195 choice[t-3] -0.155 value_choice_not_chosen*choice[t-3]
+  C2  used by  418/1010 (41.4%)  theta = -1.066 +/- 0.521
+       +0.808 choice[t-2] +0.386 value_choice_not_chosen*choice[t-2] -0.444 choice[t-1]*choice[t-3]
+

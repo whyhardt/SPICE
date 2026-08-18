@@ -113,6 +113,13 @@ def score(model, dataset, dof: np.ndarray, batch_size: int, device) -> Dict[str,
     ``dof`` replaces `count_sindy_coefficients()` so that tied parameters are
     counted once rather than per term -- everything else matches the
     conventions used across the analysis scripts.
+
+    Read `bic`/`dbic` from a **training** split only. Every tie changes the
+    parameter count, so this is precisely the case where an information
+    criterion on held-out data does damage: the `k log n` penalty duplicates
+    what the held-out likelihood already measures, and the accept/reject test
+    would then favour ties for reasons that have nothing to do with the data
+    supporting them. Held-out splits are reported via `lik`/`nll`.
     """
     model.eval(use_sindy=True)
     nll, valid = _nll_per_session(model, dataset, batch_size, device)
@@ -158,6 +165,12 @@ def refit(tie_set: TieSet, model, dataset_train, dataset_eval, dof: np.ndarray,
     E = model.ensemble_size
 
     def _evaluate() -> Dict[str, float]:
+        """Held-out score used for early stopping -- likelihood, not ΔBIC.
+
+        The support is fixed for the duration of one refit, so ranking steps by
+        likelihood is identical to ranking them by ΔBIC would have been, minus
+        the invalid penalty on held-out data.
+        """
         with torch.no_grad():
             install_coefficients(model, {m: v.detach() for m, v in tie_set.build_coefficients().items()})
         return score(model, dataset_eval, dof, batch_size, device)
@@ -192,7 +205,7 @@ def refit(tie_set: TieSet, model, dataset_train, dataset_eval, dof: np.ndarray,
 
             model.eval(use_sindy=True)
             current = _evaluate()
-            if current['dbic'] > best['score']['dbic'] + min_delta:
+            if current['lik'] > best['score']['lik'] + min_delta:
                 best = dict(score=current, step=step,
                             state={k: v.detach().clone() for k, v in tie_set.state_dict().items()})
                 stale = 0
@@ -233,7 +246,7 @@ def greedy_ties(estimator, dataset_train, dataset_eval, args, device) -> Tuple[T
     )
     print(f"{len(candidates)} screened candidates; evaluating up to {args.max_candidates}\n", flush=True)
 
-    current = baseline
+    current, current_train = baseline, baseline_train
     history: List[dict] = []
     for rank, candidate in enumerate(candidates[:args.max_candidates], start=1):
         # Overlapping ties are one statement, not several: fold the candidate
@@ -262,7 +275,11 @@ def greedy_ties(estimator, dataset_train, dataset_eval, args, device) -> Tuple[T
         # optimistic; the gap to the train likelihood is the honest read on
         # whether a tie is buying fit or buying selection.
         train = score(model, dataset_train, dof, args.batch_size, device)
-        gain = result['dbic'] - current['dbic']
+        # Accept on the *training* criterion. A tie changes the parameter count,
+        # so the trade-off it makes is exactly what BIC is for -- and exactly
+        # what a held-out ΔBIC would double-charge. The eval split still drives
+        # early stopping inside `refit`, on likelihood.
+        gain = train['dbic'] - current_train['dbic']
         keep = gain > args.accept_delta
         label = candidate.describe().splitlines()[0]
         # Report the *net* parameters this step removes. A merge absorbs groups
@@ -273,7 +290,7 @@ def greedy_ties(estimator, dataset_train, dataset_eval, args, device) -> Tuple[T
               f"        err={candidate.fit_error:.3f} saves={net_saved:4d} "
               f"(group {candidate.dof_saved}) "
               f"par {current['n_par']:.2f}->{result['n_par']:.2f} | "
-              f"dBIC {current['dbic']:+.4f}->{result['dbic']:+.4f} ({gain:+.4f}) "
+              f"train dBIC {current_train['dbic']:+.4f}->{train['dbic']:+.4f} ({gain:+.4f}) "
               f"lik test {result['lik']:.4f} train {train['lik']:.4f} | "
               f"best@{best_step}{'!' if best_step >= args.refit_steps else ''} "
               f"[{time.time() - t0:.0f}s] "
@@ -286,7 +303,7 @@ def greedy_ties(estimator, dataset_train, dataset_eval, args, device) -> Tuple[T
                             n_par=result['n_par'], dbic=result['dbic'], bic=result['bic'],
                             lik=result['lik'], lik_train=train['lik'], dbic_train=train['dbic'], gain=gain, accepted=keep, best_step=best_step))
         if keep:
-            accepted, current = trial, result
+            accepted, current, current_train = trial, result, train
         else:
             with torch.no_grad():
                 install_coefficients(model, accepted.build_coefficients())

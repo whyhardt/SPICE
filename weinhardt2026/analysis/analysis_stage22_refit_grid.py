@@ -155,24 +155,36 @@ def _grouped_dbic(nll_per_session, valid, n_parameters, dataset) -> float:
 
 @torch.no_grad()
 def score_member(model, dataset, batch_size, device) -> float:
-    """Selection criterion: ΔBIC of the mean per-member likelihood.
+    """Early-stopping criterion: mean per-member trial likelihood, higher better.
 
     Makes no assumption about the across-member coefficient distribution --
     every member is a valid model and this reports the typical one.
+
+    This used to return a ΔBIC, which is wrong on the held-out split it is
+    called with: the `k log n` term stands in for the generalization gap that
+    held-out data measures directly, so scoring both charges parsimony twice.
+    The change is behaviourally a no-op *here* -- the support is frozen for the
+    whole refit, so a constant parameter count makes the ΔBIC and likelihood
+    rankings identical -- but the number is now the one that is actually
+    meaningful off-sample, and it no longer invites cross-checkpoint
+    comparisons that the penalty would corrupt.
     """
     model.eval(use_sindy=True)
     log_probs = _forward_batched(model, dataset.xs, batch_size, device)
     valid = ~torch.isnan(dataset.xs[:, :, 0, 0])
     targets = torch.nan_to_num(dataset.ys, nan=0.0)
     ll = (targets.unsqueeze(0) * log_probs).sum(-1).sum(-1)          # (E, B, T)
-    nll_per_session = -(ll * valid.unsqueeze(0)).sum(dim=2).mean(dim=0)
-    return _grouped_dbic(nll_per_session, valid,
-                         model.count_sindy_coefficients().cpu().numpy(), dataset)
+    return float(torch.exp((ll * valid.unsqueeze(0)).sum()
+                           / (valid.sum() * model.ensemble_size)))
 
 
 @torch.no_grad()
-def evaluate_full(model, dataset, batch_size, device) -> Dict[str, float]:
-    """All three scorings, for the pre/post report."""
+def evaluate_full(model, dataset, batch_size, device, held_out: bool = False) -> Dict[str, float]:
+    """All three scorings, for the pre/post report.
+
+    ``held_out=True`` omits the ΔBIC entries; a test split is reported as
+    likelihood only.
+    """
     model.eval(use_sindy=True)
     E = model.ensemble_size
     valid = ~torch.isnan(dataset.xs[:, :, 0, 0])
@@ -197,8 +209,12 @@ def evaluate_full(model, dataset, batch_size, device) -> Dict[str, float]:
         lik_coef = float(torch.exp((ll_coef * valid).sum() / valid.sum()))
         dbic_coef = _grouped_dbic(-(ll_coef * valid).sum(dim=1), valid, n_par_coef, dataset)
 
-    return dict(lik_member=lik_member, dbic_member=dbic_member, lik_logit=lik_logit,
-                lik_coef=lik_coef, dbic_coef=dbic_coef, n_par=float(n_par.mean()))
+    out = dict(lik_member=lik_member, lik_logit=lik_logit, lik_coef=lik_coef,
+               n_par=float(n_par.mean()))
+    if not held_out:
+        # Information criteria on the training split only -- see `score_member`.
+        out.update(dbic_member=dbic_member, dbic_coef=dbic_coef)
+    return out
 
 
 def snapshot(model) -> dict:
@@ -362,10 +378,10 @@ def main():
         )
         estimator.load_spice(path)
 
-        pre_test = evaluate_full(estimator.model, dataset_test, args.batch_size, device)
+        pre_test = evaluate_full(estimator.model, dataset_test, args.batch_size, device, held_out=True)
         pre_train = evaluate_full(estimator.model, dataset_train, args.batch_size, device)
         info = refit_checkpoint(estimator, dataset_train, dataset_test, args, device)
-        post_test = evaluate_full(estimator.model, dataset_test, args.batch_size, device)
+        post_test = evaluate_full(estimator.model, dataset_test, args.batch_size, device, held_out=True)
         post_train = evaluate_full(estimator.model, dataset_train, args.batch_size, device)
 
         estimator.save_spice(os.path.join(
@@ -381,9 +397,9 @@ def main():
 
         print(f"thr={threshold:<5g} ratio={ratio:<4g} par={row['n_par']:6.2f} | "
               f"best@{info['best_step']:4d} stopped@{info['stop_step']:4d} | "
-              f"dBIC member {pre_test['dbic_member']:+.4f} -> {post_test['dbic_member']:+.4f} "
-              f"({post_test['dbic_member'] - pre_test['dbic_member']:+.4f}) | "
-              f"lik member {pre_test['lik_member']:.4f} -> {post_test['lik_member']:.4f} "
+              f"train dBIC {pre_train['dbic_member']:+.4f} -> {post_train['dbic_member']:+.4f} "
+              f"({post_train['dbic_member'] - pre_train['dbic_member']:+.4f}) | "
+              f"test lik {pre_test['lik_member']:.4f} -> {post_test['lik_member']:.4f} "
               f"[{time.time() - t0:.0f}s]", flush=True)
 
         del estimator
@@ -392,12 +408,16 @@ def main():
 
     df = pd.DataFrame(rows)
     df.to_csv(out_csv, index=False)
-    df['gain'] = df.post_test_dbic_member - df.pre_test_dbic_member
+    # Gain is measured on the training criterion, which is the one that trades
+    # fit against parameter count; the held-out columns are likelihood only.
+    df['gain'] = df.post_train_dbic_member - df.pre_train_dbic_member
 
     print(f"\n=== pre vs post correlation (n={len(df)}) ===", flush=True)
-    for metric in ['dbic_member', 'dbic_coef', 'lik_member']:
-        pre, post = df[f'pre_test_{metric}'], df[f'post_test_{metric}']
-        print(f"  {metric:12s} pearson {pre.corr(post):+.3f} spearman {pre.corr(post, method='spearman'):+.3f}")
+    for split, metric in [('test', 'lik_member'), ('test', 'lik_coef'),
+                          ('train', 'dbic_member'), ('train', 'dbic_coef')]:
+        pre, post = df[f'pre_{split}_{metric}'], df[f'post_{split}_{metric}']
+        print(f"  {split}/{metric:12s} pearson {pre.corr(post):+.3f} "
+              f"spearman {pre.corr(post, method='spearman'):+.3f}")
     print(f"\n  corr(n_par, gain) pearson {df.n_par.corr(df.gain):+.3f} "
           f"spearman {df.n_par.corr(df.gain, method='spearman'):+.3f}")
     censored = df[df.best_step >= args.max_steps]
@@ -405,12 +425,15 @@ def main():
         print(f"\n  WARNING: {len(censored)} checkpoint(s) hit the step cap and are censored: "
               f"{censored[['threshold', 'ratio']].to_dict('records')}")
     sel = df.loc[df.pre_train_dbic_member.idxmax()]
-    orc = df.loc[df.post_test_dbic_member.idxmax()]
-    print(f"\n  pick by pre-refit train: thr={sel.threshold:g}/{sel.ratio:g} -> post {sel.post_test_dbic_member:.4f}")
-    print(f"  best post-refit on test: thr={orc.threshold:g}/{orc.ratio:g} -> post {orc.post_test_dbic_member:.4f}")
-    print("\n=== top 5 post-refit (test ΔBIC, per-member) ===")
-    print(df.nlargest(5, 'post_test_dbic_member')[
-        ['threshold', 'ratio', 'n_par', 'best_step', 'pre_test_dbic_member', 'post_test_dbic_member', 'gain']
+    orc = df.loc[df.post_train_dbic_member.idxmax()]
+    print(f"\n  pick by pre-refit train dBIC:  thr={sel.threshold:g}/{sel.ratio:g} "
+          f"-> post train {sel.post_train_dbic_member:.4f}, test lik {sel.post_test_lik_member:.4f}")
+    print(f"  best post-refit train dBIC:    thr={orc.threshold:g}/{orc.ratio:g} "
+          f"-> post train {orc.post_train_dbic_member:.4f}, test lik {orc.post_test_lik_member:.4f}")
+    print("\n=== top 5 post-refit (train ΔBIC, per-member; test likelihood shown for confirmation) ===")
+    print(df.nlargest(5, 'post_train_dbic_member')[
+        ['threshold', 'ratio', 'n_par', 'best_step', 'pre_train_dbic_member',
+         'post_train_dbic_member', 'gain', 'post_test_lik_member']
     ].round(4).to_string(index=False))
     print(f"\nSaved to {out_csv}\nBest models: {ckpt_dir}")
 

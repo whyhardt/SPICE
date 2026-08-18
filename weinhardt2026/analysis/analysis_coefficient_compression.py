@@ -99,8 +99,12 @@ def evaluate_compressed_model(
     spice_model: SpiceEstimator,
     dataset: SpiceDataset,
     compressed_model: CompressedSpiceModel,
+    held_out: bool = False,
 ) -> Dict[str, float]:
     """Score predictive performance of a coefficient reconstruction on ``dataset``.
+
+    ``held_out=True`` returns likelihood and NLL only, dropping AIC/BIC/ΔBIC --
+    an information criterion belongs on the training split.
 
     Uses grouped (per participant x experiment) BIC/AIC, matching
     `analysis_model_evaluation.grouped_information_criteria`, not a single
@@ -145,11 +149,14 @@ def evaluate_compressed_model(
         n_actions_baseline=dataset.n_actions,
     )
 
-    return dict(
-        nll=info["nll_total"], aic=info["aic_mean"], bic=info["bic_mean"],
-        trial_lik=trial_lik,
-        dbic_per_trial=info["delta_bic_per_trial_mean"],
-    )
+    out = dict(nll=info["nll_total"], trial_lik=trial_lik)
+    if not held_out:
+        # Information criteria on the training split only: on held-out data the
+        # k*log(n) term duplicates the generalization gap the split already
+        # measures, which biases every comparison toward the sparsest model.
+        out.update(aic=info["aic_mean"], bic=info["bic_mean"],
+                   dbic_per_trial=info["delta_bic_per_trial_mean"])
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -193,7 +200,7 @@ def run_nmf_per_module_hyperparameter_search(
                 n_active_mean = float((np.abs(loadings) > 1e-6).sum(axis=1).mean())
 
                 res_train = evaluate_compressed_model(spice_model, dataset_train, compressed)
-                res_test = evaluate_compressed_model(spice_model, dataset_test, compressed)
+                res_test = evaluate_compressed_model(spice_model, dataset_test, compressed, held_out=True)
 
                 row = dict(
                     K_per_module=K_per_module, alpha_W=alpha_W, alpha_H=alpha_H, K=compressed.K,
@@ -207,7 +214,7 @@ def run_nmf_per_module_hyperparameter_search(
                 if verbose:
                     print(f"  K/mod={K_per_module} aW={alpha_W:<7g} aH={alpha_H:<7g} K={compressed.K:>3d} "
                           f"active={n_active_mean:5.2f} terms/mech={row['mean_terms_per_mechanism']:4.2f} "
-                          f"train_dbic/trial={res_train['dbic_per_trial']:.4f} test_dbic/trial={res_test['dbic_per_trial']:.4f}")
+                          f"train_dbic/trial={res_train['dbic_per_trial']:.4f} test_lik={res_test['trial_lik']:.4f}")
 
     return pd.DataFrame(rows)
 
@@ -221,23 +228,21 @@ def plot_hyperparameter_search(df: pd.DataFrame, output_dir: str, chosen_idx: in
 
     Both mark the chosen (train-selected) setting, and the left panel in
     particular is the check that train-based selection was reasonable --
-    if train and test ΔBIC/trial were uncorrelated across the grid, that
-    would be a red flag that the search is overfitting train.
+    if train ΔBIC/trial and held-out likelihood were uncorrelated across the
+    grid, that would be a red flag that the search is overfitting train. The
+    hold-out is plotted as likelihood, not as an information criterion --
+    penalising parameters on a split that already measures generalization
+    charges for parsimony twice.
     """
     fig, axes = plt.subplots(1, 2, figsize=(11, 4.5))
     chosen = df.loc[chosen_idx]
 
     ax = axes[0]
-    ax.scatter(df["train_dbic_per_trial"], df["test_dbic_per_trial"], alpha=0.5, s=20, color="tab:blue")
-    ax.scatter([chosen["train_dbic_per_trial"]], [chosen["test_dbic_per_trial"]], color="tab:red", s=80,
+    ax.scatter(df["train_dbic_per_trial"], df["test_trial_lik"], alpha=0.5, s=20, color="tab:blue")
+    ax.scatter([chosen["train_dbic_per_trial"]], [chosen["test_trial_lik"]], color="tab:red", s=80,
                marker="*", zorder=5, label="chosen (by train)")
-    lims = [
-        min(df["train_dbic_per_trial"].min(), df["test_dbic_per_trial"].min()),
-        max(df["train_dbic_per_trial"].max(), df["test_dbic_per_trial"].max()),
-    ]
-    ax.plot(lims, lims, "--", color="gray", alpha=0.5, linewidth=1)
     ax.set_xlabel("train ΔBIC/trial (selection criterion)")
-    ax.set_ylabel("test ΔBIC/trial (confirmation only)")
+    ax.set_ylabel("test trial likelihood (confirmation only)")
     ax.set_title("Train/test calibration across the grid")
     ax.legend(fontsize=8)
     ax.grid(alpha=0.3)
@@ -398,7 +403,7 @@ def analysis_coefficient_compression(
     if verbose:
         print(f"\nChosen (by train ΔBIC/trial={chosen['train_dbic_per_trial']:.4f}): "
               f"K_per_module={chosen_K_per_module}, alpha_W={chosen_alpha_W}, alpha_H={chosen_alpha_H}")
-        print(f"  Out-of-sample confirmation: test ΔBIC/trial={chosen['test_dbic_per_trial']:.4f} "
+        print(f"  Out-of-sample confirmation: test trial likelihood={chosen['test_trial_lik']:.4f} "
               f"(never used for selection)")
         print(f"  {chosen['n_active_mean']:.1f}/{int(chosen['K'])} mechanisms active/participant on average, "
               f"{chosen['mean_terms_per_mechanism']:.1f} terms/mechanism, "

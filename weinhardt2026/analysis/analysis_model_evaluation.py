@@ -157,6 +157,7 @@ def analysis_model_evaluation(
     output_dir: Optional[str] = None,
     trial_filter: Optional[Callable[[torch.Tensor], torch.Tensor]] = None,
     n_actions_random_baseline: Optional[int] = None,
+    held_out: bool = False,
     ):
     """
     Args:
@@ -167,11 +168,21 @@ def analysis_model_evaluation(
             baseline in ΔBIC computation. Defaults to ``dataset.n_actions``.
             Set to a smaller value when some actions are excluded via
             ``trial_filter`` (e.g. n_actions-1 when filtering out waiting).
+        held_out: Set True when ``dataset`` is a test/validation split. Drops
+            the AIC/BIC/ΔBIC columns and reports likelihood and NLL only.
 
     BIC/AIC/ΔBIC-per-trial are computed per (participant, experiment) group and
     reported as mean ± std across groups -- see ``grouped_information_criteria``
     for why a single dataset-pooled BIC is not a fair comparison across models
     with different parameter-sharing structure.
+
+    **Information criteria belong on training data only.** The ``k log n`` term
+    exists to stand in for the generalization gap; held-out likelihood already
+    *is* that gap, so scoring a test split with BIC charges for parsimony twice
+    and systematically favours whichever model is sparsest. On dezfouli2019 this
+    inverted a ranking: a 5.6-parameter model beat a 10.7-parameter one on
+    held-out ΔBIC while losing to it on both the in-sample criterion and raw
+    held-out likelihood. Select on training BIC; report held-out NLL.
     """
 
     unique_pairs, group_index = get_participant_experiment_groups(dataset)
@@ -266,13 +277,16 @@ def analysis_model_evaluation(
             'n_parameters': n_parameters_per_group.mean().item(),
             'n_parameters (std)': n_parameters_per_group.std().item() if n_parameters_per_group.numel() > 1 else 0.0,
             'NLL': info['nll_total'],
-            'AIC': info['aic_mean'],
-            'AIC (std)': info['aic_std'],
-            'BIC': info['bic_mean'],
-            'BIC (std)': info['bic_std'],
-            'ΔBIC/trial': info['delta_bic_per_trial_mean'],
-            'ΔBIC/trial (std)': info['delta_bic_per_trial_std'],
         }
+        if not held_out:
+            rows[name].update({
+                'AIC': info['aic_mean'],
+                'AIC (std)': info['aic_std'],
+                'BIC': info['bic_mean'],
+                'BIC (std)': info['bic_std'],
+                'ΔBIC/trial': info['delta_bic_per_trial_mean'],
+                'ΔBIC/trial (std)': info['delta_bic_per_trial_std'],
+            })
 
     # ------------------------------------------------------------
     # Printing model performance table
@@ -402,11 +416,16 @@ def analysis_model_evaluation_mse(
     verbose: bool = True,
     loss_fn: Callable = None,
     n_actions: int = None,
+    held_out: bool = False,
 ) -> pd.DataFrame:
     """Evaluate models on continuous prediction tasks using MSE-based metrics.
 
     Counterpart to ``analysis_model_evaluation`` for continuous action spaces.
     Computes MSE, RMSE, MAE, and R² for each model.
+
+    ``held_out=True`` drops the BIC/ΔBIC columns, for the same reason as in
+    ``analysis_model_evaluation``: an information criterion on a test split
+    charges for parsimony twice. On held-out data read MSE/R² instead.
 
     Args:
         dataset: Test dataset (SpiceDataset with continuous targets).
@@ -511,7 +530,7 @@ def analysis_model_evaluation_mse(
         mse_val = max(metrics['mse'], 1e-30)
         bic = n_valid * (1 + math.log(2 * math.pi) + math.log(mse_val)) + n_params * math.log(n_valid)
         delta_bic_per_trial = (bic_random - bic) / n_valid
-        rows.append({
+        row = {
             'Model': name,
             'MSE': metrics['mse'],
             'MSE (std)': mse_std,
@@ -519,9 +538,11 @@ def analysis_model_evaluation_mse(
             'MAE': metrics['mae'],
             'R²': metrics['r2'],
             'n_parameters': n_params,
-            'BIC': bic,
-            'ΔBIC/trial': delta_bic_per_trial,
-        })
+        }
+        if not held_out:
+            row['BIC'] = bic
+            row['ΔBIC/trial'] = delta_bic_per_trial
+        rows.append(row)
 
     df = pd.DataFrame(rows).set_index('Model')
 

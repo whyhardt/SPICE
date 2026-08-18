@@ -145,6 +145,7 @@ print(analysis_model_evaluation(
 print("\n--- Model evaluation (test) ---")
 print(analysis_model_evaluation(
     dataset=dataset_test,
+    held_out=True,
     spice_model=estimator,
     benchmark_model=benchmark.to(torch.device('cpu')),
     gru_model=gru.to(torch.device('cpu')),

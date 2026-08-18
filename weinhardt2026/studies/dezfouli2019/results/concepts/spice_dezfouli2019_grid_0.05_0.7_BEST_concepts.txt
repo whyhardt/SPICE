@@ -1,0 +1,42 @@
+selected complexity weight: 200
+
+value_reward_chosen  (T=17, K=5)
+  C1  used by  922/1010 (91.3%)  theta = -0.900 +/- 0.376
+       +0.694 reward[t] -0.611 reward[t-1] -0.316 reward[t-2] -0.051 value_reward_chosen*reward[t-3] -0.196 reward[t]*reward[t-3] +0.066 reward[t-2]*reward[t-3]
+  C2  used by  720/1010 (71.3%)  theta = -0.576 +/- 0.446
+       +0.937 value_reward_chosen -0.269 reward[t-3] -0.195 value_reward_chosen^2 -0.112 value_reward_chosen*reward[t-2]
+  C0  used by  691/1010 (68.4%)  theta = +0.358 +/- 0.390  [SIGN CONFLICT]
+       +0.954 1 +0.180 value_reward_chosen*reward[t-1] -0.240 reward[t-1]*reward[t-3]
+  C3  used by  146/1010 (14.5%)  theta = -0.722 +/- 0.294
+       +0.647 value_reward_chosen*reward[t] +0.763 reward[t]*reward[t-1]
+  [dropped]  {reward[t]*reward[t-2]}
+
+value_reward_not_chosen  (T=12, K=5)
+  C0  used by  812/1010 (80.4%)  theta = -0.496 +/- 0.315
+       +0.979 value_reward_not_chosen +0.155 reward[t-1] -0.077 reward[t-3] +0.083 value_reward_not_chosen^2 -0.069 value_reward_not_chosen*reward[t-3]
+  C4  used by  744/1010 (73.7%)  theta = -0.347 +/- 0.347  [SIGN CONFLICT]
+       +0.997 1 +0.061 value_reward_not_chosen*reward[t-1]
+  [dropped]  {reward[t-2]*reward[t-3]}
+  [dropped]  {reward[t-1]*reward[t-3]}
+  [dropped]  {reward[t-1]*reward[t-2]}
+
+value_choice_chosen  (T=12, K=4)
+  C2  used by  723/1010 (71.6%)  theta = +0.145 +/- 0.584  [SIGN CONFLICT]
+       +0.907 1 -0.422 choice[t-3]
+  C3  used by  715/1010 (70.8%)  theta = -0.532 +/- 0.470
+       +0.871 value_choice_chosen -0.487 value_choice_chosen*choice[t-1] -0.058 value_choice_chosen*choice[t-3]
+  C0  used by  596/1010 (59.0%)  theta = -0.960 +/- 0.368
+       +0.879 choice[t-2] -0.335 choice[t-1]*choice[t-2] -0.338 choice[t-2]*choice[t-3]
+  C1  used by  555/1010 (55.0%)  theta = +0.500 +/- 0.449
+       +0.937 choice[t-1] +0.050 value_choice_chosen^2 -0.220 value_choice_chosen*choice[t-2] -0.267 choice[t-1]*choice[t-3]
+
+value_choice_not_chosen  (T=12, K=4)
+  C0  used by  968/1010 (95.8%)  theta = -0.701 +/- 0.296
+       +0.897 choice[t-2] +0.063 value_choice_not_chosen^2 +0.222 value_choice_not_chosen*choice[t-2] +0.336 choice[t-1]*choice[t-2] +0.174 choice[t-2]*choice[t-3]
+  C1  used by  820/1010 (81.2%)  theta = -0.705 +/- 0.234
+       +0.832 value_choice_not_chosen +0.554 value_choice_not_chosen*choice[t-1]
+  C3  used by  756/1010 (74.9%)  theta = +0.147 +/- 0.707  [SIGN CONFLICT]
+       +0.968 choice[t-1] +0.252 choice[t-3]
+  C2  used by  730/1010 (72.3%)  theta = -0.356 +/- 0.193
+       +0.985 1 -0.170 choice[t-1]*choice[t-3]
+

@@ -962,18 +962,31 @@ class BaseModel(nn.Module):
         # accumulators, creating them on first use. Expand group_ids to broadcast: (E, B) -> (E, B, 1, 1)
         group_idx = group_ids.unsqueeze(-1).unsqueeze(-1)  # (E, B, 1, 1)
 
+        # b^T b and the row count complete the sufficient statistics: with them,
+        # RSS(c) = c^T A^T A c - 2 c^T A^T b + b^T b is computable in closed form
+        # from the accumulators alone, with no forward pass. sindy_ridge_finalize
+        # ignores both -- they exist for consumers that need absolute (not just
+        # relative) residuals, e.g. the noise-scale estimate a Gaussian BIC needs
+        # (see spice/resources/sindy_concepts.py).
+        btb_samples = (target ** 2).sum(dim=2).squeeze(-1)  # (E, B)
+        n_rows_samples = torch.full_like(btb_samples, float(library.shape[2]))
+
         accum = self._ridge_accumulators.get(key_module)
         if accum is None:
             accum = {
                 'AtA': torch.zeros(E, n_groups, T, T, device=library.device, dtype=library.dtype),
                 'Atb': torch.zeros(E, n_groups, T, 1, device=library.device, dtype=library.dtype),
                 'count': torch.zeros(E, n_groups, device=library.device, dtype=library.dtype),
+                'btb': torch.zeros(E, n_groups, device=library.device, dtype=library.dtype),
+                'n_rows': torch.zeros(E, n_groups, device=library.device, dtype=library.dtype),
             }
             self._ridge_accumulators[key_module] = accum
 
         accum['AtA'].scatter_add_(1, group_idx.expand_as(AtA_samples), AtA_samples)
         accum['Atb'].scatter_add_(1, group_idx.expand_as(Atb_samples), Atb_samples)
         accum['count'].scatter_add_(1, group_ids, torch.ones_like(group_ids, dtype=library.dtype))
+        accum['btb'].scatter_add_(1, group_ids, btb_samples)
+        accum['n_rows'].scatter_add_(1, group_ids, n_rows_samples)
 
     def sindy_ridge_finalize(self, key_module: str, ridge_alpha: float = None) -> bool:
         """Solve the ridge-regularized normal equations accumulated via sindy_ridge_accumulate.

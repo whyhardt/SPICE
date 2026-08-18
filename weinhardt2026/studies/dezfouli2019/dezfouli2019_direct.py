@@ -177,7 +177,7 @@ if __name__ == '__main__':
     print(results_train)
 
     print("\n--- Model evaluation (test) ---")
-    results_test = analysis_model_evaluation(dataset=dataset_test, spice_model=estimator)
+    results_test = analysis_model_evaluation(dataset=dataset_test, spice_model=estimator, held_out=True)
     print(results_test)
 
     results_train.to_csv(os.path.join(output_dir, 'model_evaluation_train.csv'), index=False)

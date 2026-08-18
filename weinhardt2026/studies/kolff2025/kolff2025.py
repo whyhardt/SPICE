@@ -187,6 +187,7 @@ print(analysis_model_evaluation(
 
 print(analysis_model_evaluation(
     dataset=dataset_test,
+    held_out=True,
     spice_model=estimator,
     benchmark_model=benchmark,
     gru_model=gru,

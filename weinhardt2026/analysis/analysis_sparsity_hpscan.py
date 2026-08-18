@@ -1,8 +1,12 @@
 """Analyze hyperparameter scan over pruning_threshold × pruning_test.
 
 For each checkpoint, computes (SINDy autoregressive):
-  - In-sample trial likelihood/NLL/BIC/AIC on training data, plus the
-    hold-out equivalents on test blocks (suffixed `_test`)
+  - In-sample trial likelihood/NLL/BIC/AIC on training data
+  - Hold-out trial likelihood and NLL on test blocks (suffixed `_test`), plus
+    the generalization gap between them -- **no information criterion on the
+    hold-out**, since BIC's `k log n` term stands in for exactly the gap the
+    hold-out already measures, and applying both charges parsimony twice. On a
+    scan whose whole axis is sparsity, that bias points straight down the axis.
   - Mean number of active SINDy coefficients per participant
 
 Usage:
@@ -71,10 +75,11 @@ def analysis_sparsity_hpscan(
     pd.DataFrame
         Rows = HP configurations, columns include threshold, test,
         trial_likelihood, NLL, BIC(_std), AIC(_std), delta_bic_per_trial(_std)
-        (all computed in-sample on training data), plus hold-out equivalents
-        on test_blocks suffixed `_test`, and n_params_mean, n_params_std.
-        BIC/AIC are computed per (participant, experiment) group and reported
-        as mean ± std across groups.
+        (all computed in-sample on training data), plus trial_likelihood_test,
+        NLL_test, generalization_gap on test_blocks, and n_params_mean,
+        n_params_std. BIC/AIC are computed per (participant, experiment) group
+        and reported as mean ± std across groups. Select on the training
+        criteria; read the hold-out columns as confirmation only.
     """
     if device is None:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -216,6 +221,11 @@ def analysis_sparsity_hpscan(
             n_actions_baseline=n_actions,
         )
 
+        # Information criteria on the training split only; the hold-out is
+        # reported as likelihood/NLL. A BIC on held-out data double-charges
+        # parsimony (see `analysis_model_evaluation`), which on a sparsity scan
+        # is exactly the wrong thumb on the scale -- it rewards the very axis
+        # the scan is varying.
         rows.append({
             'threshold': threshold,
             'test': test_val,
@@ -231,12 +241,7 @@ def analysis_sparsity_hpscan(
             'delta_bic_per_trial_std': info_train['delta_bic_per_trial_std'],
             'trial_likelihood_test': trial_lik,
             'NLL_test': nll,
-            'BIC_test': info['bic_mean'],
-            'BIC_test_std': info['bic_std'],
-            'AIC_test': info['aic_mean'],
-            'AIC_test_std': info['aic_std'],
-            'delta_bic_per_trial_test': info['delta_bic_per_trial_mean'],
-            'delta_bic_per_trial_test_std': info['delta_bic_per_trial_std'],
+            'generalization_gap': trial_lik_train - trial_lik,
             'path': os.path.basename(path),
         })
 
@@ -247,26 +252,30 @@ def analysis_sparsity_hpscan(
 
 
 def plot_hpscan_heatmaps(df, output_path):
-    """Save a 2×3 grid of heatmaps: rows = train/test, columns = n_params,
-    trial_likelihood, BIC. Cell values are annotated; axes are threshold
-    (rows) × test (columns) of the HP scan grid.
+    """Save a 2×3 grid of heatmaps over the threshold × test HP grid.
+
+    Top row is the training split, where the selection criteria live: parameter
+    count, trial likelihood, and BIC. Bottom row is the hold-out, where only
+    likelihood-based quantities are meaningful -- parameter count (identical, so
+    repeated as a reference), trial likelihood, and the generalization gap. The
+    bottom-right panel deliberately shows the gap rather than a hold-out BIC;
+    see this module's docstring.
     """
-    metrics = [
-        ('n_params_mean', 'Parameter Count'),
-        ('trial_likelihood', 'Trial Likelihood'),
-        ('BIC', 'BIC'),
+    panels = [
+        [('n_params_mean', 'Parameter Count'), ('trial_likelihood', 'Trial Likelihood'), ('BIC', 'BIC')],
+        [('n_params_mean', 'Parameter Count'), ('trial_likelihood_test', 'Trial Likelihood'),
+         ('generalization_gap', 'Generalization Gap')],
     ]
-    splits = [('', 'Training'), ('_test', 'Test')]
+    split_labels = ['Training', 'Hold-out']
 
     thresholds = sorted(df['threshold'].unique())
     test_vals = sorted(df['test'].unique())
 
     fig, axes = plt.subplots(2, 3, figsize=(15, 9))
 
-    for row, (suffix, split_label) in enumerate(splits):
-        for col, (metric, metric_label) in enumerate(metrics):
+    for row, split_label in enumerate(split_labels):
+        for col, (column, metric_label) in enumerate(panels[row]):
             ax = axes[row, col]
-            column = metric if metric == 'n_params_mean' else f'{metric}{suffix}'
             pivot = df.pivot(index='threshold', columns='test', values=column)
             pivot = pivot.reindex(index=thresholds, columns=test_vals)
 

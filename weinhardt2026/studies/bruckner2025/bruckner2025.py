@@ -347,6 +347,7 @@ df_mse = analysis_model_evaluation_mse(
     gru_model=gru,
     output_dir='weinhardt2026/studies/bruckner2025/results',
     verbose=True,
+    held_out=dataset_test is not None,
 )
 
 
