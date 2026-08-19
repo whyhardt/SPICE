@@ -86,44 +86,63 @@ def _print_training_status(
     )
     status_lines.append(bar_str)
     
-    max_len_module = max([len(module) for module in model.get_modules()])
-    
-    # Add SPICE model equations if SINDy is active
+    # Concept-structure summary. Deliberately one line per module rather than a dump of
+    # equations: during training what you need to track is whether structure is
+    # collapsing (concepts retiring), whether concepts are staying multi-term, and how
+    # much per-participant freedom is left -- not the algebra of any one participant.
     if sindy_weight > 0:
         status_lines.append("-" * terminal_width)
         counts = model.count_spice_parameters()
+        loadings_per_participant = counts['loadings']
         status_lines.append(
-            f"SPICE Model (loadings/participant: {counts['loadings'][0, 0]:.0f}, "
-            f"shared direction values: {counts['directions']:.0f}):"
+            f"SPICE concepts   free/participant: {loadings_per_participant.mean():.1f}"
+            f" +/- {loadings_per_participant.std():.1f}"
+            f"   shared: {counts['directions']:.0f}"
         )
-        status_lines.append(model.get_spice_model_string(participant_id=0))
 
-        # Concept prevalence: how many of the P*X units hold each concept open. This
-        # replaces the old per-term presence row -- term support is now a property of
-        # the population-level dictionary, not something each participant owns.
-        status_lines.append("-" * terminal_width)
-        n_units = model.n_participants * model.n_experiments
-        status_lines.append(f"Concept prevalence (number of models={n_units}):")
-        for m in model.get_modules():
-            gates = model.sindy_concept_gates[m].any(dim=0)  # (P, X, C)
-            prevalence = gates.sum(dim=0).sum(dim=0).detach().cpu().numpy()
-            alive = model.sindy_concept_support[m].any(dim=-1).detach().cpu().numpy()
-            space_filler = " " + " " * (max_len_module - len(m)) if max_len_module > len(m) else " "
-            entries = ", ".join(str(int(v)) for v, a in zip(prevalence, alive) if a and v > 0)
-            status_lines.append(m + ":" + space_filler + (entries or "(no live concepts)"))
+        name_width = max(len(module) for module in model.get_modules())
+        name_width = max(name_width, 6)
+        status_lines.append(
+            f"{'module':<{name_width}}  {'live':>7}  {'terms/c':>7}  {'held/p':>6}  prevalence %"
+        )
 
-        # What each live concept is made of
-        status_lines.append("-" * terminal_width)
-        status_lines.append("Concept supports:")
-        for m in model.get_modules():
-            terms = model.sindy_candidate_terms[m]
-            support = model.sindy_concept_support[m].detach().cpu().numpy()
-            live = model.sindy_concept_gates[m].any(dim=0).any(dim=0).any(dim=0).detach().cpu().numpy()
-            for index_concept in range(support.shape[0]):
-                if not live[index_concept] or not support[index_concept].any():
-                    continue
-                owned = [terms[i] for i in range(len(terms)) if support[index_concept, i]]
-                status_lines.append(f"  {m}[{index_concept}]: " + " | ".join(owned))
+        for module in model.get_modules():
+            gates = model.sindy_concept_gates[module]          # (E, P, X, C)
+            support = model.sindy_concept_support[module]      # (C, T)
+            held = gates.any(dim=0)                            # (P, X, C)
+            live = held.any(dim=0).any(dim=0) & support.any(dim=-1)   # (C,)
+
+            n_live = int(live.sum())
+            n_total = support.shape[0]
+            n_units = model.n_participants * model.n_experiments
+
+            if n_live == 0:
+                status_lines.append(f"{module:<{name_width}}  {0:>3}/{n_total:<3}  {'-':>7}  {'-':>6}  (no live concepts)")
+                continue
+
+            terms_per_concept = support[live].sum(dim=-1).float().mean().item()
+            held_per_unit = held.sum(dim=-1).float().mean().item()
+
+            prevalence = (held.sum(dim=0).sum(dim=0)[live].float() / max(n_units, 1) * 100)
+            prevalence = prevalence.sort(descending=True).values.tolist()
+
+            # Keep the prevalence list inside the terminal, however many concepts survive
+            budget = max(20, terminal_width - name_width - 30)
+            rendered, shown = "", 0
+            for value in prevalence:
+                candidate = (rendered + " " if rendered else "") + f"{value:.0f}"
+                if len(candidate) > budget:
+                    break
+                rendered, shown = candidate, shown + 1
+            if shown < len(prevalence):
+                rendered += f" +{len(prevalence) - shown}"
+
+            status_lines.append(
+                f"{module:<{name_width}}  {n_live:>3}/{n_total:<3}  "
+                f"{terms_per_concept:>7.1f}  {held_per_unit:>6.1f}  {rendered}"
+            )
+
+
     status_lines.append("=" * terminal_width)
     
     # Convergence messages

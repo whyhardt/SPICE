@@ -20,12 +20,20 @@ from .reporting import _check_cuda_oom
 def _project_after_step(model: BaseModel, optimizer: torch.optim.Optimizer, sindy_alpha: float = None) -> None:
     """Re-establish the factorization's constraints after an optimizer step.
 
-    Non-negativity and the L1 prox on the loadings, then the unit-norm gauge on the
-    concept directions. Both must run every step while a penalty is pushing on Z.
+    Order matters: the gauge is fixed *first*, then the prox is applied to loadings that
+    are already on their final scale. Doing it the other way round lets the
+    renormalization multiply Z by the row norms and partially undo the shrinkage just
+    applied, which makes the effective L1 threshold depend on how far V happened to
+    drift that step rather than on sindy_alpha alone.
+
+    Both run every step. Normalizing less often would be worse, not better: at
+    equilibrium each step perturbs a row norm by O(lr), a slow reparametrization Adam's
+    moment estimates track without trouble, whereas batching the drift into one large
+    correction hands the optimizer a genuine discontinuity.
     """
     lr = max((group.get('lr', 0.0) for group in optimizer.param_groups), default=0.0)
-    model.project_loadings(lr=lr, sindy_alpha=sindy_alpha or 0.0)
     model.normalize_concept_directions()
+    model.project_loadings(lr=lr, sindy_alpha=sindy_alpha or 0.0)
 
 
 def _run_shooting_epoch_vectorized(

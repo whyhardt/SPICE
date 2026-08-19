@@ -40,13 +40,13 @@ if __name__=='__main__':
 
     # SINDy training parameters
     parser.add_argument('--sindy_skip_refit', action='store_false', help='Refits the SINDy coefficients in Stage 2 training (default: True)')
-    parser.add_argument('--shooting_steps', type=int, default=100, help='Multi-step shooting horizon for Stage 2 SINDy refit (1=one-step-ahead, default: 100)')
     parser.add_argument('--sindy_weight', type=float, default=0.01, help='Weight for SINDy regularization during RNN training')
     parser.add_argument('--sindy_alpha', type=float, default=0.0001, help='Degree-weighted coefficient penalty strength (ridge alpha)')
-    parser.add_argument('--pruning_test', type=float, default=0.5, help='Minimum fraction of ensemble members that must exceed pruning_threshold for a term to survive (ensemble ratio test)')
     parser.add_argument('--pruning_threshold', type=float, default=0.01, help='Significance threshold value for SINDy coefficients')
+    parser.add_argument('--pruning_test', type=float, default=0.5, help='Minimum fraction of ensemble members that must exceed pruning_threshold for a term to survive (ensemble ratio test)')
     parser.add_argument('--pruning_frequency', type=int, default=100, help='Epochs between pruning events')
     parser.add_argument('--pruning_terms', type=int, default=None, help='Max terms pruned per event. None=auto-compute so coefficients can reach 0 within training.')
+    parser.add_argument('--shooting_steps', type=int, default=100, help='Multi-step shooting horizon for Stage 2 SINDy refit (1=one-step-ahead, default: 100)')
     
     # Data setup parameters
     parser.add_argument('--data_kwargs', type=json.loads, default='{}', help='additional kwargs for csv_to_dataset for loading the data correctly.')

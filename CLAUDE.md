@@ -70,7 +70,6 @@ SPICE/
 │   │   │   ├── pruning.py              # Gate pruning + cross-ensemble consensus
 │   │   │   ├── losses.py               # Loss functions and schedule helpers
 │   │   │   └── reporting.py            # Terminal output
-│   │   ├── spice_direct_training.py    # RNN-free pipeline: fit concepts straight to behaviour
 │   │   ├── sindy_differentiable.py     # Differentiable SINDy polynomial library
 │   │   └── sindy_concept_init.py       # Data-driven seeding for the concept dictionary
 │   ├── precoded/                       # Pre-built cognitive model architectures
