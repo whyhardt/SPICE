@@ -71,15 +71,13 @@ class SpiceModel(BaseModel):
                 # remove squared terms (x^2 = x for binary)
                 for cs in control_signals:
                     if cs + '^' in ct:
-                        self.sindy_coefficients_presence[module][..., ict] = 0
-                        self.sindy_coefficients_prior_mask[module][..., ict] = 0
+                        self.sindy_term_prior_mask[module][ict] = False
                         break
                 # remove cross-products of mutually exclusive indicators (x_i * x_j = 0)
                 for i, cs_i in enumerate(control_signals):
                     for cs_j in control_signals[i + 1:]:
                         if cs_i in ct and cs_j in ct:
-                            self.sindy_coefficients_presence[module][..., ict] = 0
-                            self.sindy_coefficients_prior_mask[module][..., ict] = 0
+                            self.sindy_term_prior_mask[module][ict] = False
 
     def forward(self, inputs, prev_state=None):
 

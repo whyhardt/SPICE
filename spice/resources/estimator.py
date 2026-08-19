@@ -9,10 +9,9 @@ from sklearn.base import BaseEstimator
 from typing import Dict, Optional, Tuple, List, Union
 from copy import copy
 
-from .spice_training import fit_spice, cross_entropy_loss
+from .training import fit_spice, cross_entropy_loss
 from .model import BaseModel
 from .spice_utils import SpiceConfig, SpiceDataset
-from .sindy_compression import CompressedSpiceModel, compress_sindy_equations as _compress_sindy_equations
 
 
 warnings.filterwarnings("ignore")
@@ -58,13 +57,12 @@ class SpiceEstimator(BaseEstimator):
         # SPICE training parameters
         use_sindy: Optional[bool] = False,
         sindy_weight: Optional[float] = 0.01,  # Weight for SINDy regularization loss
-        sindy_alpha: Optional[float] = 1e-4,  # Degree-weighted coefficient penalty strength (ridge alpha)
+        sindy_alpha: Optional[float] = 1e-4,  # L1 strength for the proximal step on concept loadings, and the ridge alpha
         sindy_library_polynomial_degree: Optional[int] = 2,
         sindy_pruning_frequency: Optional[int] = 100,  # Epochs between pruning events
         sindy_threshold_pruning: Optional[float] = 0.01,  # Optional per-member threshold pruning (None to disable)
         sindy_ensemble_pruning: Optional[float] = 0.5,  # Minimum ensemble ratio for a term to survive (primary pruning mechanism)
-        sindy_pruning_terms: Optional[int] = None, # Number of pruned terms per pruning event (Defaults to None: Computed automatically such that n_coefficients can reach 0 within 'epochs-epochs_warmup' epochs)
-        sindy_reconditioning_epochs: Optional[int] = 3,  # Pure SINDy SGD epochs after ridge recalibration
+        sindy_pruning_terms: Optional[int] = None, # Concepts closed per pruning event (Defaults to None: computed so the model can reach 0 concepts within 'epochs-epochs_warmup' epochs)
         sindy_refit: Optional[bool] = True,  # Enable Stage 2 Training (SINDy refit on frozen RNN parameters)
         sindy_ridge: Optional[bool] = True,  # Use ridge regression initialization in Stage 2.2 (falls back to SGD on failure)
         sindy_shooting_steps: Optional[int] = 100,  # Multi-step shooting horizon for Stage 2 (1 = one-step-ahead)
@@ -106,7 +104,6 @@ class SpiceEstimator(BaseEstimator):
                 supporting a term in the ensemble ratio test (None = disabled).
             sindy_ensemble_pruning: Minimum fraction of ensemble members that must
                 exceed sindy_threshold_pruning for a term to survive. Primary pruning mechanism.
-            sindy_reconditioning_epochs: Pure SINDy SGD epochs after ridge recalibration to warm-start the optimizer (0 = disable).
             sindy_ridge: Use closed-form ridge regression to initialize SINDy coefficients in Stage 2.2.
                 Falls back to SGD on failure. Set False to use pure SGD. (default: True)
             sindy_shooting_steps: Multi-step shooting horizon for Stage 2 SINDy refit.
@@ -146,7 +143,6 @@ class SpiceEstimator(BaseEstimator):
         self.sindy_threshold_pruning = sindy_threshold_pruning
         self.sindy_ensemble_pruning = sindy_ensemble_pruning
         self.sindy_pruning_terms = sindy_pruning_terms
-        self.sindy_reconditioning_epochs = sindy_reconditioning_epochs
         self.sindy_refit = sindy_refit
         self.sindy_ridge = sindy_ridge
         self.sindy_shooting_steps = sindy_shooting_steps
@@ -189,18 +185,25 @@ class SpiceEstimator(BaseEstimator):
 
         self.use_sindy(use_sindy)
         
-        sindy_params = []
+        # Three param groups, tagged by role rather than identified by position:
+        # the concept directions are shared across the whole population while the
+        # loadings are per unit, so they are separable knobs. Downstream schedulers
+        # look these up by 'role', never by index.
+        direction_params = []
+        loading_params = []
         rnn_params = []
         for name, param in self.model.named_parameters():
-            if 'sindy' in name:
-                sindy_params.append(param)
+            if 'sindy_concept_directions' in name:
+                direction_params.append(param)
+            elif 'sindy_concept_loadings' in name:
+                loading_params.append(param)
             else:
                 rnn_params.append(param)
-        # Separate optimizer param groups: SINDy coefficients get fixed lr, RNN params get configurable lr + weight decay
         self.rnn_optimizer = torch.optim.AdamW(
             [
-            {'params': sindy_params, 'weight_decay': 0, 'lr': 0.01},
-            {'params': rnn_params, 'weight_decay': l2_rnn, 'lr': learning_rate},
+            {'params': direction_params, 'weight_decay': 0, 'lr': 0.01, 'role': 'directions'},
+            {'params': loading_params, 'weight_decay': 0, 'lr': 0.01, 'role': 'loadings'},
+            {'params': rnn_params, 'weight_decay': l2_rnn, 'lr': learning_rate, 'role': 'rnn'},
             ],
             )
         
@@ -243,7 +246,6 @@ class SpiceEstimator(BaseEstimator):
             sindy_threshold_pruning=self.sindy_threshold_pruning,
             sindy_ensemble_pruning=self.sindy_ensemble_pruning,
             sindy_pruning_terms=self.sindy_pruning_terms,
-            sindy_reconditioning_epochs=self.sindy_reconditioning_epochs,
             sindy_refit=self.sindy_refit,
             sindy_ridge=self.sindy_ridge,
             sindy_shooting_steps=self.sindy_shooting_steps,
@@ -312,51 +314,35 @@ class SpiceEstimator(BaseEstimator):
             return None
 
     def get_sindy_coefficients(self, key_module: Optional[str] = None, aggregate: bool = False) -> Dict[str, np.ndarray]:
-        """Returns a dict of modules holding a numpy array with the sindy coefficients of shape (ensemble, participant, experiment, coefficient)."""
+        """Per module, the coefficients implied by the factorization, (E, P, X, T).
+
+        Derived from Z @ V rather than stored. Use get_concept_loadings() for anything
+        reporting individual differences -- loadings on a shared dictionary are
+        comparable across participants in a way raw per-term coefficients are not.
+        """
         
         return self.model.get_sindy_coefficients(key_module=key_module, aggregate=aggregate)
     
-    def count_sindy_coefficients(self):
-        return self.model.count_sindy_coefficients()
+    def count_spice_parameters(self):
+        """Degrees of freedom, split into per-participant loadings and shared directions.
 
-    def compress_sindy_equations(self, K: int = None, method: str = "nmf_per_module", **method_kwargs) -> CompressedSpiceModel:
-        """Fit a reparameterization of this model's per-participant SINDy coefficients.
-
-        Many SINDy terms co-vary strongly across participants -- they are not
-        independent axes of individual difference, just different symptoms of
-        the same underlying trait. This factors the (participant x term)
-        coefficient matrix into a population-average equation shared by
-        everyone, plus a handful of numbers per participant (loadings on
-        shared "mechanisms"). Returns a `CompressedSpiceModel` exposing
-        `.print_population()`, `.print_mechanisms()`, and
-        `.print_participant(participant_id)` for compact symbolic equations,
-        and `.apply(estimator)` as a context manager to temporarily run
-        inference with the compressed coefficients.
-
-        Args:
-            K: number of shared mechanisms. Ignored for the default method
-                (and "family"), which take a per-module `K_per_module` in
-                `method_kwargs` instead.
-            method: "nmf_per_module" (default) -- sign-split NMF fit
-                independently within each module's own term block. Chosen
-                after comparing dense SVD, joint/per-module sparse
-                dictionary learning, joint NMF, and a hand-classified
-                term-family basis: it wins on predictive cost, genuine
-                usage sparsity, mechanism compactness, and localization,
-                without hand-classifying anything. See
-                `spice.resources.sindy_compression` module docstring for
-                the other methods and their tradeoffs.
-            method_kwargs: forwarded to the fitting method, e.g.
-                `K_per_module`, `alpha_W`, `alpha_H` for the default method.
-
-        This only fits and prints the reparameterization -- it does not
-        evaluate predictive performance, and does not pick hyperparameters
-        for you. See `weinhardt2026.analysis.analysis_coefficient_compression`
-        for a train-selected/test-confirmed hyperparameter search that
-        measures the held-out predictive cost of compression.
+        Returned as two separate numbers on purpose -- see BaseModel.count_spice_parameters.
         """
-        return _compress_sindy_equations(self, K, method=method, **method_kwargs)
-       
+        return self.model.count_spice_parameters()
+
+    def get_concepts(self, key_module: Optional[str] = None) -> Dict[str, np.ndarray]:
+        """Per module, the (n_concepts, n_terms) population-level concept dictionary."""
+        return self.model.get_concepts(key_module=key_module)
+
+    def get_concept_loadings(self, key_module: Optional[str] = None, aggregate: bool = False) -> Dict[str, np.ndarray]:
+        """Per module, each participant's non-negative loading on every concept.
+
+        This is the quantity to report individual differences on. Raw per-term
+        coefficients are a derived view of it and are not comparable across
+        participants in the way loadings on a shared dictionary are.
+        """
+        return self.model.get_concept_loadings(key_module=key_module, aggregate=aggregate)
+
     def get_modules(self):
         return self.model.get_modules()
     
@@ -370,8 +356,8 @@ class SpiceEstimator(BaseEstimator):
         # load trained parameters
         loaded_parameters = torch.load(path_model, map_location=torch.device('cpu'))
         
-        # Infer ensemble_size from saved coefficient shape: (E, P, X, terms)
-        self.model.ensemble_size = loaded_parameters['model']['sindy_coefficients.'+next(iter(self.model.submodules_rnn))].shape[0]
+        # Infer ensemble_size from saved loading shape: (E, P, X, n_concepts)
+        self.model.ensemble_size = loaded_parameters['model']['sindy_concept_loadings.'+next(iter(self.model.submodules_rnn))].shape[0]
         self.ensemble_size = self.model.ensemble_size
         
         self.model = self.spice_class(
@@ -391,10 +377,11 @@ class SpiceEstimator(BaseEstimator):
             )
         
         for module in self.get_modules():
-            self.model.setup_sindy_coefficients(key_module=module, polynomial_degree=self.model.sindy_specs[module]['polynomial_degree'])
-        self.model.sindy_coefficients_presence = loaded_parameters['sindy_coefficients_presence']
-        if 'sindy_coefficients_prior_mask' in loaded_parameters:
-            self.model.sindy_coefficients_prior_mask = loaded_parameters['sindy_coefficients_prior_mask']
+            self.model.setup_sindy_concepts(key_module=module, polynomial_degree=self.model.sindy_specs[module]['polynomial_degree'])
+        self.model.sindy_concept_support = loaded_parameters['sindy_concept_support']
+        self.model.sindy_concept_gates = loaded_parameters['sindy_concept_gates']
+        if 'sindy_term_prior_mask' in loaded_parameters:
+            self.model.sindy_term_prior_mask = loaded_parameters['sindy_term_prior_mask']
 
         self.model.load_state_dict(loaded_parameters['model'])
         self.model.init_state(batch_size=self.model.n_participants)
@@ -404,7 +391,7 @@ class SpiceEstimator(BaseEstimator):
             
     def save_spice(self, path_rnn: str):
         """
-        Save the SPICE model (RNN weights, optimizer state, and SINDy coefficient masks) to a .pkl file.
+        Save the SPICE model (RNN weights, optimizer state, and concept structure) to a .pkl file.
 
         Args:
             path_rnn: File path to save the model.
@@ -414,8 +401,9 @@ class SpiceEstimator(BaseEstimator):
         state_dict = {
             'model': self.model.state_dict(),
             'optimizer': self.rnn_optimizer.state_dict(),
-            'sindy_coefficients_presence': self.model.sindy_coefficients_presence,
-            'sindy_coefficients_prior_mask': self.model.sindy_coefficients_prior_mask,
+            'sindy_concept_support': self.model.sindy_concept_support,
+            'sindy_concept_gates': self.model.sindy_concept_gates,
+            'sindy_term_prior_mask': self.model.sindy_term_prior_mask,
             }
         torch.save(state_dict, path_rnn)
         

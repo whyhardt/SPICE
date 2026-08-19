@@ -40,8 +40,8 @@ def _load_estimator():
     """Load fitted SpiceEstimator."""
     ckpt = torch.load(PARAMS_PATH, map_location='cpu')
     first_mod = next(iter(workingmemory.CONFIG.library_setup))
-    ensemble_size = ckpt['model'][f'sindy_coefficients.{first_mod}'].shape[0]
-    n_participants = ckpt['model'][f'sindy_coefficients.{first_mod}'].shape[1]
+    ensemble_size = ckpt['model'][f'sindy_concept_loadings.{first_mod}'].shape[0]
+    n_participants = ckpt['model'][f'sindy_concept_loadings.{first_mod}'].shape[1]
     del ckpt
 
     estimator = SpiceEstimator(

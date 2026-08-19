@@ -82,8 +82,7 @@ class SpiceModel(BaseModel):
                 # remove squared terms for binary signals only (x^2 = x)
                 for cs in binary_cs:
                     if cs + '^' in ct:
-                        self.sindy_coefficients_presence[module][..., ict] = 0
-                        self.sindy_coefficients_prior_mask[module][..., ict] = 0
+                        self.sindy_term_prior_mask[module][ict] = False
                         break
                 # remove cross-products of mutually exclusive indicators (x_i * x_j = 0)
                 for group in EXCLUSIVE_GROUPS:
@@ -91,8 +90,7 @@ class SpiceModel(BaseModel):
                     for i, cs_i in enumerate(group_cs):
                         for cs_j in group_cs[i + 1:]:
                             if cs_i in ct and cs_j in ct:
-                                self.sindy_coefficients_presence[module][..., ict] = 0
-                                self.sindy_coefficients_prior_mask[module][..., ict] = 0
+                                self.sindy_term_prior_mask[module][ict] = False
 
     def forward(self, inputs, prev_state=None):
 

@@ -40,7 +40,7 @@ import torch
 from sklearn.linear_model import LinearRegression
 
 from spice import SpiceEstimator
-from spice.resources.spice_training import _ridge_solve_sindy
+from spice.resources.training.ridge import _ridge_solve_sindy
 from spice.resources.spice_utils import SpiceDataset
 
 
@@ -240,16 +240,6 @@ def _create_morphed_estimator(
                 for step in range(n_steps):
                     new_mask[0, pid * n_steps + step] = mask_e[pid]
             new_model.sindy_coefficients_prior_mask[module] = new_mask
-
-        # Expand damping parameters
-        if module in model.sindy_damping_raw:
-            old_damp = model.sindy_damping_raw[module].data  # (E_orig, P, X)
-            damp_e = old_damp[e]  # (P, X)
-            new_damp = torch.zeros(1, n_virtual, X)
-            for pid in range(n_participants):
-                for step in range(n_steps):
-                    new_damp[0, pid * n_steps + step] = damp_e[pid]
-            new_model.sindy_damping_raw[module] = torch.nn.Parameter(new_damp)
 
     return new_estimator
 

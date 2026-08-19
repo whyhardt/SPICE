@@ -33,16 +33,18 @@ BaseModel(
 **Key components:**
 - `submodules_rnn` — `ModuleDict` of RNN submodules (residual architecture), each learning one cognitive mechanism
 - `submodules_eq` — registry for hard-coded (non-learned) equation modules, an alternative to `submodules_rnn` for mechanisms you want to specify by hand instead of fit
-- `sindy_coefficients` — Learnable `Dict[module_name, Tensor]` with shape `(E, P, X, n_terms)`
-- `sindy_coefficients_presence` — Binary masks for active coefficients (same shape); flipped by pruning
-- `sindy_coefficients_prior_mask` — Binary masks for theory-driven exclusions (e.g. forcing `binary^2 = 0` for one-hot features). **Never** reset by pruning, unlike `sindy_coefficients_presence`
-- `sindy_pruning_patience_counters` — Per-`(E,P,X,term)` counters; a term must accumulate 2 consecutive failed pruning checks before removal
-- `sindy_candidate_terms` / `sindy_degree_weights` — Library of basis functions and complexity penalties (degree weighting is currently disabled — see Known Inert Code below)
+- `sindy_concept_directions` — Learnable `Dict[module_name, Tensor]` of shape `(C, T)`: the population-level concept dictionary `V`. Rows are unit-norm, shared across ensemble members, participants and experiments
+- `sindy_concept_loadings` — Learnable `Dict[module_name, Tensor]` of shape `(E, P, X, C)`: each unit's non-negative loading `Z` on each concept
+- `sindy_concept_support` — `(C, T)` bool: which terms each concept owns. Starts **full** and only shrinks; a concept being multi-term is the point of the factorization, and support is never re-grown, so anything unreachable at init stays unreachable
+- `sindy_concept_gates` — `(E, P, X, C)` bool: which concepts each unit holds. `Z` is effectively `gate × magnitude`, and the gate mask starts all-open — all sparsity comes from the L1 prox and pruning, none is seeded at init
+- `sindy_term_prior_mask` — `(T,)` bool: theory-driven term exclusions (e.g. forcing `binary^2 = 0` for one-hot features), applied to `V`'s columns. Uniform across units by construction, and **never** revived by pruning
+- `sindy_pruning_patience_counters` / `sindy_support_patience_counters` — `(E,P,X,C)` and `(C,T)` counters; a gate or support entry must accumulate consecutive failed checks before removal
+- `sindy_candidate_terms` — Library of basis functions per module
 - `use_sindy` — Boolean toggle: `True` = equation mode, `False` = RNN mode
 - `fit_sindy` — Independent of `use_sindy`: controls whether `call_module` computes the SINDy fit/regularization losses during training at all
 - `ridge_mode` — Internal flag toggled by the training pipeline during Stage 2 ridge solves; when `True`, `call_module` bypasses normal RNN/SINDy branching and solves SINDy coefficients directly against the RNN's own predictions
 - `sindy_loss_reg` / `sindy_loss_fit` — Two **decoupled** scalar loss accumulators computed per forward pass. `sindy_loss_reg` has gradients flowing only to RNN params (SINDy side detached) — this is what `sindy_weight` scales to regularize the RNN toward SINDy-discoverable dynamics. `sindy_loss_fit` has gradients flowing only to SINDy coefficients (RNN side detached) and is fit independently of `sindy_weight`.
-- `sindy_norm` — `1` (L1, default) or `2` (L2) penalty norm used by `compute_weighted_coefficient_penalty`
+- `sindy_norm` — `1` (L1, default) or `2` (L2) penalty norm used by `compute_constants_penalty`
 - `learnable_initial_values` — For any `memory_state` entry whose initial value is `None` in `SpiceConfig`, a per-`(ensemble, participant)` learnable scalar parameter instead of a fixed constant; applied in `init_forward_pass` only when no `prev_state` is passed
 - `embedding_fusion` — How multiple registered embeddings (participant + experiment, etc.) are combined; `torch.cat` by default, or a learned `EnsembleEmbeddingFusion` layer once more than one embedding is registered
 
@@ -94,12 +96,18 @@ Broadcasts and concatenates inputs + fused embeddings to `[W,E,B,I,features]`. F
 - `forward_sindy()` — Compute state update using sparse polynomial equations
 - `compute_sindy_loss_for_module()` — Computes `sindy_loss_reg`/`sindy_loss_fit` for a module
 - `sindy_ridge_solve()` — Accumulates per-`(participant, experiment)` normal equations via scatter-add and solves in closed form (float64, ridge-penalized); used by Stage 2 refit and `ridge_mode`
-- `sindy_coefficient_pruning(patience=1, n_terms_pruning=None)` / `sindy_coefficient_patience(threshold)` — Patience-gated hard thresholding fallback (used when ensemble pruning is unavailable)
-- `compute_weighted_coefficient_penalty(sindy_alpha)` — Degree-weighted L1/L2 penalty on coefficients
-- `print(participant_id=0, experiment_id=0)` / `get_spice_model_string(...)` — Human-readable equations per module, e.g. `"value[t+1] = 0.92 value[t] + 0.14 reward[t]"`
-- `get_modules()` / `get_candidate_terms(key_module=None)` / `get_sindy_coefficients(key_module=None, aggregate=False)` / `count_sindy_coefficients()` — Introspection (see [SpiceEstimator](#spiceestimator-spiceresourcesestimatorpy))
+- `compose_coefficients(module)` / `derived_presence(module)` — `Z @ V` in term space, and the support it implies. Presence is **derived**, never stored: a unit's support is a union of whole concepts
+- `normalize_concept_directions()` / `project_loadings(lr, sindy_alpha)` — The two constraint projections, called after **every** optimizer step. The first re-fixes the unit-norm gauge (`Z @ V` is invariant under `(Z D, D⁻¹ V)`, so without it the L1 is defeated by inflating `V`); the second applies `z ← relu(z − lr·α)`, giving non-negativity, L1 shrinkage and *exact* zeros in one operation
+- `prune_concept_gates(patience, n_concepts_pruning)` / `prune_concept_support(patience, n_terms_pruning)` — The two pruning levels: which concepts a unit holds (per unit) and which terms a concept owns (per population). Both run on every pruning event
+- `concept_gate_patience(threshold)` / `concept_support_patience(threshold)` — Patience counters for the two levels
+- `retire_dead_concepts(module)` / `enforce_anchor_condition(module)` — Retire concepts nobody loads on, and (once, **after** discovery converges) concepts owning no exclusive term. Running the anchor check during the search would retire the whole dictionary, since supports start full
+- `set_concepts(module, directions, loadings)` / `concepts_from_dense(module, coefficients)` — Install an exact dictionary, resizing `C`. For generative ground-truth models, where mechanisms are known and must be represented exactly rather than projected
+- `set_coefficients_from_dense(module, coefficients)` — Non-negative least-squares *projection* of dense coefficients onto the current dictionary. Approximate by construction
+- `compute_constants_penalty(sindy_alpha)` — L1/L2 on learnable constants only. Loadings are penalized proximally instead
+- `print(participant_id=0, experiment_id=0)` / `get_spice_model_string(...)` — Per module, the concept dictionary plus that participant's loadings, in increment form
+- `get_modules()` / `get_candidate_terms(...)` / `get_concepts(...)` / `get_concept_loadings(..., aggregate=False)` / `get_sindy_coefficients(...)` / `count_spice_parameters()` — Introspection (see [SpiceEstimator](#spiceestimator-spiceresourcesestimatorpy))
 - `eval(use_sindy=True)` / `train(mode=True, use_sindy=False)` — Override `nn.Module`'s eval/train to also set `self.use_sindy` (eval defaults to SINDy-mode-on, train defaults to SINDy-mode-off)
-- `to(device)` — Also moves the sindy loss tensors, presence/prior masks, degree weights, and patience counters, since these are plain dict/Tensor attributes rather than registered buffers
+- `to(device)` — Also moves the sindy loss tensors, concept support/gate/prior masks, and patience counters, since these are plain dict/Tensor attributes rather than registered buffers
 
 **Ensemble support:** `EnsembleLinear`, `EnsembleEmbedding`, `EnsembleRNNModule` — vectorized computation across ensemble members.
 
@@ -115,9 +123,7 @@ No sigmoid/tanh gates — the architecture is inherently more polynomial-amenabl
 ### Known Inert Code
 
 A few attributes/parameters exist in the model but are not currently wired into the active forward path — present for a planned feature or an experiment that didn't pan out, not active behavior:
-- `sindy_damping_raw` (per-module learnable damping, `sigmoid(raw) ∈ (0,1)`) — the multiplication into `forward_sindy` is commented out.
 - `weight_out_scale` in `EnsembleRNNModule` — bounded-tanh rescaling of the output is commented out.
-- Degree-weighting in `compute_weighted_coefficient_penalty` — currently overridden to uniform weights (`degree_weights = torch.ones_like(...)`, marked `TODO: REMOVE IF NOT HELPING` in the code).
 
 Do not describe these as active behavior in code you write against this model; if you need them, they'll need to be re-enabled and tested first.
 
@@ -201,7 +207,7 @@ PyTorch Dataset with auto-promotion (2D→3D→4D: unsqueezes a session dim, the
 
 Main user-facing class implementing sklearn's estimator interface.
 
-**Methods:** `fit(data, targets, data_test, target_test)`, `predict(conditions)` → single prediction array (ensemble mean in RNN mode, member-0 in SINDy mode — **not** a `(rnn_pred, spice_pred)` tuple), `save_spice(path)`, `load_spice(path)`, `get_sindy_coefficients()`, `get_participant_embeddings()`, `print_spice_model()`, `count_sindy_coefficients()`, `get_modules()`, `get_candidate_terms()`, `compress_sindy_equations()`
+**Methods:** `fit(data, targets, data_test, target_test)`, `predict(conditions)` → single prediction array (ensemble mean in RNN mode, member-0 in SINDy mode — **not** a `(rnn_pred, spice_pred)` tuple), `save_spice(path)`, `load_spice(path)`, `get_concepts()`, `get_concept_loadings()`, `get_sindy_coefficients()`, `get_participant_embeddings()`, `print_spice_model()`, `count_spice_parameters()`, `get_modules()`, `get_candidate_terms()`
 
 **Constructor arguments:**
 
@@ -235,13 +241,12 @@ Main user-facing class implementing sklearn's estimator interface.
 | **SPICE / SINDy** ||||
 | `use_sindy` | `bool` | `False` | Enable SINDy integration (forward predictions use equations instead of the RNN) |
 | `sindy_weight` | `float` | `0.01` | Lambda for SINDy regularization loss (`sindy_loss_reg`) |
-| `sindy_alpha` | `float` | `1e-4` | Degree-weighted L1 penalty strength (also used as ridge alpha in Stage 2) |
+| `sindy_alpha` | `float` | `1e-4` | L1 strength for the proximal step on concept loadings (`z ← relu(z − lr·α)`), also the ridge alpha in Stage 2. Because the shrinkage is `lr·α`, it is **not** comparable across different LR schedules |
 | `sindy_library_polynomial_degree` | `int` | `2` | Max polynomial degree for SINDy candidate library |
 | `sindy_pruning_frequency` | `int` | `100` | Epochs between pruning events |
-| `sindy_threshold_pruning` | `float` | `0.01` | Minimum `\|coefficient\|` for a member to count as supporting a term in the ensemble ratio test (`None` disables) |
-| `sindy_ensemble_pruning` | `float` | `0.5` | Minimum fraction of ensemble members that must exceed `sindy_threshold_pruning` for a term to survive (ensemble ratio test); primary pruning mechanism |
-| `sindy_pruning_terms` | `int` | `None` | Max terms pruned per event, across all modules (`None` = auto-computed so pruning can reach zero terms within the available epochs) |
-| `sindy_reconditioning_epochs` | `int` | `3` | Pure SINDy SGD epochs after ridge recalibration (currently unused — see [Two-Stage Training Pipeline](#two-stage-training-pipeline-spiceresourcesspice_trainingpy)) |
+| `sindy_threshold_pruning` | `float` | `0.01` | Minimum loading for a member to count as holding a concept in the ensemble ratio test, and the magnitude below which a support entry becomes a pruning candidate. Measured against **unit-norm** directions, so it lives on the loading scale, not the raw-coefficient scale (`None` disables) |
+| `sindy_ensemble_pruning` | `float` | `0.5` | Minimum fraction of ensemble members that must load on a concept above `sindy_threshold_pruning` for it to survive (ensemble ratio test); primary pruning mechanism |
+| `sindy_pruning_terms` | `int` | `None` | Max concepts closed per event, across all modules (`None` = auto-computed so pruning can reach zero concepts within the available epochs) |
 | `sindy_refit` | `bool` | `True` | Enable Stage 2 (SINDy refit on frozen RNN parameters). If `False`, the estimator returns whatever Stage 1 produced. |
 | `sindy_ridge` | `bool` | `True` | Use closed-form ridge regression to initialize Stage 2 coefficients (falls back to SGD on failure/non-finite loss) |
 | `sindy_shooting_steps` | `int` | `100` | Multi-step "shooting" rollout horizon for Stage 2 (`1` = one-step-ahead; larger values penalize compounding error over more trials) |
@@ -253,90 +258,19 @@ Main user-facing class implementing sklearn's estimator interface.
 
 `predict()` returns a single array: the ensemble mean in RNN mode, or ensemble member 0 in SINDy mode (all members are fit toward consensus targets in Stage 2, so any one member is representative).
 
-`compress_sindy_equations(K=None, method="nmf_per_module", **method_kwargs)` — fits a reparameterization of the model's per-participant SINDy coefficients into `coefficients[participant] ≈ population_mean + loadings[participant] @ components`: a shared population equation plus a handful of "mechanism loading" numbers per participant. Returns a `CompressedSpiceModel` (`spice/resources/sindy_compression.py`), exposing `print_population()`, `print_mechanisms()`, `print_participant(participant_id)`, and `apply(estimator)` as a context manager for temporary inference with the compressed coefficients. See [analyses.md](analyses.md) ("Coefficient Compression") for the full method comparison and typical usage — `SpiceEstimator.compress_sindy_equations()` only fits/prints the reparameterization; it does not select hyperparameters or evaluate held-out predictive cost (use `weinhardt2026.analysis.analysis_coefficient_compression` for that).
+`count_spice_parameters()` returns **two** numbers, deliberately never summed: `'loadings'` (open concept gates per participant — the per-participant degrees of freedom) and `'directions'` (free values in the shared dictionary, one fewer than each live concept's support size, since unit-norm removes a degree of freedom). Merging them amortizes population-level structure over participants, which makes pooling look nearly free and biases any BIC-driven search toward pooling everything — report them separately.
 
----
-
-## Dimension Conventions
-
-| Symbol | Meaning | Notes |
-|--------|---------|-------|
-| T | Outer timesteps (trials) | |
-| W | Within-trial timesteps | Typically 1; >1 for DDM |
-| E | Ensemble members | |
-| B | Batch (sessions) | sessions = participants x experiments x blocks |
-| F | Features | |
-| I | Items | Internal value representations; defaults to `n_actions` but can differ (see below) |
-| A | Actions | Observable action space (one-hot) |
-| P | Participants | |
-| X | Experiments | |
-| C | Candidate terms | SINDy library size |
-
-**Items vs. Actions:** Items and actions can be decoupled. `n_items` is the number of latent value representations the model maintains internally (state shape uses I). `n_actions` is the observable action space (logits shape uses A). By default `n_items = n_actions`, but they can differ — e.g., in a two-armed bandit with multiple symbol pairs, items might be contrast-specific values (low vs. high) while actions are position-specific (left vs. right). See `weinhardt2026/studies/ganesh2024a/ganesh2024a.ipynb` for an example.
-
-**Canonical internal shapes:**
-- Input: `(T, W, E, B, F)` — after `init_forward_pass()` promotes from batch-first `(B, T, W, F)`
-- State: `(W, E, B, I)`
-- Logits: `(T, W, E, B, A)`
-- SINDy coefficients: `(E, P, X, C)`
-
----
-
-## Data Pipeline
-
-### CSV → SpiceDataset (`spice/utils/convert_dataset.py`)
-
-```python
-csv_to_dataset(
-    file: Union[str, pd.DataFrame],
-    df_participant_id: str = 'participant',
-    df_block: str = 'block',
-    df_experiment_id: str = 'experiment',
-    df_choice: Union[str, Iterable[str]] = 'choice',
-    df_feedback: Optional[Union[str, Iterable[str]]] = 'reward',
-    df_time: Optional[str] = None,
-    df_trial: Optional[str] = None,
-    additional_inputs: Optional[Union[str, Iterable[str]]] = None,
-    device=None,
-    sequence_length: int = None,
-    timeshift_additional_inputs: Optional[Iterable[int]] = None,
-    remove_failed_trials: bool = True,
-    continuous_action: bool = False,
-) -> SpiceDataset
-```
-
-```
-Raw CSV (participant, experiment, block, choice, [reward], [additional_inputs])
-    ↓  csv_to_dataset()
-    ↓  - Map categorical columns to numeric IDs (string choices → sorted-alphabetical codes, with a warning)
-    ↓  - One-hot encode choices → n_actions columns (or store raw values if continuous_action=True)
-    ↓  - Promote rewards to action-aligned structure → n_actions columns (one per action)
-    ↓  - Normalize rewards to [-1, 1] or [0, 1]
-    ↓  - Build metadata columns (last 5: time_trial, trials, block, experiment_id, participant_id)
-    ↓  - Shift: xs[t] = observation at trial t, ys[t] = action[t+1]
-    ↓
-SpiceDataset: shape (sessions, outer_ts, within_ts, features)
-```
-
-**Rewards are optional** (`df_feedback=None` to omit). Full vs. partial feedback is inferred structurally:
-- **Partial feedback** (single reward column, discrete action): reward is placed in the column of the chosen action; unchosen columns are NaN
-- **Full/counterfactual feedback** (`len(df_feedback) > 1`, or `continuous_action=True`): each feedback column maps directly to its corresponding action column, no NaN masking of alternatives
-
-**Within-trial sequences:** passing `df_trial`/`df_time` switches to a code path that groups rows by an outer-trial identifier and produces a true 4D `(sessions, outer_ts, within_ts, features)` dataset (e.g. for DDM/evidence-accumulation models). Without them, `within_ts` is always 1.
-
-**`timeshift_additional_inputs`** applies a per-column shift (`-1`/`0`/`1`) to additional-input columns along the trial dimension; a `'-'` entry also truncates the last trial from both `xs`/`ys`.
-
-**Round-trip export:** `dataset_to_csv()` reconstructs a tabular CSV from a `SpiceDataset`, auto-detecting full vs. partial feedback and reward-column naming.
-
-**Splitting utilities** (also in `spice/utils/convert_dataset.py`, not `spice_utils.py`): `split_data_along_timedim(dataset, split_ratio, device)`, `split_data_along_blockdim(dataset, test_blocks=None, device)`, `reshape_data_along_participantdim(dataset, device)`.
+`get_concept_loadings()` is the quantity to run individual-differences analyses on. `get_sindy_coefficients()` still returns per-term coefficients `(E, P, X, T)` for equation display, but they are derived from `Z @ V` and are not comparable across participants the way loadings on a shared dictionary are.
 
 **Dataset metadata conventions:** block and participant IDs in metadata (`xs[..., -3]` and `xs[..., -1]`) — participant IDs are 0-indexed (remapped by `csv_to_dataset`); block IDs are kept as-is from the CSV (typically 1-indexed).
 
 ---
 
-## Two-Stage Training Pipeline (`spice/resources/spice_training.py`)
+## Two-Stage Training Pipeline (`spice/resources/training/`)
 
-Main function: `fit_spice()`, called by `SpiceEstimator.fit()`. Returns `model.eval(use_sindy=True), optimizer`.
+Main function: `fit_spice()` (`training/fit.py`), called by `SpiceEstimator.fit()`. Returns `model.eval(use_sindy=True), optimizer`.
+
+The package is split by responsibility: `fit.py` (orchestration), `stage1.py` (joint training), `stage2.py` (refit, 2.1 + 2.2), `shooting.py` (rollouts and the post-step constraint projection), `trajectories.py`, `ridge.py`, `pruning.py`, `losses.py`, `reporting.py`.
 
 ### Stage 1: Joint RNN-SINDy Training (`_run_joint_training`, runs when `epochs > 0`)
 
@@ -344,16 +278,18 @@ The loss is composed in `_run_batch_training()` (called each iteration on a sess
 ```python
 loss = loss_fn(ys_pred, ys_step, **loss_fn_kwargs)                        # behavioral loss
 loss = loss + sindy_weight * model.sindy_loss_reg                         # SINDy regularization (RNN-side gradient only)
-loss = loss + model.compute_weighted_coefficient_penalty(sindy_alpha)     # degree-weighted L1 penalty on SINDy coefficients
+loss = loss + model.compute_constants_penalty(sindy_alpha)                # L1/L2 on learnable constants only
 ```
-`sindy_weight * model.sindy_loss_reg` is only added when `sindy_weight > 0` and `model.sindy_loss_reg != 0`; the penalty term only when `sindy_weight > 0 and sindy_alpha > 0`.
+`sindy_weight * model.sindy_loss_reg` is only added when `sindy_weight > 0` and `model.sindy_loss_reg != 0`; the constants penalty only when `sindy_weight > 0 and sindy_alpha > 0`.
+
+The L1 on the concept loadings is **not** in this loss. It is applied proximally after `optimizer.step()`, together with the unit-norm gauge fix, by `_project_after_step` (`training/shooting.py`) — an L1 loss term under Adam never produces an exact zero, and exact zeros are what make a closed gate mean "this unit does not have this concept".
 
 **Epoch flow (matching the actual code):**
 1. **SINDy weight warmup**: for the first `n_warmup_steps` epochs, the effective SINDy weight is scaled by an exponential warmup curve (`_setup_warmup_scaler`) instead of applied at full strength immediately.
 2. **Batching**: sessions are randomly batched (5D tensors `(ensemble, sessions, trials, within_ts, features)`); each batch runs through `_run_batch_training`, accumulating the average training loss for the epoch.
-3. **LR scheduling**: `torch.optim.lr_scheduler.ReduceLROnPlateau` (`mode='min', factor=0.5, patience=50`) steps on the epoch's training loss. RNN params can decay to `min_lr=1e-5`; SINDy params are effectively pinned at their base LR (`0.01`).
+3. **LR scheduling**: `torch.optim.lr_scheduler.ReduceLROnPlateau` (`mode='min', factor=0.5, patience=50`) steps on the epoch's training loss. RNN params can decay to `min_lr=1e-5`; concept params are effectively pinned at their base LR (`0.01`). Floors are assigned by **group role** (`'directions'`, `'loadings'`, `'rnn'`), not by position in `param_groups` — a positional list silently mis-assigns them if the group count or order ever changes.
 4. **Validation** (only if `dataset_test` is given): one no-grad forward pass in RNN mode (`loss_test_rnn`) and, if `sindy_weight > 0`, one in SINDy mode (`loss_test_sindy`).
-5. **Pruning** (only if `sindy_weight > 0` and `sindy_pruning_frequency` is set, and only past warmup): fires when the epoch count hits `sindy_pruning_frequency` (or on the first call). Uses `_ensemble_pruning` (the ensemble ratio test, `_ensemble_ratio_test`: a term survives iff at least `sindy_ensemble_pruning` fraction of ensemble members have `|coefficient| > sindy_threshold_pruning`) when `ensemble_size > 1` and `sindy_ensemble_pruning` is set; otherwise falls back to per-member hard thresholding (`model.sindy_coefficient_pruning`). A term must fail **2 consecutive** pruning checks before permanent removal (patience counter resets on success). Pruning only masks/zeroes coefficients — it does **not** currently ridge-recalibrate them within Stage 1 (that code path is present but commented out).
+5. **Pruning** (only if `sindy_weight > 0` and `sindy_pruning_frequency` is set, and only past warmup): fires when the epoch count hits `sindy_pruning_frequency` (or on the first call), and acts on **two levels**. *Concept gates* (per unit) go through `_ensemble_pruning` / `_ensemble_ratio_test` — a concept survives iff at least `sindy_ensemble_pruning` of members load on it above `sindy_threshold_pruning` — when `ensemble_size > 1`, otherwise per-member thresholding via `model.prune_concept_gates`. *Concept support* (per population) is pruned by `model.prune_concept_support` on every event, so which terms a concept owns is decided once for everyone and cannot fragment per participant. A candidate must fail **2 consecutive** checks before removal (patience resets on success).
 6. **Convergence check**: an exponentially-smoothed estimate of `|Δloss|` (recency factor 0.5) is compared against `convergence_threshold`; training stops early once below threshold.
 7. Auto batch-size probing: the whole batch loop is wrapped in a retry loop that halves `batch_size` on CUDA OOM.
 8. `KeyboardInterrupt` is caught, allowing manual early stop while still returning a usable model.
@@ -363,19 +299,17 @@ loss = loss + model.compute_weighted_coefficient_penalty(sindy_alpha)     # degr
 
 Freezes RNN weights and refits SINDy coefficients via multi-step "shooting" rather than one-step-ahead fitting, on CPU. Two sub-stages:
 
-**Stage 2.1 — Sparsity discovery** (only if a pruning criterion is configured): resets all presence masks to fully active (respecting `sindy_coefficients_prior_mask`), re-initializes coefficients, then fits with genuine one-step (`K=1`) shooting — every within/across-trial transition is flattened into its own independent pseudo-session — combined with pruning and the L1 penalty. Starts from a closed-form ridge solve (`_ridge_solve_sindy`) when it produces a finite loss; falls back to random init + SGD otherwise.
+**Stage 2.1 — Structure discovery** (only if a pruning criterion is configured): re-draws the whole factorization via `model.reset_concepts()` — full support, all gates open, random unit-norm directions, small strictly-positive loadings, respecting `sindy_term_prior_mask` — rather than inheriting Stage 1, then fits with genuine one-step (`K=1`) shooting (every within/across-trial transition flattened into its own pseudo-session) plus pruning and the L1 prox. Starts from a closed-form ridge solve (`_ridge_solve_sindy`), whose dense solution is projected onto the dictionary by non-negative least squares; falls back to random init + SGD otherwise. **The anchor condition is enforced once at the end**, when structure has settled — running it during the search would retire the entire dictionary, since full supports mean no concept has an exclusive term yet.
 
-**Stage 2.2 — Coefficient estimation**: freezes the sparsity pattern discovered in 2.1 (or the original pattern if 2.1 didn't run), re-initializes coefficients within that support, and fits via multi-step shooting with `K = sindy_shooting_steps` (default 100, clamped to the number of trials) — a window of `K` consecutive trials is rolled out autoregressively and the loss is the MSE against the RNN's own recorded state trajectory at each step, so this stage penalizes compounding error over the rollout, not just per-step error. Starts from a ridge solve (`sindy_ridge=True`) evaluated under the K-step rollout loss; falls back to SGD if ridge fails or produces a non-finite K-step loss (a ridge solve can be well-posed in isolation but unstable once rolled out — e.g. a self-coefficient that blows up over many steps).
+**Stage 2.2 — Loading estimation**: freezes the structure discovered in 2.1 (directions, support and gates), re-draws only the loadings, and fits via multi-step shooting with `K = sindy_shooting_steps` (default 100, clamped to the number of trials) — a window of `K` consecutive trials is rolled out autoregressively and the loss is the MSE against the RNN's own recorded state trajectory at each step, so this stage penalizes compounding error over the rollout, not just per-step error. Starts from a ridge solve (`sindy_ridge=True`) evaluated under the K-step rollout loss; falls back to SGD if ridge fails or produces a non-finite K-step loss (a ridge solve can be well-posed in isolation but unstable once rolled out — e.g. a self-coefficient that blows up over many steps).
 
 If `E > 1` (ensemble), Stage 2.2 re-computes state trajectories on the full (non-bootstrapped) dataset with per-ensemble-member targets before fitting, so all members converge toward a consensus.
-
-`sindy_reconditioning_epochs` is accepted by `fit_spice`/`SpiceEstimator` but not currently used by the Stage 2 code path described above — it is a leftover constructor parameter from an earlier design and has no effect.
 
 ### Custom Loss Functions
 
 A custom loss function can be passed via `loss_fn` to both `SpiceEstimator` and `fit_spice()`. It must accept `(prediction, target, **loss_fn_kwargs)` and return a scalar tensor.
 
-**Default: `cross_entropy_loss`** (`spice/resources/spice_training.py`):
+**Default: `cross_entropy_loss`** (`spice/resources/training/losses.py`):
 ```python
 def cross_entropy_loss(prediction: torch.Tensor, target: torch.Tensor, label_smoothing=0.) -> torch.Tensor:
     n_actions = target.shape[-1]
@@ -485,4 +419,8 @@ When designing `BaseModel` subclasses for SPICE, the architecture determines how
 - **Patience tuning**: Too low → premature elimination; too high → delayed sparsification
 - **`SpiceEstimator.predict()` returns a single array**, not `(rnn_pred, spice_pred)` — check `estimator.model.use_sindy` (or call `estimator.eval(use_sindy=...)` first) to control which mode it reflects
 - **`sindy_refit=False`** skips Stage 2 entirely — coefficients returned are whatever Stage 1's joint training converged to, not a dedicated refit
+- **Concept count `C` only ever shrinks** — concepts retire but never spawn, so a `C` chosen too small (default `n_terms // 2`) cannot be recovered from mid-run
+- **The two constraint projections must run after *every* optimizer step.** Skipping `normalize_concept_directions()` lets the optimizer defeat the L1 for free by inflating `V`; skipping `project_loadings()` leaves the loadings signed and never exactly zero
+- **`sindy_threshold_pruning` is on the loading scale**, not the raw-coefficient scale, because `V` rows are unit-norm and `Z` absorbs all magnitude. Thresholds tuned before the concept factorization do not carry over
+- **Presence is derived, not stored** — a unit's term support is the union of the supports of the concepts it holds. Report individual differences from **concept gates**, never from raw per-term supports
 - Some attributes exist but are currently inert (see [Known Inert Code](#known-inert-code)) — don't assume every constructor parameter or model attribute is on the active path; check before relying on it

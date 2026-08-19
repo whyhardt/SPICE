@@ -98,7 +98,7 @@ def prepare_spice(
     # Peek at checkpoint to infer dimensions
     ckpt = torch.load(path_model, map_location="cpu")
     first_module = next(iter(spice_config.library_setup))
-    coef_shape = ckpt["model"][f"sindy_coefficients.{first_module}"].shape
+    coef_shape = ckpt["model"][f"sindy_concept_loadings.{first_module}"].shape
     ensemble_size = coef_shape[0]
     n_participants_ckpt = coef_shape[1]
 

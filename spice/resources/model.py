@@ -3,7 +3,7 @@ import torch.nn as nn
 from typing import Optional, Tuple, Dict, Iterable, Callable, Union, List
 import numpy as np
 
-from .sindy_differentiable import compute_library_size, compute_polynomial_library, get_library_feature_names, get_library_term_degrees
+from .sindy_differentiable import compute_library_size, compute_polynomial_library, get_library_feature_names
 from .spice_utils import SpiceConfig, SpiceSignals
 
 # EnsembleGRUModule instances with different input_size share one dynamo cache.
@@ -246,16 +246,23 @@ class BaseModel(nn.Module):
         self.embedding_fusion = lambda *embeddings: torch.cat(embeddings, dim=-1)
         self.total_embedding_size = 0
 
-        # Differentiable SINDy coefficients
+        # Differentiable SINDy concepts. The per-participant coefficient vector is
+        # not a free parameter: it is factorized as A = Z @ V, where V is a
+        # population-level dictionary of concept directions (sparse, unit-norm rows)
+        # and Z holds each unit's non-negative loading on those concepts. A term is
+        # therefore only ever interpretable together with the other terms its
+        # concept owns, and a unit's support is a union of whole concepts rather
+        # than an arbitrary subset of terms.
         self.sindy_polynomial_degree = sindy_polynomial_degree
-        self.sindy_coefficients = nn.ParameterDict()
-        self.sindy_coefficients_presence = {}  # Binary masks to permanently zero out coefficients
-        self.sindy_coefficients_prior_mask = {}  # Theory-driven masks (e.g. binary^2=0); never reset by pruning
+        self.sindy_concept_directions = nn.ParameterDict()  # V: (C, T) -- shared across E, P, X
+        self.sindy_concept_loadings = nn.ParameterDict()  # Z: (E, P, X, C) -- non-negative
+        self.sindy_concept_support = {}  # (C, T) bool: which terms each concept owns
+        self.sindy_concept_gates = {}  # (E, P, X, C) bool: which concepts each unit has
+        self.sindy_term_prior_mask = {}  # (T,) bool: theory exclusions (e.g. binary^2=0), applied to V's columns
         self.sindy_candidate_terms = {}
-        self.sindy_degree_weights = {}  # Weights for coefficient penalty based on polynomial degree
-        self.sindy_pruning_patience_counters = {}  # Patience counters for thresholding
+        self.sindy_pruning_patience_counters = {}  # (E, P, X, C) patience for concept gates
+        self.sindy_support_patience_counters = {}  # (C, T) patience for concept supports
         self.sindy_specs = {}  # sindy-specific specifications for each module (e.g. include_bias, interaction_only, ...)
-        self.sindy_damping_raw = nn.ParameterDict()  # Per-module learnable damping: sigmoid(raw) -> gamma in (0,1)
         self.sindy_alpha = sindy_alpha
         self.sindy_norm = 1
         
@@ -403,12 +410,13 @@ class BaseModel(nn.Module):
         super().to(device=device)
         self.sindy_loss_reg = self.sindy_loss_reg.to(device)
         self.sindy_loss_fit = self.sindy_loss_fit.to(device)
-        # Move masks, weights, and patience counters to the correct device
-        for module_name in self.sindy_coefficients_presence:
-            self.sindy_coefficients_presence[module_name] = self.sindy_coefficients_presence[module_name].to(device)
-            self.sindy_coefficients_prior_mask[module_name] = self.sindy_coefficients_prior_mask[module_name].to(device)
-            self.sindy_degree_weights[module_name] = self.sindy_degree_weights[module_name].to(device)
+        # Move masks and patience counters to the correct device
+        for module_name in self.sindy_concept_gates:
+            self.sindy_concept_gates[module_name] = self.sindy_concept_gates[module_name].to(device)
+            self.sindy_concept_support[module_name] = self.sindy_concept_support[module_name].to(device)
+            self.sindy_term_prior_mask[module_name] = self.sindy_term_prior_mask[module_name].to(device)
             self.sindy_pruning_patience_counters[module_name] = self.sindy_pruning_patience_counters[module_name].to(device)
+            self.sindy_support_patience_counters[module_name] = self.sindy_support_patience_counters[module_name].to(device)
 
         return self
         
@@ -498,7 +506,7 @@ class BaseModel(nn.Module):
         self.sindy_specs[key_module]['polynomial_degree'] = polynomial_degree
         self.sindy_specs[key_module]['dt'] = dt
         self.sindy_specs[key_module]['within_trial_timesteps'] = within_trial_timesteps
-        self.setup_sindy_coefficients(key_module=key_module, polynomial_degree=polynomial_degree)
+        self.setup_sindy_concepts(key_module=key_module, polynomial_degree=polynomial_degree)
         
         # set name of each input variable which are then used in the library as features
         input_names = []
@@ -679,10 +687,39 @@ class BaseModel(nn.Module):
 
         return next_value  # [W, E, B, I]
     
-    def setup_sindy_coefficients(self, key_module: str, polynomial_degree: int = None):
+    def setup_sindy_concepts(self, key_module: str, polynomial_degree: int = None):
         """
-        Initialize learnable SINDy coefficients for each module.
-        Shape: (ensemble_size, n_participants, n_experiments, n_library_terms)
+        Initialize the concept factorization A = Z @ V for one module.
+
+        V (concept directions): (n_concepts, n_library_terms), shared across ensemble
+        members, participants and experiments; rows are unit-norm.
+        Z (concept loadings): (ensemble_size, n_participants, n_experiments, n_concepts),
+        constrained non-negative. Z is a binary gate mask times a magnitude, and the mask
+        starts all-open -- as does the support mask over terms. All sparsity comes from
+        the L1 prox and from pruning; none of it is seeded at initialization.
+
+        Concepts start with *full* support -- every concept may draw on every allowed
+        term -- because being multi-term is the entire point of a concept. Support only
+        ever shrinks, so whatever is unreachable at initialization stays unreachable:
+        seeding one term per concept would permanently confine the dictionary to
+        single-term concepts and collapse the model back to the per-term parametrization
+        it is meant to replace.
+
+        Directions are random unit-norm rather than near-zero. The unit-norm gauge is
+        what removes the multiplicative degeneracy Z @ V = (Z D)(D^-1 V), and a near-zero
+        V would simply be blown up by the first renormalization. The "start from almost
+        no dynamics" behaviour lives in Z, which starts small and strictly positive --
+        strictly, because a loading resting exactly at zero gets no gradient under the
+        non-negativity constraint and its concept would be dead from the first step.
+
+        Signs live in V, which is free and signed, so a decay-plus-drive mechanism such
+        as a Rescorla-Wagner update is a single concept (-1 Q, +1 r) carrying one loading
+        per participant, rather than two coefficients that happen to sum to one.
+
+        n_concepts defaults to n_terms // 2: deliberately undercomplete, since an
+        overcomplete dictionary is precisely where the factorization stops being
+        identifiable. Concepts can retire but never spawn, so this is a real
+        hyperparameter -- too small cannot be recovered from mid-run.
         """
 
         if polynomial_degree is None:
@@ -724,41 +761,250 @@ class BaseModel(nn.Module):
         # Compute library size
         n_library_terms = compute_library_size(n_total_features, polynomial_degree) - n_removed
 
-        # Initialize coefficients: (E, P, X, terms)
-        init_coeffs = torch.randn(self.ensemble_size, self.n_participants, self.n_experiments, n_library_terms) * 0.001
-        self.sindy_coefficients[key_module] = nn.Parameter(init_coeffs)
+        # Concept directions V: random unit-norm rows, (C, T)
+        n_concepts = max(1, n_library_terms // 2)
+        directions = torch.randn(n_concepts, n_library_terms, device=self.device)
+        directions /= directions.norm(dim=-1, keepdim=True).clamp(min=1e-12)
+        self.sindy_concept_directions[key_module] = nn.Parameter(directions)
 
-        # Initialize mask to all ones (all coefficients active)
-        self.sindy_coefficients_presence[key_module] = torch.ones(
-            self.ensemble_size, self.n_participants, self.n_experiments, n_library_terms,
+        # Concept loadings Z: (E, P, X, C), strictly positive so no concept starts dead
+        self.sindy_concept_loadings[key_module] = nn.Parameter(
+            torch.rand(self.ensemble_size, self.n_participants, self.n_experiments, n_concepts) * 1e-3 + 1e-4
+        )
+
+        # Concept support: full. Terms leave a concept only by pruning.
+        self.sindy_concept_support[key_module] = torch.ones(
+            n_concepts, n_library_terms, dtype=torch.bool, device=self.device
+        )
+
+        # Concept gates: which concepts each unit has (all open initially)
+        self.sindy_concept_gates[key_module] = torch.ones(
+            self.ensemble_size, self.n_participants, self.n_experiments, n_concepts,
             dtype=torch.bool, device=self.device
         )
 
-        # Initialize prior mask (theory-driven, never reset by pruning).
-        # Always re-initialize here so the shape matches the current library;
-        # preprocess_coefficients() runs after all setup_module() calls and
-        # will set the correct mask entries afterward.
-        self.sindy_coefficients_prior_mask[key_module] = torch.ones(
-            self.ensemble_size, self.n_participants, self.n_experiments, n_library_terms,
-            dtype=torch.bool, device=self.device
+        # Term-level prior mask (theory-driven, never revived by pruning). Uniform
+        # across units by construction -- every setter in the codebase writes it per
+        # term index -- so it lives in T-space and applies to V's columns.
+        # preprocess_coefficients() runs after all setup_module() calls and sets the
+        # correct entries afterward.
+        self.sindy_term_prior_mask[key_module] = torch.ones(
+            n_library_terms, dtype=torch.bool, device=self.device
         )
 
-        # Compute degree-based weights for coefficient penalty
-        term_degrees = get_library_term_degrees(self.sindy_candidate_terms[key_module])
-        degree_weights = torch.tensor([max(1,d*2) for d in term_degrees], dtype=torch.float32, device=self.device)
-        self.sindy_degree_weights[key_module] = degree_weights
-
-        # Initialize per-module damping: sigmoid(5.0) ≈ 0.993 (near no-damping)
-        self.sindy_damping_raw[key_module] = nn.Parameter(
-            torch.full((self.ensemble_size, self.n_participants, self.n_experiments), 5.0)
-        )
-
-        # Initialize patience counters to zero
+        # Patience counters: one per gate, one per support entry
         self.sindy_pruning_patience_counters[key_module] = torch.zeros(
-            self.ensemble_size, self.n_participants, self.n_experiments, n_library_terms,
+            self.ensemble_size, self.n_participants, self.n_experiments, n_concepts,
             dtype=torch.int32, device=self.device
         )
-    
+        self.sindy_support_patience_counters[key_module] = torch.zeros(
+            n_concepts, n_library_terms, dtype=torch.int32, device=self.device
+        )
+
+    @torch.no_grad()
+    def reset_concepts(self, key_module: Optional[str] = None) -> None:
+        """Re-draw a module's factorization from the initial distribution.
+
+        Used when a stage wants to rediscover structure from scratch (stage 2.1) rather
+        than inherit whatever stage 1 converged to. Concept count is never resized --
+        retired concepts are zeroed rows, so re-drawing simply refills them.
+        """
+        modules = self.get_modules() if key_module is None else [key_module]
+        for module in modules:
+            directions = torch.randn_like(self.sindy_concept_directions[module].data)
+            directions /= directions.norm(dim=-1, keepdim=True).clamp(min=1e-12)
+            self.sindy_concept_directions[module].data.copy_(directions)
+            self.sindy_concept_support[module] = torch.ones_like(self.sindy_concept_support[module])
+            self.sindy_concept_support[module] &= self.sindy_term_prior_mask[module].unsqueeze(0)
+            self.sindy_concept_gates[module] = torch.ones_like(self.sindy_concept_gates[module])
+            self.sindy_concept_gates[module] &= self.sindy_concept_support[module].any(dim=-1)
+            self.sindy_pruning_patience_counters[module].zero_()
+            self.sindy_support_patience_counters[module].zero_()
+            self.reinit_loadings(module)
+
+    @torch.no_grad()
+    def reinit_loadings(self, key_module: Optional[str] = None, scale: float = 1e-3) -> None:
+        """Re-draw loadings small and strictly positive, within the open gates.
+
+        Strictly positive matters: a loading sitting exactly at zero receives no
+        gradient under the non-negativity constraint, and its concept would be dead for
+        the rest of training.
+        """
+        modules = self.get_modules() if key_module is None else [key_module]
+        for module in modules:
+            loadings = self.sindy_concept_loadings[module]
+            fresh = torch.rand_like(loadings) * scale + 1e-4
+            loadings.data.copy_(fresh * self.sindy_concept_gates[module].float())
+
+    def effective_directions(self, key_module: str) -> torch.Tensor:
+        """(C, T) concept directions with support and theory exclusions applied."""
+        mask = self.sindy_concept_support[key_module] & self.sindy_term_prior_mask[key_module].unsqueeze(0)
+        return self.sindy_concept_directions[key_module] * mask.float()
+
+    def effective_loadings(self, key_module: str) -> torch.Tensor:
+        """(E, P, X, C) non-negative loadings with closed gates zeroed."""
+        loadings = self.sindy_concept_loadings[key_module].clamp(min=0.0)
+        return loadings * self.sindy_concept_gates[key_module].float()
+
+    def compose_coefficients(self, key_module: str) -> torch.Tensor:
+        """(E, P, X, T) per-unit coefficient vectors implied by the factorization."""
+        return torch.einsum(
+            'epxc,ct->epxt',
+            self.effective_loadings(key_module),
+            self.effective_directions(key_module),
+        )
+
+    def derived_presence(self, key_module: str) -> torch.Tensor:
+        """(E, P, X, T) bool: a term is present for a unit iff some open concept owns it.
+
+        This replaces the free per-unit presence mask. A unit's support is now a union
+        of whole concepts, which is what stops the independent per-unit topk from
+        manufacturing a distinct support for every participant.
+        """
+        support = self.sindy_concept_support[key_module] & self.sindy_term_prior_mask[key_module].unsqueeze(0)
+        return torch.einsum(
+            'epxc,ct->epxt',
+            self.sindy_concept_gates[key_module].float(),
+            support.float(),
+        ) > 0
+
+    @torch.no_grad()
+    def normalize_concept_directions(self, key_module: Optional[str] = None) -> None:
+        """Fix the multiplicative gauge: unit-norm V rows, inverse scale into Z.
+
+        Z @ V is invariant under (Z D, D^-1 V) for any positive diagonal D, so without
+        this the cheapest way to shrink an L1 penalty on Z is to inflate V at no cost to
+        the fit, and the sparsity pressure silently evaporates. Call after every
+        optimizer step while a penalty is pushing on Z.
+        """
+        modules = self.get_modules() if key_module is None else [key_module]
+        for module in modules:
+            directions = self.sindy_concept_directions[module]
+            norms = directions.data.norm(dim=-1, keepdim=True)  # (C, 1)
+            # Dead concepts (all-zero rows) have nothing to normalize; leave them be.
+            scale = torch.where(norms > 1e-12, norms, torch.ones_like(norms))
+            directions.data /= scale
+            self.sindy_concept_loadings[module].data *= scale.squeeze(-1)
+
+    @torch.no_grad()
+    def project_loadings(self, lr: float = 0.0, sindy_alpha: float = 0.0,
+                         key_module: Optional[str] = None) -> None:
+        """Proximal step for the non-negative L1 on Z: z <- relu(z - lr * alpha).
+
+        Non-negativity, L1 shrinkage and genuine exact zeros in one operation. An L1
+        term in the loss under Adam never produces an exact zero, so sparsity would
+        otherwise have to come entirely from hard thresholding. Note the effective
+        threshold scales with the learning rate, so sindy_alpha is not comparable
+        across different LR schedules.
+        """
+        modules = self.get_modules() if key_module is None else [key_module]
+        shrink = float(lr) * float(sindy_alpha)
+        for module in modules:
+            loadings = self.sindy_concept_loadings[module]
+            if shrink > 0:
+                loadings.data = (loadings.data - shrink).clamp(min=0.0)
+            else:
+                loadings.data.clamp_(min=0.0)
+            loadings.data *= self.sindy_concept_gates[module].float()
+
+    @torch.no_grad()
+    def set_concepts(self, key_module: str, directions: torch.Tensor, loadings: torch.Tensor) -> None:
+        """Install an exact concept dictionary, resizing n_concepts to match.
+
+        Unlike set_coefficients_from_dense(), which projects onto whatever dictionary is
+        already there, this replaces the dictionary outright. Intended for generative
+        ground-truth models, where the mechanisms are known and must be represented
+        exactly rather than approximated -- a projection onto a random undercomplete
+        dictionary would silently corrupt any parameter-recovery comparison.
+
+        Args:
+            directions: (C, T) concept directions. Rows are normalized here.
+            loadings: (E, P, X, C) non-negative loadings.
+        """
+        directions = directions.to(self.device).float()
+        loadings = loadings.to(self.device).float()
+        if (loadings < 0).any():
+            raise ValueError("Concept loadings must be non-negative.")
+
+        norms = directions.norm(dim=-1, keepdim=True)
+        scale = torch.where(norms > 1e-12, norms, torch.ones_like(norms))
+        directions = directions / scale
+        loadings = loadings * scale.squeeze(-1)
+
+        n_concepts, n_terms = directions.shape
+        expected = self.sindy_concept_directions[key_module].shape[-1]
+        if n_terms != expected:
+            raise ValueError(f"{key_module}: directions have {n_terms} terms, expected {expected}.")
+
+        self.sindy_concept_directions[key_module] = nn.Parameter(directions)
+        self.sindy_concept_loadings[key_module] = nn.Parameter(loadings)
+        self.sindy_concept_support[key_module] = (directions != 0)
+        self.sindy_concept_gates[key_module] = (loadings != 0)
+        self.sindy_pruning_patience_counters[key_module] = torch.zeros(
+            *loadings.shape, dtype=torch.int32, device=self.device)
+        self.sindy_support_patience_counters[key_module] = torch.zeros(
+            n_concepts, n_terms, dtype=torch.int32, device=self.device)
+
+    @torch.no_grad()
+    def concepts_from_dense(self, key_module: str, coefficients: torch.Tensor) -> None:
+        """Install an exact dictionary reproducing a dense (E, P, X, T) coefficient tensor.
+
+        Builds one concept per (term, sign) that is actually used, which represents any
+        signed coefficient tensor exactly under the non-negativity constraint on the
+        loadings. Terms nobody uses get no concept, so C stays as small as the ground
+        truth allows.
+        """
+        coefficients = coefficients.to(self.device).float()
+        n_terms = coefficients.shape[-1]
+
+        used_positive = (coefficients > 0).any(dim=0).any(dim=0).any(dim=0)
+        used_negative = (coefficients < 0).any(dim=0).any(dim=0).any(dim=0)
+
+        rows, columns = [], []
+        for index_term in range(n_terms):
+            if used_positive[index_term]:
+                rows.append(torch.eye(n_terms, device=self.device)[index_term])
+                columns.append(coefficients[..., index_term].clamp(min=0.0))
+            if used_negative[index_term]:
+                rows.append(-torch.eye(n_terms, device=self.device)[index_term])
+                columns.append((-coefficients[..., index_term]).clamp(min=0.0))
+
+        if not rows:  # nothing used: keep a single inert concept
+            rows = [torch.zeros(n_terms, device=self.device)]
+            columns = [torch.zeros(coefficients.shape[:-1], device=self.device)]
+
+        self.set_concepts(key_module, torch.stack(rows, dim=0), torch.stack(columns, dim=-1))
+
+    @torch.no_grad()
+    def set_coefficients_from_dense(self, key_module: str, coefficients: torch.Tensor,
+                                    n_iter: int = 200) -> None:
+        """Project a dense (E, P, X, T) coefficient tensor onto the concept dictionary.
+
+        The target generally lies outside the span of the concepts -- the dictionary is
+        undercomplete and the loadings are non-negative -- so this is a non-negative
+        least-squares fit, solved by projected gradient descent. It is a projection, not
+        an assignment: the result reproduces the target only to the extent the current
+        dictionary can express it.
+
+        Used by the ridge initializer and by anything holding dense coefficients that
+        need expressing in concept space.
+        """
+        coefficients = coefficients.to(self.sindy_concept_loadings[key_module].dtype)
+
+        directions = self.effective_directions(key_module)  # (C, T)
+        gram = directions @ directions.T  # (C, C)
+        cross = torch.einsum('epxt,ct->epxc', coefficients, directions)
+        # Lipschitz constant of the quadratic; guards the fixed step size.
+        step = 1.0 / (torch.linalg.matrix_norm(gram, ord=2).clamp(min=1e-12))
+        loadings = self.sindy_concept_loadings[key_module].data.clamp(min=0.0)
+        for _ in range(n_iter):
+            gradient = torch.einsum('epxc,cd->epxd', loadings, gram) - cross
+            loadings = (loadings - step * gradient).clamp(min=0.0)
+        self.sindy_concept_loadings[key_module].data.copy_(loadings)
+
+        self.project_loadings(key_module=key_module)
+
+
     def forward_sindy(self, h_current: torch.Tensor, key_module: str, participant_ids: torch.Tensor, experiment_ids: torch.Tensor, controls: torch.Tensor, polynomial_degree: int):
         """
         Forward pass using SINDy model.
@@ -777,13 +1023,12 @@ class BaseModel(nn.Module):
         E = self.ensemble_size
         B = participant_ids.shape[-1]
 
-        # Advanced indexing: coefficients (E, P, X, terms) -> (E, B, terms)
+        # Advanced indexing: loadings (E, P, X, C) -> (E, B, C), then compose against the
+        # population-level concept directions. Composing back into term space here keeps
+        # the library einsum below -- and every downstream consumer -- unchanged.
         E_idx = torch.arange(E, device=self.device).unsqueeze(1)  # (E, 1)
-        sindy_coeffs = self.sindy_coefficients[key_module][E_idx, participant_ids, experiment_ids]  # (E, B, terms)
-        mask = self.sindy_coefficients_presence[key_module][E_idx, participant_ids, experiment_ids]  # (E, B, terms)
-
-        # Apply sparsity mask
-        sindy_coeffs = sindy_coeffs * mask.float()
+        loadings = self.effective_loadings(key_module)[E_idx, participant_ids, experiment_ids]  # (E, B, C)
+        sindy_coeffs = loadings @ self.effective_directions(key_module)  # (E, B, terms)
 
         # Compute polynomial library — fold E*B for compatibility with compute_polynomial_library
         W = h_current.shape[0]
@@ -801,12 +1046,7 @@ class BaseModel(nn.Module):
 
         library = library_folded.reshape(W, E, B, I, -1)  # (W, E, B, I, terms)
 
-        # Learnable damping: gamma in (0, 1) per module/ensemble/participant/experiment
-        # gamma = torch.sigmoid(self.sindy_damping_raw[key_module][E_idx, participant_ids, experiment_ids])  # (E, B)
-        # gamma = gamma.unsqueeze(0).unsqueeze(-1)  # (1, E, B, 1) for broadcasting with (W, E, B, I)
-
         # Compute predictions: library (W, E, B, I, C) @ coeffs (E, B, C) -> (W, E, B, I)
-        # h_next_sindy = gamma * h_current + torch.einsum('webic,ebc->webi', library, sindy_coeffs)
         dt = self.sindy_specs[key_module].get('dt', 1.)
         h_next_sindy = h_current + dt * torch.einsum('webic,ebc->webi', library, sindy_coeffs)
 
@@ -847,7 +1087,7 @@ class BaseModel(nn.Module):
             Tuple of (sindy_loss_reg, sindy_loss_fit) scalar tensors
         """
 
-        if module_name not in self.sindy_coefficients:
+        if module_name not in self.sindy_concept_directions:
             zero = torch.tensor(0.0, device=self.device)
             return zero, zero
 
@@ -907,7 +1147,7 @@ class BaseModel(nn.Module):
         architectures with large per-sample state (e.g. SpiceDDM's evidence_pdf grid).
 
         Args:
-            key_module: Module name (key in sindy_coefficients).
+            key_module: Module name.
             participant_ids: (E, B) participant indices.
             experiment_ids: (E, B) experiment indices.
             h_next: (W, E, B, I) RNN target states.
@@ -917,7 +1157,7 @@ class BaseModel(nn.Module):
         W, E, B, I = h_next.shape
         P = self.n_participants
         X = self.n_experiments
-        T = self.sindy_coefficients[key_module].shape[-1]
+        T = self.sindy_concept_directions[key_module].shape[-1]
 
         if h_current is None:
             h_current = torch.zeros_like(h_next)
@@ -936,10 +1176,11 @@ class BaseModel(nn.Module):
         dt = self.sindy_specs[key_module].get('dt', 1.)
         target = ((h_next - h_current) / dt).double()  # (W, E, B, I) -- per-unit-time rate, not per-step delta
 
-        # Apply presence mask: zero out pruned library columns per (E, P, X) group
-        # mask: (E, P, X, T) -> gather per-sample mask via participant/experiment ids
+        # Apply presence mask: zero out pruned library columns per (E, P, X) group.
+        # Presence is derived from the factorization -- a term is available to a unit
+        # iff one of its open concepts owns it.
         E_idx = torch.arange(E, device=self.device).unsqueeze(1)  # (E, 1)
-        sample_mask = self.sindy_coefficients_presence[key_module][E_idx, participant_ids, experiment_ids]  # (E, B, T)
+        sample_mask = self.derived_presence(key_module)[E_idx, participant_ids, experiment_ids]  # (E, B, T)
         library = library * sample_mask.float().unsqueeze(0).unsqueeze(3)  # (1, E, B, 1, T) -> broadcasts to (W, E, B, I, T)
 
         # Build group index for each (ensemble, batch) sample -> (participant, experiment) pair
@@ -966,8 +1207,7 @@ class BaseModel(nn.Module):
         # RSS(c) = c^T A^T A c - 2 c^T A^T b + b^T b is computable in closed form
         # from the accumulators alone, with no forward pass. sindy_ridge_finalize
         # ignores both -- they exist for consumers that need absolute (not just
-        # relative) residuals, e.g. the noise-scale estimate a Gaussian BIC needs
-        # (see spice/resources/sindy_concepts.py).
+        # relative) residuals, e.g. the noise-scale estimate a Gaussian BIC needs.
         btb_samples = (target ** 2).sum(dim=2).squeeze(-1)  # (E, B)
         n_rows_samples = torch.full_like(btb_samples, float(library.shape[2]))
 
@@ -992,11 +1232,17 @@ class BaseModel(nn.Module):
         """Solve the ridge-regularized normal equations accumulated via sindy_ridge_accumulate.
 
         Adds the ridge penalty to the accumulated A^T A, solves per (participant, experiment)
-        group, and writes the result into self.sindy_coefficients[key_module]. Call once per
-        module after all chunks of a solve have been accumulated.
+        group for a dense coefficient vector, then projects that solution into the concept
+        factorization via set_coefficients_from_dense(). Call once per module after all
+        chunks of a solve have been accumulated.
+
+        The solve itself stays in dense term space because the normal equations are only
+        quadratic there; the result is then projected onto the concept dictionary as a
+        non-negative least-squares fit, so it initializes the loadings rather than
+        reproducing the dense solution exactly.
 
         Args:
-            key_module: Module name (key in sindy_coefficients).
+            key_module: Module name.
             ridge_alpha: Ridge penalty strength. Defaults to self.sindy_alpha.
 
         Returns:
@@ -1009,7 +1255,7 @@ class BaseModel(nn.Module):
 
         P = self.n_participants
         X = self.n_experiments
-        T = self.sindy_coefficients[key_module].shape[-1]
+        T = self.sindy_concept_directions[key_module].shape[-1]
         E = accum['AtA'].shape[0]
         alpha = ridge_alpha if ridge_alpha is not None else self.sindy_alpha
 
@@ -1017,165 +1263,262 @@ class BaseModel(nn.Module):
         Atb_accum = accum['Atb'].reshape(E, P, X, T, 1)
         has_data = accum['count'].reshape(E, P, X) > 0  # (E, P, X)
 
-        # Add ridge penalty: alpha * diag(degree_weights) + eps*I for numerical stability
-        penalty_diag = torch.diag(alpha * self.sindy_degree_weights[key_module]).double()  # (T, T)
-        penalty_diag += 1e-4 * torch.eye(T, device=AtA_accum.device, dtype=AtA_accum.dtype)
+        # Add ridge penalty: alpha*I + eps*I for numerical stability
+        penalty_diag = (alpha + 1e-4) * torch.eye(T, device=AtA_accum.device, dtype=AtA_accum.dtype)
         AtA_accum = AtA_accum + penalty_diag  # broadcasts over (E, P, X)
 
         # Solve; return False on failure (singular matrix, etc.)
         try:
+            dense = torch.zeros(E, P, X, T, device=AtA_accum.device, dtype=AtA_accum.dtype)
             if has_data.all():
-                coefficients = torch.linalg.solve(AtA_accum, Atb_accum).squeeze(-1)
-                self.sindy_coefficients[key_module].data.copy_(coefficients)
+                dense = torch.linalg.solve(AtA_accum, Atb_accum).squeeze(-1)
             else:
-                coefficients = torch.linalg.solve(AtA_accum[has_data], Atb_accum[has_data]).squeeze(-1)
-                self.sindy_coefficients[key_module].data[has_data] = coefficients.to(self.sindy_coefficients[key_module].dtype)
+                dense[has_data] = torch.linalg.solve(AtA_accum[has_data], Atb_accum[has_data]).squeeze(-1)
         except torch.linalg.LinAlgError:
             return False
 
-        # Zero out pruned coefficients explicitly
-        self.sindy_coefficients[key_module].data *= self.sindy_coefficients_presence[key_module].float()
+        # Terms excluded by theory never enter the factorization
+        dense = dense * self.sindy_term_prior_mask[key_module].to(dense.dtype)
+        self.set_coefficients_from_dense(key_module, dense)
 
         return True
 
 
-    def sindy_coefficient_pruning(self, patience: int = 1, n_terms_pruning: int = None):
-        """
-        Apply hard thresholding to SINDy coefficients with patience counter.
-        A coefficient is only thresholded out if it has been below threshold for 'patience' consecutive calls.
-
-        Args:
-            threshold (float): Base threshold value
-            n_terms_pruning (int, optional): Number of smallest terms below threshold to be pruned across all modules
-                                        for each participant and ensemble member. If None, all terms below threshold are cut.
-            base_threshold (float): Additive base threshold (default: 0.0)
-            patience (int): Number of consecutive epochs a coefficient must be below threshold before being cut (default: 1)
-        """
-        
+    def concept_gate_patience(self, threshold: float):
+        """Advance the patience counter of every open gate whose loading is below threshold."""
         module_list = list(self.submodules_rnn.keys())
-        
-        # Collect all coefficients, masks, and patience counters across modules
-        # Shape: [ensemble, n_participants, n_experiments, total_library_terms]
-        all_coeffs_abs = torch.cat([self.sindy_coefficients[m].abs() for m in module_list], dim=-1)
-        all_masks = torch.cat([self.sindy_coefficients_presence[m] for m in module_list], dim=-1)
+
+        all_loadings = torch.cat([self.effective_loadings(m).detach() for m in module_list], dim=-1)
+        all_gates = torch.cat([self.sindy_concept_gates[m] for m in module_list], dim=-1)
         all_patience = torch.cat([self.sindy_pruning_patience_counters[m] for m in module_list], dim=-1)
 
-        # Identify candidates: active coefficients that have exceeded patience (excluding protected terms)
-        is_candidate = (all_patience >= patience) & (all_masks == 1)
-
-        # For n_terms_pruning, only consider coefficients that exceed patience
-        temp_coeffs = all_coeffs_abs.clone()
-        temp_coeffs[~is_candidate] = torch.inf
-
-        # Find k smallest per [participant, ensemble]
-        n_terms_pruning = all_coeffs_abs.shape[-1] if n_terms_pruning is None else n_terms_pruning
-        _, indices = torch.topk(temp_coeffs, min(n_terms_pruning, is_candidate.sum().item()), dim=-1, largest=False)
-        # Shape: [n_participants, n_ensemble, k]
-
-        # Create pruning mask
-        pruning_mask = torch.zeros_like(all_coeffs_abs, dtype=torch.bool)
-        pruning_mask.scatter_(dim=-1, index=indices, src=torch.ones_like(indices, dtype=torch.bool))
-        pruning_mask &= is_candidate  # Safety: only cut actual candidates
-
-        # Split back to modules and update
-        start_idx = 0
-        with torch.no_grad():
-            for module in module_list:
-                n_terms = self.sindy_coefficients[module].shape[-1]
-                keep_mask = ~pruning_mask[..., start_idx:start_idx + n_terms]
-                # Update the permanent mask
-                self.sindy_coefficients_presence[module] &= keep_mask
-                # Zero out the coefficients
-                self.sindy_coefficients[module] *= keep_mask.float()
-                # Reset patience counters for thresholded coefficients
-                self.sindy_pruning_patience_counters[module] *= keep_mask.int()
-
-                start_idx += n_terms
-                
-    def sindy_coefficient_patience(self, threshold: float):
-        
-        module_list = list(self.submodules_rnn.keys())
-        
-        # Collect all coefficients, masks, and patience counters across modules
-        # Shape: [ensemble, n_participants, n_experiments, total_library_terms]
-        all_coeffs_abs = torch.cat([self.sindy_coefficients[m].abs() for m in module_list], dim=-1)
-        all_masks = torch.cat([self.sindy_coefficients_presence[m] for m in module_list], dim=-1)
-        all_patience = torch.cat([self.sindy_pruning_patience_counters[m] for m in module_list], dim=-1)
-
-        # Update patience counters for all coefficients (excluding protected terms)
-        below_threshold = (all_coeffs_abs < threshold) & (all_masks == 1)
+        below_threshold = (all_loadings < threshold) & all_gates
         all_patience = torch.where(
             below_threshold,
-            all_patience + 1,  # increase patience counter by one if below threshold 
-            torch.zeros_like(all_patience)  # Reset to 0 if above threshold
+            all_patience + 1,
+            torch.zeros_like(all_patience),
         )
-        
-        # Split back to modules and update patience counters for each module
+
         start_idx = 0
         for module in module_list:
-            n_terms = self.sindy_coefficients[module].shape[-1]
-            self.sindy_pruning_patience_counters[module] = all_patience[..., start_idx:start_idx + n_terms]
-            start_idx += n_terms
-            
-    def count_sindy_coefficients(self) -> torch.Tensor:
-        """Returns count of active coefficients per (ensemble, participant, experiment)."""
-        coefficients = torch.zeros(self.n_participants, self.n_experiments, device=self.device)
-        sindy_coefs = self.get_sindy_coefficients(aggregate=True)
+            n_concepts = self.sindy_concept_gates[module].shape[-1]
+            self.sindy_pruning_patience_counters[module] = all_patience[..., start_idx:start_idx + n_concepts]
+            start_idx += n_concepts
+
+    def concept_support_patience(self, threshold: float):
+        """Advance the patience counter of every support entry whose |V| is below threshold."""
         for module in self.submodules_rnn:
-            coefficients += (sindy_coefs[module] != 0).sum(dim=-1)
-            if self.sindy_specs[module]['include_state']:
-                index_state = 1 if self.sindy_specs[module]['include_bias'] else 0
-                index_state_not_in_model = torch.where(torch.logical_and(sindy_coefs[module][..., index_state] < -0.95, sindy_coefs[module][..., index_state] > -1.05))[0]
-                coefficients[index_state_not_in_model] -= 1
-        return coefficients
+            directions = self.sindy_concept_directions[module].detach().abs()
+            support = self.sindy_concept_support[module]
+            counters = self.sindy_support_patience_counters[module]
+            below_threshold = (directions < threshold) & support
+            self.sindy_support_patience_counters[module] = torch.where(
+                below_threshold,
+                counters + 1,
+                torch.zeros_like(counters),
+            )
 
-    def compute_weighted_coefficient_penalty(self, sindy_alpha: float) -> torch.Tensor:
+    @torch.no_grad()
+    def prune_concept_gates(self, patience: int = 1, n_concepts_pruning: int = None):
+        """Close the weakest concept gates, per unit (member x participant x experiment).
+
+        This is the per-participant half of pruning: it decides only *which concepts a
+        unit has*, never which terms exist. Term-level structure is a population decision
+        made by prune_concept_support(), so an independent topk here can no longer
+        manufacture a distinct term support for every participant.
         """
-        Compute weighted coefficient penalty on SINDy coefficients based on polynomial degree.
-        Each term is penalized according to its degree: d=0 -> 1*coeff^2, d=1 -> 2*coeff^2, d=2 -> 3*coeff^2, etc.
+        module_list = list(self.submodules_rnn.keys())
 
-        Args:
-            sindy_alpha: Base coefficient regularization weight
-            norm: Norm type (1 for L1, 2 for L2)
+        all_loadings = torch.cat([self.effective_loadings(m).detach() for m in module_list], dim=-1)
+        all_gates = torch.cat([self.sindy_concept_gates[m] for m in module_list], dim=-1)
+        all_patience = torch.cat([self.sindy_pruning_patience_counters[m] for m in module_list], dim=-1)
+
+        is_candidate = (all_patience >= patience) & all_gates
+        if not is_candidate.any():
+            return
+
+        scores = all_loadings.clone()
+        scores[~is_candidate] = torch.inf
+
+        n_concepts_pruning = all_loadings.shape[-1] if n_concepts_pruning is None else n_concepts_pruning
+        k = min(n_concepts_pruning, int(is_candidate.sum().item()))
+        _, indices = torch.topk(scores, k, dim=-1, largest=False)
+
+        pruning_mask = torch.zeros_like(all_gates)
+        pruning_mask.scatter_(dim=-1, index=indices, src=torch.ones_like(indices, dtype=torch.bool))
+        pruning_mask &= is_candidate  # Safety: only close actual candidates
+
+        start_idx = 0
+        for module in module_list:
+            n_concepts = self.sindy_concept_gates[module].shape[-1]
+            keep_mask = ~pruning_mask[..., start_idx:start_idx + n_concepts]
+            self.sindy_concept_gates[module] &= keep_mask
+            self.sindy_concept_loadings[module].data *= keep_mask.float()
+            self.sindy_pruning_patience_counters[module] *= keep_mask.int()
+            start_idx += n_concepts
+
+        for module in module_list:
+            self.retire_dead_concepts(module)
+
+    @torch.no_grad()
+    def prune_concept_support(self, patience: int = 1, n_terms_pruning: int = None):
+        """Drop the weakest terms out of concept directions -- a population-level decision.
+
+        Runs per module over the (C, T) direction matrix, so a term leaves a concept for
+        every participant at once and term support can no longer fragment across units.
+        Directions are renormalized afterwards and the anchor condition re-established.
+        """
+        for module in self.submodules_rnn:
+            directions = self.sindy_concept_directions[module]
+            support = self.sindy_concept_support[module]
+            counters = self.sindy_support_patience_counters[module]
+
+            is_candidate = (counters >= patience) & support
+            if not is_candidate.any():
+                continue
+
+            scores = directions.data.abs().clone()
+            scores[~is_candidate] = torch.inf
+
+            flat = scores.reshape(-1)
+            budget = flat.numel() if n_terms_pruning is None else n_terms_pruning
+            k = min(budget, int(is_candidate.sum().item()))
+            _, indices = torch.topk(flat, k, largest=False)
+
+            pruning_mask = torch.zeros_like(flat, dtype=torch.bool)
+            pruning_mask.scatter_(0, indices, torch.ones_like(indices, dtype=torch.bool))
+            pruning_mask = pruning_mask.reshape(scores.shape) & is_candidate
+
+            keep_mask = ~pruning_mask
+            self.sindy_concept_support[module] &= keep_mask
+            directions.data *= keep_mask.float()
+            self.sindy_support_patience_counters[module] *= keep_mask.int()
+
+            self.normalize_concept_directions(module)
+            self.retire_dead_concepts(module)
+
+    @torch.no_grad()
+    def retire_dead_concepts(self, key_module: str) -> int:
+        """Zero out concepts that no unit loads on, or that own no terms.
+
+        This is the only way C ever falls: a concept no participant loads on carries no
+        information, and leaving it in place would let it drift and reappear later.
+        """
+        support = self.sindy_concept_support[key_module]
+        gates = self.sindy_concept_gates[key_module]
+
+        alive = gates.any(dim=0).any(dim=0).any(dim=0) & support.any(dim=-1)  # (C,)
+        dead = ~alive
+        n_dead = int(dead.sum().item())
+        if n_dead == 0:
+            return 0
+
+        self.sindy_concept_support[key_module][dead] = False
+        self.sindy_concept_gates[key_module][..., dead] = False
+        self.sindy_concept_directions[key_module].data[dead] = 0.0
+        self.sindy_concept_loadings[key_module].data[..., dead] = 0.0
+        self.sindy_support_patience_counters[key_module][dead] = 0
+        self.sindy_pruning_patience_counters[key_module][..., dead] = 0
+        return n_dead
+
+    @torch.no_grad()
+    def enforce_anchor_condition(self, key_module: str) -> int:
+        """Retire any concept that owns no term exclusively.
+
+        Call this **once, after structure discovery has converged** -- not on every
+        pruning event. Supports start full and shrink, so early in the search no concept
+        has an exclusive term and running this then would retire the whole dictionary on
+        the first pass. The anchor condition is an identifiability requirement on the
+        *final* dictionary, not an invariant to maintain during the search.
+
+        Overlapping supports are deliberately allowed -- a term genuinely can belong to
+        two mechanisms, and the shared coefficient then becomes a prediction (a_shared =
+        z_1 + z_2) rather than a free parameter. What identifies that decomposition is
+        that each concept keeps at least one term no other concept covers. Without such
+        an anchor a concept can be mixed into the others without changing the fit, so the
+        split stops asserting anything; the classic example is one concept's support
+        nesting inside another's.
+
+        A concept that loses its last exclusive term is retired rather than merged: by
+        construction its direction lies in the span of the supports that remain, so the
+        surviving concepts can absorb it and the optimizer re-fits it away.
+        """
+        n_retired = 0
+        while True:
+            support = self.sindy_concept_support[key_module]  # (C, T)
+            gates = self.sindy_concept_gates[key_module]
+            alive = gates.any(dim=0).any(dim=0).any(dim=0) & support.any(dim=-1)  # (C,)
+            if not alive.any():
+                break
+
+            active = support & alive.unsqueeze(-1)
+            # A term is exclusive to concept c iff no other live concept covers it.
+            covered_count = active.sum(dim=0, keepdim=True)  # (1, T)
+            exclusive = active & (covered_count == 1)
+            anchorless = alive & ~exclusive.any(dim=-1)
+
+            if not anchorless.any():
+                break
+
+            # Retire the smallest offender first; retiring one concept can hand another
+            # an exclusive term, so re-evaluate rather than dropping them all at once.
+            sizes = torch.where(anchorless, active.sum(dim=-1), torch.full_like(active.sum(dim=-1), 2 ** 30))
+            victim = int(torch.argmin(sizes).item())
+
+            self.sindy_concept_support[key_module][victim] = False
+            self.sindy_concept_gates[key_module][..., victim] = False
+            self.sindy_concept_directions[key_module].data[victim] = 0.0
+            self.sindy_concept_loadings[key_module].data[..., victim] = 0.0
+            n_retired += 1
+
+        return n_retired
+
+    def count_spice_parameters(self) -> Dict[str, torch.Tensor]:
+        """Degrees of freedom of the fitted model, split by axis.
 
         Returns:
-            Weighted coefficient penalty (scalar tensor)
-        """
+            'loadings': (P, X) open concept gates per participant -- the per-participant
+                degrees of freedom.
+            'directions': scalar -- free values in the shared concept dictionary summed
+                over modules. Each live concept costs one fewer than its support size,
+                since the unit-norm constraint removes one degree of freedom.
 
+        The two are deliberately never summed. Merging them amortizes population-level
+        structure over participants, which makes pooling look nearly free and biases any
+        BIC-driven search toward pooling everything -- whereas the claim SPICE makes is
+        about the *form* of the equations, not about population variance in a single
+        coefficient. Report them as separate numbers.
+        """
+        loadings = torch.zeros(self.n_participants, self.n_experiments, device=self.device)
+        directions = torch.zeros((), device=self.device)
+
+        for module in self.submodules_rnn:
+            gates = self.sindy_concept_gates[module]  # (E, P, X, C)
+            support = self.sindy_concept_support[module] & self.sindy_term_prior_mask[module].unsqueeze(0)
+
+            # A concept counts for a unit if any ensemble member holds it open
+            loadings += gates.any(dim=0).float().sum(dim=-1)
+
+            alive = gates.any(dim=0).any(dim=0).any(dim=0) & support.any(dim=-1)  # (C,)
+            support_sizes = support.sum(dim=-1)  # (C,)
+            directions += torch.where(alive, (support_sizes - 1).clamp(min=0), torch.zeros_like(support_sizes)).sum()
+
+        return {'loadings': loadings, 'directions': directions}
+
+    def compute_constants_penalty(self, sindy_alpha: float) -> torch.Tensor:
+        """L1/L2 penalty on any learnable constants (e.g. switch biases).
+
+        Concept loadings are *not* penalized here. Their L1 is applied as a proximal step
+        in project_loadings() instead, because an L1 term in the loss under Adam never
+        produces an exact zero -- and exact zeros are what make a closed gate mean
+        "this unit does not have this concept".
+        """
         assert self.sindy_norm == 1 or self.sindy_norm == 2, "Only L1-norm or L2-norm are allowed."
 
         penalty = torch.tensor(0.0, device=self.device)
-        
         if sindy_alpha == 0:
             return penalty
 
-        for module_name in self.submodules_rnn:
-            if module_name not in self.sindy_coefficients:
-                continue
-                
-            # Get coefficients: [n_participants, n_ensemble, n_library_terms]
-            coeffs = self.sindy_coefficients[module_name]
-
-            # Get degree weights: [n_library_terms]
-            degree_weights = self.sindy_degree_weights[module_name].clone()
-            # -------------------------------------------------------
-            # TODO: REMOVE IF NOT HELPING TO RECOVER ASYM LEARNING!!!
-            # -------------------------------------------------------
-            degree_weights = torch.ones_like(degree_weights)
-
-            # Compute weighted coefficient penalty for each term
-            # For each coefficient, penalty = (degree + 1) * |coeff|^norm
-            # degree_weights already contains (degree + 1) for each term
-            if self.sindy_norm == 2:
-                # Sum across coefficient dimension, mean over participants and ensemble
-                weighted_penalty = ((coeffs ** 2) * degree_weights).sum(dim=-1).mean()
-            else:
-                # Sum across coefficient dimension, mean over participants and ensemble
-                weighted_penalty = (coeffs.abs() * degree_weights).sum(dim=-1).mean()
-
-            penalty += weighted_penalty
-
-        # Penalize any learnable constants (e.g. switch biases) with unweighted L1/L2
         if hasattr(self, 'constants') and isinstance(self.constants, torch.nn.ParameterDict):
             for param in self.constants.values():
                 if self.sindy_norm == 2:
@@ -1184,83 +1527,113 @@ class BaseModel(nn.Module):
                     penalty += param.abs().mean()
 
         return penalty * sindy_alpha
+
                     
     def get_spice_model_string(self, participant_id: int = 0, experiment_id: int = 0) -> str:
-        """
-        Get the learned SPICE features and equations as a string.
+        """Render each module as its concept dictionary plus this participant\'s loadings.
 
-        Args:
-            ensemble_idx: Ensemble member index (default: 0)
-            participant_id: Participant index
-            experiment_id: Experiment index
+        Per-participant structure is reported as loadings on population-level concepts,
+        not as a free-standing per-term equation: a coefficient is only interpretable
+        alongside the other terms its concept owns, and raw per-term supports were never
+        comparable across participants in the first place.
 
-        Returns:
-            String representation of the SPICE model equations
+        Equations are shown in increment form, which is what the model actually
+        parametrizes -- a Rescorla-Wagner update reads as one concept, alpha * (r - Q),
+        rather than as two coefficients that happen to sum to one.
         """
         lines = []
-        max_len_module = max([len(module) for module in self.get_modules()])
-        coefs_dict = self.get_sindy_coefficients(aggregate=True)
         for module in self.submodules_rnn:
-            sparse_coefs = coefs_dict[module][participant_id, experiment_id].detach().cpu().numpy()
-            space_filler = " "+" "*(max_len_module-len(module)) if max_len_module > len(module) else " "
-            equation_str = module + "[t+1]" + space_filler + "= "
-            for index_term, term in enumerate(self.sindy_candidate_terms[module]):
-                if term == module:
-                    sparse_coefs[index_term] += 1
-                if np.abs(sparse_coefs[index_term]) != 0:
-                    if equation_str[-3:] != " = ":
-                        equation_str += "+ "
-                    equation_str += str(np.round(sparse_coefs[index_term], 3)) + " " + term
-                    equation_str += "[t] " if term == module else " "
-            if equation_str[-3:] == " = ":
-                equation_str += "0"
-            lines.append(equation_str)
-            
+            directions = self.effective_directions(module).detach().cpu().numpy()
+            loadings = self.effective_loadings(module).detach().mean(dim=0)
+            loadings = loadings[participant_id, experiment_id].cpu().numpy()
+            terms = self.sindy_candidate_terms[module]
+
+            lines.append(f"d{module}/dt =")
+            n_shown = 0
+            for index_concept in range(directions.shape[0]):
+                if loadings[index_concept] == 0 or not np.any(directions[index_concept] != 0):
+                    continue
+                body = []
+                for index_term, term in enumerate(terms):
+                    value = directions[index_concept, index_term]
+                    if value == 0:
+                        continue
+                    rendered = f"{term}[t]" if term == module else term
+                    body.append(f"{value:+.3f} {rendered}")
+                lines.append(
+                    f"    {loadings[index_concept]:8.3f} * [ {' '.join(body)} ]"
+                    f"    (concept {index_concept})"
+                )
+                n_shown += 1
+            if n_shown == 0:
+                lines.append("    0")
+
         return "\n".join(lines)
 
     def print(self, participant_id: int = 0, experiment_id: int = 0) -> None:
         print(self.get_spice_model_string(participant_id=participant_id, experiment_id=experiment_id))
-    
+
     def get_modules(self):
         return [module for module in self.submodules_rnn]
-    
+
     def get_candidate_terms(self, key_module: Optional[str] = None) -> Union[Dict[str, List[str]], List[str]]:
         if key_module is None:
             return self.sindy_candidate_terms
         else:
             return self.sindy_candidate_terms[key_module]
-    
+
+    def get_concepts(self, key_module: Optional[str] = None) -> Dict[str, torch.Tensor]:
+        """Per module, the (C, T) population-level concept dictionary (support applied)."""
+        modules = self.get_modules() if key_module is None else (
+            [key_module] if isinstance(key_module, str) else key_module
+        )
+        return {module: self.effective_directions(module).detach() for module in modules}
+
+    def get_concept_loadings(self, key_module: Optional[str] = None, aggregate: bool = False) -> Dict[str, torch.Tensor]:
+        """Per module, each unit\'s non-negative loading on every concept.
+
+        Shape (E, P, X, C), or (P, X, C) averaged over ensemble members that hold the
+        concept open when aggregate=True. This is the per-participant quantity to report
+        and to run individual-differences analyses on.
+        """
+        modules = self.get_modules() if key_module is None else (
+            [key_module] if isinstance(key_module, str) else key_module
+        )
+
+        loadings = {}
+        for module in modules:
+            values = self.effective_loadings(module).detach()
+            if aggregate:
+                gates = self.sindy_concept_gates[module]
+                values = torch.where(gates, values, torch.full_like(values, float('nan')))
+                values = torch.nan_to_num(torch.nanmean(values, dim=0), nan=0.0)
+            loadings[module] = values
+        return loadings
+
     def get_sindy_coefficients(self, key_module: Optional[str] = None, aggregate: bool = False):
-        if key_module is None:
-            key_module = self.get_modules()  
-        elif isinstance(key_module, str):
-            key_module = [key_module]
+        """Per module, the coefficients implied by the factorization.
+
+        Derived from Z @ V rather than stored, but the shape contract is unchanged --
+        (E, P, X, T), or (P, X, T) when aggregate=True -- so downstream consumers that
+        just want the fitted equation keep working. Use get_concept_loadings() for
+        anything that reports individual differences.
+        """
+        modules = self.get_modules() if key_module is None else (
+            [key_module] if isinstance(key_module, str) else key_module
+        )
 
         sindy_coefficients = {}
-        for module in key_module:
-            coeffs = self.sindy_coefficients[module].detach()  # (E, P, X, T)
-            presence = self.sindy_coefficients_presence[module].float()  # (E, P, X, T)
-
-            # Masked median: only aggregate over ensemble members where term is active
-            masked_coeffs = coeffs * presence  # zero out inactive
-            
-            # Average across ensemble members without respecting 0
+        for module in modules:
+            coefficients = self.compose_coefficients(module).detach()
             if aggregate:
-                masked_coeffs[presence == 0] = float('nan')  # mark inactive as NaN so median ignores them
-                aggregated = torch.nanmean(masked_coeffs, dim=0)  # (E, P, X, C) -> (P, X, C)
-                sindy_coefficients[module] = torch.nan_to_num(aggregated, nan=0.0)  # terms inactive in all members -> 0
+                presence = self.derived_presence(module)
+                masked = torch.where(presence, coefficients, torch.full_like(coefficients, float('nan')))
+                sindy_coefficients[module] = torch.nan_to_num(torch.nanmean(masked, dim=0), nan=0.0)
             else:
-                sindy_coefficients[module] = masked_coeffs
-            
-            # Presence: term is active if majority of ensemble members have it
-            # aggregated_presence = (presence.sum(dim=0) > (self.ensemble_size / 2)).float()
-            # sindy_coefficients[module] = (aggregated * aggregated_presence).cpu().numpy()
+                sindy_coefficients[module] = coefficients
 
-            # Add implicit +1 for the identity term (h_next = h_current + library @ coeffs)
-            # identity_idx = self.sindy_candidate_terms[module].index(module)
-            # sindy_coefficients[module][..., identity_idx] += 1
-            
         return sindy_coefficients
+
     
     def eval(self, use_sindy=True):
         super().eval()

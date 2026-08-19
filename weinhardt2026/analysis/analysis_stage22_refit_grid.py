@@ -367,7 +367,7 @@ def main():
         t0 = time.time()
         state = torch.load(path, map_location='cpu')
         first = next(iter(config.library_setup))
-        E, P = state['model'][f'sindy_coefficients.{first}'].shape[:2]
+        E, P = state['model'][f'sindy_concept_loadings.{first}'].shape[:2]
         del state
 
         estimator = SpiceEstimator(

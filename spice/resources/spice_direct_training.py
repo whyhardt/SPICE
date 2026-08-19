@@ -18,7 +18,7 @@ behavioural objective in both:
   Stage 1 (structure discovery) -- coefficients trained with an L1 penalty
     (``sindy_alpha``) plus periodic pruning, so the sparsity pattern is
     discovered rather than assumed. Pruning reuses the existing machinery
-    (`BaseModel.sindy_coefficient_patience` / `.sindy_coefficient_pruning`
+    (`BaseModel.concept_gate_patience` / `.prune_concept_gates`
     for per-member thresholding, `_ensemble_ratio_test` for cross-member
     consensus), so the discovered support means the same thing it does
     elsewhere in the codebase.
@@ -32,10 +32,11 @@ behavioural objective in both:
     as Stage 2.2 of the RNN pipeline does) keeps the refit in the basin the
     structure search actually selected.
 
-What is trained: `sindy_coefficients` and, when the model defines them,
+What is trained: the concept factorization (`sindy_concept_loadings` and
+`sindy_concept_directions`) and, when the model defines them,
 `learnable_initial_values` (per-participant initial memory states -- part of the
 equation system, not the RNN). `submodules_rnn`, `participant_embedding` and
-`sindy_damping_raw` receive no gradient in SINDy mode and are left frozen;
+receive no gradient in SINDy mode and are left frozen;
 `participant_embedding` in particular only ever enters through the RNN branch,
 so a model fitted this way carries no embedding information.
 
@@ -72,7 +73,9 @@ import torch
 
 from .model import BaseModel
 from .spice_utils import SpiceDataset
-from .spice_training import cross_entropy_loss, _ensemble_ratio_test, _get_terminal_width
+from .training import cross_entropy_loss
+from .training.pruning import _ensemble_ratio_test
+from .training.reporting import _get_terminal_width
 
 
 # ---------------------------------------------------------------------------
@@ -108,18 +111,21 @@ def bootstrap_within_participant(
 # Training / evaluation steps
 # ---------------------------------------------------------------------------
 
-def _apply_presence(model: BaseModel) -> None:
-    """Re-zero every pruned coefficient.
+def _apply_constraints(model: BaseModel, optimizer=None, sindy_alpha: float = 0.0) -> None:
+    """Re-establish the factorization's constraints after an optimizer step.
 
-    `forward_sindy` already multiplies by the presence mask, so pruned terms
-    get no gradient -- but Adam's momentum can still drift a coefficient off
-    zero after it is pruned, leaving a nonzero value that `count_sindy_coefficients`
-    and every downstream analysis would read as an active term. Re-applying the
-    mask after each step keeps "pruned" and "zero" the same statement.
+    Non-negativity plus the L1 prox on the loadings, then the unit-norm gauge on the
+    concept directions. The L1 is proximal rather than a loss term because Adam never
+    drives a penalized parameter to exactly zero, and an exact zero is what makes a
+    closed gate mean "this unit does not have this concept". The gauge has to be
+    re-fixed every step: Z @ V is invariant under (Z D, D^-1 V), so leaving V free lets
+    the optimizer shrink the penalty at no cost to the fit.
     """
-    with torch.no_grad():
-        for module in model.get_modules():
-            model.sindy_coefficients[module].data *= model.sindy_coefficients_presence[module].float()
+    lr = 0.0
+    if optimizer is not None:
+        lr = max((group.get('lr', 0.0) for group in optimizer.param_groups), default=0.0)
+    model.project_loadings(lr=lr, sindy_alpha=sindy_alpha)
+    model.normalize_concept_directions()
 
 
 def run_epoch_direct(
@@ -186,7 +192,7 @@ def run_epoch_direct(
         if optimizer is not None:
             step_loss = loss
             if sindy_alpha > 0:
-                step_loss = step_loss + model.compute_weighted_coefficient_penalty(sindy_alpha=sindy_alpha)
+                step_loss = step_loss + model.compute_constants_penalty(sindy_alpha=sindy_alpha)
             optimizer.zero_grad()
             step_loss.backward()
             if grad_clip is not None:
@@ -194,7 +200,7 @@ def run_epoch_direct(
                     [p for group in optimizer.param_groups for p in group['params']], max_norm=grad_clip,
                 )
             optimizer.step()
-            _apply_presence(model)
+            _apply_constraints(model, optimizer, sindy_alpha or 0.0)
 
         total_loss += loss.item() * n_valid
         total_trials += n_valid
@@ -232,28 +238,30 @@ def prune_step(
     prior masks are re-applied last and are never revived.
     """
     modules = model.get_modules()
-    before = int(sum(model.sindy_coefficients_presence[m].sum().item() for m in modules))
+    before = int(sum(model.sindy_concept_gates[m].sum().item() for m in modules))
 
-    model.sindy_coefficient_patience(threshold=threshold)
-    model.sindy_coefficient_pruning(patience=patience, n_terms_pruning=n_terms_pruning)
+    model.concept_gate_patience(threshold=threshold)
+    model.concept_support_patience(threshold=threshold)
+    model.prune_concept_gates(patience=patience, n_concepts_pruning=n_terms_pruning)
+    model.prune_concept_support(patience=patience, n_terms_pruning=n_terms_pruning)
 
     if ensemble_ratio is not None:
         with torch.no_grad():
             for module in modules:
                 consensus = _ensemble_ratio_test(
-                    coefficients=model.sindy_coefficients[module].detach(),
-                    presence=model.sindy_coefficients_presence[module],
+                    coefficients=model.effective_loadings(module).detach(),
+                    presence=model.sindy_concept_gates[module],
                     threshold=threshold,
                     ratio=ensemble_ratio,
                 )  # (P, X, terms)
-                model.sindy_coefficients_presence[module] &= consensus.unsqueeze(0)
+                model.sindy_concept_gates[module] &= consensus.unsqueeze(0)
 
     with torch.no_grad():
         for module in modules:
-            model.sindy_coefficients_presence[module] &= model.sindy_coefficients_prior_mask[module]
-    _apply_presence(model)
+                model.retire_dead_concepts(module)
+    _apply_constraints(model)
 
-    after = int(sum(model.sindy_coefficients_presence[m].sum().item() for m in modules))
+    after = int(sum(model.sindy_concept_gates[m].sum().item() for m in modules))
     return before, after
 
 
@@ -265,26 +273,26 @@ def prune_step(
 def averaged_coefficients(model: BaseModel):
     """Temporarily collapse the ensemble to its mean coefficient set.
 
-    This is the model `print_spice_model` / `get_sindy_coefficients(aggregate=True)`
+    This is the model `print_spice_model` / `get_concept_loadings(aggregate=True)`
     describe -- the single equation you would publish. Same convention as
-    `CompressedSpiceModel._write`: aggregated values are already zero wherever a
+    aggregation: averaged values are already zero wherever a
     term is inactive in every member, so presence is set all-True and the zeros
     carry the 'inactive' meaning.
     """
     modules = model.get_modules()
-    saved = {m: (model.sindy_coefficients[m].data.clone(),
-                 model.sindy_coefficients_presence[m].clone()) for m in modules}
+    saved = {m: (model.sindy_concept_loadings[m].data.clone(),
+                 model.sindy_concept_gates[m].clone()) for m in modules}
     try:
-        aggregated = model.get_sindy_coefficients(aggregate=True)  # (P, X, T)
+        aggregated = model.get_concept_loadings(aggregate=True)  # (P, X, C)
         for module in modules:
             values = aggregated[module].unsqueeze(0).expand(model.ensemble_size, -1, -1, -1).clone()
-            model.sindy_coefficients[module].data = values.to(saved[module][0].dtype)
-            model.sindy_coefficients_presence[module] = torch.ones_like(saved[module][1])
+            model.sindy_concept_loadings[module].data = values.to(saved[module][0].dtype)
+            model.sindy_concept_gates[module] = torch.ones_like(saved[module][1])
         yield model
     finally:
         for module in modules:
-            model.sindy_coefficients[module].data = saved[module][0]
-            model.sindy_coefficients_presence[module] = saved[module][1]
+            model.sindy_concept_loadings[module].data = saved[module][0]
+            model.sindy_concept_gates[module] = saved[module][1]
 
 
 @torch.no_grad()
@@ -331,16 +339,16 @@ def score_three_ways(model: BaseModel, xs: torch.Tensor, ys: torch.Tensor) -> Di
 def _snapshot(model: BaseModel) -> dict:
     """Deep copy of everything the refit can change (coefficients, support, initial values)."""
     return dict(
-        coefficients={m: model.sindy_coefficients[m].data.clone() for m in model.get_modules()},
-        presence={m: model.sindy_coefficients_presence[m].clone() for m in model.get_modules()},
+        coefficients={m: model.sindy_concept_loadings[m].data.clone() for m in model.get_modules()},
+        presence={m: model.sindy_concept_gates[m].clone() for m in model.get_modules()},
         initial_values={k: p.data.clone() for k, p in model.learnable_initial_values.items()},
     )
 
 
 def _restore(model: BaseModel, snapshot: dict) -> None:
     for module in model.get_modules():
-        model.sindy_coefficients[module].data = snapshot['coefficients'][module].clone()
-        model.sindy_coefficients_presence[module] = snapshot['presence'][module].clone()
+        model.sindy_concept_loadings[module].data = snapshot['coefficients'][module].clone()
+        model.sindy_concept_gates[module] = snapshot['presence'][module].clone()
     for key, parameter in model.learnable_initial_values.items():
         parameter.data = snapshot['initial_values'][key].clone()
 
@@ -351,7 +359,7 @@ def _restore(model: BaseModel, snapshot: dict) -> None:
 
 def _flat_coefficients(model: BaseModel, aggregate: bool = True) -> torch.Tensor:
     """All modules' coefficients concatenated along the term axis (presence-masked)."""
-    coefs = model.get_sindy_coefficients(aggregate=aggregate)
+    coefs = model.get_concept_loadings(aggregate=aggregate)
     return torch.cat([coefs[m].reshape(*coefs[m].shape[:-1], -1) for m in model.get_modules()], dim=-1)
 
 
@@ -372,12 +380,12 @@ def coefficient_diagnostics(model: BaseModel, previous: Optional[torch.Tensor] =
     aggregated = _flat_coefficients(model, aggregate=True)          # (P, X, T_total)
     per_member = _flat_coefficients(model, aggregate=False)         # (E, P, X, T_total)
     presence = torch.cat(
-        [model.sindy_coefficients_presence[m] for m in model.get_modules()], dim=-1,
+        [model.sindy_concept_gates[m] for m in model.get_modules()], dim=-1,
     )                                                              # (E, P, X, T_total)
 
     active = aggregated != 0
     diagnostics = {
-        'n_active_mean': float(model.count_sindy_coefficients().mean().item()),
+        'n_active_mean': float(model.count_spice_parameters()['loadings'].mean().item()),
         'max_abs': float(aggregated.abs().max().item()),
         'support_agree': float((presence.all(dim=0) | (~presence.any(dim=0))).float().mean().item()),
     }
@@ -436,7 +444,7 @@ def fit_spice_direct(
     Parameters
     ----------
     model : BaseModel
-        The SPICE model whose `sindy_coefficients` will be fitted. Its RNN
+        The SPICE model whose concept factorization will be fitted. Its RNN
         submodules are never called and never updated.
     dataset_train, dataset_test : SpiceDataset
         Training data, and optional held-out data used *for reporting only* --
@@ -511,8 +519,10 @@ def fit_spice_direct(
         parameter.requires_grad_(False)
     trainable: List[torch.nn.Parameter] = []
     for module in model.get_modules():
-        model.sindy_coefficients[module].requires_grad_(True)
-        trainable.append(model.sindy_coefficients[module])
+        model.sindy_concept_loadings[module].requires_grad_(True)
+        model.sindy_concept_directions[module].requires_grad_(True)
+        trainable.append(model.sindy_concept_loadings[module])
+        trainable.append(model.sindy_concept_directions[module])
     for parameter in model.learnable_initial_values.values():
         parameter.requires_grad_(True)
         trainable.append(parameter)
@@ -613,9 +623,9 @@ def fit_spice_direct(
     # ------------------------------------------------------------------
     # Stage 2 -- freeze the discovered support, refit without the L1 penalty
     # ------------------------------------------------------------------
-    frozen_support = {m: model.sindy_coefficients_presence[m].clone() for m in model.get_modules()}
+    frozen_support = {m: model.sindy_concept_gates[m].clone() for m in model.get_modules()}
     if verbose:
-        n_active = float(model.count_sindy_coefficients().mean().item())
+        n_active = float(model.count_spice_parameters()['loadings'].mean().item())
         print(f"\nStage 1 complete. Frozen support: {n_active:.2f} active coefficients per participant.")
 
     optimizer = torch.optim.Adam(trainable, lr=learning_rate_stage2)
@@ -632,7 +642,7 @@ def fit_spice_direct(
     # reported downstream would be wrong. Checked before any best-snapshot
     # restore, which may legitimately reinstate a Stage 1 support.
     for module in model.get_modules():
-        if not torch.equal(frozen_support[module], model.sindy_coefficients_presence[module]):
+        if not torch.equal(frozen_support[module], model.sindy_concept_gates[module]):
             raise RuntimeError(
                 f"Stage 2 changed the sparsity pattern of module {module!r}; it must only refit "
                 "coefficients on the support discovered in Stage 1."

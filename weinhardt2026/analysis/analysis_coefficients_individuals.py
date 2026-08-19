@@ -137,7 +137,7 @@ def prepare(criterion_col, data_path: str, dataset_kwargs: dict = {}, spice_mode
         # Peek at saved checkpoint to infer ensemble_size
         _ckpt = torch.load(model_path, map_location="cpu")
         _first_module = next(iter(spice_config.library_setup))
-        ensemble_size = _ckpt["model"][f"sindy_coefficients.{_first_module}"].shape[0]
+        ensemble_size = _ckpt["model"][f"sindy_concept_loadings.{_first_module}"].shape[0]
         del _ckpt
 
         estimator = SpiceEstimator(

@@ -3,7 +3,7 @@
 Two layers of downstream analysis sit on top of a fitted `SpiceEstimator`:
 
 1. **Generative benchmarking** (`weinhardt2026/utils/task.py`) — simulate new behavior by running the fitted model through the task environment, for comparison against real data.
-2. **Cross-study analysis pipelines** (`weinhardt2026/analysis/`) — model evaluation, morphing, coefficient-level statistics, clustering, compression. These operate on a fitted `SpiceEstimator` (and optionally its generated behavior) and are shared across all studies in `weinhardt2026/studies/`.
+2. **Cross-study analysis pipelines** (`weinhardt2026/analysis/`) — model evaluation, morphing, concept-level statistics, clustering. These operate on a fitted `SpiceEstimator` (and optionally its generated behavior) and are shared across all studies in `weinhardt2026/studies/`.
 
 See [training.md](training.md) for the model/training internals these analyses consume, and [studies.md](studies.md) for how individual studies wire them together.
 
@@ -179,7 +179,9 @@ analysis_coefficients_distributions(
 ) -> (coeff_df, presence_df, ensemble_consistency_df)
 ```
 
-Produces: ensemble-spread plots and CV heatmaps (`compute_ensemble_consistency`, `plot_ensemble_spread`, `plot_ensemble_cv_heatmap`) showing how stable each coefficient is across ensemble members; violin plots of coefficient distributions across participants (`plot_coefficient_violins`); presence-rate bar charts (`plot_presence_rate_bar`) — what fraction of participants retain each term after pruning; experiment-comparison plots (`plot_experiment_comparison`); and a sparsity heatmap (`plot_sparsity_heatmap`) of which terms are active for which participants.
+Produces: ensemble-spread plots and CV heatmaps (`compute_ensemble_consistency`, `plot_ensemble_spread`, `plot_ensemble_cv_heatmap`) showing how stable each coefficient is across ensemble members; violin plots of coefficient distributions across participants (`plot_coefficient_violins`); presence-rate bar charts (`plot_presence_rate_bar`); experiment-comparison plots (`plot_experiment_comparison`); and a sparsity heatmap (`plot_sparsity_heatmap`).
+
+> **Migration note:** this script still reads per-term coefficients and presence. Under the concept factorization those are *derived* quantities (`Z @ V` and the union of held concepts' supports), so presence rates here no longer describe per-participant structural choices — they describe which concepts participants hold, projected into term space. Prefer `get_concept_loadings()` and the gates for anything structural.
 
 ### Individual-Differences Regression — `analysis_coefficients_individuals.py`
 
@@ -197,38 +199,32 @@ analysis_coefficients_individuals(
 - **Continuous** (`run_continuous`): regresses coefficient *magnitude* on a continuous criterion, with beta-coefficient bar plots and fitted logistic curves; `jonckheere_terpstra` tests for monotonic trend across ordered groups.
 - **Result**: statistical evidence for *which mechanisms* (equation terms) differ between groups or scale with a trait — the individual-level counterpart to the morphing analysis above.
 
-### Coefficient Compression — `analysis_coefficient_compression.py`
+### Concept-Level Group Differences
 
-When many sparse SINDy coefficients are fit per participant, this compresses them into a small number of interpretable "mechanisms" via per-module NMF (non-negative matrix factorization), `MODEL ≈ U @ H` (optionally `mean + U @ H` with `center=True`).
-
-```python
-analysis_coefficient_compression(
-    spice_model=None, model_path=None, dataset=None,
-    dataset_train=None, dataset_test=None,
-    k_per_module_values=None, alpha_w_values=None, alpha_h_values=None,   # hyperparameter grid search
-    chosen_K_per_module=None, chosen_alpha_W=None, chosen_alpha_H=None,   # or fixed values
-    mechanism_names_override=None, mechanism_threshold_ratio=0.15,
-    output_dir="analysis_coefficient_compression",
-)
-```
-
-`run_nmf_per_module_hyperparameter_search` + `plot_hyperparameter_search` sweep `K` (mechanisms per module) and regularization strengths, selecting the setting that best reconstructs held-out coefficients (`evaluate_compressed_model`). **Result**: a per-participant `loadings_df` (`participant_index` + one loading column per discovered mechanism) — this is the direct input to `analysis_mechanism_individuals.py` below.
-
-This wraps the lower-level `spice.resources.sindy_compression` module (also reachable directly as `SpiceEstimator.compress_sindy_equations()`, see [training.md](training.md)), which implements several compression methods compared in its docstring: `"nmf_per_module"` (default — sign-split NMF fit independently per module, wins on predictive cost, genuine sparsity, and module-localization), `"svd"` (dense PCA, best reconstruction fidelity but every participant loads on every mechanism), `"sparse"`/`"sparse_per_module"` (L1 dictionary learning), `"nmf"` (joint, not module-localized), and `"family"` (block-diagonal PCA within hand-classified syntactic term families — most legible names, but families are asserted rather than learned, and costs some predictive performance). The result is a `CompressedSpiceModel` with `print_population()`, `print_mechanisms()`, `print_participant(id)`, and an `apply(estimator)` context manager for temporary inference; `commit(estimator)` overwrites permanently but note that afterward `count_sindy_coefficients()` will overstate complexity (the population mean is dense) — report `K` mechanisms × active-mechanism count via `.sparsity()` instead.
-
-### Mechanism-Level Group Differences — `analysis_mechanism_individuals.py`
-
-Same idea as `analysis_coefficients_individuals.py` but operating on the compressed *mechanisms* from `analysis_coefficient_compression.py` rather than raw coefficients — tests whether a mechanism's activation differs between reference and comparison groups.
+Post-hoc coefficient compression (`analysis_coefficient_compression.py`, `analysis_mechanism_individuals.py`,
+`analysis_coefficient_ties.py`, `analysis_concepts.py`) has been **removed**. Structure is now discovered
+*during* training as the concept factorization `A_pt = Z_pc · V_ct` (see
+[training.md](training.md#basemodel-spiceresourcesmodelpy)), so the quantities those scripts produced come
+straight off the fitted model:
 
 ```python
-analysis_mechanism_individuals(
-    loadings_df,       # from analysis_coefficient_compression
-    path_data, reference, criterion, output_dir,
-    df_participant_id="participant", active_threshold=1e-6,
-) -> res_df  # one row per mechanism: beta/SE/p-value/significance per group comparison
+estimator.get_concepts()             # {module: (C, T)} population-level concept dictionary
+estimator.get_concept_loadings()     # {module: (E, P, X, C)} per-participant loadings
+estimator.count_spice_parameters()   # {'loadings': (P, X), 'directions': scalar}
 ```
 
-Produces forest plots (`_plot_mechanism_forest`) and per-group mechanism activation-rate plots (`_plot_mechanism_activation_rates`).
+Group-difference testing should run on the **concept loadings** and **concept gates**, exactly as
+`analysis_mechanism_individuals.py` used to run on NMF mechanism loadings: a gate pattern is a participant's
+structure, a loading is the magnitude with which they run that mechanism.
+
+Two reporting rules carry over and matter:
+
+- **Report prevalence from concept gates, never from raw per-term supports.** Term support is now a population
+  decision, and the old per-participant `topk` was what manufactured the appearance of 101 distinct supports on
+  dezfouli2019 in the first place.
+- **Never merge the two parameter counts.** `count_spice_parameters()` returns per-participant loadings and
+  shared direction values separately. Summing them amortizes population structure over participants, which makes
+  pooling look nearly free and biases any BIC-driven search toward pooling everything.
 
 ### Behavioral Clustering — `analysis_behavioral_clustering.py`
 
@@ -242,7 +238,7 @@ analysis_behavioral_clustering(
 
 1. Loads per-participant behavioral metrics CSV (produced by a generative-behavior analysis).
 2. Hierarchical clustering (`linkage`, `fcluster`, Ward's method) on standardized behavioral metrics.
-3. Extracts equation features (`_extract_equation_features`: coefficients + presence per participant).
+3. Extracts equation features (`_extract_equation_features`: concept loadings + gates per participant).
 4. Tests whether equation structure differs across behavioral clusters (`_test_equation_differences`: Kruskal-Wallis / Mann-Whitney) and reports `adjusted_rand_score` alignment between behavioral clusters and any independently-known grouping.
 - **Result**: evidence for (or against) the claim that behaviorally-defined subgroups correspond to structurally distinct equations, not just parameter shifts.
 
@@ -280,4 +276,4 @@ Evaluates a batch of checkpoints from a pruning-threshold × pruning-test hyperp
 3. Inspect population-level equation structure with `analysis_coefficients_distributions.py`.
 4. Relate coefficients to external criteria: `analysis_coefficients_individuals.py` (discrete groups or continuous traits) and/or `run_morphing` for a continuous structural trajectory.
 5. Generate synthetic behavior (`generate_behavior`) and validate it against real data with `analysis_generative_comparison.py` and `compute_reward_history_kernel`.
-6. Optionally compress coefficients into interpretable mechanisms (`analysis_coefficient_compression.py`) and re-test group differences at the mechanism level (`analysis_mechanism_individuals.py`), or check behavioral-cluster/equation alignment (`analysis_behavioral_clustering.py`).
+6. Test group differences at the concept level using `estimator.get_concept_loadings()` and the concept gates, or check behavioral-cluster/equation alignment (`analysis_behavioral_clustering.py`).

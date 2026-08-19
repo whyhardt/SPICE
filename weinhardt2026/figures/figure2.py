@@ -270,7 +270,7 @@ def select_distinctive_participants(model, n_select=3):
         List of participant IDs.
     """
     modules = model.get_modules()
-    P = next(iter(model.sindy_coefficients.values())).shape[1]
+    P = next(iter(model.sindy_concept_loadings.values())).shape[1]
 
     # Build binary signature vector per participant
     sig_vectors = []

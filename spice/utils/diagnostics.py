@@ -513,7 +513,7 @@ class SpiceDiagnostics:
                                     loss_delta, loss_all_sindy
         """
         if loss_fn is None:
-            from spice.resources.spice_training import cross_entropy_loss
+            from spice.resources.training import cross_entropy_loss
             loss_fn = cross_entropy_loss
 
         model = self.model

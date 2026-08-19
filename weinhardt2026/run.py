@@ -12,7 +12,7 @@ import json
 import importlib
 
 from spice import SpiceEstimator, csv_to_dataset, split_data_along_blockdim, split_data_along_timedim
-from spice.resources.spice_training import _get_terminal_width
+from spice.resources.training.reporting import _get_terminal_width
 
 from studies.synthetic.benchmarking_qlearning import QLearning
 from analysis.analysis_model_evaluation import analysis_model_evaluation

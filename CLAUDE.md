@@ -14,6 +14,39 @@ Discovering computational models that explain human cognition and behavior remai
 2. **SINDy Regularization**: During training, SINDy equations act as regularizers, pushing submodule dynamics toward spaces amenable to SINDy candidate terms
 3. **Equation Discovery**: SINDy approximates the fitted dynamics in each disentangled submodule, yielding interpretable symbolic equations, then a final refit stage recovers coefficients on the frozen RNN's dynamics
 
+### The Concept Factorization
+
+Per-participant coefficients are not free parameters. For each submodule the coefficient
+matrix is factorized as
+
+    A_pt = Z_pc · V_ct
+
+where `V` is a **population-level dictionary of concepts** — sparse, unit-norm directions
+over the candidate terms — and `Z` holds each participant's **non-negative loading** on
+each concept. A term is therefore only ever interpretable together with the other terms
+its concept owns, and a participant's structure is a *gate pattern over concepts* rather
+than an arbitrary subset of terms.
+
+Because SINDy targets the state *increment* (`h_next = h + dt * library @ coefficients`),
+a Rescorla-Wagner update is a single concept: direction `(-1 Q, +1 r)` carrying one
+loading `α` per participant, rather than two coefficients that happen to sum to one. More
+generally a relaxation `Δx = λ(x* − x)` has direction encoding the *fixed point* and
+loading encoding the *rate*.
+
+Identifiability rests on four things, all enforced during training:
+
+- **`Z ≥ 0`**, applied with the L1 as a proximal step (`z ← relu(z − lr·α)`) so the zeros
+  are exact — an L1 loss term under Adam never produces one.
+- **Unit-norm `V` rows**, re-fixed after every optimizer step. `Z @ V` is invariant under
+  `(Z D, D⁻¹ V)`, so without this the cheapest way to shrink the penalty is to inflate `V`.
+- **Undercomplete `C`** (defaults to `n_terms // 2`); overcomplete dictionaries are exactly
+  where identifiability fails. Concepts retire but never spawn, so `C` is a real hyperparameter.
+- **The anchor condition**: each concept must own at least one term no other concept covers.
+  Overlapping supports are allowed — a shared coefficient then becomes a *prediction*
+  (`a_shared = z₁ + z₂`) rather than a free parameter — but a concept with no exclusive term
+  can be mixed into the others without changing the fit. Enforced once after structure
+  discovery converges, not during the search.
+
 ### What SPICE Models
 
 Any trial-by-trial behavioral task where a participant (human or animal) makes repeated choices and the researcher wants to recover *interpretable* latent cognitive dynamics — not just predict the next action. Studies in `weinhardt2026/studies/` cover: reward-learning bandits with working memory, directed exploration, confidence-weighted learning under perceptual uncertainty, patch foraging, task-switching/cognitive-control effort, changepoint/volatility belief updating (linear and circular state spaces), collaborative visuospatial foraging, and primate social behavior. See [docs/studies.md](docs/studies.md) for what each study models and its population.
@@ -27,9 +60,19 @@ SPICE/
 │   │   ├── estimator.py                # SpiceEstimator — scikit-learn compatible wrapper
 │   │   ├── model.py                    # BaseModel — core RNN + SINDy architecture
 │   │   ├── spice_utils.py              # SpiceConfig, SpiceDataset, SpiceSignals
-│   │   ├── spice_training.py           # Two-stage training pipeline
+│   │   ├── training/                   # Two-stage training pipeline (split by responsibility)
+│   │   │   ├── fit.py                  # fit_spice orchestrator
+│   │   │   ├── stage1.py               # Joint RNN + SINDy training against behaviour
+│   │   │   ├── stage2.py               # SINDy refit on frozen trajectories (2.1 + 2.2)
+│   │   │   ├── shooting.py             # Multi-step rollouts + post-step constraint projection
+│   │   │   ├── trajectories.py         # Hidden-state trajectory collection/reshaping
+│   │   │   ├── ridge.py                # Closed-form ridge initialization
+│   │   │   ├── pruning.py              # Gate pruning + cross-ensemble consensus
+│   │   │   ├── losses.py               # Loss functions and schedule helpers
+│   │   │   └── reporting.py            # Terminal output
+│   │   ├── spice_direct_training.py    # RNN-free pipeline: fit concepts straight to behaviour
 │   │   ├── sindy_differentiable.py     # Differentiable SINDy polynomial library
-│   │   └── sindy_compression.py        # Per-participant coefficient compression (mechanism discovery)
+│   │   └── sindy_concept_init.py       # Data-driven seeding for the concept dictionary
 │   ├── precoded/                       # Pre-built cognitive model architectures
 │   │   ├── rescorlawagner.py           # Rescorla-Wagner learning model
 │   │   ├── choice.py                   # Choice perseveration
@@ -82,13 +125,13 @@ python weinhardt2026/run.py              # Fit SPICE model to dataset
 Full details, current constructor signatures, and internals: **[docs/training.md](docs/training.md)**.
 
 - **`SpiceConfig`** (`spice/resources/spice_utils.py`) — declares a model's architecture: which submodules exist (`library_setup`), the latent memory states they update (`memory_state`), and which states feed the output logits (`states_in_logit`).
-- **`BaseModel`** (`spice/resources/model.py`) — the RNN + SINDy architecture task-specific models subclass. Register submodules with `setup_module()`, run them each trial with `call_module()`.
+- **`BaseModel`** (`spice/resources/model.py`) — the RNN + SINDy architecture task-specific models subclass. Register submodules with `setup_module()`, run them each trial with `call_module()`. Holds the concept factorization: `sindy_concept_directions` (`V`, shape `(C, T)`), `sindy_concept_loadings` (`Z`, shape `(E, P, X, C)`), plus the `sindy_concept_support` / `sindy_concept_gates` masks.
 - **`SpiceDataset`** (`spice/resources/spice_utils.py`) — the training data container; build one from a behavioral CSV via `csv_to_dataset()` (`spice/utils/convert_dataset.py`).
-- **`SpiceEstimator`** (`spice/resources/estimator.py`) — the sklearn-style entry point: `.fit(data, targets)`, `.predict(conditions)`, `.print_spice_model()`, `.get_sindy_coefficients()`, `.compress_sindy_equations()`, `.save_spice()`/`.load_spice()`.
+- **`SpiceEstimator`** (`spice/resources/estimator.py`) — the sklearn-style entry point: `.fit(data, targets)`, `.predict(conditions)`, `.print_spice_model()`, `.get_concepts()`, `.get_concept_loadings()`, `.get_sindy_coefficients()`, `.count_spice_parameters()`, `.save_spice()`/`.load_spice()`.
 
 **Precoded models** (`spice/precoded/`): Rescorla-Wagner, Choice Perseveration, Forgetting, Learning Rate, Interaction, Embedding, DDM, Working Memory (+ variants) — ready-made `BaseModel` subclasses for common cognitive mechanisms.
 
-**Downstream analysis** (`weinhardt2026/analysis/`, see **[docs/analyses.md](docs/analyses.md)**): model evaluation (BIC/AIC/likelihood), model morphing (continuous structural trajectories along a behavioral axis), individual-differences regression on equation coefficients, coefficient compression into interpretable mechanisms, generative behavior comparison, behavioral clustering, and more — plus generative benchmarking (`weinhardt2026/utils/task.py`) for simulating new behavior from a fitted model.
+**Downstream analysis** (`weinhardt2026/analysis/`, see **[docs/analyses.md](docs/analyses.md)**): model evaluation (BIC/AIC/likelihood), model morphing (continuous structural trajectories along a behavioral axis), individual-differences regression on concept loadings, generative behavior comparison, behavioral clustering, and more — plus generative benchmarking (`weinhardt2026/utils/task.py`) for simulating new behavior from a fitted model.
 
 ---
 
@@ -125,6 +168,6 @@ A living list of gotchas (tensor device reassignment, action-mask overlap, `Spic
 ## Documentation
 
 - **[docs/training.md](docs/training.md)** — `BaseModel`, `SpiceConfig`, `SpiceDataset`, `SpiceEstimator` internals; the two-stage training pipeline; dimension conventions; the precoded-model pattern; architecture design guidelines; common pitfalls.
-- **[docs/analyses.md](docs/analyses.md)** — generative benchmarking and the full `weinhardt2026/analysis/` pipeline (model evaluation, morphing, coefficient distributions/individuals/compression, behavioral clustering, reward-history kernels, parameter recovery), with a suggested analysis sequence for a new study.
+- **[docs/analyses.md](docs/analyses.md)** — generative benchmarking and the full `weinhardt2026/analysis/` pipeline (model evaluation, morphing, concept distributions/individuals, behavioral clustering, reward-history kernels, parameter recovery), with a suggested analysis sequence for a new study.
 - **[docs/studies.md](docs/studies.md)** — what each study in `weinhardt2026/studies/` models, its population, and its benchmark comparison model.
 - Full hosted documentation: https://whyhardt.github.io/SPICE/

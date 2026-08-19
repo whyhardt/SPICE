@@ -145,8 +145,8 @@ def analysis_sparsity_hpscan(
         # Load checkpoint to get ensemble size and n_participants
         ckpt = torch.load(path, map_location='cpu')
         first_mod = next(iter(spice_config.library_setup))
-        ensemble_size = ckpt['model'][f'sindy_coefficients.{first_mod}'].shape[0]
-        n_participants = ckpt['model'][f'sindy_coefficients.{first_mod}'].shape[1]
+        ensemble_size = ckpt['model'][f'sindy_concept_loadings.{first_mod}'].shape[0]
+        n_participants = ckpt['model'][f'sindy_concept_loadings.{first_mod}'].shape[1]
         del ckpt
 
         estimator = SpiceEstimator(

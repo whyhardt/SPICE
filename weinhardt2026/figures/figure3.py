@@ -94,8 +94,10 @@ def _load_presence_rates(study_key):
     n_participants = 0
 
     for key, tensor in state.items():
-        if key.startswith('sindy_coefficients.'):
-            mod_name = key.replace('sindy_coefficients.', '')
+        if key.startswith('sindy_concept_loadings.'):
+            # Loadings are (E, P, X, C) and non-negative; "present" now means the
+            # participant holds the concept, not that a term coefficient is nonzero.
+            mod_name = key.replace('sindy_concept_loadings.', '')
             coefs = tensor.float()
             n_participants = coefs.shape[1]
 

@@ -37,8 +37,8 @@ def load_coefficients(model_path, model_module, n_actions=2):
 
     ckpt = torch.load(model_path, map_location="cpu")
     first_module = next(iter(spice_config.library_setup))
-    ensemble_size = ckpt["model"][f"sindy_coefficients.{first_module}"].shape[0]
-    n_participants = ckpt["model"][f"sindy_coefficients.{first_module}"].shape[1]
+    ensemble_size = ckpt["model"][f"sindy_concept_loadings.{first_module}"].shape[0]
+    n_participants = ckpt["model"][f"sindy_concept_loadings.{first_module}"].shape[1]
     del ckpt
 
     estimator = SpiceEstimator(

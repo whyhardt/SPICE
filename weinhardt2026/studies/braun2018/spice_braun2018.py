@@ -92,8 +92,7 @@ class SpiceModel(BaseModel):
             for ict, ct in enumerate(candidate_terms[module]):
                 for cs in binary_cs:
                     if cs + '^' in ct:
-                        self.sindy_coefficients_presence[module][..., ict] = 0
-                        self.sindy_coefficients_prior_mask[module][..., ict] = 0
+                        self.sindy_term_prior_mask[module][ict] = False
                         break
 
     def forward(self, inputs, prev_state=None):

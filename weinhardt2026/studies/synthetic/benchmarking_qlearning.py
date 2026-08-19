@@ -183,12 +183,24 @@ class QLearning(BaseModel):
             ) 
         }
         
+        # Build the dense ground-truth coefficients, then install an exact dictionary
+        # that reproduces them. concepts_from_dense() resizes n_concepts to what the
+        # ground truth actually needs -- projecting onto the default random,
+        # undercomplete dictionary would be approximate and would silently corrupt any
+        # parameter-recovery comparison against this generator.
         for module in self.get_modules():
-            self.sindy_coefficients[module].requires_grad = False
-            self.sindy_coefficients[module].data[0, participant_id.unsqueeze(1), experiment_id] = torch.nn.Parameter(torch.zeros_like(self.sindy_coefficients[module][0, participant_id.unsqueeze(1), experiment_id]))
+            n_terms = self.sindy_concept_directions[module].shape[-1]
+            dense = torch.zeros(
+                self.ensemble_size, self.n_participants, self.n_experiments, n_terms,
+                device=self.sindy_concept_loadings[module].device,
+            )
             for candidate_term, value in coefficient_maps[module]:
-                self.sindy_coefficients[module].data[0, participant_id.unsqueeze(1), experiment_id, self.sindy_candidate_terms[module].index(candidate_term)] = value
-            self.sindy_coefficients_presence[module] = torch.where(self.sindy_coefficients[module] != 0, 1, 0)
+                index_term = self.sindy_candidate_terms[module].index(candidate_term)
+                dense[0, participant_id.unsqueeze(1), experiment_id, index_term] = value
+
+            self.concepts_from_dense(module, dense)
+            self.sindy_concept_loadings[module].requires_grad = False
+            self.sindy_concept_directions[module].requires_grad = False
             
     def eval(self, *args, **kwargs):
         super().eval()

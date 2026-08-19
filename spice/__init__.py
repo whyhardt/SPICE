@@ -5,9 +5,8 @@ SPICE: Sparse and Interpretable Cognitive Equations
 from .resources.estimator import SpiceEstimator
 from .resources.model import BaseModel
 from .resources.spice_utils import SpiceConfig, SpiceDataset, SpiceSignals
-from .resources.spice_training import cross_entropy_loss, mse_loss
+from .resources.training import cross_entropy_loss, mse_loss
 from .resources.spice_direct_training import fit_spice_direct
-from .resources.sindy_compression import CompressedSpiceModel
 from .utils.convert_dataset import csv_to_dataset, dataset_to_csv, split_data_along_blockdim, split_data_along_timedim
 from .utils.plotting import plot_session
 
@@ -18,7 +17,6 @@ __all__ = [
     "BaseModel",
     "SpiceDataset",
     "SpiceSignals",
-    "CompressedSpiceModel",
     "csv_to_dataset",
     "dataset_to_csv",
     "split_data_along_blockdim",
