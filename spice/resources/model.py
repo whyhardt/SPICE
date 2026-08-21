@@ -412,9 +412,9 @@ class BaseModel(nn.Module):
 
         return self
         
-    def setup_constant(self, n_ensemble, n_participants, n_experiments):
+    def setup_constant(self):
         # return ParameterModule(n_ensemble, n_participants, n_experiments)
-        return nn.Parameter(torch.zeros((n_ensemble, n_participants, n_experiments)))
+        return nn.Parameter(torch.zeros((self.ensemble_size, self.n_participants, self.n_experiments, 1)))
     
     def setup_embedding(
         self, 

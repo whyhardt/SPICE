@@ -17,7 +17,7 @@ from weinhardt2026.analysis.analysis_model_evaluation import analysis_model_eval
 from weinhardt2026.utils.generation import generate_repeated
 
 
-train_spice = True
+train_spice = False
 train_gru = False
 train_benchmark = False
 
@@ -211,12 +211,12 @@ with torch.no_grad():
     estimator.use_sindy(True)
     predictions_spice_eq = torch.tensor(estimator.predict(dataset.xs))
 
-# --- Extract per-trial SPICE internal states (belief, learning rate) ---
+# --- Extract per-trial SPICE internal states (belief, certainty) ---
 def extract_spice_states(model, xs_session):
-    """Run model trial-by-trial to capture per-trial belief and learning rate.
+    """Run model trial-by-trial to capture per-trial belief and certainty.
 
     Handles different model architectures:
-    - Single LR: 'lr_value' state
+    - Single LR: 'certainty_raw' state
     - Dual LR (changepoint): 'changepoint_lr_value', 'uncertainty_lr_value', 'changepoint_value'
     - No LR: only 'belief_value'
     """
@@ -224,7 +224,7 @@ def extract_spice_states(model, xs_session):
     prev_state = None
 
     # Detect model architecture
-    has_single_lr = 'lr_value' in model.state
+    has_single_lr = 'certainty_raw' in model.state
     has_dual_lr = 'changepoint_lr_value' in model.state and 'uncertainty_lr_value' in model.state
     has_cp = 'changepoint_value' in model.state
 
@@ -252,7 +252,7 @@ def extract_spice_states(model, xs_session):
             uncertainty_lrs.append(uncertainty_lr[0, 0, 0, :].mean().item())
             cp_probs.append(cp_prob[0, 0, 0, :].mean().item() if cp_prob is not None else 0.5)
         elif has_single_lr:
-            lr = torch.sigmoid(model.state['lr_value'])
+            lr = torch.sigmoid(model.state['certainty_raw'])
             lrs.append(lr[0, 0, 0, :].mean().item())
         else:
             # No LR module
@@ -317,9 +317,39 @@ pred_spice_eq_deg = sincos_to_degrees(
 
 caught_trials = [t for t, c in zip(trials, caught_vals) if c > 0.5]
 
-# --- Plot: 4 panels ---
-fig, axs = plt.subplots(4, 1, figsize=(12, 10), sharex=True,
-                         gridspec_kw={'height_ratios': [1, 1, 1, 0.6]})
+# --- Prediction error (laser vs. belief entering that trial's update) ---
+def circular_diff_deg(a_deg, b_deg):
+    """Signed shortest angular difference a-b, wrapped to [-180, 180]."""
+    return (a_deg - b_deg + 180.0) % 360.0 - 180.0
+
+laser_sin_full = dataset.xs[session, :, 0, 2]
+laser_cos_full = dataset.xs[session, :, 0, 3]
+laser_deg_full = sincos_to_degrees(laser_sin_full, laser_cos_full)
+
+belief_sym_deg_full = sincos_to_degrees(
+    torch.tensor(states_sym['belief_sin']),
+    torch.tensor(states_sym['belief_cos']),
+)
+# belief entering trial t's update is the post-update belief from t-1
+# (trial 0's belief is initialized to laser[0], per the model's forward pass)
+belief_prev_deg_full = torch.cat([laser_deg_full[:1], belief_sym_deg_full[:-1]])
+
+pe_deg_full = circular_diff_deg(laser_deg_full, belief_prev_deg_full)
+pe_deg = pe_deg_full[t_start:t_end].numpy()
+
+# --- Fitted equations for the plotted participant/experiment ---
+session_participant_id = int(dataset.xs[session, 0, 0, -1].item())
+session_experiment_id = int(dataset.xs[session, 0, 0, -2].item())
+equation_str = model.get_spice_model_string(
+    participant_id=session_participant_id,
+    experiment_id=session_experiment_id,
+)
+
+# --- Plot: 4 panels + equation text panel ---
+fig, axs = plt.subplots(5, 1, figsize=(12, 11.5),
+                         gridspec_kw={'height_ratios': [1, 1, 1, 0.6, 0.9]})
+for ax in axs[:4]:
+    ax.sharex(axs[0])
 
 # (1) Actual positions: laser + shield
 axs[0].scatter(list(trials), actual_laser_deg.numpy(), c='blue', s=15, alpha=0.6, label='Laser', zorder=3)
@@ -341,17 +371,19 @@ axs[1].set_title('Model Predictions vs Human Shield Position')
 axs[1].legend(fontsize=8)
 axs[1].grid(alpha=0.3)
 
-# (2) SPICE internal belief vs laser observations
+# (2) SPICE internal belief + predicted shield vs laser observations
 axs[2].scatter(list(trials), actual_laser_deg.numpy(), c='blue', s=15, alpha=0.6, label='Laser', zorder=3)
 axs[2].plot(list(trials), true_mean, 'b-', label='True Mean')
 axs[2].plot(list(trials), belief_rnn_deg.numpy(), 'r--', label='Belief (RNN)')
-axs[2].plot(list(trials), belief_sym_deg.numpy(), 'r-', label='Belief (SYM)')
+axs[2].plot(list(trials), belief_sym_deg.numpy(), 'r-', label='Belief (EQ)')
+axs[2].plot(list(trials), pred_spice_rnn_deg.numpy(), 'orange', linestyle='--', label='Predicted Shield (RNN)')
+axs[2].plot(list(trials), pred_spice_eq_deg.numpy(), 'orange', linestyle='-', label='Predicted Shield (EQ)')
 axs[2].set_ylabel('Position (degrees)')
-axs[2].set_title('SPICE Internal Belief vs Laser')
+axs[2].set_title('SPICE Internal Belief & Predicted Shield vs Laser')
 axs[2].legend(fontsize=8)
 axs[2].grid(alpha=0.3)
 
-# (4) Dynamic learning rate + changepoint probability + catch ticks
+# (4) Dynamic certainty + changepoint probability + catch ticks
 # Detect what dynamics are available
 has_lr = states_rnn['lr'][0] is not None
 has_dual_lr = states_rnn['changepoint_lr'] is not None
@@ -365,21 +397,21 @@ if has_dual_lr and has_cp:
     axs[3].plot(list(trials), [states_rnn['changepoint_lr'][t] for t in range(t_start, t_end)],
                 'orange', linestyle='--', alpha=0.7, label='α_changepoint (RNN)')
     axs[3].plot(list(trials), [states_sym['changepoint_lr'][t] for t in range(t_start, t_end)],
-                'orange', linestyle='-', linewidth=2, label='α_changepoint (SYM)')
+                'orange', linestyle='-', linewidth=2, label='α_changepoint (EQ)')
     axs[3].plot(list(trials), [states_rnn['uncertainty_lr'][t] for t in range(t_start, t_end)],
                 'purple', linestyle='--', alpha=0.7, label='α_uncertainty (RNN)')
     axs[3].plot(list(trials), [states_sym['uncertainty_lr'][t] for t in range(t_start, t_end)],
-                'purple', linestyle='-', linewidth=2, label='α_uncertainty (SYM)')
+                'purple', linestyle='-', linewidth=2, label='α_uncertainty (EQ)')
     axs[3].plot(list(trials), [states_rnn['lr'][t] for t in range(t_start, t_end)],
                 'r--', alpha=0.5, label='α_composite (RNN)')
     axs[3].plot(list(trials), [states_sym['lr'][t] for t in range(t_start, t_end)],
-                'r-', linewidth=2, label='α_composite (SYM)')
+                'r-', linewidth=2, label='α_composite (EQ)')
 
     # Changepoint probability on secondary axis
     ax4_twin.plot(list(trials), [states_rnn['cp_prob'][t] for t in range(t_start, t_end)],
                   'cyan', linestyle='--', alpha=0.5, label='P(CP) (RNN)')
     ax4_twin.plot(list(trials), [states_sym['cp_prob'][t] for t in range(t_start, t_end)],
-                  'cyan', linestyle='-', linewidth=1.5, label='P(CP) (SYM)')
+                  'cyan', linestyle='-', linewidth=1.5, label='P(CP) (EQ)')
     ax4_twin.set_ylabel('Changepoint Probability', color='cyan')
     ax4_twin.tick_params(axis='y', labelcolor='cyan')
     ax4_twin.set_ylim([0, 1])
@@ -389,16 +421,25 @@ if has_dual_lr and has_cp:
     axs[3].set_title('Dynamic Learning Rates & Changepoint Detection')
 
 elif has_lr:
-    # Simple single learning rate model
+    # Simple single certainty model
     axs[3].plot(list(trials), [states_rnn['lr'][t] for t in range(t_start, t_end)],
                 'r--', label='α (RNN)')
     axs[3].plot(list(trials), [states_sym['lr'][t] for t in range(t_start, t_end)],
-                'r-', label='α (SYM)')
+                'r-', label='α (EQ)')
     axs[3].set_ylabel('Learning Rate (α)')
-    axs[3].set_title('Dynamic Learning Rate')
+    axs[3].set_ylim([0, 1])
+    axs[3].set_title('Dynamic Learning Rate vs. Prediction Error')
+
+    ax4_twin = axs[3].twinx()
+    ax4_twin.plot(list(trials), pe_deg, color='0.5', linewidth=1, alpha=0.5, zorder=1)
+    ax4_twin.scatter(list(trials), pe_deg, c=['green' if c > 0.5 else 'gray' for c in caught_vals],
+                      s=18, alpha=0.8, zorder=2, label='PE (deg)')
+    ax4_twin.axhline(0, color='0.7', linewidth=0.8, zorder=0)
+    ax4_twin.set_ylabel('Prediction Error (degrees)', color='0.4')
+    ax4_twin.tick_params(axis='y', labelcolor='0.4')
 else:
-    # No learning rate module
-    axs[3].text(0.5, 0.5, 'No learning rate dynamics in this model',
+    # No certainty module
+    axs[3].text(0.5, 0.5, 'No certainty dynamics in this model',
                 ha='center', va='center', transform=axs[3].transAxes)
     axs[3].set_ylabel('(Not applicable)')
     axs[3].set_title('Learning Rate Dynamics')
@@ -420,9 +461,23 @@ if has_dual_lr and has_cp:
                   fontsize=7, loc='upper left', ncol=2)
 elif has_lr:
     handles, labels = axs[3].get_legend_handles_labels()
-    handles.append(Line2D([0], [0], color='green', lw=1.5))
-    labels.append('Caught')
-    axs[3].legend(handles=handles, labels=labels, fontsize=8)
+    handles.append(Line2D([0], [0], marker='o', color='0.5', markerfacecolor='green', linestyle='None', label='PE, caught'))
+    labels.append('PE, caught')
+    handles.append(Line2D([0], [0], marker='o', color='0.5', markerfacecolor='gray', linestyle='None', label='PE, missed'))
+    labels.append('PE, missed')
+    axs[3].legend(handles=handles, labels=labels, fontsize=8, loc='upper left')
+
+# (5) Fitted SPICE equations for this participant/experiment
+axs[4].axis('off')
+axs[4].set_title(
+    f'Fitted equations — participant {session_participant_id}, experiment {session_experiment_id}',
+    fontsize=10, loc='left',
+)
+axs[4].text(
+    0.0, 1.0, equation_str,
+    transform=axs[4].transAxes, ha='left', va='top',
+    fontsize=9, family='monospace',
+)
 
 plt.tight_layout()
 fig.savefig(os.path.join(output_dir, 'generated_shield_positions.png'), bbox_inches='tight', dpi=150)

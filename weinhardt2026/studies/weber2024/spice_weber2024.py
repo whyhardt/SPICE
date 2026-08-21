@@ -9,20 +9,18 @@ CONFIG = SpiceConfig(
         'belief_update_caught': ('pe',),   # update when shield catches laser
         'belief_update_missed': ('pe',),   # update when shield misses laser
         # Dynamic learning rate: modulates gated output
-        # 'lr_update_caught': ('pe',),    # LR adapts when catching (tracking well)
-        # 'lr_update_missed':  ('pe',),    # LR decays when missing (tracking poorly)
-        'lr_update_caught': (),    # LR adapts when catching (tracking well)
-        'lr_update_missed':  (),    # LR decays when missing (tracking poorly)
+        'certainty_update_caught': (),    # LR adapts when catching (tracking well)
+        'certainty_update_missed':  (),    # LR decays when missing (tracking poorly)
     },
 
     memory_state={
         'belief_value': 0,    # internal belief about laser position (sin/cos as items 0, 1)
-        'lr_value': 0,        # dynamic learning rate state; sigmoid(3) = 1.0
+        'certainty_raw': 0,        # dynamic learning rate state; sigmoid(3) = 1.0
     },
 
     states_in_logit=[
         'belief_value', 
-        'lr_value',
+        'certainty_raw',
         ],
 
     additional_inputs=(
@@ -40,12 +38,19 @@ class SpiceModel(BaseModel):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
 
+        # self.experiment_embedding = self.setup_embedding(
+        #     num_embeddings=self.n_experiments,
+        #     embedding_size=2,
+        # )
+
         self.participant_embedding = self.setup_embedding(
             num_embeddings=self.n_participants,
             embedding_size=self.embedding_size,
             dropout=self.dropout,
         )
-
+        
+        self.alpha_raw = self.setup_constant()
+    
     def forward(self, inputs, prev_state=None):
 
         spice_signals = self.init_forward_pass(inputs, prev_state)
@@ -75,8 +80,8 @@ class SpiceModel(BaseModel):
 
             # --- Dynamic learning rate ---
             self.call_module(
-                key_module='lr_update_caught',
-                key_state='lr_value',
+                key_module='certainty_update_caught',
+                key_state='certainty_raw',
                 action_mask=caught_mask,
                 # inputs=(prediction_error.detach(),),
                 participant_index=spice_signals.participant_ids,
@@ -86,8 +91,8 @@ class SpiceModel(BaseModel):
             )
 
             self.call_module(
-                key_module='lr_update_missed',
-                key_state='lr_value',
+                key_module='certainty_update_missed',
+                key_state='certainty_raw',
                 action_mask=1 - caught_mask,
                 # inputs=(prediction_error.detach(),),
                 participant_index=spice_signals.participant_ids,
@@ -98,7 +103,7 @@ class SpiceModel(BaseModel):
 
             # --- Gated output: shield_t + alpha * (belief - shield_t) ---
             # alpha ∈ [0, 1] via sigmoid; interpolates between current position and belief
-            alpha = torch.sigmoid(self.state['lr_value'])
+            certainty_value = torch.sigmoid(self.state['certainty_raw'])
             
             # --- Belief update: split by catch outcome ---
             self.call_module(
@@ -126,9 +131,12 @@ class SpiceModel(BaseModel):
                 experiment_index=spice_signals.experiment_ids if experiment_embedding is not None else None,
                 experiment_embedding=experiment_embedding,
             )
-
-            spice_signals.logits[trial] = (1-alpha) * shield[trial] + alpha * self.state['belief_value']
-            # self.state['belief_value'] = (1-alpha) * shield[trial] + alpha * self.state['belief_value']
+            
+            # E_idx = torch.arange(self.ensemble_size, device=self.device).unsqueeze(1)
+            # alpha = torch.sigmoid(
+            #     self.alpha_raw[E_idx, spice_signals.participant_ids, spice_signals.experiment_ids]
+            # ).expand(-1, -1, self.n_items)
+            spice_signals.logits[trial] = (1-certainty_value) * shield[trial] + certainty_value * self.state['belief_value']
             # spice_signals.logits[trial] = self.state['belief_value']
             
         spice_signals = self.post_forward_pass(spice_signals)

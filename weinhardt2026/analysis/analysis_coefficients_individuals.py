@@ -42,6 +42,7 @@ from scipy.stats import spearmanr, kruskal, norm, chi2, f_oneway
 from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import StandardScaler
 from statsmodels.stats.multitest import multipletests
+import statsmodels.api as sm
 
 warnings.filterwarnings("ignore")
 
@@ -198,8 +199,18 @@ def prepare(criterion_col, data_path: str, dataset_kwargs: dict = {}, spice_mode
         crit_df[criterion_col] = crit_df["participant_id"]
     crit_df = crit_df[["participant_id", criterion_col]]
 
+    # --- per-participant data volume, to be used as a nuisance covariate ---
+    # Sparsity is decided by pruning, which is data-driven: a participant with more
+    # observed trials supports more surviving terms. Without this covariate a criterion
+    # that correlates with data volume produces spurious "presence" effects.
+    volume = (raw_df.groupby(df_participant_id)
+              .size().rename("n_events").reset_index()
+              .rename(columns={df_participant_id: "participant_id"}))
+    volume["log_n_events"] = np.log(volume["n_events"])
+
     # Merge
     df = sindy_df.merge(crit_df, on="participant_id", how="inner")
+    df = df.merge(volume, on="participant_id", how="left")
     df = df.dropna(subset=[criterion_col])
     print(f"After merge: {len(df)} participants with criterion '{criterion_col}'.")
     return df, sindy_cols
@@ -343,14 +354,20 @@ def _plot_forest(df_plot, ax, title="", xlabel="Effect (β)"):
     y_pos = np.arange(len(df_plot))
     colors = df_plot["significance"].map(SIG_COLORS).values
 
-    # CI lines
+    # CI lines -- prefer explicit (profile-likelihood) bounds so that the bars agree
+    # with the likelihood-ratio p-values driving `significance`; fall back to Wald.
+    has_explicit_ci = {"ci_lo", "ci_hi"}.issubset(df_plot.columns)
     for y, row_idx in zip(y_pos, range(len(df_plot))):
         row = df_plot.iloc[row_idx]
-        if not np.isnan(row["se"]):
+        if has_explicit_ci and not (np.isnan(row["ci_lo"]) or np.isnan(row["ci_hi"])):
+            lo, hi = row["ci_lo"], row["ci_hi"]
+        elif not np.isnan(row.get("se", np.nan)):
             lo = row["beta"] - 1.96 * row["se"]
             hi = row["beta"] + 1.96 * row["se"]
-            ax.plot([lo, hi], [y, y], color=colors[row_idx],
-                    linewidth=2, solid_capstyle="round")
+        else:
+            continue
+        ax.plot([lo, hi], [y, y], color=colors[row_idx],
+                linewidth=2, solid_capstyle="round")
 
     # Point estimates
     ax.scatter(df_plot["beta"], y_pos, color=colors, s=50, zorder=5,
@@ -462,10 +479,94 @@ def _plot_presence_rates(res_df, df, criterion_col, ref, comparisons, output_dir
 # 2b. Continuous analysis – logistic regression β (effect) per coefficient
 # ---------------------------------------------------------------------------
 
-def run_continuous(df, sindy_cols, criterion_col, output_dir):
-    """For each SINDy coefficient, fit logistic regression predicting
-    presence/absence from the continuous criterion (e.g. age).
-    Produces forest plots (β with 95% CIs) and logistic-curve plots."""
+def _logistic_effect(y, x, Z=None, profile_ci=True):
+    """Logistic regression of presence `y` on criterion `x`, adjusting for covariates `Z`.
+
+    Everything reported comes from the *same* unpenalised likelihood, so the interval and
+    the p-value cannot contradict each other:
+      * beta / se  -- MLE and its Wald standard error
+      * p_value    -- likelihood-ratio test of the full model against the model without x
+      * ci_lo/hi   -- profile-likelihood interval, the interval dual to that LR test
+
+    Returns a dict; `note` is set when the fit is unreliable (separation / non-convergence).
+    """
+    X_red = np.ones((len(y), 1)) if Z is None else np.column_stack([np.ones(len(y)), Z])
+    X_full = np.column_stack([X_red, x])
+    nan = dict(beta=np.nan, se=np.nan, p_value=np.nan, ci_lo=np.nan, ci_hi=np.nan)
+
+    def _fit(X, offset=None):
+        model = sm.Logit(y, X, offset=offset)
+        res = model.fit(disp=0, maxiter=200)
+        if not res.mle_retvals.get("converged", False):
+            raise RuntimeError("not converged")
+        return res
+
+    try:
+        full, red = _fit(X_full), _fit(X_red)
+    except Exception:
+        return {**nan, "note": "separation"}
+
+    beta = full.params[-1]
+    se = full.bse[-1]
+    # A |beta| this large on standardised input means the data separate; the MLE is
+    # effectively infinite and neither the estimate nor any interval is meaningful.
+    if not np.isfinite(beta) or abs(beta) > 15 or not np.isfinite(se):
+        return {**nan, "note": "separation"}
+
+    lr = 2 * (full.llf - red.llf)
+    p_value = 1 - chi2.cdf(max(0.0, lr), df=1)
+
+    ci_lo = ci_hi = np.nan
+    if profile_ci:
+        target = full.llf - chi2.ppf(0.95, df=1) / 2
+
+        def profile_ll(b):
+            """Max log-likelihood with the criterion coefficient pinned at b."""
+            try:
+                return _fit(X_red, offset=b * x).llf
+            except Exception:
+                return -np.inf
+
+        def solve(direction):
+            step = max(se, 0.1)
+            lo, hi = beta, beta
+            for _ in range(60):                       # expand until the bound is bracketed
+                hi = hi + direction * step
+                if profile_ll(hi) < target:
+                    break
+                lo, step = hi, step * 1.5
+            else:
+                return np.nan
+            for _ in range(60):                       # bisect onto the bound
+                mid = (lo + hi) / 2
+                if profile_ll(mid) < target:
+                    hi = mid
+                else:
+                    lo = mid
+            return (lo + hi) / 2
+
+        ci_lo, ci_hi = solve(-1), solve(+1)
+
+    return {"beta": beta, "se": se, "p_value": p_value,
+            "ci_lo": ci_lo, "ci_hi": ci_hi, "note": np.nan}
+
+
+def run_continuous(df, sindy_cols, criterion_col, output_dir,
+                   covariates=("log_n_events",), min_presence=8, fdr_alpha=0.05):
+    """For each SINDy coefficient, fit logistic regression predicting presence/absence
+    from the continuous criterion (e.g. age), adjusting for nuisance covariates.
+
+    Three guards against over-reading the result:
+      * `covariates`   -- terms adjusted for; defaults to log data volume per participant,
+                          which otherwise drives presence through data-driven pruning.
+      * `min_presence` -- coefficients present (or absent) in fewer than this many
+                          participants are not tested; such cells separate and yield
+                          uninterpretable estimates.
+      * `fdr_alpha`    -- Benjamini-Hochberg correction across all tested coefficients;
+                          `significance` reflects the FDR-adjusted p-value, not the raw one.
+
+    Produces forest plots (β with profile-likelihood 95% CIs) and logistic-curve plots.
+    """
 
     df_clean = df[df[criterion_col].notna()].copy()
     if df_clean.empty:
@@ -475,8 +576,15 @@ def run_continuous(df, sindy_cols, criterion_col, output_dir):
     crit_max = df_clean[criterion_col].max()
     print("\nContinuous analysis on '"+criterion_col+"': "+f"range [{crit_min:.1f}, {crit_max:.1f}], n={len(df_clean)}")
 
-    scaler = StandardScaler()
-    crit_std = scaler.fit_transform(df_clean[[criterion_col]]).flatten()
+    crit_std = StandardScaler().fit_transform(df_clean[[criterion_col]]).flatten()
+
+    covariates = [c for c in (covariates or ()) if c in df_clean.columns]
+    if covariates:
+        Z = StandardScaler().fit_transform(df_clean[list(covariates)].astype(float))
+        print(f"Adjusting for nuisance covariate(s): {', '.join(covariates)}")
+    else:
+        Z = None
+        print("No nuisance covariates applied.")
 
     results = []
     skipped = []
@@ -485,67 +593,35 @@ def run_continuous(df, sindy_cols, criterion_col, output_dir):
         vals = df_clean[col].values
         mask = ~np.isnan(vals)
         if mask.sum() < 10:
-            skipped.append((col, f"<10 obs"))
+            skipped.append((col, "<10 obs"))
             continue
         y = (vals[mask] != 0).astype(int)
-        rate = y.mean()
+        n_present = int(y.sum())
+        n_total = int(len(y))
 
-        if rate == 0:
+        if n_present == 0:
             skipped.append((col, "all zero"))
             continue
-        if rate == 1.0:
+        if n_present == n_total:
             results.append({
-                "coefficient": col,
-                "coefficient_clean": clean_name(col),
-                "beta": np.nan,
-                "se": np.nan,
-                "p_value": np.nan,
-                "n_nonzero": int(y.sum()),
-                "n_total": int(len(y)),
-                "significance": "ns",
-                "note": "always_present",
+                "coefficient": col, "coefficient_clean": clean_name(col),
+                "beta": np.nan, "se": np.nan, "p_value": np.nan,
+                "ci_lo": np.nan, "ci_hi": np.nan,
+                "n_nonzero": n_present, "n_total": n_total,
+                "significance": "ns", "note": "always_present",
             })
             continue
+        # Too few in the minority cell to estimate anything: these are the rows whose
+        # Wald intervals blow up while an LR test still reports a small p-value.
+        if min(n_present, n_total - n_present) < min_presence:
+            skipped.append((col, f"minority cell < {min_presence}"))
+            continue
 
-        solver = "saga" if rate < 0.1 else "liblinear"
-        max_iter = 2000 if rate < 0.1 else 1000
-        model = LogisticRegression(solver=solver, max_iter=max_iter, random_state=0)
-        X_col = crit_std[mask].reshape(-1, 1)
-        model.fit(X_col, y)
-        beta = model.coef_[0][0]
-
-        p_hat = model.predict_proba(X_col)[:, 1]
-
-        # Standard error via Fisher information
-        W_fisher = p_hat * (1 - p_hat)
-        X_design = np.column_stack([np.ones(mask.sum()), crit_std[mask]])
-        fisher = (X_design.T * W_fisher) @ X_design
-        try:
-            cov = np.linalg.inv(fisher)
-            se = np.sqrt(cov[1, 1])
-        except np.linalg.LinAlgError:
-            se = np.nan
-
-        # Likelihood ratio test
-        eps = 1e-15
-        ll = np.sum(
-            y * np.log(np.clip(p_hat, eps, 1 - eps))
-            + (1 - y) * np.log(np.clip(1 - p_hat, eps, 1 - eps))
-        )
-        p0 = y.mean()
-        ll0 = np.sum(y * np.log(p0) + (1 - y) * np.log(1 - p0))
-        lr = -2 * (ll0 - ll)
-        p_val = 1 - chi2.cdf(max(0, lr), df=1)
-
+        fit = _logistic_effect(y, crit_std[mask], None if Z is None else Z[mask])
         results.append({
-            "coefficient": col,
-            "coefficient_clean": clean_name(col),
-            "beta": beta,
-            "se": se,
-            "p_value": p_val,
-            "n_nonzero": int(y.sum()),
-            "n_total": int(len(y)),
-            "significance": get_significance(p_val),
+            "coefficient": col, "coefficient_clean": clean_name(col),
+            **fit, "n_nonzero": n_present, "n_total": n_total,
+            "significance": "ns",
         })
 
     if skipped:
@@ -555,15 +631,18 @@ def run_continuous(df, sindy_cols, criterion_col, output_dir):
     if res_df.empty:
         raise ValueError("No valid regressions.")
 
+    # ---- Benjamini-Hochberg across everything actually tested ----
+    testable = res_df["p_value"].notna()
+    res_df["p_fdr"] = np.nan
+    if testable.any():
+        res_df.loc[testable, "p_fdr"] = multipletests(
+            res_df.loc[testable, "p_value"].values, alpha=fdr_alpha, method="fdr_bh")[1]
+        res_df.loc[testable, "significance"] = [
+            get_significance(p) for p in res_df.loc[testable, "p_fdr"]]
+
     os.makedirs(output_dir, exist_ok=True)
 
-    # Separate always-present from actual regressions
-    has_note = "note" in res_df.columns
-    if has_note:
-        mask_reg = res_df["note"].isna()
-    else:
-        mask_reg = pd.Series(True, index=res_df.index)
-
+    mask_reg = res_df["note"].isna()
     res_df.to_csv(os.path.join(output_dir, "continuous_effect_results_all.csv"), index=False)
 
     reg_df = res_df[mask_reg].copy()
@@ -573,19 +652,26 @@ def run_continuous(df, sindy_cols, criterion_col, output_dir):
 
     # ---- print summary ----
     never = [clean_name(c) for c, n in skipped if n == "all zero"]
-    always = res_df.loc[res_df.get("note") == "always_present", "coefficient_clean"].tolist() if has_note else []
-    print(f"\nAnalysed {len(reg_df)} variable coefficients.")
+    small = [clean_name(c) for c, n in skipped if str(n).startswith("minority cell")]
+    always = res_df.loc[res_df["note"] == "always_present", "coefficient_clean"].tolist()
+    separated = res_df.loc[res_df["note"] == "separation", "coefficient_clean"].tolist()
+    print(f"\nAnalysed {len(reg_df)} variable coefficients (FDR-corrected, alpha={fdr_alpha}).")
     if never:
         print(f"Never-present ({len(never)}): {', '.join(never[:5])}")
     if always:
         print(f"Always-present ({len(always)}): {', '.join(always[:5])}")
+    if small:
+        print(f"Untestable, minority cell < {min_presence} ({len(small)}): {', '.join(small[:5])}")
+    if separated:
+        print(f"Separated / non-converged ({len(separated)}): {', '.join(separated[:5])}")
 
     sig = reg_df[reg_df["significance"].isin(["*", "**", "***"])]
-    print(f"Significant effects: {len(sig)}")
+    print(f"Significant effects after FDR: {len(sig)}")
     for _, row in sig.head(10).iterrows():
         direction = "increases" if row["beta"] > 0 else "decreases"
-        print(f"  {row['coefficient_clean']}: β={row['beta']:.3f}, "
-              f"p={row['p_value']:.4f} {row['significance']} "
+        print(f"  {row['coefficient_clean']}: β={row['beta']:.3f} "
+              f"[{row['ci_lo']:.3f}, {row['ci_hi']:.3f}], "
+              f"p_raw={row['p_value']:.4f}, p_fdr={row['p_fdr']:.4f} {row['significance']} "
               f"(presence {direction} with {criterion_col})")
 
     # ---- plots ----
@@ -596,7 +682,9 @@ def run_continuous(df, sindy_cols, criterion_col, output_dir):
 
 
 def _plot_beta_bars(df, criterion_col, output_dir):
-    df_plot = df[["beta", "se", "coefficient_clean", "significance"]].dropna(subset=["beta"]).copy()
+    cols = [c for c in ["beta", "se", "ci_lo", "ci_hi", "coefficient_clean", "significance"]
+            if c in df.columns]
+    df_plot = df[cols].dropna(subset=["beta"]).copy()
     fig, ax = plt.subplots(figsize=(8, max(6, len(df_plot) * 0.25)))
     _plot_forest(df_plot, ax,
                  title=f"Effect of {criterion_col} on coefficient presence",
@@ -799,6 +887,10 @@ def analysis_coefficients_individuals(
     
     dataset_kwargs: dict = {},
     output_dir: str = None,
+
+    covariates: tuple = ("log_n_events",),
+    min_presence: int = 8,
+    fdr_alpha: float = 0.05,
     ):
     """Run the full individual-level SINDy coefficient analysis pipeline.
 
@@ -824,6 +916,16 @@ def analysis_coefficients_individuals(
         Reference group for discrete analysis.  Required when *analysis* is ``"disc"``.
     dir_output : str, optional
         Output directory (default: auto-generated next to data).
+    covariates : tuple, optional
+        Nuisance covariates adjusted for in the continuous presence regression.
+        Defaults to ``("log_n_events",)`` -- per-participant data volume, which drives
+        coefficient presence through data-driven pruning and will otherwise masquerade
+        as a criterion effect whenever the two are correlated.
+    min_presence : int, optional
+        Minimum size of the minority (present/absent) cell for a coefficient to be
+        tested.  Smaller cells separate and give uninterpretable estimates.
+    fdr_alpha : float, optional
+        Benjamini-Hochberg level applied across all tested coefficients.
     """
 
     if analysis == "disc" and reference is None:
@@ -854,7 +956,9 @@ def analysis_coefficients_individuals(
         res = run_discrete(df, sindy_cols, criterion,
                            reference, output_dir)
     else:
-        res = run_continuous(df, sindy_cols, criterion, output_dir)
+        res = run_continuous(df, sindy_cols, criterion, output_dir,
+                             covariates=covariates, min_presence=min_presence,
+                             fdr_alpha=fdr_alpha)
 
     # 3. Magnitude analysis (Spearman / KW / JT)
     print("\n" + "=" * 70)

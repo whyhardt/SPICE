@@ -295,6 +295,114 @@ def plot_ensemble_spread(
         plt.close()
 
 
+def plot_ensemble_errorbars_by_term(
+    raw_coefficients: Dict[str, torch.Tensor],
+    presence_masks: Dict[str, torch.Tensor],
+    candidate_terms: Dict[str, List[str]],
+    modules: List[str],
+    output_dir: str,
+    participant_values: np.ndarray = None,
+    participant_label: str = None,
+    error: str = "sd",
+) -> None:
+    """Per-ape mean +/- across-ensemble error bar, grouped by term along the x axis.
+
+    One tick per candidate term; within a tick, every participant is drawn as its own
+    marker with an error bar, tightly packed. This makes the reliability of each term
+    directly visible: if the participants' error bars overlap heavily, the apparent
+    between-participant spread for that term is estimation noise, not individual
+    differences. The ICC printed above each term quantifies exactly that -- the share of
+    the observed between-participant variance that survives subtracting the noise floor.
+
+    Args:
+        participant_values: optional per-participant scalar used to colour and order the
+            markers within each term (e.g. dominance rank), shape (P,).
+        participant_label: colour-bar label for `participant_values`.
+        error: "sd" for the raw across-ensemble spread, "sem" for the error on the mean
+            (sd / sqrt(E)) -- the quantity the ICC compares against.
+    """
+    for module in modules:
+        coefs = raw_coefficients[module].numpy()   # (E, P, X, T)
+        pres = presence_masks[module].numpy()
+        terms = candidate_terms[module]
+        E, P, X, n_terms = coefs.shape
+
+        vals = coefs.mean(axis=2)                  # (E, P, T)  average across experiments
+        active = pres.any(axis=2)                  # (E, P, T)
+        live = [t for t in range(n_terms) if (vals[:, :, t] * active[:, :, t]).any()]
+        if not live:
+            continue
+
+        order = (np.argsort(participant_values) if participant_values is not None
+                 else np.arange(P))
+        if participant_values is not None:
+            colour_src = np.asarray(participant_values, dtype=float)[order]
+            norm = plt.Normalize(np.nanmin(colour_src), np.nanmax(colour_src))
+            cmap = plt.get_cmap("viridis")
+            colours = cmap(norm(colour_src))
+        else:
+            colours = np.tile(np.array([[0.12, 0.47, 0.71, 1.0]]), (P, 1))
+
+        fig, ax = plt.subplots(figsize=(max(10, len(live) * 1.5), 5))
+        offsets = np.linspace(-0.38, 0.38, P)
+        iccs = []
+
+        for x, t in enumerate(live):
+            v = vals[:, :, t]                       # (E, P)
+            a = active[:, :, t]                     # (E, P)
+            mean_p = np.where(a, v, np.nan)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                mu = np.nanmean(mean_p, axis=0)     # (P,)
+                sd = np.nanstd(mean_p, axis=0, ddof=1)
+            n_act = a.sum(axis=0)
+            err = sd / np.sqrt(np.maximum(n_act, 1)) if error == "sem" else sd
+            mu, err = mu[order], err[order]
+
+            # vlines/scatter rather than errorbar: only these accept per-point colours
+            xs = x + offsets
+            finite_pt = np.isfinite(mu) & np.isfinite(err)
+            ax.vlines(xs[finite_pt], (mu - err)[finite_pt], (mu + err)[finite_pt],
+                      colors=colours[finite_pt], linewidth=0.7, alpha=0.85)
+            ax.scatter(xs, mu, s=5, c=colours, zorder=3, linewidths=0)
+
+            # ICC: share of observed between-participant variance that is not noise.
+            # Participants whose term was pruned are EXCLUDED, not treated as 0 --
+            # including them measures presence variation (a 0-vs-nonzero split) rather
+            # than magnitude variation, and inflates the ICC toward 1.
+            finite = np.isfinite(mu) & np.isfinite(sd[order])
+            icc = np.nan
+            if finite.sum() > 2:
+                var_obs = np.var(mu[finite], ddof=1)
+                noise = np.mean(sd[order][finite] ** 2) / E
+                icc = max(var_obs - noise, 0.0) / var_obs if var_obs > 0 else 0.0
+            iccs.append((x, icc))
+
+        # Labels go on last, in axes coordinates, so they sit above the data at a
+        # single consistent height instead of chasing a y-limit that is still growing.
+        for x, icc in iccs:
+            ax.text(x, 1.01, f"ICC {icc:.2f}", ha="center", va="bottom", fontsize=7,
+                    color="dimgray", transform=ax.get_xaxis_transform())
+
+        ax.axhline(0, color="black", linewidth=0.8, linestyle="--", alpha=0.6)
+        ax.set_xticks(range(len(live)))
+        ax.set_xticklabels([terms[t] for t in live], rotation=40, ha="right", fontsize=8)
+        ax.set_ylabel(f"coefficient (mean +/- {error.upper()} across {E} ensemble members)")
+        ax.set_title(f"Per-participant ensemble spread: {module}")
+        ax.margins(x=0.02)
+
+        if participant_values is not None:
+            sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
+            sm.set_array([])
+            fig.colorbar(sm, ax=ax, label=participant_label or "participant value",
+                         fraction=0.025, pad=0.01)
+
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_dir, f"ensemble_errorbars_{module}.png"),
+                    dpi=300, bbox_inches="tight")
+        plt.close()
+
+
 def _plot_ensemble_cv_heatmap_single(
     coefs: np.ndarray,
     pres: np.ndarray,
@@ -665,6 +773,8 @@ def analysis_coefficients_distributions(
     max_participants_strip: int = 30,
     cluster_heatmap: bool = True,
     verbose: bool = True,
+    participant_values: np.ndarray = None,
+    participant_label: str = None,
 ) -> Tuple[pd.DataFrame, pd.DataFrame, Optional[pd.DataFrame]]:
     """Run the full coefficient distribution analysis.
 
@@ -758,6 +868,13 @@ def analysis_coefficients_distributions(
         print("  Ensemble spread plots saved.")
 
     plot_ensemble_cv_heatmap(raw, presence, candidate_terms, modules, output_dir)
+
+    plot_ensemble_errorbars_by_term(
+        raw, presence, candidate_terms, modules, output_dir,
+        participant_values=participant_values, participant_label=participant_label,
+    )
+    if verbose:
+        print("  Per-participant ensemble error-bar plots saved.")
     if verbose:
         print("  Ensemble CV heatmaps saved.")
 
