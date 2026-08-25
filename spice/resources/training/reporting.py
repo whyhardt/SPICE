@@ -37,6 +37,68 @@ def _is_notebook() -> bool:
         return False
 
 
+# One min/mean/max block: three 6-wide numbers, single-space separated.
+_RANGE_WIDTH = 20
+_RANGE_HEADER = f"{'min':>6} {'mean':>6} {'max':>6}"
+
+
+def _format_value_range(values: torch.Tensor) -> str:
+    """min/mean/max of a factor's in-use entries, as one fixed-width block.
+
+    Both tracked quantities are non-negative -- Z by constraint, V by taking |V| -- so
+    no sign column is reserved.
+    """
+    if values.numel() == 0:
+        return f"{'-':^{_RANGE_WIDTH}}"
+    return f"{values.min().item():>6.3f} {values.mean().item():>6.3f} {values.max().item():>6.3f}"
+
+
+def _format_mean_std(values: torch.Tensor) -> str:
+    """`mean+/-std` of a count, in a fixed 10-wide field."""
+    values = values.float()
+    spread = values.std() if values.numel() > 1 else torch.zeros_like(values).sum()
+    return f"{values.mean().item():>4.1f}+/-{spread.item():<3.1f}"
+
+
+# Width of one prevalence entry: a right-aligned integer percent plus its separator.
+_PREVALENCE_WIDTH = 4
+
+
+def _format_prevalence(fractions: torch.Tensor, budget: int) -> str:
+    """Integer percent per entry, in index order.
+
+    Deliberately *not* sorted. Index position is the identity here -- concept c in this
+    epoch is concept c in the next one, and term t is a named library term -- so sorting
+    by prevalence would make a decaying concept slide along the strip and destroy the
+    one thing the display is for: watching a specific concept or term fade out.
+
+    Percentages are truncated, not rounded, so 100 means literally all: a concept every
+    participant but one holds reads 99, never 100.
+    """
+    entries = [f"{int(fraction * 100):>3}" for fraction in fractions.tolist()]
+    if len(entries) * _PREVALENCE_WIDTH - 1 > budget:
+        keep = max(1, (budget - len(f" +{len(entries)}")) // _PREVALENCE_WIDTH)
+        return " ".join(entries[:keep]) + f" +{len(entries) - keep}"
+    return " ".join(entries)
+
+
+def _spice_parameter_postfix(model: BaseModel) -> dict:
+    """`free_participant`/`shared` fields for a tqdm postfix.
+
+    One count_spice_parameters() call, not three: it loops every module and reduces over
+    the gate/support masks, so calling it per postfix field forces three device syncs per
+    epoch for the same numbers.
+    """
+    counts = model.count_spice_parameters()
+    loadings = counts['loadings']
+    # std() over a single unit is nan (and warns); a one-participant fit has no spread.
+    spread = loadings.std() if loadings.numel() > 1 else torch.zeros_like(loadings).sum()
+    return {
+        'free_participant': f"{loadings.mean():.2f}+/-{spread:.2f}",
+        'shared': f"{counts['directions']:.0f}",
+    }
+
+
 def _print_training_status(
     len_last_print: int,
     model: BaseModel,
@@ -102,46 +164,89 @@ def _print_training_status(
 
         name_width = max(len(module) for module in model.get_modules())
         name_width = max(name_width, 6)
+
+        # Widths of every fixed column, so the two group headers can be centred over
+        # their own blocks instead of being eyeballed into place.
+        count_width = 10
+        n_concepts_max = max(model.sindy_concept_support[m].shape[0] for m in model.get_modules())
+        n_terms_max = max(model.sindy_concept_support[m].shape[1] for m in model.get_modules())
+
+        fixed = name_width + 2 * (2 + count_width + 2 + _RANGE_WIDTH + 2)
+        strip_budget = max(2 * _PREVALENCE_WIDTH * 2, terminal_width - fixed)
+        # Split the remaining width in proportion to what each strip has to render.
+        z_full = n_concepts_max * _PREVALENCE_WIDTH - 1
+        v_full = n_terms_max * _PREVALENCE_WIDTH - 1
+        z_budget = max(2 * _PREVALENCE_WIDTH, min(z_full, round(strip_budget * z_full /
+                                                                max(z_full + v_full, 1))))
+        v_budget = max(2 * _PREVALENCE_WIDTH, min(v_full, strip_budget - z_budget))
+
+        z_block = count_width + 2 + _RANGE_WIDTH + 2 + z_budget
+        v_block = count_width + 2 + _RANGE_WIDTH + 2 + v_budget
         status_lines.append(
-            f"{'module':<{name_width}}  {'live':>7}  {'terms/c':>7}  {'held/p':>6}  prevalence %"
+            f"{'Modules':<{name_width}}  {'Loadings Z':<{z_block}}  {'Concepts V':<{v_block}}"
+        )
+        status_lines.append(
+            f"{'':<{name_width}}  "
+            f"{'c/p':^{count_width}}  {_RANGE_HEADER}  {'prevalence/participant'[:z_budget]:<{z_budget}}  "
+            f"{'t/c':^{count_width}}  {_RANGE_HEADER}  {'prevalence/concept'[:v_budget]:<{v_budget}}"
         )
 
         for module in model.get_modules():
             gates = model.sindy_concept_gates[module]          # (E, P, X, C)
-            support = model.sindy_concept_support[module]      # (C, T)
+            # Same mask the model itself composes coefficients through (and the same one
+            # count_spice_parameters counts): theory-excluded columns are not part of a
+            # concept's support even when the learned support bit is still set.
+            support = (model.sindy_concept_support[module]
+                       & model.sindy_term_prior_mask[module].unsqueeze(0))   # (C, T)
             held = gates.any(dim=0)                            # (P, X, C)
             live = held.any(dim=0).any(dim=0) & support.any(dim=-1)   # (C,)
 
             n_live = int(live.sum())
             n_total = support.shape[0]
-            n_units = model.n_participants * model.n_experiments
+            n_units = max(model.n_participants * model.n_experiments, 1)
 
             if n_live == 0:
-                status_lines.append(f"{module:<{name_width}}  {0:>3}/{n_total:<3}  {'-':>7}  {'-':>6}  (no live concepts)")
+                empty = f"{'-':^{count_width}}  {'-':^{_RANGE_WIDTH}}"
+                status_lines.append(
+                    f"{module:<{name_width}}  {empty}  {_format_prevalence(torch.zeros(n_total), z_budget):<{z_budget}}  "
+                    f"{empty}  {_format_prevalence(torch.zeros(support.shape[1]), v_budget):<{v_budget}}"
+                )
                 continue
 
-            terms_per_concept = support[live].sum(dim=-1).float().mean().item()
-            held_per_unit = held.sum(dim=-1).float().mean().item()
+            # Values of the two factors, restricted to what is actually in use: Z over
+            # the gated loadings of live concepts, V over the supported terms of live
+            # concepts. Unused entries are exact zeros and would only drag the statistics
+            # toward zero as pruning proceeds, i.e. track sparsity instead of magnitude.
+            # V is tracked as |V|: rows are unit-norm with arbitrary sign per coordinate,
+            # so the signed mean sits at ~0 regardless of how the direction is moving,
+            # while the mean magnitude tracks how concentrated the row is.
+            loadings = model.effective_loadings(module).detach()[..., live]  # (E, P, X, C_live)
+            loading_values = loadings[gates[..., live]]
+            directions = model.effective_directions(module).detach()[live]   # (C_live, T)
+            direction_values = directions[support[live]].abs()
 
-            prevalence = (held.sum(dim=0).sum(dim=0)[live].float() / max(n_units, 1) * 100)
-            prevalence = prevalence.sort(descending=True).values.tolist()
-
-            # Keep the prevalence list inside the terminal, however many concepts survive
-            budget = max(20, terminal_width - name_width - 30)
-            rendered, shown = "", 0
-            for value in prevalence:
-                candidate = (rendered + " " if rendered else "") + f"{value:.0f}"
-                if len(candidate) > budget:
-                    break
-                rendered, shown = candidate, shown + 1
-            if shown < len(prevalence):
-                rendered += f" +{len(prevalence) - shown}"
+            # Two different questions, one per factor: how many concepts a participant
+            # holds / how widely each concept is held, versus how many terms a concept
+            # spans / how widely each term is used across the dictionary.
+            concepts_per_unit = held[..., live].sum(dim=-1).float()          # (P, X)
+            # Over all C, not just the live ones: a retired concept leaves a '.' in place
+            # rather than shifting every later concept one position along the strip.
+            concept_prevalence = torch.where(
+                live, held.sum(dim=0).sum(dim=0).float() / n_units, torch.zeros(()))
+            terms_per_concept = support[live].sum(dim=-1).float()            # (C_live,)
+            term_prevalence = support[live].sum(dim=0).float() / n_live      # (T,)
 
             status_lines.append(
-                f"{module:<{name_width}}  {n_live:>3}/{n_total:<3}  "
-                f"{terms_per_concept:>7.1f}  {held_per_unit:>6.1f}  {rendered}"
+                f"{module:<{name_width}}  {_format_mean_std(concepts_per_unit)}  {_format_value_range(loading_values)}  "
+                f"{_format_prevalence(concept_prevalence, z_budget):<{z_budget}}  "
+                f"{_format_mean_std(terms_per_concept)}  {_format_value_range(direction_values)}  "
+                f"{_format_prevalence(term_prevalence, v_budget):<{v_budget}}"
             )
 
+        status_lines.append(
+            "prevalence  truncated %, in index order   |   prevalence/participant: each concept "
+            "across participants   prevalence/concept: each term across concepts"
+        )
 
     status_lines.append("=" * terminal_width)
     

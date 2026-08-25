@@ -225,7 +225,7 @@ def analysis_model_evaluation(
 
     # setup SPICE model
     if spice_model is not None:
-        spice_parameters = spice_model.count_sindy_coefficients()  # (P, X)
+        spice_parameters = spice_model.count_spice_parameters()['loadings']  # (P, X)
 
         spice_rnn_parameters = 0
         for module in spice_model.get_modules():
@@ -502,7 +502,7 @@ def analysis_model_evaluation_mse(
             preds_sindy = preds_sindy.mean(dim=0)
         preds_sindy = preds_sindy.detach().cpu()
 
-        spice_params_tensor = spice_model.count_sindy_coefficients()
+        spice_params_tensor = spice_model.count_spice_parameters()['loadings']
         participant_ids = dataset.xs[:, 0, 0, -1].long().cpu()
         experiment_ids = dataset.xs[:, 0, 0, -2].long().cpu()
         unique_pairs = torch.unique(torch.stack([participant_ids, experiment_ids], dim=1), dim=0)

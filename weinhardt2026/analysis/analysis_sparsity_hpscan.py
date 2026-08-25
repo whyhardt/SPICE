@@ -163,7 +163,7 @@ def analysis_sparsity_hpscan(
         estimator.load_spice(path)
 
         # ── Coefficient count (per participant/experiment group actually in the test set) ──
-        n_params = estimator.count_sindy_coefficients()  # (P, X)
+        n_params = estimator.count_spice_parameters()['loadings']  # (P, X)
         n_params_per_group = n_params[unique_pairs[:, 0], unique_pairs[:, 1]].float()
         n_params_mean = n_params_per_group.mean().item()
         n_params_std = n_params_per_group.std().item() if n_params_per_group.numel() > 1 else 0.0

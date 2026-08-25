@@ -18,7 +18,7 @@ from torch.nn.functional import mse_loss
 
 from ..model import BaseModel
 from ..spice_utils import SpiceDataset
-from .reporting import _get_terminal_width, _check_cuda_oom, _print_training_status
+from .reporting import _get_terminal_width, _check_cuda_oom, _print_training_status, _spice_parameter_postfix
 from .losses import cross_entropy_loss
 from .trajectories import _vectorize_state_sequential, _flatten_state_trajectories_onestep
 from .ridge import _ridge_solve_sindy
@@ -34,7 +34,8 @@ def _run_sindy_training(
     ys_train_original: torch.Tensor = None,
     epochs: int = 1000,
     n_warmup_steps: int = 100,
-    sindy_alpha: float = None,
+    sindy_lambda_loading: float = None,
+    sindy_lambda_concept: float = None,
     sindy_pruning_frequency: int = None,
     sindy_ensemble_pruning: float = None,
     sindy_threshold_pruning: float = None,
@@ -51,12 +52,10 @@ def _run_sindy_training(
         Re-draw the concept factorization from scratch (full support, all gates
         open, random unit-norm directions, small positive loadings) rather than
         inheriting whatever Stage 1 converged to, then train with one-step
-        teacher forcing plus pruning and the L1 prox on the loadings. Pruning
-        acts on both levels: concept gates per unit, concept support across the
-        population. LR warms at 0.01 and is boosted back after pruning events.
-        The anchor condition is enforced once at the end, when structure has
-        settled -- not during the search, where full supports mean no concept
-        has an exclusive term yet.
+        teacher forcing plus pruning and the L1 prox on both halves of the
+        factorization. Pruning acts on both levels: concept gates per unit,
+        concept support across the population. LR warms at 0.01 and is boosted
+        back after pruning events.
 
     Stage 2.2 — Loading estimation:
         Freeze the discovered structure (directions, support and gates),
@@ -77,9 +76,13 @@ def _run_sindy_training(
         ys_train_original: 4D original training targets
         epochs: Training epochs per stage (default: 1000)
         n_warmup_steps: Warmup epochs per stage (default: 100)
-        sindy_alpha: L1 strength for the proximal step on the loadings. Applied
-            as shrinkage of lr * sindy_alpha per step, so it is not comparable
+        sindy_lambda_loading: L1 strength for the proximal step on the loadings. Applied
+            as shrinkage of lr * sindy_lambda_loading per step, so it is not comparable
             across different LR schedules.
+        sindy_lambda_concept: L1 strength for the proximal step on the concept directions,
+            applied the same way. Sets how dense each concept's support is
+            allowed to be; without it the penalty on the loadings alone drives
+            the directions toward maximum density.
         sindy_pruning_frequency: Epochs between pruning events in Stage 2.1
         sindy_ensemble_pruning: Minimum fraction of ensemble members that must
             load on a concept for it to survive the ensemble ratio test
@@ -159,7 +162,7 @@ def _run_sindy_training(
                     window_starts=window_starts_21,
                     K=K_21,
                     B_total=B_21,
-                    sindy_alpha=sindy_alpha,
+                    sindy_lambda_loading=sindy_lambda_loading,
                     batch_size_sessions=batch_size_sessions,
                 )
             # A closed-form solve can "succeed" (no LinAlgError) while still
@@ -213,7 +216,8 @@ def _run_sindy_training(
                             window_starts=window_starts_21,
                             K=K_21,
                             batch_sessions=batch_sessions,
-                            sindy_alpha=sindy_alpha,
+                            sindy_lambda_loading=sindy_lambda_loading,
+                            sindy_lambda_concept=sindy_lambda_concept,
                         )
                         loss_epoch += loss_e
                         n_batches += 1
@@ -226,17 +230,18 @@ def _run_sindy_training(
                     pbar.set_postfix(
                         loss=f"{loss_epoch:.7f}",
                         lr=f"{optimizer_21.param_groups[0]['lr']:.1e}",
-                        n_params=f"{model.count_spice_parameters()['loadings'].mean():.2f}+/-{model.count_spice_parameters()['loadings'].std():.2f}",
+                        **_spice_parameter_postfix(model),
                     )
 
                     # Pruning
                     if sindy_pruning_frequency is not None:
-                        if ((sindy_ensemble_pruning is None or model.ensemble_size==1)
-                            and sindy_threshold_pruning is not None
-                            and epoch >= n_warmup_steps
-                            ):
-                            model.concept_gate_patience(threshold=sindy_threshold_pruning)
+                        if sindy_threshold_pruning is not None and epoch >= n_warmup_steps:
+                            # Support patience is ensemble-independent (V is shared), so it
+                            # advances in both modes; gate patience is the non-ensemble path.
                             model.concept_support_patience(threshold=sindy_threshold_pruning)
+
+                            if sindy_ensemble_pruning is None or model.ensemble_size == 1:
+                                model.concept_gate_patience(threshold=sindy_threshold_pruning)
 
                         if (epoch % sindy_pruning_frequency == 0 or epoch == 1) and epoch >= n_warmup_steps:
                             pruned = False
@@ -245,7 +250,6 @@ def _run_sindy_training(
                                     model=model,
                                     sindy_ensemble_pruning=sindy_ensemble_pruning,
                                     sindy_threshold_pruning=sindy_threshold_pruning,
-                                    n_terms_pruning=sindy_pruning_terms,
                                     verbose=verbose,
                                 )
                             elif sindy_threshold_pruning is not None and sindy_threshold_pruning > 0:
@@ -280,16 +284,6 @@ def _run_sindy_training(
                 model.zero_grad(set_to_none=True)
                 torch.cuda.empty_cache()
                 batch_size_sessions = max(1, batch_size_sessions // 2)
-
-        # Structure discovery has converged: enforce the anchor condition once, now.
-        # Supports start full and only shrink, so no concept has an exclusive term early
-        # on -- running this during the search would retire the whole dictionary. What it
-        # removes here are concepts that never separated from the others and so are not
-        # identifiable: their direction lies inside the span of the supports that remain.
-        for module in model.get_modules():
-            n_retired = model.enforce_anchor_condition(module)
-            if verbose and n_retired:
-                print(f"  {module}: retired {n_retired} concept(s) without an exclusive term")
 
     # Switch to full (non-bootstrapped) data with per-member targets
     if xs_train_original is not None and E > 1:
@@ -359,7 +353,7 @@ def _run_sindy_training(
                     window_starts=window_starts,
                     K=K,
                     B_total=B,
-                    sindy_alpha=sindy_alpha,
+                    sindy_lambda_loading=sindy_lambda_loading,
                     batch_size_sessions=batch_size_sessions,
                 )
             # A closed-form solve can "succeed" (no LinAlgError) while still
@@ -425,7 +419,7 @@ def _run_sindy_training(
                         window_starts=window_starts,
                         K=K,
                         batch_sessions=batch_sessions,
-                        sindy_alpha=None,  # unpenalized
+                        sindy_lambda_loading=None,  # unpenalized
                     )
                     loss_epoch += loss_e
                     n_batches += 1
@@ -438,7 +432,7 @@ def _run_sindy_training(
                 pbar.set_postfix(
                     loss=f"{loss_epoch:.7f}",
                     lr=f"{optimizer_22.param_groups[0]['lr']:.1e}",
-                    n_params=f"{model.count_spice_parameters()['loadings'].mean():.2f}+/-{model.count_spice_parameters()['loadings'].std():.2f}",
+                    **_spice_parameter_postfix(model),
                     K=K,
                 )
             break

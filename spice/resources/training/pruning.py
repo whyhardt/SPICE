@@ -22,9 +22,8 @@ def _ensemble_pruning(
     sindy_ensemble_pruning: float,
     sindy_threshold_pruning: float,
     verbose: bool,
-    n_terms_pruning: int = None,
 ):
-    """Ensemble-based closing of concept gates, with optional rate limiting.
+    """Ensemble-based closing of concept gates.
 
     Operates on concept gates, not on terms: members agree on the concept
     dictionary by construction, so the cross-member vote is now about whether
@@ -33,72 +32,34 @@ def _ensemble_pruning(
     unit-norm directions -- a different scale from the raw coefficient threshold it
     used to be, so previously tuned values do not carry over.
 
-    Args:
-        n_terms_pruning: Max concepts to close per event (across all modules).
-            When set, only the smallest-loading candidates are closed.
-            None = no limit (close all that fail the test).
+    No patience counter and no rate limit: the ensemble vote already is the test for
+    statistical uncertainty about |z| >= threshold, so a gate that fails it fails now.
+    Patience is the single-member substitute for that vote, and lives in
+    prune_concept_gates() instead.
     """
     pruned = False
-    module_list = list(model.submodules_rnn.keys())
-
-    ensemble_test_kwargs = dict(
-        threshold=sindy_threshold_pruning or 0.0,
-        ratio=sindy_ensemble_pruning,
-    )
 
     confidence_masks = _compute_pruning_masks(
         model,
-        ensemble_test_kwargs=ensemble_test_kwargs,
+        ensemble_test_kwargs=dict(
+            threshold=sindy_threshold_pruning or 0.0,
+            ratio=sindy_ensemble_pruning,
+        ),
         verbose=verbose,
     )
 
-    # Update patience counters for all modules
-    for module in module_list:
-        mask = confidence_masks[module].to(model.device)  # (P, X, C)
-        still_active = model.sindy_concept_gates[module].any(dim=0)  # (P, X, C)
-        failed = ~mask & still_active
+    for module in model.submodules_rnn:
+        survives = confidence_masks[module].to(model.device)      # (P, X, C)
+        still_active = model.sindy_concept_gates[module].any(dim=0)
+        prune = ~survives & still_active
+        if not prune.any():
+            continue
 
-        counters = model.sindy_pruning_patience_counters[module]
-        failed_e = failed.unsqueeze(0).expand_as(counters)
-        counters.data = torch.where(failed_e, counters + 1, torch.zeros_like(counters))
-
-    # Collect candidates across all modules: terms with counters >= 2
-    all_prune_candidates = torch.cat(
-        [model.sindy_pruning_patience_counters[m][0] >= 2 for m in module_list], dim=-1
-    )  # (P, X, total_concepts)
-
-    if all_prune_candidates.any():
-        # Rate-limit: only prune the n_terms_pruning smallest-magnitude candidates
-        if n_terms_pruning is not None:
-            all_coeffs_abs = torch.cat([
-                model.effective_loadings(m).detach().mean(dim=0)
-                for m in module_list
-            ], dim=-1)  # (P, X, total_concepts)
-
-            # Set non-candidates to inf so they won't be selected
-            temp_coeffs = all_coeffs_abs.clone()
-            temp_coeffs[~all_prune_candidates] = torch.inf
-
-            k = min(n_terms_pruning, all_prune_candidates.sum(dim=-1).max().item())
-            if k > 0:
-                _, indices = torch.topk(temp_coeffs, k, dim=-1, largest=False)
-                limited_mask = torch.zeros_like(all_prune_candidates)
-                limited_mask.scatter_(dim=-1, index=indices, src=torch.ones_like(indices, dtype=torch.bool))
-                all_prune_candidates = all_prune_candidates & limited_mask
-
-        # Split back to modules and apply pruning
-        start_idx = 0
-        for module in module_list:
-            n_concepts = model.sindy_concept_gates[module].shape[-1]
-            prune = all_prune_candidates[..., start_idx:start_idx + n_concepts]  # (P, X, C)
-            if prune.any():
-                prune_e = prune.unsqueeze(0).expand(model.ensemble_size, -1, -1, -1)
-                model.sindy_concept_gates[module] &= ~prune_e
-                model.sindy_concept_loadings[module].data *= model.sindy_concept_gates[module].float()
-                model.sindy_pruning_patience_counters[module].data *= (~prune_e).int()
-                model.retire_dead_concepts(module)
-                pruned = True
-            start_idx += n_concepts
+        prune_e = prune.unsqueeze(0).expand(model.ensemble_size, -1, -1, -1)
+        model.sindy_concept_gates[module] &= ~prune_e
+        model.sindy_concept_loadings[module].data *= model.sindy_concept_gates[module].float()
+        model.retire_dead_concepts(module)
+        pruned = True
 
     return model, pruned
 

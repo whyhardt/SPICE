@@ -41,7 +41,8 @@ if __name__=='__main__':
     # SINDy training parameters
     parser.add_argument('--sindy_skip_refit', action='store_false', help='Refits the SINDy coefficients in Stage 2 training (default: True)')
     parser.add_argument('--sindy_weight', type=float, default=0.01, help='Weight for SINDy regularization during RNN training')
-    parser.add_argument('--sindy_alpha', type=float, default=0.0001, help='Degree-weighted coefficient penalty strength (ridge alpha)')
+    parser.add_argument('--sindy_lambda_loading', type=float, default=0.0001, help='L1 strength for the proximal step on concept loadings (ridge alpha)')
+    parser.add_argument('--sindy_lambda_concept', type=float, default=0.0001, help='L1 strength for the proximal step on concept directions (concept support density)')
     parser.add_argument('--pruning_threshold', type=float, default=0.01, help='Significance threshold value for SINDy coefficients')
     parser.add_argument('--pruning_test', type=float, default=0.5, help='Minimum fraction of ensemble members that must exceed pruning_threshold for a term to survive (ensemble ratio test)')
     parser.add_argument('--pruning_frequency', type=int, default=100, help='Epochs between pruning events')
@@ -176,7 +177,8 @@ if __name__=='__main__':
 
         # sindy fitting parameters
         sindy_weight=args.sindy_weight,
-        sindy_alpha=args.sindy_alpha,
+        sindy_lambda_loading=args.sindy_lambda_loading,
+        sindy_lambda_concept=args.sindy_lambda_concept,
         sindy_library_polynomial_degree=2,
         sindy_pruning_frequency=args.pruning_frequency,
         sindy_threshold_pruning=args.pruning_threshold,

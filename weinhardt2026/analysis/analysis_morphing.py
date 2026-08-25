@@ -160,7 +160,7 @@ def _create_morphed_estimator(
         use_sindy=True,
         embedding_size=estimator.embedding_size,
         dropout=estimator.dropout,
-        sindy_alpha=estimator.sindy_alpha,
+        sindy_lambda_loading=estimator.sindy_lambda_loading,
         sindy_pruning_frequency=estimator.sindy_pruning_frequency,
         sindy_threshold_pruning=estimator.sindy_threshold_pruning,
         sindy_shooting_steps=estimator.sindy_shooting_steps,
@@ -403,7 +403,7 @@ def _run_morphing_single_member(
             break
 
     # Final ridge solve with the discovered sparsity pattern
-    _ridge_solve_sindy(morphed_model, xs_5d, ys_5d, alpha=estimator.sindy_alpha)
+    _ridge_solve_sindy(morphed_model, xs_5d, ys_5d, alpha=estimator.sindy_lambda_loading)
 
     # Save individual member model if requested
     if save_path is not None:

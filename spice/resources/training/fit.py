@@ -34,7 +34,8 @@ def fit_spice(
     loss_fn_kwargs: dict = {},
 
     sindy_weight: float = 0.,
-    sindy_alpha: float = 0.,
+    sindy_lambda_loading: float = 0.,
+    sindy_lambda_concept: float = 0.,
     sindy_pruning_frequency: int = 1,
     sindy_threshold_pruning: float = None,
     sindy_ensemble_pruning: float = None,
@@ -75,7 +76,10 @@ def fit_spice(
         convergence_threshold: Early stopping threshold
         loss_fn: Loss function for behavioral prediction
         sindy_weight: λ_sindy regularization strength
-        sindy_alpha: Degree-weighted L1 penalty strength
+        sindy_lambda_loading: L1 strength for the proximal step on the concept loadings (Z)
+        sindy_lambda_concept: L1 strength for the proximal step on the concept directions (V).
+            Controls how dense each concept's support is; with sindy_lambda_loading alone the
+            objective is minimised by maximally dense concepts
         sindy_threshold_pruning: Minimum |coefficient| for a member to count as
             supporting a term in the ensemble ratio test. When
             sindy_ensemble_pruning is None, falls back to per-member hard
@@ -187,7 +191,8 @@ def fit_spice(
                     loss_fn_kwargs=loss_fn_kwargs,
 
                     sindy_weight=sindy_weight,
-                    sindy_alpha=sindy_alpha,
+                    sindy_lambda_loading=sindy_lambda_loading,
+                    sindy_lambda_concept=sindy_lambda_concept,
                     sindy_threshold_pruning=sindy_threshold_pruning,
                     sindy_pruning_frequency=sindy_pruning_frequency,
                     sindy_ensemble_pruning=sindy_ensemble_pruning,
@@ -239,7 +244,8 @@ def fit_spice(
             ys_train_original=dataset_train.ys,
             epochs=1000,
             n_warmup_steps=100,
-            sindy_alpha=sindy_alpha,
+            sindy_lambda_loading=sindy_lambda_loading,
+            sindy_lambda_concept=sindy_lambda_concept,
             sindy_pruning_frequency=sindy_pruning_frequency,
             sindy_ensemble_pruning=sindy_ensemble_pruning,
             sindy_threshold_pruning=sindy_threshold_pruning,
@@ -276,7 +282,7 @@ def fit_spice(
                 loss_fn_kwargs=loss_fn_kwargs,
 
                 sindy_weight=1,
-                sindy_alpha=0,
+                sindy_lambda_loading=0,
                 sindy_threshold_pruning=None,
                 sindy_pruning_frequency=None,
                 sindy_ensemble_pruning=None,
@@ -303,7 +309,7 @@ def fit_spice(
                 loss_fn_kwargs=loss_fn_kwargs,
 
                 sindy_weight=1,
-                sindy_alpha=0,
+                sindy_lambda_loading=0,
                 sindy_threshold_pruning=None,
                 sindy_pruning_frequency=None,
                 sindy_ensemble_pruning=None,

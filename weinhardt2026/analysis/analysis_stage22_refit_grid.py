@@ -189,7 +189,7 @@ def evaluate_full(model, dataset, batch_size, device, held_out: bool = False) ->
     E = model.ensemble_size
     valid = ~torch.isnan(dataset.xs[:, :, 0, 0])
     targets = torch.nan_to_num(dataset.ys, nan=0.0)
-    n_par = model.count_sindy_coefficients().cpu().numpy()
+    n_par = model.count_spice_parameters()['loadings'].cpu().numpy()
 
     log_probs = _forward_batched(model, dataset.xs, batch_size, device)
     ll_member = (targets.unsqueeze(0) * log_probs).sum(-1).sum(-1)
@@ -203,7 +203,7 @@ def evaluate_full(model, dataset, batch_size, device, held_out: bool = False) ->
     lik_logit = float(torch.exp((ll_logit * valid).sum() / valid.sum()))
 
     with averaged_coefficients(model):
-        n_par_coef = model.count_sindy_coefficients().cpu().numpy()
+        n_par_coef = model.count_spice_parameters()['loadings'].cpu().numpy()
         lp_coef = _forward_batched(model, dataset.xs, batch_size, device)[0]
         ll_coef = (targets * lp_coef).sum(-1).sum(-1)
         lik_coef = float(torch.exp((ll_coef * valid).sum() / valid.sum()))

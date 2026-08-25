@@ -17,14 +17,17 @@ from ..spice_utils import SpiceDataset
 from .reporting import _check_cuda_oom
 
 
-def _project_after_step(model: BaseModel, optimizer: torch.optim.Optimizer, sindy_alpha: float = None) -> None:
+def _project_after_step(model: BaseModel, optimizer: torch.optim.Optimizer,
+                        sindy_lambda_loading: float = None, sindy_lambda_concept: float = None) -> None:
     """Re-establish the factorization's constraints after an optimizer step.
 
-    Order matters: the gauge is fixed *first*, then the prox is applied to loadings that
-    are already on their final scale. Doing it the other way round lets the
-    renormalization multiply Z by the row norms and partially undo the shrinkage just
-    applied, which makes the effective L1 threshold depend on how far V happened to
-    drift that step rather than on sindy_alpha alone.
+    Order matters, and the three steps are ordered so each penalty sees the scale it was
+    tuned against. The prox on V runs *first*, while the row is still on the unit-norm
+    scale the previous step left it on. The gauge is fixed *second*, which also re-masks
+    the pruned coordinates. The prox on Z runs *last*, on loadings already at their final
+    scale -- doing that one earlier lets the renormalization multiply Z by the row norms
+    and partially undo the shrinkage just applied, which makes the effective L1 threshold
+    depend on how far V happened to drift that step rather than on sindy_lambda_loading alone.
 
     Both run every step. Normalizing less often would be worse, not better: at
     equilibrium each step perturbs a row norm by O(lr), a slow reparametrization Adam's
@@ -32,8 +35,9 @@ def _project_after_step(model: BaseModel, optimizer: torch.optim.Optimizer, sind
     correction hands the optimizer a genuine discontinuity.
     """
     lr = max((group.get('lr', 0.0) for group in optimizer.param_groups), default=0.0)
+    model.project_directions(lr=lr, sindy_lambda_concept=sindy_lambda_concept or 0.0)
     model.normalize_concept_directions()
-    model.project_loadings(lr=lr, sindy_alpha=sindy_alpha or 0.0)
+    model.project_loadings(lr=lr, sindy_lambda_loading=sindy_lambda_loading or 0.0)
 
 
 def _run_shooting_epoch_vectorized(
@@ -45,7 +49,8 @@ def _run_shooting_epoch_vectorized(
     window_starts: list,
     K: int,
     batch_sessions: torch.Tensor,
-    sindy_alpha: float = None,
+    sindy_lambda_loading: float = None,
+    sindy_lambda_concept: float = None,
 ) -> float:
     """Vectorized shooting epoch: fold all windows into the batch dimension.
 
@@ -65,7 +70,8 @@ def _run_shooting_epoch_vectorized(
         window_starts: List of trial indices where shooting windows begin
         K: Shooting window size
         batch_sessions: Session indices for this batch (tensor)
-        sindy_alpha: L1 penalty strength (None or 0 = disabled)
+        sindy_lambda_loading: L1 penalty strength on the loadings (None or 0 = disabled)
+        sindy_lambda_concept: L1 penalty strength on the concept directions (None or 0 = disabled)
 
     Returns:
         Mean loss over all valid steps
@@ -143,8 +149,8 @@ def _run_shooting_epoch_vectorized(
         total_loss = total_loss / n_valid_steps
 
         if optimizer is not None:
-            if sindy_alpha is not None and sindy_alpha > 0:
-                total_loss = total_loss + model.compute_constants_penalty(sindy_alpha=sindy_alpha)
+            if sindy_lambda_loading is not None and sindy_lambda_loading > 0:
+                total_loss = total_loss + model.compute_constants_penalty(strength=sindy_lambda_loading)
 
             total_loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -154,7 +160,7 @@ def _run_shooting_epoch_vectorized(
             # has to follow the optimizer step. Re-fixing the gauge here too keeps the
             # penalty meaningful: Z @ V is invariant under (Z D, D^-1 V), so an
             # unnormalized V lets the optimizer shrink the penalty for free.
-            _project_after_step(model, optimizer, sindy_alpha)
+            _project_after_step(model, optimizer, sindy_lambda_loading, sindy_lambda_concept)
 
         return total_loss.item()
 
@@ -169,7 +175,7 @@ def _run_shooting_eval_batched(
     window_starts: list,
     K: int,
     B_total: int,
-    sindy_alpha: float,
+    sindy_lambda_loading: float,
     batch_size_sessions: int = None,
 ) -> tuple:
     """No-grad ridge-solution evaluation over all B_total sessions, chunked and with
@@ -199,7 +205,7 @@ def _run_shooting_eval_batched(
                     window_starts=window_starts,
                     K=K,
                     batch_sessions=batch_sessions,
-                    sindy_alpha=sindy_alpha,
+                    sindy_lambda_loading=sindy_lambda_loading,
                 )
                 loss_total += loss_e
                 n_batches += 1

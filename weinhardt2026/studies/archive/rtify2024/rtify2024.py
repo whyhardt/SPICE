@@ -104,7 +104,7 @@ else:
         ensemble_size=10,  # default: 10; only useful with SINDy fitting
 
         sindy_weight=sindy_weight,
-        sindy_alpha=1e-3,
+        sindy_lambda_loading=1e-3,
         sindy_threshold_pruning=0.05,
         sindy_ensemble_pruning=0.7,
         sindy_refit=sindy_refit,

@@ -35,7 +35,8 @@ def _run_batch_training(
     optimizer: torch.optim.Optimizer = None,
     sindy_weight: float = 0.,
     sindy_weight_fit: float = 0.1,
-    sindy_alpha: float = 0.,
+    sindy_lambda_loading: float = 0.,
+    sindy_lambda_concept: float = 0.,
     n_steps: int = None,
     loss_fn: callable = cross_entropy_loss,
     loss_fn_kwargs: dict = {},
@@ -83,8 +84,8 @@ def _run_batch_training(
             if sindy_weight > 0 and model.sindy_loss_reg != 0:
                 loss_step = loss_step + sindy_weight * model.sindy_loss_reg #+ sindy_weight_fit * model.sindy_loss_fit
 
-            if sindy_weight > 0 and sindy_alpha > 0:
-                loss_step = loss_step + model.compute_constants_penalty(sindy_alpha=sindy_alpha)
+            if sindy_weight > 0 and sindy_lambda_loading > 0:
+                loss_step = loss_step + model.compute_constants_penalty(strength=sindy_lambda_loading)
                 
             # backpropagation
             optimizer.zero_grad()
@@ -102,7 +103,11 @@ def _run_batch_training(
             # L1 on the loadings is applied proximally rather than as a loss term, and
             # the unit-norm gauge on the directions must be re-fixed every step or the
             # penalty can be defeated by inflating V.
-            _project_after_step(model, optimizer, sindy_alpha if sindy_weight > 0 else 0.0)
+            _project_after_step(
+                model, optimizer,
+                sindy_lambda_loading if sindy_weight > 0 else 0.0,
+                sindy_lambda_concept if sindy_weight > 0 else 0.0,
+            )
 
         loss_batch += loss_step.item()
         # if sindy_weight > 0 and model.sindy_loss_reg != 0:
@@ -127,7 +132,8 @@ def _run_joint_training(
     loss_fn_kwargs: dict = {},
 
     sindy_weight: float = 0,
-    sindy_alpha: float = 0,
+    sindy_lambda_loading: float = 0,
+    sindy_lambda_concept: float = 0,
     sindy_pruning_frequency: int = None,
     sindy_threshold_pruning: float = None,
     sindy_ensemble_pruning: float = None,
@@ -212,7 +218,8 @@ def _run_joint_training(
                 # Compute warmup-scaled SINDy weights
                 if n_calls_to_train_model >= n_warmup_steps:
                     sindy_weight_epoch = sindy_weight
-                    sindy_alpha_epoch = sindy_alpha
+                    sindy_lambda_loading_epoch = sindy_lambda_loading
+                    sindy_lambda_concept_epoch = sindy_lambda_concept
                     sindy_weight_fit_epoch = 1.0
                 else:
                     warmup_scale = warmup_scaler_sindy_weight[n_calls_to_train_model]
@@ -221,7 +228,11 @@ def _run_joint_training(
                     # small and strictly positive; a full-strength prox from step 0
                     # would shrink them to exactly zero, where they get no gradient and
                     # their concepts are dead for the rest of the run.
-                    sindy_alpha_epoch = sindy_alpha * warmup_scale
+                    sindy_lambda_loading_epoch = sindy_lambda_loading * warmup_scale
+                    # Same reasoning for the prox on V: directions start dense and
+                    # near-random, and full-strength shrinkage from step 0 would zero
+                    # coordinates before the fit has said anything about them.
+                    sindy_lambda_concept_epoch = sindy_lambda_concept * warmup_scale
                     sindy_weight_fit_epoch = warmup_scale
 
                 # Training iterations for this epoch
@@ -247,7 +258,8 @@ def _run_joint_training(
                         n_steps=n_steps,
                         sindy_weight=sindy_weight_epoch,
                         sindy_weight_fit=sindy_weight_fit_epoch,
-                        sindy_alpha=sindy_alpha_epoch,
+                        sindy_lambda_loading=sindy_lambda_loading_epoch,
+                        sindy_lambda_concept=sindy_lambda_concept_epoch,
                         loss_fn=loss_fn,
                         loss_fn_kwargs=loss_fn_kwargs,
                     )
@@ -285,13 +297,15 @@ def _run_joint_training(
                 # and n_calls_to_train_model >= n_warmup_steps
                 ):
 
-                if ((sindy_ensemble_pruning is None or model.ensemble_size==1)
-                    and sindy_threshold_pruning is not None
-                    and n_calls_to_train_model >= n_warmup_steps
-                    ):
-                    # Fallback: per-epoch patience tracking for per-member threshold pruning
-                    model.concept_gate_patience(threshold=sindy_threshold_pruning)
+                if sindy_threshold_pruning is not None and n_calls_to_train_model >= n_warmup_steps:
+                    # V is shared across ensemble members, so support patience is an
+                    # ensemble-independent quantity and must advance in either mode --
+                    # otherwise prune_concept_support() never sees a single candidate.
                     model.concept_support_patience(threshold=sindy_threshold_pruning)
+
+                    if sindy_ensemble_pruning is None or model.ensemble_size == 1:
+                        # Fallback: per-epoch patience tracking for per-member threshold pruning
+                        model.concept_gate_patience(threshold=sindy_threshold_pruning)
 
                 
                 if (n_calls_to_train_model % sindy_pruning_frequency == 0
@@ -308,7 +322,6 @@ def _run_joint_training(
                                 model=model,
                                 sindy_ensemble_pruning=sindy_ensemble_pruning,
                                 sindy_threshold_pruning=sindy_threshold_pruning,
-                                n_terms_pruning=sindy_pruning_terms,
                                 verbose=verbose,
                                 )
 

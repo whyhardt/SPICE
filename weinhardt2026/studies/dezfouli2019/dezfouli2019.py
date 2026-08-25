@@ -20,8 +20,10 @@ from weinhardt2026.analysis.analysis_coefficients_distributions import analysis_
 from weinhardt2026.analysis.analysis_coefficients_individuals import analysis_coefficients_individuals
 from weinhardt2026.utils.generation import generate_repeated
 
+sindy_lambda_loading=0.01
+sindy_lambda_concept=0.01
 
-train_spice = False
+train_spice = True
 train_benchmark = False
 train_gru = False
 
@@ -31,7 +33,7 @@ N_REPEATS = 100
 path_data = 'weinhardt2026/studies/dezfouli2019/data/dezfouli2019.csv'
 data_dir = 'weinhardt2026/studies/dezfouli2019/data'
 output_dir = 'weinhardt2026/studies/dezfouli2019/results'
-path_spice = 'weinhardt2026/studies/dezfouli2019/params_array/spice_dezfouli2019_0.1_0.7.pkl'
+path_spice = f'weinhardt2026/studies/dezfouli2019/params/spice_dezfouli2019_z{sindy_lambda_loading}_v{sindy_lambda_concept}.pkl'
 path_spice_compressed = 'weinhardt2026/studies/dezfouli2019/params/spice_dezfouli2019_compressed.pkl'
 path_benchmark = 'weinhardt2026/studies/dezfouli2019/params/benchmark_dezfouli2019.pkl'
 path_gru = 'weinhardt2026/studies/dezfouli2019/params/gru_dezfouli2019.pkl'
@@ -48,6 +50,10 @@ print(f"Shape of dataset: {dataset_train.xs.shape}")
 print(f"Number of participants: {info_dataset['n_participants']}")
 print(f"Number of actions in dataset: {info_dataset['n_actions']}")
 
+# remove long tail of trials to make training faster
+from spice import SpiceDataset
+dataset_train = SpiceDataset(dataset_train.xs[:, :100], dataset_train.ys[:, :100])
+
 # -------------------------------------------------------------------------------------------
 # SPICE ESTIMATOR
 # -------------------------------------------------------------------------------------------
@@ -63,14 +69,19 @@ estimator = SpiceEstimator(
 
     epochs=1000,
     warmup_steps=500,
-
+    
+    ensemble_size=10,
+    sindy_threshold_pruning=0.1,
+    sindy_lambda_loading=sindy_lambda_loading,
+    sindy_lambda_concept=sindy_lambda_concept,
+    
     device=device,
     verbose=True,
     save_path_spice=path_spice,
 )
 
 if train_spice:
-    estimator.fit(dataset_train.xs, dataset_train.ys, dataset_test.xs, dataset_test.ys)
+    estimator.fit(dataset_train.xs, dataset_train.ys)#, dataset_test.xs, dataset_test.ys)
     estimator.save_spice(path_spice)
 else:
     estimator.load_spice(path_spice)

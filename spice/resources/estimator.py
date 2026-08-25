@@ -57,7 +57,8 @@ class SpiceEstimator(BaseEstimator):
         # SPICE training parameters
         use_sindy: Optional[bool] = False,
         sindy_weight: Optional[float] = 0.01,  # Weight for SINDy regularization loss
-        sindy_alpha: Optional[float] = 1e-4,  # L1 strength for the proximal step on concept loadings, and the ridge alpha
+        sindy_lambda_loading: Optional[float] = 1e-4,  # L1 strength for the proximal step on concept loadings, and the ridge alpha
+        sindy_lambda_concept: Optional[float] = 1e-4,  # L1 strength for the proximal step on concept directions (support density)
         sindy_library_polynomial_degree: Optional[int] = 2,
         sindy_pruning_frequency: Optional[int] = 100,  # Epochs between pruning events
         sindy_threshold_pruning: Optional[float] = 0.01,  # Optional per-member threshold pruning (None to disable)
@@ -97,7 +98,11 @@ class SpiceEstimator(BaseEstimator):
             loss_fn: Behavioral loss function (prediction, target) -> scalar.
             use_sindy: Enable SINDy integration.
             sindy_weight: Lambda for SINDy regularization loss.
-            sindy_alpha: Degree-weighted L1 penalty strength.
+            sindy_lambda_loading: L1 strength for the proximal step on the concept loadings (Z).
+            sindy_lambda_concept: L1 strength for the proximal step on the concept directions (V).
+                Sets how dense a concept's support may be. With sindy_lambda_loading alone the
+                objective is minimised by maximally dense concepts, since a k-dense
+                unit-norm direction carries sqrt(k) of coefficient mass per unit loading.
             sindy_library_polynomial_degree: Max polynomial degree for SINDy candidate library.
             sindy_pruning_frequency: Epochs between pruning events.
             sindy_threshold_pruning: Minimum |coefficient| for a member to count as
@@ -137,7 +142,8 @@ class SpiceEstimator(BaseEstimator):
 
         # SINDy training parameters
         self.sindy_weight = sindy_weight
-        self.sindy_alpha = sindy_alpha
+        self.sindy_lambda_loading = sindy_lambda_loading
+        self.sindy_lambda_concept = sindy_lambda_concept
         self.sindy_library_polynomial_degree = sindy_library_polynomial_degree
         self.sindy_pruning_frequency = sindy_pruning_frequency
         self.sindy_threshold_pruning = sindy_threshold_pruning
@@ -172,7 +178,7 @@ class SpiceEstimator(BaseEstimator):
             dropout=dropout,
             spice_config=spice_config,
             sindy_polynomial_degree=sindy_library_polynomial_degree,
-            sindy_alpha=sindy_alpha,
+            sindy_alpha=sindy_lambda_loading,  # doubles as the ridge alpha inside BaseModel
             ensemble_size=ensemble_size,
             embedding_size=embedding_size,
             n_items=n_items,
@@ -184,11 +190,22 @@ class SpiceEstimator(BaseEstimator):
         ).to(device)
 
         self.use_sindy(use_sindy)
-        
-        # Three param groups, tagged by role rather than identified by position:
-        # the concept directions are shared across the whole population while the
-        # loadings are per unit, so they are separable knobs. Downstream schedulers
-        # look these up by 'role', never by index.
+
+        self._build_optimizer()
+
+    def _build_optimizer(self):
+        """(Re)build the optimizer over the *current* self.model's parameters.
+
+        Must be called again whenever self.model is replaced (e.g. load_spice), since
+        an optimizer holds parameter tensors by identity: left pointing at the previous
+        model's tensors it still steps without error, but nothing the forward pass reads
+        ever changes.
+
+        Three param groups, tagged by role rather than identified by position: the
+        concept directions are shared across the whole population while the loadings are
+        per unit, so they are separable knobs. Downstream schedulers look these up by
+        'role', never by index.
+        """
         direction_params = []
         loading_params = []
         rnn_params = []
@@ -203,10 +220,10 @@ class SpiceEstimator(BaseEstimator):
             [
             {'params': direction_params, 'weight_decay': 0, 'lr': 0.01, 'role': 'directions'},
             {'params': loading_params, 'weight_decay': 0, 'lr': 0.01, 'role': 'loadings'},
-            {'params': rnn_params, 'weight_decay': l2_rnn, 'lr': learning_rate, 'role': 'rnn'},
+            {'params': rnn_params, 'weight_decay': self.l2_rnn, 'lr': self.learning_rate, 'role': 'rnn'},
             ],
             )
-        
+
     def fit(self, data: np.ndarray, targets: np.ndarray, data_test: np.ndarray = None, target_test: np.ndarray = None):
         """
         Fit the RNN and SPICE models to given data.
@@ -241,7 +258,8 @@ class SpiceEstimator(BaseEstimator):
             loss_fn_kwargs = self.loss_fn_kwargs,
 
             sindy_weight=self.sindy_weight,
-            sindy_alpha=self.sindy_alpha,
+            sindy_lambda_loading=self.sindy_lambda_loading,
+            sindy_lambda_concept=self.sindy_lambda_concept,
             sindy_pruning_frequency=self.sindy_pruning_frequency,
             sindy_threshold_pruning=self.sindy_threshold_pruning,
             sindy_ensemble_pruning=self.sindy_ensemble_pruning,
@@ -388,6 +406,31 @@ class SpiceEstimator(BaseEstimator):
 
         self.model = self.model.to(self.model.device)
         self.model.eval()
+
+        # The optimizer built in __init__ holds the discarded model's tensors; without
+        # this a subsequent .fit() runs but updates nothing.
+        self._build_optimizer()
+
+        # Restore the checkpoint's Adam moments so a resumed run continues on the
+        # curvature estimate it stopped with instead of re-warming from zero. Only the
+        # per-parameter state is taken: group hyperparameters stay the ones this
+        # estimator was constructed with, so a resume never silently inherits an
+        # lr the previous run's ReduceLROnPlateau had already annealed.
+        if 'optimizer' in loaded_parameters:
+            hyperparameters = [
+                {k: v for k, v in group.items() if k != 'params'}
+                for group in self.rnn_optimizer.param_groups
+            ]
+            try:
+                self.rnn_optimizer.load_state_dict(loaded_parameters['optimizer'])
+            except ValueError as error:
+                warnings.warn(
+                    f"Could not restore optimizer state from {path_model} ({error}); "
+                    "continuing with freshly initialized moments."
+                )
+            else:
+                for group, saved in zip(self.rnn_optimizer.param_groups, hyperparameters):
+                    group.update(saved)
             
     def save_spice(self, path_rnn: str):
         """

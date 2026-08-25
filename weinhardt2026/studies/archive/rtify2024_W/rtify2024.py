@@ -122,7 +122,7 @@ estimator = SpiceEstimator(
     ensemble_size=1,  # default: 10; only useful with SINDy fitting (i.e. sindy_weight>0; sindy_refit=True)
     
     sindy_weight=0,#1e-2,  # default: 1e-2; increase training speed -> sindy_weight=0 -> skips joint training in stage 1
-    sindy_alpha=1e-3,  # default: 1e-4; try with higher values to increase simplification pressure on SINDy and therefore on the RNN
+    sindy_lambda_loading=1e-3,  # default: 1e-4; try with higher values to increase simplification pressure on SINDy and therefore on the RNN
     sindy_threshold_pruning=0.05,
     sindy_ensemble_pruning=0.7,
     sindy_refit=sindy_refit,

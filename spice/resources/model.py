@@ -191,7 +191,7 @@ class BaseModel(nn.Module):
         n_reward_features: int = None,
         
         ensemble_size: int = 1,
-        embedding_size: int = 32,
+        embedding_size: int = 8,
         
         dropout: float = 0.,
         
@@ -876,10 +876,20 @@ class BaseModel(nn.Module):
         this the cheapest way to shrink an L1 penalty on Z is to inflate V at no cost to
         the fit, and the sparsity pressure silently evaporates. Call after every
         optimizer step while a penalty is pushing on Z.
+
+        The gauge is fixed on the *masked* row -- the vector effective_directions()
+        actually hands to the einsum -- not on the raw parameter. Those differ: nothing
+        else re-masks the parameter, so an optimizer step refills coordinates that
+        pruning zeroed and they silently regrow. Normalizing the raw row then leaves the
+        effective one at norm < 1 and lets magnitude accumulate outside the support,
+        where it is invisible to both the norm budget and the L1 prox.
         """
         modules = self.get_modules() if key_module is None else [key_module]
         for module in modules:
             directions = self.sindy_concept_directions[module]
+            mask = (self.sindy_concept_support[module]
+                    & self.sindy_term_prior_mask[module].unsqueeze(0))
+            directions.data *= mask.float()
             norms = directions.data.norm(dim=-1, keepdim=True)  # (C, 1)
             # Dead concepts (all-zero rows) have nothing to normalize; leave them be.
             scale = torch.where(norms > 1e-12, norms, torch.ones_like(norms))
@@ -887,18 +897,18 @@ class BaseModel(nn.Module):
             self.sindy_concept_loadings[module].data *= scale.squeeze(-1)
 
     @torch.no_grad()
-    def project_loadings(self, lr: float = 0.0, sindy_alpha: float = 0.0,
+    def project_loadings(self, lr: float = 0.0, sindy_lambda_loading: float = 0.0,
                          key_module: Optional[str] = None) -> None:
-        """Proximal step for the non-negative L1 on Z: z <- relu(z - lr * alpha).
+        """Proximal step for the non-negative L1 on Z: z <- relu(z - lr * lambda_loading).
 
         Non-negativity, L1 shrinkage and genuine exact zeros in one operation. An L1
         term in the loss under Adam never produces an exact zero, so sparsity would
         otherwise have to come entirely from hard thresholding. Note the effective
-        threshold scales with the learning rate, so sindy_alpha is not comparable
-        across different LR schedules.
+        threshold scales with the learning rate, so sindy_lambda_loading is not
+        comparable across different LR schedules.
         """
         modules = self.get_modules() if key_module is None else [key_module]
-        shrink = float(lr) * float(sindy_alpha)
+        shrink = float(lr) * float(sindy_lambda_loading)
         for module in modules:
             loadings = self.sindy_concept_loadings[module]
             if shrink > 0:
@@ -906,6 +916,38 @@ class BaseModel(nn.Module):
             else:
                 loadings.data.clamp_(min=0.0)
             loadings.data *= self.sindy_concept_gates[module].float()
+
+    @torch.no_grad()
+    def project_directions(self, lr: float = 0.0, sindy_lambda_concept: float = 0.0,
+                           key_module: Optional[str] = None) -> None:
+        """Proximal step for the signed L1 on V: v <- sign(v) * relu(|v| - lr * lambda_concept).
+
+        The population-level counterpart to project_loadings, and not optional once an
+        L1 pushes on Z. With unit-norm rows a k-dense direction delivers sqrt(k) of
+        coefficient mass per unit of loading, so at fixed C the penalty on Z alone is
+        minimised by making every concept as dense as possible -- a density pump, and
+        hard thresholding on the support has to fight its gradient rather than merely
+        tidy up after it. This term prices density directly: ||v||_1 ranges over
+        [1, sqrt(T)] on the unit sphere, so the ratio of the two penalties sets the
+        effective support size.
+
+        Soft-thresholding shrinks the row norm and the renormalization that follows
+        scales it back up, but the operation still sparsifies: writing s = lr*lambda,
+        for entries a > b > s the ratio (b - s)/(a - s) is smaller than b/a, so the
+        small entries are squeezed out over iterations. Apply it to an
+        already-normalized row (i.e. before renormalizing, not after) or the effective
+        threshold picks up whatever norm drift happened that step. Like
+        sindy_lambda_loading it scales with the learning rate and is not comparable
+        across LR schedules.
+        """
+        shrink = float(lr) * float(sindy_lambda_concept)
+        if shrink <= 0:
+            return
+        modules = self.get_modules() if key_module is None else [key_module]
+        for module in modules:
+            directions = self.sindy_concept_directions[module]
+            magnitude = (directions.data.abs() - shrink).clamp(min=0.0)
+            directions.data = torch.sign(directions.data) * magnitude
 
     @torch.no_grad()
     def set_concepts(self, key_module: str, directions: torch.Tensor, loadings: torch.Tensor) -> None:
@@ -1340,8 +1382,8 @@ class BaseModel(nn.Module):
         scores = all_loadings.clone()
         scores[~is_candidate] = torch.inf
 
-        n_concepts_pruning = all_loadings.shape[-1] if n_concepts_pruning is None else n_concepts_pruning
-        k = min(n_concepts_pruning, int(is_candidate.sum().item()))
+        # TEMPORARY: rate limiting disabled -- every gate below threshold is closed.
+        k = int(is_candidate.sum(dim=-1).max().item())
         _, indices = torch.topk(scores, k, dim=-1, largest=False)
 
         pruning_mask = torch.zeros_like(all_gates)
@@ -1366,7 +1408,7 @@ class BaseModel(nn.Module):
 
         Runs per module over the (C, T) direction matrix, so a term leaves a concept for
         every participant at once and term support can no longer fragment across units.
-        Directions are renormalized afterwards and the anchor condition re-established.
+        Directions are renormalized afterwards and concepts nobody loads on retired.
         """
         for module in self.submodules_rnn:
             directions = self.sindy_concept_directions[module]
@@ -1381,8 +1423,8 @@ class BaseModel(nn.Module):
             scores[~is_candidate] = torch.inf
 
             flat = scores.reshape(-1)
-            budget = flat.numel() if n_terms_pruning is None else n_terms_pruning
-            k = min(budget, int(is_candidate.sum().item()))
+            # TEMPORARY: rate limiting disabled -- every term below threshold is dropped.
+            k = int(is_candidate.sum().item())
             _, indices = torch.topk(flat, k, largest=False)
 
             pruning_mask = torch.zeros_like(flat, dtype=torch.bool)
@@ -1421,58 +1463,6 @@ class BaseModel(nn.Module):
         self.sindy_pruning_patience_counters[key_module][..., dead] = 0
         return n_dead
 
-    @torch.no_grad()
-    def enforce_anchor_condition(self, key_module: str) -> int:
-        """Retire any concept that owns no term exclusively.
-
-        Call this **once, after structure discovery has converged** -- not on every
-        pruning event. Supports start full and shrink, so early in the search no concept
-        has an exclusive term and running this then would retire the whole dictionary on
-        the first pass. The anchor condition is an identifiability requirement on the
-        *final* dictionary, not an invariant to maintain during the search.
-
-        Overlapping supports are deliberately allowed -- a term genuinely can belong to
-        two mechanisms, and the shared coefficient then becomes a prediction (a_shared =
-        z_1 + z_2) rather than a free parameter. What identifies that decomposition is
-        that each concept keeps at least one term no other concept covers. Without such
-        an anchor a concept can be mixed into the others without changing the fit, so the
-        split stops asserting anything; the classic example is one concept's support
-        nesting inside another's.
-
-        A concept that loses its last exclusive term is retired rather than merged: by
-        construction its direction lies in the span of the supports that remain, so the
-        surviving concepts can absorb it and the optimizer re-fits it away.
-        """
-        n_retired = 0
-        while True:
-            support = self.sindy_concept_support[key_module]  # (C, T)
-            gates = self.sindy_concept_gates[key_module]
-            alive = gates.any(dim=0).any(dim=0).any(dim=0) & support.any(dim=-1)  # (C,)
-            if not alive.any():
-                break
-
-            active = support & alive.unsqueeze(-1)
-            # A term is exclusive to concept c iff no other live concept covers it.
-            covered_count = active.sum(dim=0, keepdim=True)  # (1, T)
-            exclusive = active & (covered_count == 1)
-            anchorless = alive & ~exclusive.any(dim=-1)
-
-            if not anchorless.any():
-                break
-
-            # Retire the smallest offender first; retiring one concept can hand another
-            # an exclusive term, so re-evaluate rather than dropping them all at once.
-            sizes = torch.where(anchorless, active.sum(dim=-1), torch.full_like(active.sum(dim=-1), 2 ** 30))
-            victim = int(torch.argmin(sizes).item())
-
-            self.sindy_concept_support[key_module][victim] = False
-            self.sindy_concept_gates[key_module][..., victim] = False
-            self.sindy_concept_directions[key_module].data[victim] = 0.0
-            self.sindy_concept_loadings[key_module].data[..., victim] = 0.0
-            n_retired += 1
-
-        return n_retired
-
     def count_spice_parameters(self) -> Dict[str, torch.Tensor]:
         """Degrees of freedom of the fitted model, split by axis.
 
@@ -1505,7 +1495,7 @@ class BaseModel(nn.Module):
 
         return {'loadings': loadings, 'directions': directions}
 
-    def compute_constants_penalty(self, sindy_alpha: float) -> torch.Tensor:
+    def compute_constants_penalty(self, strength: float) -> torch.Tensor:
         """L1/L2 penalty on any learnable constants (e.g. switch biases).
 
         Concept loadings are *not* penalized here. Their L1 is applied as a proximal step
@@ -1516,7 +1506,7 @@ class BaseModel(nn.Module):
         assert self.sindy_norm == 1 or self.sindy_norm == 2, "Only L1-norm or L2-norm are allowed."
 
         penalty = torch.tensor(0.0, device=self.device)
-        if sindy_alpha == 0:
+        if strength == 0:
             return penalty
 
         if hasattr(self, 'constants') and isinstance(self.constants, torch.nn.ParameterDict):
@@ -1526,7 +1516,7 @@ class BaseModel(nn.Module):
                 else:
                     penalty += param.abs().mean()
 
-        return penalty * sindy_alpha
+        return penalty * strength
 
                     
     def get_spice_model_string(self, participant_id: int = 0, experiment_id: int = 0) -> str:

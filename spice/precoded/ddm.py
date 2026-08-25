@@ -324,7 +324,7 @@ if __name__=='__main__':
         batch_size=1000,
         
         sindy_weight=0.00001,
-        sindy_alpha=0.0001,
+        sindy_lambda_loading=0.0001,
         sindy_library_polynomial_degree=2,
         
         # save_path_spice='spice_ddm.pkl',
