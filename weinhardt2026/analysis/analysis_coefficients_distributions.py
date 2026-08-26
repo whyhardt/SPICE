@@ -152,7 +152,9 @@ def extract_coefficient_data(
 
     presence = {}
     for m in modules:
-        presence[m] = estimator.model.sindy_coefficients_presence[m].detach().cpu()
+        # Presence is derived from the factorization: a term is present for a unit iff
+        # one of that unit's open concepts owns it (see BaseModel.derived_presence).
+        presence[m] = estimator.model.derived_presence(m).detach().cpu()
 
     # Move tensors to CPU
     for m in modules:

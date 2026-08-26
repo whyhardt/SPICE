@@ -86,6 +86,12 @@ def _run_batch_training(
 
             if sindy_weight > 0 and sindy_lambda_loading > 0:
                 loss_step = loss_step + model.compute_constants_penalty(strength=sindy_lambda_loading)
+
+            if sindy_weight > 0:
+                loss_step = loss_step + model.compute_factorization_penalty(
+                    sindy_lambda_loading=sindy_lambda_loading,
+                    sindy_lambda_concept=sindy_lambda_concept,
+                )
                 
             # backpropagation
             optimizer.zero_grad()
@@ -100,14 +106,9 @@ def _run_batch_training(
             #     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
 
-            # L1 on the loadings is applied proximally rather than as a loss term, and
-            # the unit-norm gauge on the directions must be re-fixed every step or the
-            # penalty can be defeated by inflating V.
-            _project_after_step(
-                model, optimizer,
-                sindy_lambda_loading if sindy_weight > 0 else 0.0,
-                sindy_lambda_concept if sindy_weight > 0 else 0.0,
-            )
+            # The unit-norm gauge on the directions must be re-fixed every step or the
+            # L1 on Z can be defeated by inflating V.
+            _project_after_step(model)
 
         loss_batch += loss_step.item()
         # if sindy_weight > 0 and model.sindy_loss_reg != 0:
@@ -137,7 +138,8 @@ def _run_joint_training(
     sindy_pruning_frequency: int = None,
     sindy_threshold_pruning: float = None,
     sindy_ensemble_pruning: float = None,
-    sindy_pruning_terms: int = None,
+    n_prune_z: int = None,
+    n_prune_v: int = None,
 
     convergence_threshold: float = 0,
     verbose: bool = False,
@@ -155,9 +157,10 @@ def _run_joint_training(
     test (a concept survives iff at least that fraction of members load on it
     above `sindy_threshold_pruning`); otherwise per-member thresholding is used.
 
-    Objective: L_total = L_CE(y, y_hat) + sindy_weight * L_SINDy, with the L1 on
-    the loadings applied as a proximal step after the optimizer rather than as a
-    loss term, so it produces exact zeros.
+    Objective: L_total = L_CE(y, y_hat) + sindy_weight * L_SINDy
+               + sindy_lambda_loading * ||Z||_1 + sindy_lambda_concept * ||V||_1.
+    Non-negativity of Z and the unit-norm gauge on V are constraint projections applied
+    after each optimizer step; exact zeros come from thresholding, not from the L1.
 
     Returns:
         Tuple of (model, optimizer, loss_train, loss_test_rnn, loss_test_sindy)
@@ -297,7 +300,10 @@ def _run_joint_training(
                 # and n_calls_to_train_model >= n_warmup_steps
                 ):
 
-                if sindy_threshold_pruning is not None and n_calls_to_train_model >= n_warmup_steps:
+                if sindy_threshold_pruning is not None:
+                    # Patience already accumulates during warmup, so both halves of the
+                    # factorization have candidates ready at the very first pruning event
+                    # instead of Z firing one event ahead of V.
                     # V is shared across ensemble members, so support patience is an
                     # ensemble-independent quantity and must advance in either mode --
                     # otherwise prune_concept_support() never sees a single candidate.
@@ -307,32 +313,31 @@ def _run_joint_training(
                         # Fallback: per-epoch patience tracking for per-member threshold pruning
                         model.concept_gate_patience(threshold=sindy_threshold_pruning)
 
-                
-                if (n_calls_to_train_model % sindy_pruning_frequency == 0
-                    or n_calls_to_train_model == 1
-                    # and n_calls_to_train_model >= n_warmup_steps
+                # First event lands exactly on the end of warmup, then every frequency
+                # epochs -- this is the schedule the pruning budgets are sized against.
+                if (n_calls_to_train_model >= n_warmup_steps
+                    and (n_calls_to_train_model - n_warmup_steps) % sindy_pruning_frequency == 0
                     ):
-                    
-                    # pruning
-                    if n_calls_to_train_model >= n_warmup_steps:
-                        if (sindy_ensemble_pruning is not None 
-                            and model.ensemble_size > 1
-                            ):
-                            model, _ = _ensemble_pruning(
-                                model=model,
-                                sindy_ensemble_pruning=sindy_ensemble_pruning,
-                                sindy_threshold_pruning=sindy_threshold_pruning,
-                                verbose=verbose,
-                                )
 
-                        elif sindy_threshold_pruning is not None and sindy_threshold_pruning > 0:
-                            # Fallback: per-member threshold pruning only (no ensemble test)
-                            model.prune_concept_gates(patience=sindy_pruning_frequency, n_concepts_pruning=sindy_pruning_terms)
+                    if (sindy_ensemble_pruning is not None
+                        and model.ensemble_size > 1
+                        ):
+                        model, _ = _ensemble_pruning(
+                            model=model,
+                            sindy_ensemble_pruning=sindy_ensemble_pruning,
+                            sindy_threshold_pruning=sindy_threshold_pruning,
+                            n_prune_z=n_prune_z,
+                            verbose=verbose,
+                            )
 
-                        # Term-level structure is a population decision and runs on every
-                        # pruning event, independently of the per-unit gate pruning above.
-                        if sindy_threshold_pruning is not None and sindy_threshold_pruning > 0:
-                            model.prune_concept_support(patience=sindy_pruning_frequency, n_terms_pruning=sindy_pruning_terms)
+                    elif sindy_threshold_pruning is not None and sindy_threshold_pruning > 0:
+                        # Fallback: per-member threshold pruning only (no ensemble test)
+                        model.prune_concept_gates(patience=sindy_pruning_frequency, n_concepts_pruning=n_prune_z)
+
+                    # Term-level structure is a population decision and runs on every
+                    # pruning event, independently of the per-unit gate pruning above.
+                    if sindy_threshold_pruning is not None and sindy_threshold_pruning > 0:
+                        model.prune_concept_support(patience=sindy_pruning_frequency, n_terms_pruning=n_prune_v)
 
             # Check convergence
             dloss = last_loss - (loss_test_rnn if dataloader_test is not None else loss_train)

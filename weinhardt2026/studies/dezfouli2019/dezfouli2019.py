@@ -9,8 +9,9 @@ import torch
 
 from spice import SpiceEstimator
 
-from spice.precoded.workingmemory import SpiceModel, CONFIG
+# from spice.precoded.workingmemory import SpiceModel, CONFIG
 # from spice.precoded.choice import SpiceModel, CONFIG
+from spice_dezfouli2019 import SpiceModel, CONFIG
 
 from weinhardt2026.utils.benchmarking_gru import GRUModel, training
 from weinhardt2026.studies.dezfouli2019.benchmarking_dezfouli2019 import GQLModel, get_dataset, generate_behavior
@@ -20,8 +21,8 @@ from weinhardt2026.analysis.analysis_coefficients_distributions import analysis_
 from weinhardt2026.analysis.analysis_coefficients_individuals import analysis_coefficients_individuals
 from weinhardt2026.utils.generation import generate_repeated
 
-sindy_lambda_loading=0.01
-sindy_lambda_concept=0.01
+sindy_lambda_loading=0.0001
+sindy_lambda_concept=0.00001
 
 train_spice = True
 train_benchmark = False
@@ -33,7 +34,7 @@ N_REPEATS = 100
 path_data = 'weinhardt2026/studies/dezfouli2019/data/dezfouli2019.csv'
 data_dir = 'weinhardt2026/studies/dezfouli2019/data'
 output_dir = 'weinhardt2026/studies/dezfouli2019/results'
-path_spice = f'weinhardt2026/studies/dezfouli2019/params/spice_dezfouli2019_z{sindy_lambda_loading}_v{sindy_lambda_concept}.pkl'
+path_spice = f'weinhardt2026/studies/dezfouli2019/params/spice_dezfouli2019_choice_z{sindy_lambda_loading}_v{sindy_lambda_concept}.pkl'
 path_spice_compressed = 'weinhardt2026/studies/dezfouli2019/params/spice_dezfouli2019_compressed.pkl'
 path_benchmark = 'weinhardt2026/studies/dezfouli2019/params/benchmark_dezfouli2019.pkl'
 path_gru = 'weinhardt2026/studies/dezfouli2019/params/gru_dezfouli2019.pkl'
@@ -70,6 +71,8 @@ estimator = SpiceEstimator(
     epochs=1000,
     warmup_steps=500,
     
+    sindy_weight=0.1,
+    sindy_refit=True,
     ensemble_size=10,
     sindy_threshold_pruning=0.1,
     sindy_lambda_loading=sindy_lambda_loading,
@@ -81,6 +84,8 @@ estimator = SpiceEstimator(
 )
 
 if train_spice:
+    if estimator.epochs==0:
+        estimator.load_spice(path_spice)    
     estimator.fit(dataset_train.xs, dataset_train.ys)#, dataset_test.xs, dataset_test.ys)
     estimator.save_spice(path_spice)
 else:
@@ -220,7 +225,7 @@ analysis_coefficients_distributions(
 )
 
 # -------------------------------------------------------------------------------------------
-# ANALYSIS: STRUCTURAL GROUP DIFFERENCES
+# ANALYSIS: STRUCTURAL + MAGNITUDE GROUP DIFFERENCES (on the concept loadings)
 # -------------------------------------------------------------------------------------------
 
 analysis_coefficients_individuals(
@@ -239,7 +244,9 @@ analysis_coefficients_individuals(
 #   estimator.get_concepts()          -- the population-level concept dictionary
 #   estimator.get_concept_loadings()  -- each participant's loadings on it
 #   estimator.count_spice_parameters()-- loadings/participant and shared direction values
-# The group-difference analysis should be re-pointed at the concept loadings.
+# The group-difference analysis above now runs on those loadings: structural differences are
+# which concepts a participant's gates hold open, magnitude differences are how strongly
+# they load on the concepts they have.
 # -------------------------------------------------------------------------------------------
 
 # -------------------------------------------------------------------------------------------

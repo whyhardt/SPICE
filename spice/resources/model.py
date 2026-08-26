@@ -716,7 +716,7 @@ class BaseModel(nn.Module):
         as a Rescorla-Wagner update is a single concept (-1 Q, +1 r) carrying one loading
         per participant, rather than two coefficients that happen to sum to one.
 
-        n_concepts defaults to n_terms // 2: deliberately undercomplete, since an
+        n_concepts defaults to ceil(n_terms / 2): deliberately undercomplete, since an
         overcomplete dictionary is precisely where the factorization stops being
         identifiable. Concepts can retire but never spawn, so this is a real
         hyperparameter -- too small cannot be recovered from mid-run.
@@ -762,7 +762,7 @@ class BaseModel(nn.Module):
         n_library_terms = compute_library_size(n_total_features, polynomial_degree) - n_removed
 
         # Concept directions V: random unit-norm rows, (C, T)
-        n_concepts = max(1, n_library_terms // 2)
+        n_concepts = max(1, -(-n_library_terms // 2))
         directions = torch.randn(n_concepts, n_library_terms, device=self.device)
         directions /= directions.norm(dim=-1, keepdim=True).clamp(min=1e-12)
         self.sindy_concept_directions[key_module] = nn.Parameter(directions)
@@ -897,57 +897,50 @@ class BaseModel(nn.Module):
             self.sindy_concept_loadings[module].data *= scale.squeeze(-1)
 
     @torch.no_grad()
-    def project_loadings(self, lr: float = 0.0, sindy_lambda_loading: float = 0.0,
-                         key_module: Optional[str] = None) -> None:
-        """Proximal step for the non-negative L1 on Z: z <- relu(z - lr * lambda_loading).
+    def project_loadings(self, key_module: Optional[str] = None) -> None:
+        """Re-impose the two hard constraints on Z: non-negativity and closed gates.
 
-        Non-negativity, L1 shrinkage and genuine exact zeros in one operation. An L1
-        term in the loss under Adam never produces an exact zero, so sparsity would
-        otherwise have to come entirely from hard thresholding. Note the effective
-        threshold scales with the learning rate, so sindy_lambda_loading is not
-        comparable across different LR schedules.
+        This is a constraint projection, not a penalty. The L1 on the loadings lives in
+        the objective (compute_factorization_penalty), so nothing here depends on the
+        learning rate and lambda cannot silently change meaning when the LR schedule does.
         """
         modules = self.get_modules() if key_module is None else [key_module]
-        shrink = float(lr) * float(sindy_lambda_loading)
         for module in modules:
             loadings = self.sindy_concept_loadings[module]
-            if shrink > 0:
-                loadings.data = (loadings.data - shrink).clamp(min=0.0)
-            else:
-                loadings.data.clamp_(min=0.0)
+            loadings.data.clamp_(min=0.0)
             loadings.data *= self.sindy_concept_gates[module].float()
 
-    @torch.no_grad()
-    def project_directions(self, lr: float = 0.0, sindy_lambda_concept: float = 0.0,
-                           key_module: Optional[str] = None) -> None:
-        """Proximal step for the signed L1 on V: v <- sign(v) * relu(|v| - lr * lambda_concept).
+    def compute_factorization_penalty(self, sindy_lambda_loading: float = 0.0,
+                                      sindy_lambda_concept: float = 0.0) -> torch.Tensor:
+        """L1 on both halves of the factorization: lambda_z * ||Z||_1 + lambda_v * ||V||_1.
 
-        The population-level counterpart to project_loadings, and not optional once an
-        L1 pushes on Z. With unit-norm rows a k-dense direction delivers sqrt(k) of
-        coefficient mass per unit of loading, so at fixed C the penalty on Z alone is
-        minimised by making every concept as dense as possible -- a density pump, and
-        hard thresholding on the support has to fight its gradient rather than merely
-        tidy up after it. This term prices density directly: ||v||_1 ranges over
-        [1, sqrt(T)] on the unit sphere, so the ratio of the two penalties sets the
-        effective support size.
+        Both run over the *effective* (gated, support-masked) tensors, so closed gates and
+        pruned terms contribute neither value nor gradient. The two are normalized
+        differently on purpose, because their gradients are diluted differently:
 
-        Soft-thresholding shrinks the row norm and the renormalization that follows
-        scales it back up, but the operation still sparsifies: writing s = lr*lambda,
-        for entries a > b > s the ratio (b - s)/(a - s) is smaller than b/a, so the
-        small entries are squeezed out over iterations. Apply it to an
-        already-normalized row (i.e. before renormalizing, not after) or the effective
-        threshold picks up whatever norm drift happened that step. Like
-        sindy_lambda_loading it scales with the learning rate and is not comparable
-        across LR schedules.
+        V is population-level -- every participant's data contributes to dL/dv -- so its
+        fit gradient is O(1) against a mean-reduced behavioural loss and a plain sum is
+        already on the right scale. Z is per-participant, so the fit gradient reaching any
+        single loading is diluted by ~1/(E*P) while a summed penalty is not; summing there
+        makes the same numeric lambda hit Z about P times harder than V, and makes lambda
+        depend on the cohort size. Averaging over units fixes both: lambda_z is the price
+        of one concept for one participant, in units of the mean behavioural loss.
+
+        The ratio lambda_v : lambda_z sets concept density, and that is the knob worth
+        thinking about. With unit-norm V rows a k-dense direction delivers sqrt(k) of
+        coefficient mass per unit of loading, so a penalty on Z alone is minimised by
+        making every concept as dense as possible -- a density pump. ||v||_1 ranges over
+        [1, sqrt(T)] on the unit sphere, so lambda_v prices exactly that density.
         """
-        shrink = float(lr) * float(sindy_lambda_concept)
-        if shrink <= 0:
-            return
-        modules = self.get_modules() if key_module is None else [key_module]
-        for module in modules:
-            directions = self.sindy_concept_directions[module]
-            magnitude = (directions.data.abs() - shrink).clamp(min=0.0)
-            directions.data = torch.sign(directions.data) * magnitude
+        penalty = torch.tensor(0.0, device=self.device)
+        for module in self.get_modules():
+            if sindy_lambda_loading > 0:
+                loadings = self.effective_loadings(module)               # (E, P, X, C)
+                n_units = loadings.shape[0] * loadings.shape[1] * loadings.shape[2]
+                penalty = penalty + sindy_lambda_loading * loadings.sum() / n_units
+            if sindy_lambda_concept > 0:
+                penalty = penalty + sindy_lambda_concept * self.effective_directions(module).abs().sum()
+        return penalty
 
     @torch.no_grad()
     def set_concepts(self, key_module: str, directions: torch.Tensor, loadings: torch.Tensor) -> None:
@@ -1382,8 +1375,14 @@ class BaseModel(nn.Module):
         scores = all_loadings.clone()
         scores[~is_candidate] = torch.inf
 
-        # TEMPORARY: rate limiting disabled -- every gate below threshold is closed.
+        # Rate limiting: close at most n_concepts_pruning gates per unit and event, so
+        # the budget computed once before training lets the gates reach 0 exactly over
+        # the expected number of pruning events.
         k = int(is_candidate.sum(dim=-1).max().item())
+        if n_concepts_pruning is not None:
+            k = min(k, int(n_concepts_pruning))
+        if k == 0:
+            return
         _, indices = torch.topk(scores, k, dim=-1, largest=False)
 
         pruning_mask = torch.zeros_like(all_gates)
@@ -1423,8 +1422,13 @@ class BaseModel(nn.Module):
             scores[~is_candidate] = torch.inf
 
             flat = scores.reshape(-1)
-            # TEMPORARY: rate limiting disabled -- every term below threshold is dropped.
+            # Rate limiting: drop at most n_terms_pruning support entries per module and
+            # event, on its own budget independent of the gate budget above.
             k = int(is_candidate.sum().item())
+            if n_terms_pruning is not None:
+                k = min(k, int(n_terms_pruning))
+            if k == 0:
+                continue
             _, indices = torch.topk(flat, k, largest=False)
 
             pruning_mask = torch.zeros_like(flat, dtype=torch.bool)
@@ -1498,10 +1502,8 @@ class BaseModel(nn.Module):
     def compute_constants_penalty(self, strength: float) -> torch.Tensor:
         """L1/L2 penalty on any learnable constants (e.g. switch biases).
 
-        Concept loadings are *not* penalized here. Their L1 is applied as a proximal step
-        in project_loadings() instead, because an L1 term in the loss under Adam never
-        produces an exact zero -- and exact zeros are what make a closed gate mean
-        "this unit does not have this concept".
+        Concept loadings and directions are *not* penalized here -- their L1 lives in
+        compute_factorization_penalty().
         """
         assert self.sindy_norm == 1 or self.sindy_norm == 2, "Only L1-norm or L2-norm are allowed."
 

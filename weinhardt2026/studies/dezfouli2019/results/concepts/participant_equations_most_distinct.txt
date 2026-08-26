@@ -1,0 +1,67 @@
+Concept loadings for the three participants furthest apart in
+embedding space (maximizing the minimum pairwise distance among all
+triplets). Participants: (18, 55, 59), min pairwise distance=7.859.
+
+--- participant 18 ---
+dvalue_reward_chosen/dt =
+       0.181 * [ -0.478 1 -0.823 value_reward_chosen[t] -0.306 value_reward_chosen^2 ]    (concept 2)
+dvalue_reward_not_chosen/dt =
+       0.363 * [ +0.436 1 -0.894 value_reward_not_chosen[t] +0.105 value_reward_not_chosen^2 ]    (concept 0)
+       0.274 * [ -0.444 1 -0.842 value_reward_not_chosen[t] -0.305 value_reward_not_chosen^2 ]    (concept 1)
+dvalue_choice_chosen/dt =
+       0.465 * [ +0.399 1 -0.853 value_choice_chosen[t] +0.337 value_choice_chosen^2 ]    (concept 0)
+       0.436 * [ -0.456 1 -0.890 value_choice_chosen[t] ]    (concept 1)
+dvalue_choice_not_chosen/dt =
+       0.190 * [ +1.000 1 ]    (concept 0)
+       0.339 * [ -0.461 1 -0.838 value_choice_not_chosen[t] -0.292 value_choice_not_chosen^2 ]    (concept 1)
+ddvalue_reward_chosen/dt =
+       0.235 * [ -0.333 dvalue_reward_chosen[t] +0.473 dvalue_reward_chosen^2 -0.254 dvalue_reward_chosen*dvalue -0.775 dvalue^2 ]    (concept 0)
+       0.313 * [ -0.758 1 -0.528 dvalue +0.382 dvalue^2 ]    (concept 2)
+ddvalue_reward_not_chosen/dt =
+       0.268 * [ +0.916 1 -0.401 dvalue_reward_not_chosen[t] ]    (concept 0)
+       0.456 * [ -0.585 1 -0.811 dvalue_reward_not_chosen[t] ]    (concept 1)
+ddvalue_choice/dt =
+       0.490 * [ -0.653 dvalue +0.107 dvalue_choice*dvalue +0.749 dvalue^2 ]    (concept 1)
+       6.616 * [ -0.029 dvalue_choice[t] +0.940 dvalue -0.339 dvalue^2 ]    (concept 2)
+
+--- participant 55 ---
+dvalue_reward_chosen/dt =
+       0.482 * [ +0.702 1 -0.630 value_reward_chosen[t] +0.152 value_reward_chosen^2 -0.294 reward^2 ]    (concept 0)
+       0.345 * [ -0.478 1 -0.823 value_reward_chosen[t] -0.306 value_reward_chosen^2 ]    (concept 2)
+dvalue_reward_not_chosen/dt =
+       0.224 * [ -0.444 1 -0.842 value_reward_not_chosen[t] -0.305 value_reward_not_chosen^2 ]    (concept 1)
+dvalue_choice_chosen/dt =
+       0.418 * [ +0.399 1 -0.853 value_choice_chosen[t] +0.337 value_choice_chosen^2 ]    (concept 0)
+dvalue_choice_not_chosen/dt =
+       0.250 * [ -0.461 1 -0.838 value_choice_not_chosen[t] -0.292 value_choice_not_chosen^2 ]    (concept 1)
+ddvalue_reward_chosen/dt =
+       2.103 * [ -0.333 dvalue_reward_chosen[t] +0.473 dvalue_reward_chosen^2 -0.254 dvalue_reward_chosen*dvalue -0.775 dvalue^2 ]    (concept 0)
+       1.843 * [ +0.793 dvalue -0.191 dvalue_reward_chosen^2 +0.450 dvalue_reward_chosen*dvalue +0.363 dvalue^2 ]    (concept 1)
+ddvalue_reward_not_chosen/dt =
+       0.278 * [ +0.916 1 -0.401 dvalue_reward_not_chosen[t] ]    (concept 0)
+       0.593 * [ -0.585 1 -0.811 dvalue_reward_not_chosen[t] ]    (concept 1)
+ddvalue_choice/dt =
+       0.415 * [ -0.653 dvalue +0.107 dvalue_choice*dvalue +0.749 dvalue^2 ]    (concept 1)
+       3.300 * [ -0.029 dvalue_choice[t] +0.940 dvalue -0.339 dvalue^2 ]    (concept 2)
+
+--- participant 59 ---
+dvalue_reward_chosen/dt =
+       0.371 * [ +0.702 1 -0.630 value_reward_chosen[t] +0.152 value_reward_chosen^2 -0.294 reward^2 ]    (concept 0)
+       0.326 * [ -0.478 1 -0.823 value_reward_chosen[t] -0.306 value_reward_chosen^2 ]    (concept 2)
+dvalue_reward_not_chosen/dt =
+       0.182 * [ -0.444 1 -0.842 value_reward_not_chosen[t] -0.305 value_reward_not_chosen^2 ]    (concept 1)
+dvalue_choice_chosen/dt =
+       0.564 * [ +0.399 1 -0.853 value_choice_chosen[t] +0.337 value_choice_chosen^2 ]    (concept 0)
+       0.287 * [ -0.456 1 -0.890 value_choice_chosen[t] ]    (concept 1)
+dvalue_choice_not_chosen/dt =
+    0
+ddvalue_reward_chosen/dt =
+       0.674 * [ -0.333 dvalue_reward_chosen[t] +0.473 dvalue_reward_chosen^2 -0.254 dvalue_reward_chosen*dvalue -0.775 dvalue^2 ]    (concept 0)
+       0.462 * [ +0.793 dvalue -0.191 dvalue_reward_chosen^2 +0.450 dvalue_reward_chosen*dvalue +0.363 dvalue^2 ]    (concept 1)
+       0.087 * [ -0.758 1 -0.528 dvalue +0.382 dvalue^2 ]    (concept 2)
+ddvalue_reward_not_chosen/dt =
+       0.319 * [ +0.916 1 -0.401 dvalue_reward_not_chosen[t] ]    (concept 0)
+       0.547 * [ -0.585 1 -0.811 dvalue_reward_not_chosen[t] ]    (concept 1)
+ddvalue_choice/dt =
+       9.082 * [ -0.029 dvalue_choice[t] +0.940 dvalue -0.339 dvalue^2 ]    (concept 2)
+

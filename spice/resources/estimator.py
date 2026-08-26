@@ -63,7 +63,7 @@ class SpiceEstimator(BaseEstimator):
         sindy_pruning_frequency: Optional[int] = 100,  # Epochs between pruning events
         sindy_threshold_pruning: Optional[float] = 0.01,  # Optional per-member threshold pruning (None to disable)
         sindy_ensemble_pruning: Optional[float] = 0.5,  # Minimum ensemble ratio for a term to survive (primary pruning mechanism)
-        sindy_pruning_terms: Optional[int] = None, # Concepts closed per pruning event (Defaults to None: computed so the model can reach 0 concepts within 'epochs-epochs_warmup' epochs)
+        sindy_pruning_terms: Optional[int] = None, # Overrides both per-event pruning budgets (concept gates and concept support). Defaults to None: each is sized so it can reach 0 within 'epochs-epochs_warmup' epochs
         sindy_refit: Optional[bool] = True,  # Enable Stage 2 Training (SINDy refit on frozen RNN parameters)
         sindy_ridge: Optional[bool] = True,  # Use ridge regression initialization in Stage 2.2 (falls back to SGD on failure)
         sindy_shooting_steps: Optional[int] = 100,  # Multi-step shooting horizon for Stage 2 (1 = one-step-ahead)

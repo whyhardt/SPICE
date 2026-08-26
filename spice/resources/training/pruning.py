@@ -17,11 +17,48 @@ from ..spice_utils import SpiceDataset
 from .reporting import _get_terminal_width
 
 
+def compute_pruning_budgets(
+    model: BaseModel,
+    epochs: int,
+    n_warmup_steps: int,
+    sindy_pruning_frequency: Optional[int],
+    override: Optional[int] = None,
+) -> Tuple[Optional[int], Optional[int]]:
+    """How many gates / support entries a single pruning event may remove.
+
+    Both halves of the factorization are pruned on their own budget: the gate budget is
+    per unit over the concatenated concept axis (that is the axis prune_concept_gates()
+    runs topk over), the support budget is per module over its (C, T) direction matrix.
+    Sizing them separately is what lets each half reach 0 within the expected number of
+    pruning events -- a single shared budget would starve whichever half has more items.
+
+    Computed once before training from the *initial* factorization, so the budget stays
+    a fixed rate rather than shrinking along with the structure it prunes.
+    """
+    if sindy_pruning_frequency is None:
+        return None, None
+    if override is not None:
+        return int(override), int(override)
+
+    n_pruning_events = max(1, (epochs - n_warmup_steps) // max(1, sindy_pruning_frequency))
+
+    n_gates = sum(model.sindy_concept_gates[m].shape[-1] for m in model.submodules_rnn)
+    n_support = max(
+        (model.sindy_concept_support[m].numel() for m in model.submodules_rnn),
+        default=0,
+    )
+
+    n_prune_z = max(1, math.ceil(n_gates / n_pruning_events))
+    n_prune_v = max(1, math.ceil(n_support / n_pruning_events))
+    return n_prune_z, n_prune_v
+
+
 def _ensemble_pruning(
     model: BaseModel,
     sindy_ensemble_pruning: float,
     sindy_threshold_pruning: float,
-    verbose: bool,
+    n_prune_z: int = None,
+    verbose: bool = True,
 ):
     """Ensemble-based closing of concept gates.
 
@@ -32,13 +69,24 @@ def _ensemble_pruning(
     unit-norm directions -- a different scale from the raw coefficient threshold it
     used to be, so previously tuned values do not carry over.
 
-    No patience counter and no rate limit: the ensemble vote already is the test for
-    statistical uncertainty about |z| >= threshold, so a gate that fails it fails now.
+    No patience counter: the ensemble vote already is the test for statistical
+    uncertainty about |z| >= threshold, so a gate that fails it is a candidate now.
     Patience is the single-member substitute for that vote, and lives in
     prune_concept_gates() instead.
-    """
-    pruned = False
 
+    The vote decides *candidacy*; n_prune_z decides how many candidates actually close
+    this event. Without that rate limit a single event closes every gate that lost its
+    vote at once -- and since retire_dead_concepts() zeroes the whole support row of a
+    concept nobody loads on any more, the collapse propagates into V and routes around
+    its budget too.
+
+    Candidates are ranked by the *median* loading across ensemble members, so a gate
+    kept alive by one outlier member does not outrank one the members agree is near
+    zero. At ratio = 0.5 that ranking is the same statement as the vote itself. Gates
+    whose median is exactly 0 (the majority zeroed them) tie, and topk breaks those ties
+    arbitrarily -- every one of them is a legitimate prune, and the rest come back as
+    candidates at the next event.
+    """
     confidence_masks = _compute_pruning_masks(
         model,
         ensemble_test_kwargs=dict(
@@ -48,10 +96,48 @@ def _ensemble_pruning(
         verbose=verbose,
     )
 
-    for module in model.submodules_rnn:
-        survives = confidence_masks[module].to(model.device)      # (P, X, C)
-        still_active = model.sindy_concept_gates[module].any(dim=0)
-        prune = ~survives & still_active
+    module_list = list(model.submodules_rnn.keys())
+
+    # Concatenate over modules: n_prune_z is a per-unit budget over the *whole* concept
+    # axis, the same axis prune_concept_gates() spends it on.
+    all_candidates = torch.cat(
+        [
+            (~confidence_masks[m].to(model.device)) & model.sindy_concept_gates[m].any(dim=0)
+            for m in module_list
+        ],
+        dim=-1,
+    )                                                                   # (P, X, C_total)
+    if not all_candidates.any():
+        return model, False
+
+    all_scores = torch.cat(
+        [model.effective_loadings(m).detach().median(dim=0).values for m in module_list],
+        dim=-1,
+    )                                                                   # (P, X, C_total)
+    all_scores = all_scores.clone()
+    all_scores[~all_candidates] = torch.inf
+
+    k = int(all_candidates.sum(dim=-1).max().item())
+    if n_prune_z is not None:
+        k = min(k, int(n_prune_z))
+    if k == 0:
+        return model, False
+
+    _, indices = torch.topk(all_scores, k, dim=-1, largest=False)
+    pruning_mask = torch.zeros_like(all_candidates)
+    pruning_mask.scatter_(dim=-1, index=indices, src=torch.ones_like(indices, dtype=torch.bool))
+    pruning_mask &= all_candidates                # Safety: only close actual candidates
+
+    if verbose:
+        print(f"\tclosing {int(pruning_mask.sum().item())} of "
+              f"{int(all_candidates.sum().item())} candidate gates (budget {k}/unit)")
+
+    pruned = False
+    start_idx = 0
+    for module in module_list:
+        n_concepts = model.sindy_concept_gates[module].shape[-1]
+        prune = pruning_mask[..., start_idx:start_idx + n_concepts]     # (P, X, C)
+        start_idx += n_concepts
         if not prune.any():
             continue
 
@@ -133,7 +219,7 @@ def _compute_ensemble_masks(
             n_before = presence.any(dim=0).sum().item()
             n_after = mask.sum().item()
             total = mask.numel()
-            print(f"\t{module}: {n_before} -> {n_after} / {total} (participant, experiment, term) slots")
+            print(f"\t{module}: {n_before} -> {n_after} / {total} (participant, experiment, concept) slots pass the vote")
 
     return ensemble_masks
 

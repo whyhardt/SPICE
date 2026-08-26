@@ -1,7 +1,6 @@
 """fit_spice: the two-stage SPICE training pipeline orchestrator."""
 
 import os
-import math
 import time
 import numpy as np
 import torch
@@ -16,6 +15,7 @@ from ..model import BaseModel
 from ..spice_utils import SpiceDataset
 from .reporting import _get_terminal_width, _print_training_status, _check_cuda_oom
 from .losses import cross_entropy_loss
+from .pruning import compute_pruning_budgets
 from .stage1 import _run_joint_training
 from .stage2 import _run_sindy_training
 
@@ -76,8 +76,8 @@ def fit_spice(
         convergence_threshold: Early stopping threshold
         loss_fn: Loss function for behavioral prediction
         sindy_weight: λ_sindy regularization strength
-        sindy_lambda_loading: L1 strength for the proximal step on the concept loadings (Z)
-        sindy_lambda_concept: L1 strength for the proximal step on the concept directions (V).
+        sindy_lambda_loading: L1 strength on the concept loadings (Z), as a term in the objective
+        sindy_lambda_concept: L1 strength on the concept directions (V), as a term in the objective.
             Controls how dense each concept's support is; with sindy_lambda_loading alone the
             objective is minimised by maximally dense concepts
         sindy_threshold_pruning: Minimum |coefficient| for a member to count as
@@ -149,13 +149,17 @@ def fit_spice(
         xs_train_5d = dataset_train.xs.unsqueeze(0)
         ys_train_5d = dataset_train.ys.unsqueeze(0)
 
-    # Auto-compute sindy_pruning_terms: distribute total terms evenly across
-    # available pruning events so the model can reach 0 concepts within
-    # (epochs - warmup) epochs.
-    if sindy_pruning_terms is None and sindy_weight > 0 and sindy_pruning_frequency is not None:
-        total_terms = sum(model.sindy_concept_gates[m].shape[-1] for m in model.submodules_rnn)
-        n_pruning_events = max(1, (epochs - n_warmup_steps) // max(1, sindy_pruning_frequency))
-        sindy_pruning_terms = math.ceil(total_terms / n_pruning_events)
+    # Per-event pruning budgets, computed once from the initial factorization: the
+    # gates (Z) and the concept support (V) each get a rate that reaches 0 over the
+    # expected number of pruning events, independently of one another.
+    # Stage 2 sizes its own budgets from its own epoch/warmup schedule.
+    n_prune_z, n_prune_v = compute_pruning_budgets(
+        model=model,
+        epochs=epochs,
+        n_warmup_steps=n_warmup_steps,
+        sindy_pruning_frequency=sindy_pruning_frequency,
+        override=sindy_pruning_terms,
+    )
 
     # ══════════════════════════════════════════════════════════════════════════
     # STAGE 1: Joint RNN-SINDy Training with Fused Pruning
@@ -196,7 +200,8 @@ def fit_spice(
                     sindy_threshold_pruning=sindy_threshold_pruning,
                     sindy_pruning_frequency=sindy_pruning_frequency,
                     sindy_ensemble_pruning=sindy_ensemble_pruning,
-                    sindy_pruning_terms=sindy_pruning_terms,
+                    n_prune_z=n_prune_z,
+                    n_prune_v=n_prune_v,
 
                     verbose=verbose,
                     keep_log=keep_log,
@@ -214,22 +219,22 @@ def fit_spice(
                 batch_size = max(1, batch_size // 2)
         
         # Save Stage 1 model checkpoint before Stage 2 re-draws the factorization
-        if path_save_checkpoints is not None:
-            stage1_path = path_save_checkpoints.replace('.pkl', '_stage1.pkl')
-        elif hasattr(model, '_save_path') and model._save_path is not None:
-            stage1_path = model._save_path.replace('.pkl', '_stage1.pkl')
-        else:
-            stage1_path = None
-        if stage1_path is not None:
-            os.makedirs(os.path.dirname(stage1_path) or '.', exist_ok=True)
-            torch.save({
-                'model': model.state_dict(),
-                'optimizer': optimizer.state_dict(),
-                'sindy_concept_support': model.sindy_concept_support,
-                'sindy_concept_gates': model.sindy_concept_gates,
-            }, stage1_path)
-            if verbose:
-                print(f"\nStage 1 model saved to: {stage1_path}")        
+        # if path_save_checkpoints is not None:
+        #     stage1_path = path_save_checkpoints.replace('.pkl', '_stage1.pkl')
+        # elif hasattr(model, '_save_path') and model._save_path is not None:
+        #     stage1_path = model._save_path.replace('.pkl', '_stage1.pkl')
+        # else:
+        #     stage1_path = None
+        # if stage1_path is not None:
+        #     os.makedirs(os.path.dirname(stage1_path) or '.', exist_ok=True)
+        #     torch.save({
+        #         'model': model.state_dict(),
+        #         'optimizer': optimizer.state_dict(),
+        #         'sindy_concept_support': model.sindy_concept_support,
+        #         'sindy_concept_gates': model.sindy_concept_gates,
+        #     }, stage1_path)
+        #     if verbose:
+        #         print(f"\nStage 1 model saved to: {stage1_path}")        
                 
 
     # ══════════════════════════════════════════════════════════════════════════

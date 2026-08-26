@@ -39,7 +39,7 @@ Identifiability rests on four things, all enforced during training:
   are exact — an L1 loss term under Adam never produces one.
 - **Unit-norm `V` rows**, re-fixed after every optimizer step. `Z @ V` is invariant under
   `(Z D, D⁻¹ V)`, so without this the cheapest way to shrink the penalty is to inflate `V`.
-- **Undercomplete `C`** (defaults to `n_terms // 2`); overcomplete dictionaries are exactly
+- **Undercomplete `C`** (defaults to `ceil(n_terms / 2)`); overcomplete dictionaries are exactly
   where identifiability fails. Concepts retire but never spawn, so `C` is a real hyperparameter.
 - **The anchor condition**: each concept must own at least one term no other concept covers.
   Overlapping supports are allowed — a shared coefficient then becomes a *prediction*

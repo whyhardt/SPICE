@@ -419,7 +419,7 @@ When designing `BaseModel` subclasses for SPICE, the architecture determines how
 - **Patience tuning**: Too low → premature elimination; too high → delayed sparsification
 - **`SpiceEstimator.predict()` returns a single array**, not `(rnn_pred, spice_pred)` — check `estimator.model.use_sindy` (or call `estimator.eval(use_sindy=...)` first) to control which mode it reflects
 - **`sindy_refit=False`** skips Stage 2 entirely — coefficients returned are whatever Stage 1's joint training converged to, not a dedicated refit
-- **Concept count `C` only ever shrinks** — concepts retire but never spawn, so a `C` chosen too small (default `n_terms // 2`) cannot be recovered from mid-run
+- **Concept count `C` only ever shrinks** — concepts retire but never spawn, so a `C` chosen too small (default `ceil(n_terms / 2)`) cannot be recovered from mid-run
 - **The two constraint projections must run after *every* optimizer step.** Skipping `normalize_concept_directions()` lets the optimizer defeat the L1 for free by inflating `V`; skipping `project_loadings()` leaves the loadings signed and never exactly zero
 - **`sindy_threshold_pruning` is on the loading scale**, not the raw-coefficient scale, because `V` rows are unit-norm and `Z` absorbs all magnitude. Thresholds tuned before the concept factorization do not carry over
 - **Presence is derived, not stored** — a unit's term support is the union of the supports of the concepts it holds. Report individual differences from **concept gates**, never from raw per-term supports

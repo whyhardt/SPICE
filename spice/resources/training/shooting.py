@@ -17,27 +17,23 @@ from ..spice_utils import SpiceDataset
 from .reporting import _check_cuda_oom
 
 
-def _project_after_step(model: BaseModel, optimizer: torch.optim.Optimizer,
-                        sindy_lambda_loading: float = None, sindy_lambda_concept: float = None) -> None:
-    """Re-establish the factorization's constraints after an optimizer step.
+def _project_after_step(model: BaseModel) -> None:
+    """Re-impose the factorization's constraints after an optimizer step.
 
-    Order matters, and the three steps are ordered so each penalty sees the scale it was
-    tuned against. The prox on V runs *first*, while the row is still on the unit-norm
-    scale the previous step left it on. The gauge is fixed *second*, which also re-masks
-    the pruned coordinates. The prox on Z runs *last*, on loadings already at their final
-    scale -- doing that one earlier lets the renormalization multiply Z by the row norms
-    and partially undo the shrinkage just applied, which makes the effective L1 threshold
-    depend on how far V happened to drift that step rather than on sindy_lambda_loading alone.
+    Constraints only -- the L1 on Z and V is a term in the objective
+    (BaseModel.compute_factorization_penalty), not a projection. Two things must hold
+    after every step: loadings stay non-negative and confined to open gates, and V rows
+    stay unit-norm. The gauge matters because Z @ V is invariant under (Z D, D^-1 V), so
+    without it the cheapest way to shrink an L1 on Z is to inflate V at no cost to the
+    fit and the sparsity pressure silently evaporates.
 
-    Both run every step. Normalizing less often would be worse, not better: at
-    equilibrium each step perturbs a row norm by O(lr), a slow reparametrization Adam's
-    moment estimates track without trouble, whereas batching the drift into one large
-    correction hands the optimizer a genuine discontinuity.
+    Normalizing every step is deliberate: at equilibrium each step perturbs a row norm by
+    O(lr), a slow reparametrization Adam's moment estimates track without trouble,
+    whereas batching the drift into one large correction hands the optimizer a genuine
+    discontinuity.
     """
-    lr = max((group.get('lr', 0.0) for group in optimizer.param_groups), default=0.0)
-    model.project_directions(lr=lr, sindy_lambda_concept=sindy_lambda_concept or 0.0)
     model.normalize_concept_directions()
-    model.project_loadings(lr=lr, sindy_lambda_loading=sindy_lambda_loading or 0.0)
+    model.project_loadings()
 
 
 def _run_shooting_epoch_vectorized(
@@ -152,15 +148,16 @@ def _run_shooting_epoch_vectorized(
             if sindy_lambda_loading is not None and sindy_lambda_loading > 0:
                 total_loss = total_loss + model.compute_constants_penalty(strength=sindy_lambda_loading)
 
+            total_loss = total_loss + model.compute_factorization_penalty(
+                sindy_lambda_loading=sindy_lambda_loading or 0.0,
+                sindy_lambda_concept=sindy_lambda_concept or 0.0,
+            )
+
             total_loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
 
-            # The L1 on the loadings is a proximal step rather than a loss term, so it
-            # has to follow the optimizer step. Re-fixing the gauge here too keeps the
-            # penalty meaningful: Z @ V is invariant under (Z D, D^-1 V), so an
-            # unnormalized V lets the optimizer shrink the penalty for free.
-            _project_after_step(model, optimizer, sindy_lambda_loading, sindy_lambda_concept)
+            _project_after_step(model)
 
         return total_loss.item()
 

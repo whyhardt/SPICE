@@ -23,7 +23,7 @@ from .losses import cross_entropy_loss
 from .trajectories import _vectorize_state_sequential, _flatten_state_trajectories_onestep
 from .ridge import _ridge_solve_sindy
 from .shooting import _run_shooting_epoch_vectorized, _run_shooting_eval_batched
-from .pruning import _ensemble_pruning
+from .pruning import _ensemble_pruning, compute_pruning_budgets
 
 
 def _run_sindy_training(
@@ -76,10 +76,11 @@ def _run_sindy_training(
         ys_train_original: 4D original training targets
         epochs: Training epochs per stage (default: 1000)
         n_warmup_steps: Warmup epochs per stage (default: 100)
-        sindy_lambda_loading: L1 strength for the proximal step on the loadings. Applied
-            as shrinkage of lr * sindy_lambda_loading per step, so it is not comparable
+        sindy_lambda_loading: L1 strength on the loadings, applied as a term in the
+            objective (lambda * ||Z||_1). Independent of the LR schedule, unlike the
+            proximal formulation it replaced -- values tuned for that are not comparable
             across different LR schedules.
-        sindy_lambda_concept: L1 strength for the proximal step on the concept directions,
+        sindy_lambda_concept: L1 strength on the concept directions (lambda * ||V||_1),
             applied the same way. Sets how dense each concept's support is
             allowed to be; without it the penalty on the loadings alone drives
             the directions toward maximum density.
@@ -113,11 +114,16 @@ def _run_sindy_training(
 
     # ── Stage 2.1: Structure discovery (K=1, with pruning) ───────────────
     if has_sparsity:
-        # Auto-compute pruning rate for Stage 2.1 budget
-        if sindy_pruning_terms is None and sindy_pruning_frequency is not None:
-            total_terms = sum(model.sindy_concept_gates[m].shape[-1] for m in model.submodules_rnn)
-            n_pruning_events = max(1, (epochs - n_warmup_steps) // max(1, sindy_pruning_frequency))
-            sindy_pruning_terms = math.ceil(total_terms / n_pruning_events)
+        # Per-event pruning budgets for Stage 2.1, sized once from the factorization
+        # about to be re-drawn: gates (Z) and concept support (V) each get a rate that
+        # reaches 0 over the expected number of pruning events, independently.
+        n_prune_z, n_prune_v = compute_pruning_budgets(
+            model=model,
+            epochs=epochs,
+            n_warmup_steps=n_warmup_steps,
+            sindy_pruning_frequency=sindy_pruning_frequency,
+            override=sindy_pruning_terms,
+        )
 
         if verbose:
             terminal_width = _get_terminal_width()
@@ -181,7 +187,7 @@ def _run_sindy_training(
         sindy_parameters = [p for name, p in model.named_parameters() if 'sindy' in name]
         optimizer_21 = torch.optim.AdamW(sindy_parameters, lr=lr_warmup, weight_decay=0)
         scheduler_21 = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer_21, mode='min', factor=0.5, patience=10, min_lr=1e-5,
+            optimizer_21, mode='min', factor=0.5, patience=10, min_lr=1e-3,
         )
 
         lr_boost_end = 0  # epoch at which post-pruning LR boost expires
@@ -235,7 +241,9 @@ def _run_sindy_training(
 
                     # Pruning
                     if sindy_pruning_frequency is not None:
-                        if sindy_threshold_pruning is not None and epoch >= n_warmup_steps:
+                        if sindy_threshold_pruning is not None:
+                            # Patience accumulates during warmup as well, so gates and
+                            # support both have candidates at the first pruning event.
                             # Support patience is ensemble-independent (V is shared), so it
                             # advances in both modes; gate patience is the non-ensemble path.
                             model.concept_support_patience(threshold=sindy_threshold_pruning)
@@ -243,17 +251,20 @@ def _run_sindy_training(
                             if sindy_ensemble_pruning is None or model.ensemble_size == 1:
                                 model.concept_gate_patience(threshold=sindy_threshold_pruning)
 
-                        if (epoch % sindy_pruning_frequency == 0 or epoch == 1) and epoch >= n_warmup_steps:
+                        # First event lands exactly on the end of warmup, then every
+                        # frequency epochs -- the schedule the budgets are sized against.
+                        if epoch >= n_warmup_steps and (epoch - n_warmup_steps) % sindy_pruning_frequency == 0:
                             pruned = False
                             if sindy_ensemble_pruning is not None and model.ensemble_size > 1:
                                 model, pruned = _ensemble_pruning(
                                     model=model,
                                     sindy_ensemble_pruning=sindy_ensemble_pruning,
                                     sindy_threshold_pruning=sindy_threshold_pruning,
+                                    n_prune_z=n_prune_z,
                                     verbose=verbose,
                                 )
                             elif sindy_threshold_pruning is not None and sindy_threshold_pruning > 0:
-                                model.prune_concept_gates(patience=sindy_pruning_frequency, n_concepts_pruning=sindy_pruning_terms)
+                                model.prune_concept_gates(patience=sindy_pruning_frequency, n_concepts_pruning=n_prune_z)
                                 pruned = True
 
                             # Term-level structure is decided for the population, not per
@@ -262,7 +273,7 @@ def _run_sindy_training(
                             if sindy_threshold_pruning is not None and sindy_threshold_pruning > 0:
                                 model.prune_concept_support(
                                     patience=sindy_pruning_frequency,
-                                    n_terms_pruning=sindy_pruning_terms,
+                                    n_terms_pruning=n_prune_v,
                                 )
                                 pruned = True
 

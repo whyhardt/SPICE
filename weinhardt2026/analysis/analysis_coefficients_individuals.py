@@ -1,27 +1,42 @@
 """
-Unified SINDy coefficient analysis pipeline.
+Unified SINDy *concept* analysis pipeline.
 
-Extracts ensemble-averaged SINDy coefficients from a trained SPICE model,
-merges them with participant-level data, and runs either:
-  - discrete analysis  (e.g. diagnosis groups → odds ratios)
-  - continuous analysis (e.g. age → logistic regression effect β)
+Individual differences are reported on the concept factorization, not on raw
+per-term coefficients.  For every submodule the coefficient matrix is
+
+    A_pt = Z_pc . V_ct
+
+with ``V`` a population-level dictionary of sparse, unit-norm directions over the
+candidate terms and ``Z`` each participant's non-negative loading on those
+directions.  A per-term coefficient is only interpretable together with the other
+terms its concept owns, and raw per-term values are not comparable across
+participants (the factorization is invariant to ``(Z D, D^-1 V)`` up to the
+unit-norm constraint on ``V``, which fixes the scale of the *loadings*, not of
+individual terms).  So:
+
+  - *structural* differences  = which concepts a participant's gates hold open
+                                (presence of a whole multi-term direction),
+  - *magnitude* differences   = how strongly they load on a concept they have.
+
+Both the discrete (group -> odds ratios) and continuous (trait -> logistic beta)
+branches operate on these two quantities.
 
 Usage examples:
 
   # Discrete (diagnosis-based, odds ratios):
-  python analysis_coefficients.py \
-      --model weinhardt2026/params/dezfouli2019/spice_dezfouli2019_a0_05.pkl \
-      --data  weinhardt2026/data/dezfouli2019/dezfouli2019.csv \
-      --analysis discrete \
+  python analysis_coefficients_individuals.py \
+      --model weinhardt2026/studies/dezfouli2019/params/spice_dezfouli2019.pkl \
+      --data  weinhardt2026/studies/dezfouli2019/data/dezfouli2019.csv \
+      --analysis disc \
       --criterion diag \
-      --reference Healthy
+      --reference Control
 
   # Continuous (age-based, effect sizes):
-  python analysis_coefficients.py \
-      --model weinhardt2026/params/eckstein2022/spice_eckstein2022.pkl \
-      --data  weinhardt2026/data/eckstein2022/eckstein2022.csv \
-      --analysis continuous \
-      --criterion age 
+  python analysis_coefficients_individuals.py \
+      --model weinhardt2026/studies/eckstein2022/params/spice_eckstein2022.pkl \
+      --data  weinhardt2026/studies/eckstein2022/data/eckstein2022.csv \
+      --analysis cont \
+      --criterion age
 """
 
 import argparse
@@ -67,20 +82,52 @@ def get_significance(p):
     return "ns"
 
 
+# Column name -> human-readable concept direction, filled in by ``prepare``.
+# A concept column is meaningless without the direction it stands for, so every
+# label, title and legend in this module goes through ``clean_name``.
+CONCEPT_LABELS = {}
+
+
+def concept_column(module, index_concept):
+    """Canonical dataframe column name for one concept of one submodule."""
+    return f"{module}_c{index_concept}"
+
+
+def concept_direction_string(direction, terms, max_terms=None):
+    """Render one concept direction as the expression it stands for.
+
+    e.g. ``-0.71 Q +0.71 r`` -- a Rescorla-Wagner update as a single concept,
+    rather than two coefficients that happen to sum to one.  With *max_terms*
+    the tail is summarized, for plot labels that have to fit on an axis.
+    """
+    parts = [
+        f"{value:+.2f} {term}"
+        for term, value in zip(terms, direction)
+        if value != 0
+    ]
+    if not parts:
+        return "0"
+    if max_terms is None or len(parts) <= max_terms:
+        return " ".join(parts)
+    return " ".join(parts[:max_terms]) + f" (+{len(parts) - max_terms})"
+
+
 def clean_name(col):
-    return (col.replace("x_", "").replace("_", " ").title())[:50]
+    """Plot-friendly name: the column id plus the direction it stands for."""
+    label = CONCEPT_LABELS.get(col)
+    return col if label is None else f"{col}: {label}"
 
 
 SIG_COLORS = {"***": "#FF0000", "**": "#FFA500", "*": "#FFD700", "ns": "#999999"}
 
 
 # ---------------------------------------------------------------------------
-# 1. Preparation – extract coefficients
+# 1. Preparation – extract concept loadings
 # ---------------------------------------------------------------------------
 
 def prepare(criterion_col, data_path: str, dataset_kwargs: dict = {}, spice_model: SpiceEstimator = None, model_path: str = None, model_module: str = None, model_class: BaseModel = None, model_config: SpiceConfig = None):
-    """Load a trained SPICE model, extract ensemble-averaged SINDy coefficients
-    per participant and merge with the data file.
+    """Load a trained SPICE model, extract each participant's concept loadings
+    and merge them with the data file.
 
     Parameters
     ----------
@@ -104,10 +151,12 @@ def prepare(criterion_col, data_path: str, dataset_kwargs: dict = {}, spice_mode
     Returns
     -------
     df : pd.DataFrame
-        One row per participant with columns for every SINDy coefficient
-        (prefixed ``x_``) and the criterion column.
-    sindy_cols : list[str]
-        Names of the SINDy coefficient columns.
+        One row per participant, one column per surviving concept
+        (``{module}_c{index}``) holding that participant's loading -- exactly
+        zero when the concept is not part of their structure -- plus the
+        criterion column.
+    concept_cols : list[str]
+        Names of the concept-loading columns.
     """
     # --- load data to infer dimensions ---
     dataset = csv_to_dataset(file=data_path, **dataset_kwargs)
@@ -153,16 +202,13 @@ def prepare(criterion_col, data_path: str, dataset_kwargs: dict = {}, spice_mode
     else:
         estimator = spice_model
 
-    # --- extract ensemble-averaged coefficients ---
-    # Returns Dict[module_name, np.ndarray] with shape (P, X, T)
-    coefficients = estimator.get_sindy_coefficients(aggregate=True)
+    # --- extract the concept dictionary and per-participant loadings ---
+    # V: (C, T) shared directions;  Z: (E, P, X, C) non-negative loadings.
+    directions = estimator.get_concepts()
+    loadings = estimator.get_concept_loadings(aggregate=False)
+    gates = estimator.model.sindy_concept_gates
     candidate_terms = estimator.get_candidate_terms()
     modules = estimator.get_modules()
-    
-    sindy_cols = []
-    for m in modules:
-        for c in candidate_terms[m]:
-            sindy_cols.append(m+"_"+c)
 
     # Map integer indices back to original participant labels from the CSV.
     # csv_to_dataset maps participants via enumerate(df["participant"].unique()),
@@ -170,26 +216,87 @@ def prepare(criterion_col, data_path: str, dataset_kwargs: dict = {}, spice_mode
     original_pids = raw_df[df_participant_id].unique()
     index_to_session = {i: original_pids[i] for i in range(n_participants)}
 
+    CONCEPT_LABELS.clear()
+    concept_cols = []
+    dictionary_rows = []
+    per_module_values = {}
+
+    for module in modules:
+        V = directions[module].detach().cpu().numpy()  # (C, T)
+        Z = loadings[module].detach().cpu().numpy()  # (E, P, X, C)
+        G = gates[module].detach().cpu().numpy()  # (E, P, X, C) bool
+        terms = candidate_terms[module]
+
+        # A concept is part of a participant's structure when the ensemble agrees
+        # it is: the gate is open in the majority of members. Averaging loadings
+        # over members that disagree about presence would smear a structural
+        # difference into a magnitude one.
+        gate_rate = G.mean(axis=0)  # (P, X, C)
+        present = gate_rate >= 0.5
+
+        # Loading averaged over the members that actually hold the concept open;
+        # zero where the ensemble says the concept is absent.
+        with np.errstate(invalid="ignore"):
+            member_mean = np.where(G, Z, np.nan)
+            member_mean = np.nan_to_num(np.nanmean(member_mean, axis=0), nan=0.0)
+        values = np.where(present, member_mean, 0.0)
+
+        # Collapse experiments: a participant has the concept if they have it in
+        # most of their experiments, and the reported loading is its average
+        # over those.
+        # TODO: change this to respect each participant/experiment combination as a single unit
+        present_p = present.mean(axis=1) >= 0.5  # (P, C)
+        values_p = np.where(present_p, values.mean(axis=1), 0.0)  # (P, C)
+
+        # Retire concepts that no longer exist: an all-zero direction (every term
+        # pruned out of it) or a direction no participant loads on.
+        alive = np.any(V != 0, axis=-1) & np.any(present_p, axis=0)
+        per_module_values[module] = (values_p, present_p, alive)
+
+        for index_concept in np.flatnonzero(alive):
+            col = concept_column(module, index_concept)
+            CONCEPT_LABELS[col] = concept_direction_string(
+                V[index_concept], terms, max_terms=3
+            )
+            concept_cols.append(col)
+            dictionary_rows.append({
+                "concept": col,
+                "module": module,
+                "index_concept": int(index_concept),
+                "direction": concept_direction_string(V[index_concept], terms),
+                "n_terms": int(np.sum(V[index_concept] != 0)),
+                "presence_rate": float(present_p[:, index_concept].mean()),
+                "mean_loading": float(
+                    values_p[present_p[:, index_concept], index_concept].mean()
+                ),
+            })
+
+        n_retired = int((~alive).sum())
+        print(f"  {module}: {int(alive.sum())} live concepts"
+              + (f" ({n_retired} retired)" if n_retired else ""))
+
     rows = []
     for p_idx in range(n_participants):
-        pid = index_to_session[p_idx]
-        row = {"participant_id": pid}
+        row = {"participant_id": index_to_session[p_idx]}
+        n_params_total = 0
         for module in modules:
-            coefs = coefficients[module].detach().cpu().numpy()  # (P, X, T)
-            terms = candidate_terms[module]
-            # TODO: change this to respect each participant/experiment combination as a single module
-            # Average across experiments (X dimension) for each participant
-            p_coefs = coefs[p_idx].mean(axis=0)  # (T,)
-            for t_idx, term in enumerate(terms):
-                col_name = f"{module}_{term}"
-                row[col_name] = float(p_coefs[t_idx])
-            row[f"params_{module}"] = int(np.sum(np.abs(p_coefs) > 1e-10))
-        row["total_params"] = sum(row[f"params_{m}"] for m in modules)
+            values_p, present_p, alive = per_module_values[module]
+            for index_concept in np.flatnonzero(alive):
+                row[concept_column(module, index_concept)] = float(
+                    values_p[p_idx, index_concept]
+                )
+            n_module = int(present_p[p_idx, alive].sum())
+            row[f"params_{module}"] = n_module
+            n_params_total += n_module
+        row["total_params"] = n_params_total
         rows.append(row)
 
-    sindy_df = pd.DataFrame(rows)
-    print(f"Extracted {len(sindy_cols)} SINDy coefficient columns for {len(sindy_df)} participants.")
-    
+    concept_df = pd.DataFrame(rows)
+    print(f"Extracted {len(concept_cols)} concept-loading columns for "
+          f"{len(concept_df)} participants.")
+
+    concept_dictionary = pd.DataFrame(dictionary_rows)
+
     # --- build criterion column per participant from raw data ---
     crit_df = raw_df.groupby(df_participant_id).first().reset_index()
     crit_df = crit_df.rename(columns={df_participant_id: "participant_id"})
@@ -199,14 +306,14 @@ def prepare(criterion_col, data_path: str, dataset_kwargs: dict = {}, spice_mode
     crit_df = crit_df[["participant_id", criterion_col]]
 
     # Merge
-    df = sindy_df.merge(crit_df, on="participant_id", how="inner")
+    df = concept_df.merge(crit_df, on="participant_id", how="inner")
     df = df.dropna(subset=[criterion_col])
     print(f"After merge: {len(df)} participants with criterion '{criterion_col}'.")
-    return df, sindy_cols
+    return df, concept_cols, concept_dictionary
 
 
 # ---------------------------------------------------------------------------
-# 2a. Discrete analysis – logistic regression per group-pair → odds ratios
+# 2a. Discrete analysis – structural: which concepts each group holds open
 # ---------------------------------------------------------------------------
 
 def _logistic_beta(presence, is_reference):
@@ -246,10 +353,14 @@ def _logistic_beta(presence, is_reference):
         return np.nan, np.nan, np.nan
 
 
-def run_discrete(df, sindy_cols, criterion_col, reference_group, output_dir):
-    """Pairwise logistic regression of coefficient presence between
-    the reference group and every other group.  Produces forest plots
-    (beta effect sizes with 95% CIs) and presence-rate plots."""
+def run_discrete(df, concept_cols, criterion_col, reference_group, output_dir):
+    """Structural group differences: pairwise logistic regression of *concept*
+    presence between the reference group and every other group.
+
+    Presence is a whole multi-term direction being part of a participant's
+    structure, so a significant effect reads as "this group tends to lack this
+    mechanism" rather than "this group tends to lack this term".  Produces
+    forest plots (beta effect sizes with 95% CIs) and presence-rate plots."""
 
     groups = sorted(df[criterion_col].unique())
     if reference_group not in groups:
@@ -264,7 +375,7 @@ def run_discrete(df, sindy_cols, criterion_col, reference_group, output_dir):
         print(f"  {g}: n={len(df[df[criterion_col] == g])}")
 
     results = []
-    for col in sindy_cols:
+    for col in concept_cols:
         vals = df[col].values
         mask = ~np.isnan(vals)
         if mask.sum() < 10:
@@ -276,8 +387,8 @@ def run_discrete(df, sindy_cols, criterion_col, reference_group, output_dir):
 
         crit_vals = df[criterion_col].values[mask]
         result = {
-            "coefficient": col,
-            "coefficient_clean": clean_name(col),
+            "concept": col,
+            "concept_clean": clean_name(col),
             "n_total": int(mask.sum()),
             "presence_rate": rate,
         }
@@ -308,21 +419,21 @@ def run_discrete(df, sindy_cols, criterion_col, reference_group, output_dir):
 
     res_df = pd.DataFrame(results)
     os.makedirs(output_dir, exist_ok=True)
-    res_df.to_csv(os.path.join(output_dir, "discrete_odds_ratio_results.csv"), index=False)
+    res_df.to_csv(os.path.join(output_dir, "concepts_discrete_odds_ratio_results.csv"), index=False)
 
     # ---- print summary ----
-    print(f"\nAnalysed {len(res_df)} coefficients.")
+    print(f"\nAnalysed {len(res_df)} concepts.")
     for cg in comparison_groups:
         sig_col = f"{reference_group}_vs_{cg}_sig"
         if sig_col not in res_df.columns:
             continue
         sig = res_df[res_df[sig_col].isin(["*", "**", "***"])]
-        print(f"\n{reference_group} vs {cg}: {len(sig)} significant coefficients")
+        print(f"\n{reference_group} vs {cg}: {len(sig)} significant concepts")
         for _, row in sig.head(5).iterrows():
             beta = row[f"{reference_group}_vs_{cg}_beta"]
             p_val = row[f"{reference_group}_vs_{cg}_p"]
             direction = f"more present in {reference_group}" if beta > 0 else f"less present in {reference_group}"
-            print(f"  {row['coefficient_clean']}: β={beta:.3f}, "
+            print(f"  {row['concept_clean']}: β={beta:.3f}, "
                   f"p={p_val:.4f} {row[sig_col]} ({direction})")
 
     # ---- plots ----
@@ -360,7 +471,7 @@ def _plot_forest(df_plot, ax, title="", xlabel="Effect (β)"):
     ax.axvline(0, color="black", linestyle="--", linewidth=0.8, alpha=0.7)
 
     ax.set_yticks(y_pos)
-    ax.set_yticklabels(df_plot["coefficient_clean"], fontsize=8)
+    ax.set_yticklabels(df_plot["concept_clean"], fontsize=8)
     ax.set_xlabel(xlabel)
     ax.set_title(title)
     ax.spines["top"].set_visible(False)
@@ -395,7 +506,7 @@ def _plot_odds_ratios(res_df, ref, comparisons, output_dir):
         df_plot = pd.DataFrame({
             "beta": valid[beta_col].values,
             "se": valid[se_col].values,
-            "coefficient_clean": valid["coefficient_clean"].values,
+            "concept_clean": valid["concept_clean"].values,
             "significance": valid[sig_col].values,
         })
         _plot_forest(df_plot, axes[i], title=f"{ref} vs {cg}",
@@ -409,7 +520,7 @@ def _plot_odds_ratios(res_df, ref, comparisons, output_dir):
 
 
 def _plot_presence_rates(res_df, df, criterion_col, ref, comparisons, output_dir):
-    # Pick significant coefficients, or top-6 by presence rate
+    # Pick significant concepts, or top-6 by presence rate
     sig_coeffs = []
     for _, row in res_df.iterrows():
         for cg in comparisons:
@@ -428,12 +539,12 @@ def _plot_presence_rates(res_df, df, criterion_col, ref, comparisons, output_dir
     all_groups = [ref] + comparisons
     presence_data = []
     for coef in sig_coeffs:
-        col = coef["coefficient"]
+        col = coef["concept"]
         for grp in all_groups:
             data = df[df[criterion_col] == grp][col].dropna()
             if len(data) > 0:
                 presence_data.append({
-                    "Coefficient": coef["coefficient_clean"],
+                    "Concept": coef["concept_clean"],
                     "Group": grp,
                     "Presence_Rate": (data != 0).mean(),
                 })
@@ -441,14 +552,14 @@ def _plot_presence_rates(res_df, df, criterion_col, ref, comparisons, output_dir
         return
 
     pres_df = pd.DataFrame(presence_data)
-    pivot = pres_df.pivot(index="Coefficient", columns="Group", values="Presence_Rate")
+    pivot = pres_df.pivot(index="Concept", columns="Group", values="Presence_Rate")
     col_order = [ref] + [g for g in pivot.columns if g != ref]
     pivot = pivot[col_order]
 
     fig, ax = plt.subplots(figsize=(10, 6))
     pivot.plot(kind="bar", ax=ax, width=0.8)
     ax.set_ylabel("Presence Rate")
-    ax.set_title("Presence Rates for Significant Coefficients")
+    ax.set_title("Presence rates for significant concepts")
     ax.set_xticklabels(pivot.index, rotation=45, ha="right")
     ax.legend(title=criterion_col, bbox_to_anchor=(1.05, 1), loc="upper left")
     ax.set_ylim(0, 1)
@@ -459,13 +570,14 @@ def _plot_presence_rates(res_df, df, criterion_col, ref, comparisons, output_dir
 
 
 # ---------------------------------------------------------------------------
-# 2b. Continuous analysis – logistic regression β (effect) per coefficient
+# 2b. Continuous analysis – structural: concept presence vs a continuous trait
 # ---------------------------------------------------------------------------
 
-def run_continuous(df, sindy_cols, criterion_col, output_dir):
-    """For each SINDy coefficient, fit logistic regression predicting
-    presence/absence from the continuous criterion (e.g. age).
-    Produces forest plots (β with 95% CIs) and logistic-curve plots."""
+def run_continuous(df, concept_cols, criterion_col, output_dir):
+    """Structural differences along a continuous trait: for each concept, fit a
+    logistic regression predicting its presence/absence from the criterion
+    (e.g. age).  Produces forest plots (β with 95% CIs) and logistic-curve
+    plots."""
 
     df_clean = df[df[criterion_col].notna()].copy()
     if df_clean.empty:
@@ -481,7 +593,7 @@ def run_continuous(df, sindy_cols, criterion_col, output_dir):
     results = []
     skipped = []
 
-    for col in sindy_cols:
+    for col in concept_cols:
         vals = df_clean[col].values
         mask = ~np.isnan(vals)
         if mask.sum() < 10:
@@ -495,8 +607,8 @@ def run_continuous(df, sindy_cols, criterion_col, output_dir):
             continue
         if rate == 1.0:
             results.append({
-                "coefficient": col,
-                "coefficient_clean": clean_name(col),
+                "concept": col,
+                "concept_clean": clean_name(col),
                 "beta": np.nan,
                 "se": np.nan,
                 "p_value": np.nan,
@@ -538,8 +650,8 @@ def run_continuous(df, sindy_cols, criterion_col, output_dir):
         p_val = 1 - chi2.cdf(max(0, lr), df=1)
 
         results.append({
-            "coefficient": col,
-            "coefficient_clean": clean_name(col),
+            "concept": col,
+            "concept_clean": clean_name(col),
             "beta": beta,
             "se": se,
             "p_value": p_val,
@@ -549,7 +661,7 @@ def run_continuous(df, sindy_cols, criterion_col, output_dir):
         })
 
     if skipped:
-        print(f"Skipped {len(skipped)} coefficients (e.g. {skipped[:3]})")
+        print(f"Skipped {len(skipped)} concepts (e.g. {skipped[:3]})")
 
     res_df = pd.DataFrame(results)
     if res_df.empty:
@@ -564,17 +676,17 @@ def run_continuous(df, sindy_cols, criterion_col, output_dir):
     else:
         mask_reg = pd.Series(True, index=res_df.index)
 
-    res_df.to_csv(os.path.join(output_dir, "continuous_effect_results_all.csv"), index=False)
+    res_df.to_csv(os.path.join(output_dir, "concepts_continuous_effect_results_all.csv"), index=False)
 
     reg_df = res_df[mask_reg].copy()
     reg_df["abs_beta"] = reg_df["beta"].abs()
     reg_df = reg_df.sort_values("abs_beta", ascending=False).drop(columns="abs_beta")
-    reg_df.to_csv(os.path.join(output_dir, "continuous_effect_results_variable.csv"), index=False)
+    reg_df.to_csv(os.path.join(output_dir, "concepts_continuous_effect_results_variable.csv"), index=False)
 
     # ---- print summary ----
     never = [clean_name(c) for c, n in skipped if n == "all zero"]
-    always = res_df.loc[res_df.get("note") == "always_present", "coefficient_clean"].tolist() if has_note else []
-    print(f"\nAnalysed {len(reg_df)} variable coefficients.")
+    always = res_df.loc[res_df.get("note") == "always_present", "concept_clean"].tolist() if has_note else []
+    print(f"\nAnalysed {len(reg_df)} variable concepts.")
     if never:
         print(f"Never-present ({len(never)}): {', '.join(never[:5])}")
     if always:
@@ -584,7 +696,7 @@ def run_continuous(df, sindy_cols, criterion_col, output_dir):
     print(f"Significant effects: {len(sig)}")
     for _, row in sig.head(10).iterrows():
         direction = "increases" if row["beta"] > 0 else "decreases"
-        print(f"  {row['coefficient_clean']}: β={row['beta']:.3f}, "
+        print(f"  {row['concept_clean']}: β={row['beta']:.3f}, "
               f"p={row['p_value']:.4f} {row['significance']} "
               f"(presence {direction} with {criterion_col})")
 
@@ -596,10 +708,10 @@ def run_continuous(df, sindy_cols, criterion_col, output_dir):
 
 
 def _plot_beta_bars(df, criterion_col, output_dir):
-    df_plot = df[["beta", "se", "coefficient_clean", "significance"]].dropna(subset=["beta"]).copy()
+    df_plot = df[["beta", "se", "concept_clean", "significance"]].dropna(subset=["beta"]).copy()
     fig, ax = plt.subplots(figsize=(8, max(6, len(df_plot) * 0.25)))
     _plot_forest(df_plot, ax,
-                 title=f"Effect of {criterion_col} on coefficient presence",
+                 title=f"Effect of {criterion_col} on concept presence",
                  xlabel=f"Effect β (>0: presence increases with {criterion_col})")
     _forest_legend(ax)
     plt.tight_layout()
@@ -622,7 +734,7 @@ def _plot_logistic_curves(df, criterion_col, crit_min, crit_max, output_dir):
     for ax, (_, row) in zip(axes_flat, top.iterrows()):
         p = 1 / (1 + np.exp(-row["beta"] * xs_std))
         ax.plot(xs, p, color=SIG_COLORS[row["significance"]], linewidth=2)
-        ax.set_title(row["coefficient_clean"], fontsize=9)
+        ax.set_title(row["concept_clean"], fontsize=9)
         ax.set_ylim(0, 1)
         ax.set_xlabel(criterion_col)
         ax.set_ylabel("Prob(present)")
@@ -639,7 +751,7 @@ def _plot_logistic_curves(df, criterion_col, crit_min, crit_max, output_dir):
 
 
 # ---------------------------------------------------------------------------
-# 3. Magnitude analysis – Spearman / Kruskal-Wallis / Jonckheere-Terpstra
+# 3. Magnitude analysis – how strongly participants load on the concepts they have
 # ---------------------------------------------------------------------------
 
 def jonckheere_terpstra(groups):
@@ -657,10 +769,16 @@ def jonckheere_terpstra(groups):
     return z, 2 * (1 - norm.cdf(abs(z)))
 
 
-def run_magnitude_analysis(df, sindy_cols, criterion_col, analysis_type,
+def run_magnitude_analysis(df, concept_cols, criterion_col, analysis_type,
                            output_dir, group_labels=None):
     """Non-parametric magnitude analysis (Spearman, Kruskal-Wallis,
-    Jonckheere-Terpstra) of SINDy coefficients vs the criterion.
+    Jonckheere-Terpstra) of concept *loadings* vs the criterion.
+
+    Restricted to the participants who actually have a concept, so this asks how
+    strongly a shared mechanism is expressed, independently of whether it is
+    present at all -- the structural question the discrete/continuous branches
+    above already answer.  Unlike raw per-term coefficients, loadings are
+    comparable across participants because the concept directions are unit-norm.
 
     For continuous criteria the data is binned into groups first.
     For discrete criteria the groups are the unique values.
@@ -688,13 +806,13 @@ def run_magnitude_analysis(df, sindy_cols, criterion_col, analysis_type,
             bounds = pd.qcut(df[criterion_col], q=n_groups, duplicates="drop").cat.categories
             group_labels = [f"{iv.left:.0f}-{iv.right:.0f}" for iv in bounds]
 
-    keep = [c for c in sindy_cols
+    keep = [c for c in concept_cols
             if (nz := df.loc[df[c] != 0, c]).size > 10 and nz.std() > 1e-10]
     if not keep:
-        print("No variable coefficients for magnitude analysis.")
+        print("No variable concept loadings for magnitude analysis.")
         return None
 
-    print(f"\nMagnitude analysis: {len(keep)} coefficients, {n_groups} groups")
+    print(f"\nMagnitude analysis: {len(keep)} concepts, {n_groups} groups")
 
     results = []
     for c in keep:
@@ -723,7 +841,7 @@ def run_magnitude_analysis(df, sindy_cols, criterion_col, analysis_type,
             })
 
         results.append({
-            "coefficient": c,
+            "concept": c,
             "n_nonzero": vals.size,
             "mean": vals.mean(),
             "std": vals.std(),
@@ -751,22 +869,22 @@ def run_magnitude_analysis(df, sindy_cols, criterion_col, analysis_type,
             for k in ("count", "mean", "median", "std"):
                 rec[f"group_{gid}_{k}"] = g[k]
         flat.append(rec)
-    pd.DataFrame(flat).to_csv(out / "magnitude_analysis_results.csv", index=False)
+    pd.DataFrame(flat).to_csv(out / "concepts_magnitude_analysis_results.csv", index=False)
 
-    # Heatmap of top coefficients
+    # Heatmap of top concepts
     top15 = res.head(min(15, len(res)))
     heat = pd.DataFrame(
-        {row["coefficient"]: [g["mean"] for g in row["group_stats"]]
+        {clean_name(row["concept"]): [g["mean"] for g in row["group_stats"]]
          for _, row in top15.iterrows()}
     ).T
     heat.columns = group_labels[:n_groups]
 
     plt.figure(figsize=(12, max(8, len(top15) * 0.5)))
     sns.heatmap(heat, annot=True, cmap="RdBu_r", center=0, fmt=".3f",
-                cbar_kws={"label": "Mean Coefficient"})
-    plt.title(f"SINDy coefficient means by {criterion_col} group (top-{len(top15)} JT)")
+                cbar_kws={"label": "Mean loading"})
+    plt.title(f"Concept loading means by {criterion_col} group (top-{len(top15)} JT)")
     plt.tight_layout()
-    plt.savefig(out / "magnitude_heatmap.png", dpi=300, bbox_inches="tight")
+    plt.savefig(out / "concepts_magnitude_heatmap.png", dpi=300, bbox_inches="tight")
     plt.close()
 
     # Summary
@@ -774,7 +892,7 @@ def run_magnitude_analysis(df, sindy_cols, criterion_col, analysis_type,
     print(f"Significant Kruskal-Wallis (p<0.05): {(res.kruskal_p < 0.05).sum()}")
     print(f"Significant Jonckheere-Terpstra:     {(res.jt_p < 0.05).sum()}")
     print("\nTop 10 by JT p-value:")
-    print(res[["coefficient", "spearman_rho", "spearman_p", "jt_p", "trend"]]
+    print(res[["concept", "spearman_rho", "spearman_p", "jt_p", "trend"]]
           .head(10).to_string(index=False))
 
     # Clean up temp column
@@ -800,7 +918,12 @@ def analysis_coefficients_individuals(
     dataset_kwargs: dict = {},
     output_dir: str = None,
     ):
-    """Run the full individual-level SINDy coefficient analysis pipeline.
+    """Run the full individual-differences pipeline on the concept factorization.
+
+    Step 2 asks the *structural* question -- which concepts a participant holds
+    open -- and step 3 the *magnitude* question -- how strongly they load on the
+    concepts they have.  Both are reported per concept (a whole multi-term
+    direction), never per candidate term.
 
     Parameters
     ----------
@@ -833,9 +956,9 @@ def analysis_coefficients_individuals(
 
     # 1. Preparation
     print("=" * 70)
-    print("STEP 1: Preparing data")
+    print("STEP 1: Extracting concept loadings")
     print("=" * 70)
-    df, sindy_cols = prepare(
+    df, concept_cols, concept_dictionary = prepare(
         data_path=path_data,
         criterion_col=criterion,
         spice_model=spice_model,
@@ -846,21 +969,32 @@ def analysis_coefficients_individuals(
         dataset_kwargs=dataset_kwargs,
     )
 
-    # 2. Regression analysis
+    os.makedirs(output_dir, exist_ok=True)
+    concept_dictionary.to_csv(
+        os.path.join(output_dir, "concepts_dictionary.csv"), index=False
+    )
+    print("\nConcept dictionary (full directions in concepts_dictionary.csv):")
+    for _, row in concept_dictionary.iterrows():
+        print(f"  {row['concept']:<32s} n_terms={row['n_terms']:<3d} "
+              f"present={row['presence_rate']:.2f} "
+              f"mean_loading={row['mean_loading']:.3f}")
+        print(f"      {row['direction']}")
+
+    # 2. Structural analysis: which concepts each participant holds open
     print("\n" + "=" * 70)
-    print("STEP 2: Regression analysis")
+    print("STEP 2: Structural analysis (concept presence)")
     print("=" * 70)
     if analysis == "disc":
-        res = run_discrete(df, sindy_cols, criterion,
+        res = run_discrete(df, concept_cols, criterion,
                            reference, output_dir)
     else:
-        res = run_continuous(df, sindy_cols, criterion, output_dir)
+        res = run_continuous(df, concept_cols, criterion, output_dir)
 
-    # 3. Magnitude analysis (Spearman / KW / JT)
+    # 3. Magnitude analysis: how strongly they load on the concepts they have
     print("\n" + "=" * 70)
-    print("STEP 3: Magnitude analysis")
+    print("STEP 3: Magnitude analysis (concept loadings)")
     print("=" * 70)
-    run_magnitude_analysis(df, sindy_cols, criterion, analysis, output_dir)
+    run_magnitude_analysis(df, concept_cols, criterion, analysis, output_dir)
 
     print(f"\nAll results saved to: {output_dir}")
 
@@ -872,7 +1006,7 @@ def analysis_coefficients_individuals(
 if __name__ == "__main__":
     
     p = argparse.ArgumentParser(
-        description="Unified SINDy coefficient analysis pipeline",
+        description="Unified SINDy concept analysis pipeline",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
