@@ -9,8 +9,9 @@ import torch
 
 from spice import SpiceEstimator
 
-from spice.precoded.workingmemory import SpiceModel, CONFIG
+# from spice.precoded.workingmemory import SpiceModel, CONFIG
 # from spice.precoded.choice import SpiceModel, CONFIG
+from spice_dezfouli2019 import SpiceModel, CONFIG
 
 from weinhardt2026.utils.benchmarking_gru import GRUModel, training
 from weinhardt2026.studies.dezfouli2019.benchmarking_dezfouli2019 import GQLModel, get_dataset, generate_behavior
@@ -23,7 +24,7 @@ from weinhardt2026.analysis.analysis_mechanism_individuals import analysis_mecha
 from weinhardt2026.utils.generation import generate_repeated
 
 
-train_spice = False
+train_spice = True
 train_benchmark = False
 train_gru = False
 
@@ -33,7 +34,7 @@ N_REPEATS = 100
 path_data = 'weinhardt2026/studies/dezfouli2019/data/dezfouli2019.csv'
 data_dir = 'weinhardt2026/studies/dezfouli2019/data'
 output_dir = 'weinhardt2026/studies/dezfouli2019/results'
-path_spice = 'weinhardt2026/studies/dezfouli2019/params_array/spice_dezfouli2019_0.1_0.5.pkl'
+path_spice = 'weinhardt2026/studies/dezfouli2019/params/spice_dezfouli2019_new.pkl'
 path_spice_compressed = 'weinhardt2026/studies/dezfouli2019/params/spice_dezfouli2019_compressed.pkl'
 path_benchmark = 'weinhardt2026/studies/dezfouli2019/params/benchmark_dezfouli2019.pkl'
 path_gru = 'weinhardt2026/studies/dezfouli2019/params/gru_dezfouli2019.pkl'
@@ -65,6 +66,9 @@ estimator = SpiceEstimator(
 
     epochs=1000,
     warmup_steps=500,
+    
+    sindy_threshold_pruning=0.1,
+    sindy_alpha=1e-4,
 
     device=device,
     verbose=True,
@@ -72,7 +76,7 @@ estimator = SpiceEstimator(
 )
 
 if train_spice:
-    estimator.fit(dataset_train.xs, dataset_train.ys, dataset_test.xs, dataset_test.ys)
+    estimator.fit(dataset_train.xs, dataset_train.ys)#, dataset_test.xs, dataset_test.ys)
     estimator.save_spice(path_spice)
 else:
     estimator.load_spice(path_spice)
