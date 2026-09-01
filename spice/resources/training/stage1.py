@@ -37,6 +37,7 @@ def _run_batch_training(
     sindy_weight_fit: float = 0.1,
     sindy_lambda_loading: float = 0.,
     sindy_lambda_concept: float = 0.,
+    sindy_lambda_group: float = 0.,
     n_steps: int = None,
     loss_fn: callable = cross_entropy_loss,
     loss_fn_kwargs: dict = {},
@@ -91,6 +92,7 @@ def _run_batch_training(
                 loss_step = loss_step + model.compute_factorization_penalty(
                     sindy_lambda_loading=sindy_lambda_loading,
                     sindy_lambda_concept=sindy_lambda_concept,
+                    sindy_lambda_group=sindy_lambda_group,
                 )
                 
             # backpropagation
@@ -135,6 +137,7 @@ def _run_joint_training(
     sindy_weight: float = 0,
     sindy_lambda_loading: float = 0,
     sindy_lambda_concept: float = 0,
+    sindy_lambda_group: float = 0,
     sindy_pruning_frequency: int = None,
     sindy_threshold_pruning: float = None,
     sindy_ensemble_pruning: float = None,
@@ -158,7 +161,8 @@ def _run_joint_training(
     above `sindy_threshold_pruning`); otherwise per-member thresholding is used.
 
     Objective: L_total = L_CE(y, y_hat) + sindy_weight * L_SINDy
-               + sindy_lambda_loading * ||Z||_1 + sindy_lambda_concept * ||V||_1.
+               + sindy_lambda_loading * ||Z||_1 + sindy_lambda_concept * ||V||_1
+               + sindy_lambda_group * sum_c ||Z[..., c]||_2.
     Non-negativity of Z and the unit-norm gauge on V are constraint projections applied
     after each optimizer step; exact zeros come from thresholding, not from the L1.
 
@@ -223,6 +227,7 @@ def _run_joint_training(
                     sindy_weight_epoch = sindy_weight
                     sindy_lambda_loading_epoch = sindy_lambda_loading
                     sindy_lambda_concept_epoch = sindy_lambda_concept
+                    sindy_lambda_group_epoch = sindy_lambda_group
                     sindy_weight_fit_epoch = 1.0
                 else:
                     warmup_scale = warmup_scaler_sindy_weight[n_calls_to_train_model]
@@ -236,6 +241,9 @@ def _run_joint_training(
                     # near-random, and full-strength shrinkage from step 0 would zero
                     # coordinates before the fit has said anything about them.
                     sindy_lambda_concept_epoch = sindy_lambda_concept * warmup_scale
+                    # And on the group term: at full strength from step 0 it would retire
+                    # whole concepts before the fit has had a chance to populate them.
+                    sindy_lambda_group_epoch = sindy_lambda_group * warmup_scale
                     sindy_weight_fit_epoch = warmup_scale
 
                 # Training iterations for this epoch
@@ -263,6 +271,7 @@ def _run_joint_training(
                         sindy_weight_fit=sindy_weight_fit_epoch,
                         sindy_lambda_loading=sindy_lambda_loading_epoch,
                         sindy_lambda_concept=sindy_lambda_concept_epoch,
+                        sindy_lambda_group=sindy_lambda_group_epoch,
                         loss_fn=loss_fn,
                         loss_fn_kwargs=loss_fn_kwargs,
                     )

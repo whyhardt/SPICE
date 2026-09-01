@@ -59,6 +59,7 @@ class SpiceEstimator(BaseEstimator):
         sindy_weight: Optional[float] = 0.01,  # Weight for SINDy regularization loss
         sindy_lambda_loading: Optional[float] = 1e-4,  # L1 strength for the proximal step on concept loadings, and the ridge alpha
         sindy_lambda_concept: Optional[float] = 1e-4,  # L1 strength for the proximal step on concept directions (support density)
+        sindy_lambda_group: Optional[float] = 0.,  # Group-lasso strength over the participant axis of Z (concept count)
         sindy_library_polynomial_degree: Optional[int] = 2,
         sindy_pruning_frequency: Optional[int] = 100,  # Epochs between pruning events
         sindy_threshold_pruning: Optional[float] = 0.01,  # Optional per-member threshold pruning (None to disable)
@@ -103,6 +104,12 @@ class SpiceEstimator(BaseEstimator):
                 Sets how dense a concept's support may be. With sindy_lambda_loading alone the
                 objective is minimised by maximally dense concepts, since a k-dense
                 unit-norm direction carries sqrt(k) of coefficient mass per unit loading.
+            sindy_lambda_group: Group-lasso strength over the participant axis of Z
+                (sum over concepts of the L2 norm of that concept's loading column).
+                Sets how many concepts the *population* needs, where sindy_lambda_loading
+                sets how many any one participant holds. Without it nothing in the
+                objective penalises spreading one mechanism over several duplicate
+                concepts. 0 disables it.
             sindy_library_polynomial_degree: Max polynomial degree for SINDy candidate library.
             sindy_pruning_frequency: Epochs between pruning events.
             sindy_threshold_pruning: Minimum |coefficient| for a member to count as
@@ -144,6 +151,7 @@ class SpiceEstimator(BaseEstimator):
         self.sindy_weight = sindy_weight
         self.sindy_lambda_loading = sindy_lambda_loading
         self.sindy_lambda_concept = sindy_lambda_concept
+        self.sindy_lambda_group = sindy_lambda_group
         self.sindy_library_polynomial_degree = sindy_library_polynomial_degree
         self.sindy_pruning_frequency = sindy_pruning_frequency
         self.sindy_threshold_pruning = sindy_threshold_pruning
@@ -260,6 +268,7 @@ class SpiceEstimator(BaseEstimator):
             sindy_weight=self.sindy_weight,
             sindy_lambda_loading=self.sindy_lambda_loading,
             sindy_lambda_concept=self.sindy_lambda_concept,
+            sindy_lambda_group=self.sindy_lambda_group,
             sindy_pruning_frequency=self.sindy_pruning_frequency,
             sindy_threshold_pruning=self.sindy_threshold_pruning,
             sindy_ensemble_pruning=self.sindy_ensemble_pruning,

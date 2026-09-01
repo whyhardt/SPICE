@@ -36,6 +36,7 @@ def _run_sindy_training(
     n_warmup_steps: int = 100,
     sindy_lambda_loading: float = None,
     sindy_lambda_concept: float = None,
+    sindy_lambda_group: float = None,
     sindy_pruning_frequency: int = None,
     sindy_ensemble_pruning: float = None,
     sindy_threshold_pruning: float = None,
@@ -84,6 +85,11 @@ def _run_sindy_training(
             applied the same way. Sets how dense each concept's support is
             allowed to be; without it the penalty on the loadings alone drives
             the directions toward maximum density.
+        sindy_lambda_group: Group-lasso strength over the participant axis of the
+            loadings (lambda * sum_c ||Z[..., c]||_2), applied in Stage 2.1 only.
+            Prices how many concepts the population needs; without it nothing in
+            the objective distinguishes one shared concept from several duplicates
+            splitting the same participants.
         sindy_pruning_frequency: Epochs between pruning events in Stage 2.1
         sindy_ensemble_pruning: Minimum fraction of ensemble members that must
             load on a concept for it to survive the ensemble ratio test
@@ -224,6 +230,7 @@ def _run_sindy_training(
                             batch_sessions=batch_sessions,
                             sindy_lambda_loading=sindy_lambda_loading,
                             sindy_lambda_concept=sindy_lambda_concept,
+                            sindy_lambda_group=sindy_lambda_group,
                         )
                         loss_epoch += loss_e
                         n_batches += 1

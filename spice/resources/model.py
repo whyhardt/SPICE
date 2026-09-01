@@ -911,12 +911,16 @@ class BaseModel(nn.Module):
             loadings.data *= self.sindy_concept_gates[module].float()
 
     def compute_factorization_penalty(self, sindy_lambda_loading: float = 0.0,
-                                      sindy_lambda_concept: float = 0.0) -> torch.Tensor:
-        """L1 on both halves of the factorization: lambda_z * ||Z||_1 + lambda_v * ||V||_1.
+                                      sindy_lambda_concept: float = 0.0,
+                                      sindy_lambda_group: float = 0.0) -> torch.Tensor:
+        """Sparse group lasso on the factorization:
 
-        Both run over the *effective* (gated, support-masked) tensors, so closed gates and
-        pruned terms contribute neither value nor gradient. The two are normalized
-        differently on purpose, because their gradients are diluted differently:
+            lambda_z * ||Z||_1 + lambda_v * ||V||_1 + lambda_g * sum_c ||Z[..., c]||_2
+
+        All three run over the *effective* (gated, support-masked) tensors, so closed
+        gates and pruned terms contribute neither value nor gradient. The first two are
+        normalized differently on purpose, because their gradients are diluted
+        differently:
 
         V is population-level -- every participant's data contributes to dL/dv -- so its
         fit gradient is O(1) against a mean-reduced behavioural loss and a plain sum is
@@ -931,13 +935,42 @@ class BaseModel(nn.Module):
         coefficient mass per unit of loading, so a penalty on Z alone is minimised by
         making every concept as dense as possible -- a density pump. ||v||_1 ranges over
         [1, sqrt(T)] on the unit sphere, so lambda_v prices exactly that density.
+
+        lambda_g is the group-lasso term, and it is the only part of the objective that
+        looks along the *participant* axis. The elementwise L1 above cannot see concept
+        duplication at all: with Z >= 0, both Z @ V and sum(Z) depend only on the total
+        mass along a set of duplicate directions, so splitting a mechanism across four
+        near-identical concepts costs exactly the same as concentrating it in one. That
+        leaves the population free to fragment across redundant capacity, which shows up
+        downstream as spurious individual differences -- participants differing only in
+        which copy of a mechanism they were assigned.
+
+        Grouping over (E, P, X) per concept fixes that, because the L2 norm of a column
+        grows like sqrt(n) rather than n: the first participant to load on a concept pays
+        a lot, the hundredth pays almost nothing. Concentration is cheaper than
+        fragmentation, and the per-entry gradient z_p / ||z_c||_2 is largest exactly where
+        a column is least populated, so sparsely-used concepts bleed out while well-used
+        ones become sticky. Dividing by sqrt(n_units) keeps lambda_g independent of cohort
+        size, on the same scale as lambda_z: it is the price of a concept the whole
+        population holds.
+
+        Note that lambda_g shrinks a column by a single scalar factor shared by every
+        participant in it, so it can retire a concept outright but never distinguishes
+        participants *within* a surviving one. That is lambda_z's job, and why both terms
+        are needed -- sparse group lasso, not group lasso alone.
         """
         penalty = torch.tensor(0.0, device=self.device)
         for module in self.get_modules():
-            if sindy_lambda_loading > 0:
+            if sindy_lambda_loading > 0 or sindy_lambda_group > 0:
                 loadings = self.effective_loadings(module)               # (E, P, X, C)
                 n_units = loadings.shape[0] * loadings.shape[1] * loadings.shape[2]
+            if sindy_lambda_loading > 0:
                 penalty = penalty + sindy_lambda_loading * loadings.sum() / n_units
+            if sindy_lambda_group > 0:
+                # eps keeps the sqrt differentiable at zero: a retired concept's column is
+                # all-zero, and d||z||/dz = z/||z|| would be 0/0 there.
+                column_norms = loadings.pow(2).sum(dim=(0, 1, 2)).add(1e-12).sqrt()  # (C,)
+                penalty = penalty + sindy_lambda_group * column_norms.sum() / n_units ** 0.5
             if sindy_lambda_concept > 0:
                 penalty = penalty + sindy_lambda_concept * self.effective_directions(module).abs().sum()
         return penalty

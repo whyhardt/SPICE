@@ -9,9 +9,9 @@ import torch
 
 from spice import SpiceEstimator
 
-# from spice.precoded.workingmemory import SpiceModel, CONFIG
+from spice.precoded.workingmemory import SpiceModel, CONFIG
 # from spice.precoded.choice import SpiceModel, CONFIG
-from spice_dezfouli2019 import SpiceModel, CONFIG
+# from spice_dezfouli2019 import SpiceModel, CONFIG
 
 from weinhardt2026.utils.benchmarking_gru import GRUModel, training
 from weinhardt2026.studies.dezfouli2019.benchmarking_dezfouli2019 import GQLModel, get_dataset, generate_behavior
@@ -21,6 +21,7 @@ from weinhardt2026.analysis.analysis_coefficients_distributions import analysis_
 from weinhardt2026.analysis.analysis_coefficients_individuals import analysis_coefficients_individuals
 from weinhardt2026.utils.generation import generate_repeated
 
+sindy_lambda_group=0.0001
 sindy_lambda_loading=0.0001
 sindy_lambda_concept=0.00001
 
@@ -34,7 +35,7 @@ N_REPEATS = 100
 path_data = 'weinhardt2026/studies/dezfouli2019/data/dezfouli2019.csv'
 data_dir = 'weinhardt2026/studies/dezfouli2019/data'
 output_dir = 'weinhardt2026/studies/dezfouli2019/results'
-path_spice = f'weinhardt2026/studies/dezfouli2019/params/spice_dezfouli2019_choice_z{sindy_lambda_loading}_v{sindy_lambda_concept}.pkl'
+path_spice = f'weinhardt2026/studies/dezfouli2019/params/spice_dezfouli2019_choice_z{sindy_lambda_loading}_v{sindy_lambda_concept}_g{sindy_lambda_group}.pkl'
 path_spice_compressed = 'weinhardt2026/studies/dezfouli2019/params/spice_dezfouli2019_compressed.pkl'
 path_benchmark = 'weinhardt2026/studies/dezfouli2019/params/benchmark_dezfouli2019.pkl'
 path_gru = 'weinhardt2026/studies/dezfouli2019/params/gru_dezfouli2019.pkl'
@@ -77,6 +78,7 @@ estimator = SpiceEstimator(
     sindy_threshold_pruning=0.1,
     sindy_lambda_loading=sindy_lambda_loading,
     sindy_lambda_concept=sindy_lambda_concept,
+    sindy_lambda_group=sindy_lambda_group,
     
     device=device,
     verbose=True,

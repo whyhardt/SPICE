@@ -36,6 +36,7 @@ def fit_spice(
     sindy_weight: float = 0.,
     sindy_lambda_loading: float = 0.,
     sindy_lambda_concept: float = 0.,
+    sindy_lambda_group: float = 0.,
     sindy_pruning_frequency: int = 1,
     sindy_threshold_pruning: float = None,
     sindy_ensemble_pruning: float = None,
@@ -80,6 +81,9 @@ def fit_spice(
         sindy_lambda_concept: L1 strength on the concept directions (V), as a term in the objective.
             Controls how dense each concept's support is; with sindy_lambda_loading alone the
             objective is minimised by maximally dense concepts
+        sindy_lambda_group: Group-lasso strength over the participant axis of Z. Controls how
+            many concepts the population needs, as opposed to how many one participant holds.
+            0 disables it.
         sindy_threshold_pruning: Minimum |coefficient| for a member to count as
             supporting a term in the ensemble ratio test. When
             sindy_ensemble_pruning is None, falls back to per-member hard
@@ -197,6 +201,7 @@ def fit_spice(
                     sindy_weight=sindy_weight,
                     sindy_lambda_loading=sindy_lambda_loading,
                     sindy_lambda_concept=sindy_lambda_concept,
+                    sindy_lambda_group=sindy_lambda_group,
                     sindy_threshold_pruning=sindy_threshold_pruning,
                     sindy_pruning_frequency=sindy_pruning_frequency,
                     sindy_ensemble_pruning=sindy_ensemble_pruning,
@@ -251,6 +256,7 @@ def fit_spice(
             n_warmup_steps=100,
             sindy_lambda_loading=sindy_lambda_loading,
             sindy_lambda_concept=sindy_lambda_concept,
+            sindy_lambda_group=sindy_lambda_group,
             sindy_pruning_frequency=sindy_pruning_frequency,
             sindy_ensemble_pruning=sindy_ensemble_pruning,
             sindy_threshold_pruning=sindy_threshold_pruning,

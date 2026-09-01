@@ -47,6 +47,7 @@ def _run_shooting_epoch_vectorized(
     batch_sessions: torch.Tensor,
     sindy_lambda_loading: float = None,
     sindy_lambda_concept: float = None,
+    sindy_lambda_group: float = None,
 ) -> float:
     """Vectorized shooting epoch: fold all windows into the batch dimension.
 
@@ -68,6 +69,9 @@ def _run_shooting_epoch_vectorized(
         batch_sessions: Session indices for this batch (tensor)
         sindy_lambda_loading: L1 penalty strength on the loadings (None or 0 = disabled)
         sindy_lambda_concept: L1 penalty strength on the concept directions (None or 0 = disabled)
+        sindy_lambda_group: Group-lasso strength over the participant axis of the
+            loadings, penalising the number of concepts the population uses
+            (None or 0 = disabled)
 
     Returns:
         Mean loss over all valid steps
@@ -151,6 +155,7 @@ def _run_shooting_epoch_vectorized(
             total_loss = total_loss + model.compute_factorization_penalty(
                 sindy_lambda_loading=sindy_lambda_loading or 0.0,
                 sindy_lambda_concept=sindy_lambda_concept or 0.0,
+                sindy_lambda_group=sindy_lambda_group or 0.0,
             )
 
             total_loss.backward()
