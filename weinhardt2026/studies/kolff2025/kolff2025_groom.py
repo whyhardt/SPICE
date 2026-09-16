@@ -19,7 +19,7 @@ from weinhardt2026.analysis.analysis_coefficients_individuals import analysis_co
 
 
 train_spice = False
-train_gru = True
+train_gru = False
 train_benchmark = True
 
 # -------------------------------------------------------------------------------------------

@@ -79,6 +79,7 @@ def _load_estimator(study_cfg):
         sindy_library_polynomial_degree=study_cfg['polynomial_degree'],
         ensemble_size=ensemble_size,
         use_sindy=True,
+        kwargs_spice_class=study_cfg.get('model_kwargs', {}),
     )
     estimator.load_spice(study_cfg['params'])
     return estimator

@@ -18,6 +18,7 @@ import torch
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 from matplotlib.lines import Line2D
+from matplotlib.patches import Rectangle
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
 
@@ -28,6 +29,12 @@ from weinhardt2026.analysis.analysis_behavioral_clustering import (
     _test_equation_differences,
 )
 from weinhardt2026.figures.panel_utils import save_panel
+from weinhardt2026.analysis.analysis_coefficients_individuals import (
+    wrap_label,
+    max_label_lines,
+    split_module_term,
+    term_axis_label,
+)
 
 
 # ── Color palettes ──
@@ -113,15 +120,142 @@ def _plot_panel_a(coords, labels, nearest, pc1_values):
     return fig
 
 
+def low_variance_terms(coeff_df, presence_df, percentile=10, verbose=False):
+    """Terms whose coefficients are near-constant across participants.
+
+    Such terms carry no individual variation for a cluster/diagnosis effect to
+    explain, so panels d/e drop them. Names are returned in the raw coefficient
+    format used by the beta CSVs (module:term → module_term).
+    """
+    term_stds = {}
+    for term in coeff_df.columns:
+        active = coeff_df[term].values[presence_df[term].values > 0]
+        if len(active) > 1:
+            term_stds[term] = np.std(active)
+        elif len(active) == 1:
+            term_stds[term] = 0.0
+    std_values = np.array(list(term_stds.values()))
+    std_threshold = np.percentile(std_values, percentile) if len(std_values) > 0 else 0.0
+    excluded = {t.replace(':', '_', 1) for t, sd in term_stds.items() if sd < std_threshold}
+    if verbose:
+        print(f"\nVariance filter: std threshold={std_threshold:.5f} ({percentile}th percentile)")
+        print(f"  Excluded {len(excluded)} near-constant terms")
+    return excluded
+
 # ---------------------------------------------------------------------------
 # Panel b: Equation fingerprint heatmap (sorted by PC1)
 # ---------------------------------------------------------------------------
 
-def _plot_panel_b(coeff_df, presence_df, labels, modules_list, sort_values, sort_label='PC1',
-                  diagnosis_per_participant=None, participant_ids=None):
-    """Heatmap: participants (rows, sorted by sort_values) x terms (cols sorted by |corr|),
-    with sidebars showing sort variable, diagnosis density, and diagnosis labels."""
+def term_metric_effects(coeff_df, presence_df, metric_values, min_active=8,
+                        min_presence=8, covariates=None):
+    """Per-term structural and parametric association with a behavioural metric.
+
+    The two effects are computed **independently** for every term:
+
+    * structural -- presence regressed on the standardized metric with
+      `_logistic_effect`, the same unpenalised estimator the continuous
+      coefficient pipeline uses, so this panel and that pipeline's forest plot
+      agree term for term. Pass `covariates` (e.g. log trials per participant)
+      to adjust for nuisance variables, and they are adjusted for identically.
+    * parametric -- Spearman correlation of the term's coefficient with the
+      metric **over participants who actually have the term**. Absent terms are
+      stored as exact zeros; including them would let the presence pattern leak
+      into what is supposed to be a magnitude statistic.
+
+    Terms whose minority cell is smaller than `min_presence` are not tested
+    structurally: they separate, and neither estimate nor interval is usable.
+
+    Each family is FDR-corrected separately across all terms it could test.
+    """
     from scipy.stats import spearmanr
+    from statsmodels.stats.multitest import multipletests
+    from weinhardt2026.analysis.analysis_coefficients_individuals import _logistic_effect
+
+    metric = np.asarray(metric_values, dtype=float)
+    x = StandardScaler().fit_transform(metric.reshape(-1, 1)).flatten()
+    Z = None
+    if covariates is not None:
+        Z = StandardScaler().fit_transform(
+            np.asarray(covariates, dtype=float).reshape(len(metric), -1))
+
+    rows = []
+    for col in coeff_df.columns:
+        present = (presence_df[col].values > 0).astype(int)
+        vals = coeff_df[col].values
+        n_present, n_total = int(present.sum()), len(present)
+
+        beta = p_presence = np.nan
+        if min(n_present, n_total - n_present) >= min_presence:
+            fit = _logistic_effect(present, x, Z)
+            beta, p_presence = fit["beta"], fit["p_value"]
+
+        # Magnitude over active participants only -- zeros are absence, not a value
+        active = present > 0
+        rho = p_magnitude = np.nan
+        if active.sum() >= min_active and np.std(vals[active]) > 0:
+            r, p_val = spearmanr(vals[active], metric[active])
+            if not np.isnan(r):
+                rho, p_magnitude = float(r), float(p_val)
+
+        rows.append({
+            'term': col,
+            'presence_rate': float(present.mean()),
+            'n_active': n_present,
+            'presence_beta': beta,
+            'presence_p': p_presence,
+            'magnitude_rho': rho,
+            'magnitude_p': p_magnitude,
+        })
+
+    df = pd.DataFrame(rows).set_index('term')
+    for src, dst in (('presence_p', 'presence_p_fdr'), ('magnitude_p', 'magnitude_p_fdr')):
+        df[dst] = np.nan
+        valid = df[src].notna()
+        if valid.any():
+            df.loc[valid, dst] = multipletests(
+                df.loc[valid, src].values, alpha=0.05, method='fdr_bh')[1]
+    return df
+
+
+# White gap between two adjacent modules' blocks, in column widths.
+MODULE_BLOCK_GAP = 0.22
+
+# Width of the blank column between the structural and parametric panels,
+# relative to one term column -- deliberately wider than a module divider.
+PANEL_GAP_RATIO = 1.6
+
+
+def _term_label_fontsize(n_terms):
+    """Shrink term labels as the heatmap gets more columns."""
+    return float(np.clip(90.0 / max(n_terms, 1), 3.5, 8.0))
+
+def _plot_panel_b(coeff_df, presence_df, labels, sort_values, sort_label='PC1',
+                  diagnosis_per_participant=None, participant_ids=None,
+                  show_term_labels=False, selection='fdr', n_structural_terms=10,
+                  n_parametric_terms=10, fdr_alpha=0.05, min_active=8,
+                  min_presence=8, covariates=None):
+    """Heatmap: participants (rows, sorted by sort_values) x selected terms.
+
+    Two panels, each showing the top-k terms on its own axis: `Structural`
+    ranks terms by how strongly their *presence* tracks `sort_values`,
+    `Parametric` by how strongly their *coefficient* tracks it among the
+    participants who have the term. The two rankings are independent, so a
+    term that varies on both axes appears in both panels -- see
+    `term_metric_effects` for the statistics. Terms surviving FDR on their own
+    axis are starred in the labels.
+
+    Args:
+        selection: 'fdr' (default) shows every term surviving FDR on its own
+            axis, matching the forest plot; 'topk' shows a fixed count instead.
+        covariates: nuisance variables adjusted for in the presence regression
+            (e.g. log trials per participant), as in the coefficient pipeline.
+        min_presence: smallest minority cell a term needs to be tested structurally.
+        n_structural_terms/n_parametric_terms: panel sizes when selection='topk'.
+        fdr_alpha: level at which a term's label gets a significance star.
+        min_active: participants needed with the term present before its
+            magnitude effect is estimated at all.
+        show_term_labels: annotate the heatmap x axis with the term names.
+    """
     DIAG_COLORS = {'Control': "#23918B", 'Bipolar': "#7a00b3", 'Depression': "#ff48ff"}
 
     # ── Sort participants (rows) by sort_values ──
@@ -130,99 +264,73 @@ def _plot_panel_b(coeff_df, presence_df, labels, modules_list, sort_values, sort
     y_positions = np.arange(n)
     ordered_sort_values = sort_values[sort_order]
 
-    # ── Split terms into two groups (FDR-corrected) ──
-    # Group 1 (structural): terms whose presence significantly depends on sort_values (logistic β)
-    # Group 2 (parametric): remaining terms, sorted by Spearman |ρ| of coefficient values
-    from sklearn.linear_model import LogisticRegression
-    from scipy.stats import chi2
-    from statsmodels.stats.multitest import multipletests
-
+    # ── Pick the terms to show: top-k on each axis, ranked independently ──
+    # A term may qualify on both axes and then appears in both panels; presence
+    # and magnitude are separate properties and one should not mask the other.
     col_names = list(coeff_df.columns)
-    sv_std = StandardScaler().fit_transform(sort_values.reshape(-1, 1))
+    stats = term_metric_effects(coeff_df, presence_df, sort_values,
+                                min_active=min_active, min_presence=min_presence,
+                                covariates=covariates)
 
-    # Pass 1: compute raw p-values for all terms
-    structural_candidates = []  # (col_idx, |β|, raw_p)
-    parametric_only = []        # (col_idx, |ρ|, raw_p) — terms with no structural variation
-    for i, col in enumerate(col_names):
-        present = (presence_df[col].values > 0).astype(int)
-        if present.std() == 0:
-            # Always or never present — no structural variation, test parametric only
-            vals = coeff_df[col].values
-            if vals.std() > 0:
-                r, p = spearmanr(vals, sort_values)
-                if not np.isnan(r):
-                    parametric_only.append((i, abs(r), p))
+    # Columns are grouped by the module a term belongs to, in the order the
+    # modules appear in the coefficient frame; within a module, by effect size.
+    module_of = [c.partition(':')[0] for c in col_names]
+    module_rank = {m: r for r, m in enumerate(dict.fromkeys(module_of))}
+
+    def _select(p_col, fdr_col, effect_col, k):
+        """Indices of the terms to show, grouped by module.
+
+        'fdr' keeps everything surviving FDR on that axis -- the same set the
+        coefficient pipeline's forest plot draws. 'topk' keeps a fixed count.
+        """
+        if selection == 'fdr':
+            chosen = stats[stats[fdr_col] < fdr_alpha]
+        elif selection == 'topk':
+            chosen = stats[stats[p_col].notna()].nsmallest(k, p_col)
         else:
-            # Logistic regression: presence ~ standardized sort_values
-            try:
-                lr_model = LogisticRegression(solver='liblinear', max_iter=1000, random_state=0)
-                lr_model.fit(sv_std, present)
-                beta = float(lr_model.coef_[0][0])
-                p_hat = np.clip(lr_model.predict_proba(sv_std)[:, 1], 1e-10, 1 - 1e-10)
-                p0 = np.clip(present.mean(), 1e-10, 1 - 1e-10)
-                ll = np.sum(present * np.log(p_hat) + (1 - present) * np.log(1 - p_hat))
-                ll0 = np.sum(present * np.log(p0) + (1 - present) * np.log(1 - p0))
-                lr_stat = -2 * (ll0 - ll)
-                p_val = 1 - chi2.cdf(lr_stat, df=1)
-            except Exception:
-                p_val, beta = 1.0, 0.0
-            structural_candidates.append((i, abs(beta), p_val))
+            raise ValueError(f"Unknown selection '{selection}' (expected 'fdr' or 'topk').")
 
-    # Pass 2: FDR correction on structural p-values
-    structural_terms = []  # (col_idx, |β|)
-    structural_nonsig_indices = []  # indices that failed structural test → try parametric
-    if structural_candidates:
-        raw_ps = np.array([p for _, _, p in structural_candidates])
-        reject, _, _, _ = multipletests(raw_ps, alpha=0.05, method='fdr_bh')
-        for j, (col_idx, effect, _) in enumerate(structural_candidates):
-            if reject[j]:
-                structural_terms.append((col_idx, effect))
-            else:
-                structural_nonsig_indices.append(col_idx)
+        picks = []
+        for term in chosen.index:
+            i = col_names.index(term)
+            picks.append((module_rank[module_of[i]], -abs(chosen.loc[term, effect_col]), i))
+        picks.sort()
+        return [i for _, _, i in picks]
 
-    # Pass 3: collect parametric candidates (non-structural + failed structural)
-    parametric_candidates = list(parametric_only)  # already have (col_idx, |ρ|, raw_p)
-    for col_idx in structural_nonsig_indices:
-        col = col_names[col_idx]
-        vals = coeff_df[col].values
-        if vals.std() > 0:
-            r, p = spearmanr(vals, sort_values)
-            if not np.isnan(r):
-                parametric_candidates.append((col_idx, abs(r), p))
+    def _module_groups(idx):
+        """Contiguous [start, end) column spans, one per module."""
+        mods = [module_of[i] for i in idx]
+        groups, start = [], 0
+        for j in range(1, len(mods) + 1):
+            if j == len(mods) or mods[j] != mods[j - 1]:
+                groups.append((start, j))
+                start = j
+        return groups
 
-    # Pass 4: FDR correction on parametric p-values
-    parametric_terms = []  # (col_idx, |ρ|)
-    if parametric_candidates:
-        raw_ps = np.array([p for _, _, p in parametric_candidates])
-        reject, _, _, _ = multipletests(raw_ps, alpha=0.05, method='fdr_bh')
-        for j, (col_idx, effect, _) in enumerate(parametric_candidates):
-            if reject[j]:
-                parametric_terms.append((col_idx, effect))
+    structural_idx = _select('presence_p', 'presence_p_fdr', 'presence_beta',
+                             n_structural_terms)
+    parametric_idx = _select('magnitude_p', 'magnitude_p_fdr', 'magnitude_rho',
+                             n_parametric_terms)
 
-    # Sort each group by descending effect size
-    structural_terms.sort(key=lambda x: x[1], reverse=True)
-    parametric_terms.sort(key=lambda x: x[1], reverse=True)
+    col_order = np.array(structural_idx + parametric_idx, dtype=int)
+    n_structural_shown = len(structural_idx)
 
-    col_order = np.array([idx for idx, _ in structural_terms] + [idx for idx, _ in parametric_terms])
-    n_structural = len(structural_terms)
+    def _label(col_idx, p_col, width=22):
+        """Axis label for one term, starred when it survives FDR on that axis.
 
-    # Build original-column-index → module-index mapping
-    orig_col_to_mod = {}
-    module_names = []
-    offset = 0
-    for mod_idx, mod_terms in enumerate(modules_list):
-        for _ in mod_terms:
-            orig_col_to_mod[offset] = mod_idx
-            offset += 1
-        if mod_terms and sum(len(m) for m in modules_list[:mod_idx]) < len(col_names):
-            first_col = col_names[sum(len(m) for m in modules_list[:mod_idx])]
-            mod_name = first_col.split(':')[0] if ':' in first_col else f'Module {mod_idx}'
-            module_names.append(mod_name)
-        else:
-            module_names.append(f'Module {mod_idx}')
-    reordered_mod_indices = [orig_col_to_mod.get(i, 0) for i in col_order]
+        The star leads the label ('* module : term') rather than trailing it, so
+        the wrap can never strand it on a line of its own.
+        """
+        p_adj = stats.iloc[col_idx][p_col]
+        star = '* ' if pd.notna(p_adj) and p_adj < fdr_alpha else ''
+        return term_axis_label(*split_module_term(col_names[col_idx]),
+                               prefix=star, width=width)
+
+    ordered_term_names = ([_label(i, 'presence_p_fdr') for i in structural_idx]
+                          + [_label(i, 'magnitude_p_fdr') for i in parametric_idx])
 
     # Apply both sorts (rows by sort_values, columns by |corr|)
+    n_structural = n_structural_shown
     coeff_vals = coeff_df.values[:, col_order][sort_order]
     presence_vals = presence_df.values[:, col_order][sort_order]
 
@@ -263,13 +371,13 @@ def _plot_panel_b(coeff_df, presence_df, labels, modules_list, sort_values, sort
                                    for d in ordered_diag])
 
     # ── Layout: [avg_reward | density | diag_labels | structural | gap | parametric] ──
-    has_both = n_structural > 0 and len(parametric_terms) > 0
-    n_param = len(parametric_terms)
+    has_both = n_structural > 0 and len(parametric_idx) > 0
+    n_param = len(parametric_idx)
 
     if has_diag and has_both:
         fig, (ax_side, ax_diag, ax_labels, ax_struct, ax_gap, ax_param) = plt.subplots(
             1, 6, figsize=(16, 7), sharey=True,
-            gridspec_kw={'width_ratios': [2, 2, 0.8, n_structural, 0.3, n_param],
+            gridspec_kw={'width_ratios': [2, 2, 0.8, n_structural, PANEL_GAP_RATIO, n_param],
                          'wspace': 0.02})
         ax_gap.set_visible(False)
     elif has_diag:
@@ -281,7 +389,7 @@ def _plot_panel_b(coeff_df, presence_df, labels, modules_list, sort_values, sort
     elif has_both:
         fig, (ax_side, ax_struct, ax_gap, ax_param) = plt.subplots(
             1, 4, figsize=(15, 7), sharey=True,
-            gridspec_kw={'width_ratios': [2, n_structural, 0.3, n_param],
+            gridspec_kw={'width_ratios': [2, n_structural, PANEL_GAP_RATIO, n_param],
                          'wspace': 0.02})
         ax_gap.set_visible(False)
     else:
@@ -337,21 +445,60 @@ def _plot_panel_b(coeff_df, presence_df, labels, modules_list, sort_values, sort
     hm_configs = []
     if n_structural > 0 and ax_struct is not None:
         hm_configs.append((ax_struct, display[:, :n_structural],
-                           reordered_mod_indices[:n_structural], 'Structural'))
+                           ordered_term_names[:n_structural],
+                           ('Structural (FDR)' if selection == 'fdr'
+                            else f'Structural (top {n_structural})'),
+                           _module_groups(structural_idx)))
     if n_param > 0 and ax_param is not None:
         hm_configs.append((ax_param, display[:, n_structural:],
-                           reordered_mod_indices[n_structural:], 'Parametric'))
+                           ordered_term_names[n_structural:],
+                           ('Parametric (FDR)' if selection == 'fdr'
+                            else f'Parametric (top {n_param})'),
+                           _module_groups(parametric_idx)))
 
     im = None
-    for hm_ax, hm_display, hm_mod_indices, hm_title in hm_configs:
-        cur_im = hm_ax.imshow(hm_display, aspect='auto', interpolation='nearest',
-                              cmap=cmap, vmin=-vmax, vmax=vmax)
-        if im is None:
-            im = cur_im
+    for hm_ax, hm_display, hm_term_names, hm_title, hm_groups in hm_configs:
+        n_rows_hm, n_cols_hm = hm_display.shape
 
-        hm_ax.set_xlabel(hm_title, fontsize=9, fontweight='bold')
-        hm_ax.set_xticks([])
+        # Each module is drawn as its own image, inset from its neighbours by
+        # half a gap on the interior sides only. The gap is real empty axes
+        # background, so the black frame sits flush against the outermost tiles
+        # instead of being overdrawn by them.
+        tick_positions = []
+        for start, end in hm_groups:
+            x0 = (start - 0.5) + (MODULE_BLOCK_GAP / 2 if start > 0 else 0.0)
+            x1 = (end - 0.5) - (MODULE_BLOCK_GAP / 2 if end < n_cols_hm else 0.0)
+
+            cur_im = hm_ax.imshow(
+                hm_display[:, start:end], aspect='auto', interpolation='nearest',
+                cmap=cmap, vmin=-vmax, vmax=vmax,
+                extent=(x0, x1, n_rows_hm - 0.5, -0.5), zorder=2)
+            if im is None:
+                im = cur_im
+
+            hm_ax.add_patch(Rectangle(
+                (x0, -0.5), x1 - x0, n_rows_hm,
+                fill=False, edgecolor='black', linewidth=1.1, zorder=6))
+
+            # Ticks follow the tiles, which the gaps have shifted slightly
+            width = (x1 - x0) / (end - start)
+            tick_positions.extend(x0 + (j + 0.5) * width for j in range(end - start))
+
+        hm_ax.set_xlim(-0.5, n_cols_hm - 0.5)
+        hm_ax.set_ylim(n_rows_hm - 0.5, -0.5)
+        for spine in hm_ax.spines.values():
+            spine.set_visible(False)
+
         hm_ax.set_yticks([])
+        if show_term_labels and hm_term_names:
+            hm_ax.set_xticks(tick_positions)
+            hm_ax.set_xticklabels(hm_term_names, rotation=90,
+                                  fontsize=_term_label_fontsize(len(hm_term_names)))
+            hm_ax.tick_params(axis='x', length=2, pad=1)
+            hm_ax.set_xlabel(hm_title, fontsize=9, fontweight='bold', labelpad=6)
+        else:
+            hm_ax.set_xticks([])
+            hm_ax.set_xlabel(hm_title, fontsize=9, fontweight='bold')
 
     # Colorbar on rightmost heatmap
     rightmost_ax = ax_param if (ax_param is not None and n_param > 0) else ax_struct
@@ -415,7 +562,7 @@ def _plot_panel_c(df_eq_tests, labels):
         mod = t.split(':')[0] if ':' in t else ''
         mod_short = mod.replace('value_', '').replace('_', ' ')
         term_labels.append(f'{mod_short}: {short}')
-    ax.set_yticklabels(term_labels, fontsize=7)
+    ax.set_yticklabels([wrap_label(t) for t in term_labels], fontsize=7)
 
     ax.set_xlabel('Mean Coefficient', fontsize=10)
     ax.spines['top'].set_visible(False)
@@ -505,6 +652,7 @@ def _plot_panel_d(results_csv_path, excluded_terms=None):
         term_list = term_list[-20:]
 
     y_pos = np.arange(len(term_list))
+    fig.set_size_inches(8, max(6, len(term_list) * 0.3 * max_label_lines(term_list)))
     comp_colors = plt.cm.Dark2.colors
     comp_color_map = {c: comp_colors[i % len(comp_colors)] for i, c in enumerate(unique_comps)}
     bar_height = 0.4 / n_comps
@@ -530,7 +678,7 @@ def _plot_panel_d(results_csv_path, excluded_terms=None):
 
     ax.axvline(0, color='black', linestyle='--', linewidth=0.6, alpha=0.5)
     ax.set_yticks(y_pos)
-    ax.set_yticklabels(term_list, fontsize=7.5)
+    ax.set_yticklabels([wrap_label(t) for t in term_list], fontsize=7)
     ax.set_xlabel('Effect (beta)', fontsize=10)
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
@@ -616,7 +764,7 @@ def _plot_panel_e(df_eq_tests, results_csv_path, labels, excluded_terms=None):
     n_terms = len(term_order)
     y_pos = np.arange(n_terms)
 
-    fig, (ax_left, ax_right) = plt.subplots(1, 2, figsize=(14, max(4, n_terms * 0.35)),
+    fig, (ax_left, ax_right) = plt.subplots(1, 2, figsize=(14, max(4, n_terms * 0.55)),
                                              sharey=True, gridspec_kw={'width_ratios': [1, 1],
                                                                        'wspace': 0.05})
 
@@ -708,7 +856,7 @@ def _plot_panel_e(df_eq_tests, results_csv_path, labels, excluded_terms=None):
             term_labels.append(coeff_raw)
 
     ax_left.set_yticks(y_pos)
-    ax_left.set_yticklabels(term_labels, fontsize=7)
+    ax_left.set_yticklabels([wrap_label(t) for t in term_labels], fontsize=7)
 
     fig.suptitle('e) Cluster & Diagnosis Effects', fontsize=12, fontweight='bold',
                  x=0.01, ha='left')
@@ -1176,8 +1324,6 @@ def plot_figure4(
     pc1_values = coords[:, 0]
 
     modules = estimator.get_modules()
-    candidate_terms = estimator.get_candidate_terms()
-    modules_list = [candidate_terms[m] for m in modules]
 
     print(f"Cluster sizes: {dict(zip(*np.unique(labels, return_counts=True)))}")
     sig_count = (df_eq_tests['kw_p_corrected'] < 0.05).sum()
@@ -1203,21 +1349,7 @@ def plot_figure4(
         sig = '***' if h_p < 0.001 else '**' if h_p < 0.01 else '*' if h_p < 0.05 else 'ns'
         print(f"  {col:<30s} {h_stat:>8.2f} {h_p:>10.4g} {r:>+10.3f} {sig:>5s}")
 
-    # Variance filter: exclude terms with near-constant coefficients across participants
-    # (low std → no individual variation to explain by cluster/diagnosis)
-    term_stds = {}
-    for term in coeff_df.columns:
-        active = coeff_df[term].values[presence_df[term].values > 0]
-        if len(active) > 1:
-            term_stds[term] = np.std(active)
-        elif len(active) == 1:
-            term_stds[term] = 0.0
-    std_values = np.array(list(term_stds.values()))
-    std_threshold = np.percentile(std_values, 10) if len(std_values) > 0 else 0.0
-    # Convert to raw coefficient format used in beta CSV (colon → underscore)
-    excluded_terms = {t.replace(':', '_', 1) for t, s in term_stds.items() if s < std_threshold}
-    print(f"\nVariance filter: std threshold={std_threshold:.5f} (10th percentile)")
-    print(f"  Excluded {len(excluded_terms)} near-constant terms")
+    excluded_terms = low_variance_terms(coeff_df, presence_df, verbose=True)
 
     # Load diagnosis mapping (used by panels b and f)
     diagnosis_per_participant = None
@@ -1238,7 +1370,7 @@ def plot_figure4(
     sort_values = df_metrics['avg_reward'].values
     sort_label = 'Avg Reward'
     participant_ids = df_metrics['participant_id'].values
-    fig_b = _plot_panel_b(coeff_df, presence_df, labels, modules_list, sort_values, sort_label,
+    fig_b = _plot_panel_b(coeff_df, presence_df, labels, sort_values, sort_label,
                           diagnosis_per_participant=diagnosis_per_participant,
                           participant_ids=participant_ids)
     save_panel(fig_b, output_dir, 'panel_b_fingerprint')

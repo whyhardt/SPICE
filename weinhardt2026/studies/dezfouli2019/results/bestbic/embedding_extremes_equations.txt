@@ -1,0 +1,23 @@
+% ===== Participant 11 (Bipolar) =====
+\begin{align}
+  \Delta V^{r}_{\mathrm{ch}} &= - 0.022 - 0.498 \, r_{t} + 0.483 \, r_{t-1} + 0.147 \, r_{t-2} \\
+  \Delta V^{r}_{\mathrm{un}} &= - 0.482 \, V^{r}_{\mathrm{un}}(t) \\
+  \Delta V^{c}_{\mathrm{ch}} &= 0.453 - 0.284 \, V^{c}_{\mathrm{ch}}(t) + 0.388 \, c_{t-1} - 0.493 \, c_{t-2} - 0.011 \, c_{t-3} + 0.031 \, c_{t-1} \cdot c_{t-3} + 0.110 \, c_{t-2} \cdot c_{t-3} \\
+  \Delta V^{c}_{\mathrm{un}} &= - 0.710 - 0.807 \, V^{c}_{\mathrm{un}}(t) - 0.524 \, c_{t-2} - 0.102 \, V^{c}_{\mathrm{un}}(t)^{2} - 0.417 \, c_{t-1} \cdot c_{t-2} - 0.184 \, c_{t-1} \cdot c_{t-3} + 0.171 \, c_{t-2} \cdot c_{t-3}
+\end{align}
+
+% ===== Participant 97 (Control) =====
+\begin{align}
+  \Delta V^{r}_{\mathrm{ch}} &= - 0.636 \\
+  \Delta V^{r}_{\mathrm{un}} &= 0.239 - 0.411 \, V^{r}_{\mathrm{un}}(t) \\
+  \Delta V^{c}_{\mathrm{ch}} &= - 0.936 - 0.697 \, V^{c}_{\mathrm{ch}}(t) - 0.797 \, c_{t-2} - 0.078 \, V^{c}_{\mathrm{ch}}(t) \cdot c_{t-2} + 0.044 \, V^{c}_{\mathrm{ch}}(t) \cdot c_{t-3} + 0.273 \, c_{t-2} \cdot c_{t-3} \\
+  \Delta V^{c}_{\mathrm{un}} &= - 0.087 - 0.654 \, V^{c}_{\mathrm{un}}(t) - 0.653 \, c_{t-2} - 0.319 \, V^{c}_{\mathrm{un}}(t) \cdot c_{t-1} + 0.521 \, c_{t-2} \cdot c_{t-3}
+\end{align}
+
+% ===== Participant 62 (Bipolar) =====
+\begin{align}
+  \Delta V^{r}_{\mathrm{ch}} &= - 0.816 \, r_{t} + 0.779 \, r_{t-1} + 0.141 \, r_{t-2} \\
+  \Delta V^{r}_{\mathrm{un}} &= 0 \\
+  \Delta V^{c}_{\mathrm{ch}} &= 0.243 - 0.274 \, V^{c}_{\mathrm{ch}}(t) + 0.345 \, c_{t-1} - 0.708 \, c_{t-2} + 0.308 \, c_{t-1} \cdot c_{t-2} - 0.302 \, c_{t-1} \cdot c_{t-3} + 0.339 \, c_{t-2} \cdot c_{t-3} \\
+  \Delta V^{c}_{\mathrm{un}} &= - 0.519 - 0.868 \, V^{c}_{\mathrm{un}}(t) - 0.783 \, c_{t-2} - 0.191 \, V^{c}_{\mathrm{un}}(t)^{2} - 0.169 \, V^{c}_{\mathrm{un}}(t) \cdot c_{t-2} - 0.195 \, c_{t-1} \cdot c_{t-2}
+\end{align}

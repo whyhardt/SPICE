@@ -260,15 +260,25 @@ def _run_forward_with_states(model, xs_single, n_valid, use_sindy):
 # Automatic participant selection via structural distance
 # ---------------------------------------------------------------------------
 
-def select_distinctive_participants(model, n_select=3):
-    """Find n_select participants with maximally different sparsity patterns.
+def select_distinctive_participants(model, n_select=3, metric='structure'):
+    """Find n_select maximally dissimilar participants.
 
-    Uses ensemble-majority voting on presence masks, then greedy max-min
-    Hamming distance selection across all modules.
+    Args:
+        model: fitted BaseModel.
+        n_select: number of participants to return.
+        metric: 'structure' (default) compares ensemble-majority sparsity
+            patterns via Hamming distance; 'embedding' compares the
+            ensemble-averaged participant embedding vectors via Euclidean
+            distance. Both use greedy max-min selection.
 
     Returns:
         List of participant IDs.
     """
+    if metric == 'embedding':
+        return _select_by_embedding(model, n_select)
+    if metric != 'structure':
+        raise ValueError(f"Unknown metric '{metric}' (expected 'structure' or 'embedding').")
+
     modules = model.get_modules()
     P = next(iter(model.sindy_coefficients.values())).shape[1]
 
@@ -299,38 +309,54 @@ def select_distinctive_participants(model, n_select=3):
     # Pairwise Hamming distance
     dist_matrix = squareform(pdist(rep_vecs, metric='hamming'))
 
-    # Greedy max-min selection
-    n_reps = len(rep_pids)
-    # Start with the two most distant
-    max_dist, best_pair = 0, (0, 1)
-    for i in range(n_reps):
-        for j in range(i + 1, n_reps):
-            if dist_matrix[i, j] > max_dist:
-                max_dist = dist_matrix[i, j]
-                best_pair = (i, j)
-
-    selected = [best_pair[0], best_pair[1]]
-    for _ in range(n_select - 2):
-        best_k, best_min = -1, -1
-        for k in range(n_reps):
-            if k in selected:
-                continue
-            min_d = min(dist_matrix[k, s] for s in selected)
-            if min_d > best_min:
-                best_min = min_d
-                best_k = k
-        if best_k >= 0:
-            selected.append(best_k)
+    selected = _greedy_max_min(dist_matrix, n_select)
 
     return [rep_pids[i] for i in selected]
 
+
+def _select_by_embedding(model, n_select=3):
+    """Greedy max-min selection on ensemble-averaged participant embeddings."""
+    P = next(iter(model.sindy_coefficients.values())).shape[1]
+
+    with torch.no_grad():
+        model.eval()
+        # (E, P, D) -> average over the ensemble dimension -> (P, D)
+        emb = model.participant_embedding(torch.arange(P))
+    emb = emb.detach().cpu().numpy()
+    if emb.ndim == 3:
+        emb = emb.mean(axis=0)
+
+    dist_matrix = squareform(pdist(emb, metric='euclidean'))
+
+    return _greedy_max_min(dist_matrix, n_select)
+
+
+def _greedy_max_min(dist_matrix, n_select):
+    """Pick n_select rows of a distance matrix that are maximally far apart."""
+    n = dist_matrix.shape[0]
+    n_select = min(n_select, n)
+
+    # Seed with the two most distant entries
+    i, j = np.unravel_index(np.argmax(dist_matrix), dist_matrix.shape)
+    selected = [int(i), int(j)][:n_select]
+
+    while len(selected) < n_select:
+        remaining = [k for k in range(n) if k not in selected]
+        best_k = max(remaining, key=lambda k: min(dist_matrix[k, s] for s in selected))
+        selected.append(int(best_k))
+
+    return selected
 
 # ---------------------------------------------------------------------------
 # Panel plotting functions
 # ---------------------------------------------------------------------------
 
-def _plot_panel_a_equations(estimator, participant_ids, cluster_labels=None):
-    """Panel a: Discovered equations for each participant (side by side)."""
+def _plot_panel_a_equations(estimator, participant_ids, participant_labels=None):
+    """Panel a: Discovered equations for each participant (side by side).
+
+    participant_labels: optional per-participant title prefix (e.g. cluster or
+    diagnosis label); used verbatim.
+    """
     n_participants = len(participant_ids)
     fig, axes = plt.subplots(1, n_participants, figsize=(5.5 * n_participants, 4))
     if n_participants == 1:
@@ -342,8 +368,8 @@ def _plot_panel_a_equations(estimator, participant_ids, cluster_labels=None):
 
         eq_lines = _format_equation_lines(estimator, pid)
 
-        if cluster_labels is not None:
-            title = f"Cluster {cluster_labels[col]} \u2014 Participant {pid}"
+        if participant_labels is not None:
+            title = f"{participant_labels[col]} \u2014 Participant {pid}"
         else:
             title = f"Participant {pid}"
         ax.set_title(title, fontsize=11, fontweight='bold', pad=8)
@@ -370,7 +396,7 @@ def _plot_panel_a_equations(estimator, participant_ids, cluster_labels=None):
     return fig
 
 
-def _plot_panel_b_choices(dataset, model, participant_ids, session_idx, n_trials_show, cluster_labels=None):
+def _plot_panel_b_choices(dataset, model, participant_ids, session_idx, n_trials_show, participant_labels=None):
     """Panel b: Choices and rewards for each participant."""
     n_participants = len(participant_ids)
     action_colors = ['#2ca02c', '#d62728']
@@ -421,7 +447,7 @@ def _plot_panel_b_choices(dataset, model, participant_ids, session_idx, n_trials
     return fig
 
 
-def _plot_panel_c_probs(dataset, model, participant_ids, session_idx, n_trials_show, cluster_labels=None):
+def _plot_panel_c_probs(dataset, model, participant_ids, session_idx, n_trials_show, participant_labels=None):
     """Panel c: Action probabilities (RNN + EQ overlaid) for each participant."""
     n_participants = len(participant_ids)
     action_colors = ['#2ca02c', '#d62728']
@@ -472,7 +498,7 @@ def _plot_panel_c_probs(dataset, model, participant_ids, session_idx, n_trials_s
 
 
 def _plot_panel_d_dynamics(dataset, model, participant_ids, session_idx,
-                           n_trials_show, cluster_labels=None):
+                           n_trials_show, participant_labels=None):
     """Panel d: Actual data + model dynamics.
 
     5 rows sharing trial axis per participant:
@@ -561,8 +587,8 @@ def _plot_panel_d_dynamics(dataset, model, participant_ids, session_idx,
             if col == 0:
                 axes[row, col].set_ylabel(row_labels[row], fontsize=10)
             if row == 0:
-                if cluster_labels is not None:
-                    title = f"Cluster {cluster_labels[col]} — P{pid}"
+                if participant_labels is not None:
+                    title = f"{participant_labels[col]} — P{pid}"
                 else:
                     title = f"Participant {pid}"
                 axes[row, col].set_title(title, fontsize=11, fontweight='bold')
@@ -591,39 +617,42 @@ def plot_figure2(
     estimator,
     dataset,
     participant_ids=None,
-    cluster_labels=None,
+    participant_labels=None,
     session_idx=None,
     output_dir='figures/figure2',
     n_trials_show=None,
     n_select=3,
+    selection_metric='structure',
 ):
     """Create Figure 2 panels: Equation showcase.
 
-    If participant_ids is None, automatically selects n_select structurally
-    distinctive participants via max-min Hamming distance on sparsity patterns.
+    If participant_ids is None, automatically selects n_select distinctive
+    participants via max-min distance under `selection_metric`
+    ('structure' = sparsity patterns, 'embedding' = participant embeddings).
 
     Each panel saved as detailed + clean versions in output_dir.
     """
     model = estimator.model
 
     if participant_ids is None:
-        participant_ids = select_distinctive_participants(model, n_select=n_select)
-        print(f"  Auto-selected participants (structural distance): {participant_ids}")
+        participant_ids = select_distinctive_participants(
+            model, n_select=n_select, metric=selection_metric)
+        print(f"  Auto-selected participants ({selection_metric} distance): {participant_ids}")
 
     # Panel a: Equations
-    fig_a = _plot_panel_a_equations(estimator, participant_ids, cluster_labels)
+    fig_a = _plot_panel_a_equations(estimator, participant_ids, participant_labels)
     save_panel(fig_a, output_dir, 'panel_a_equations')
 
     # Panel b: Choices and rewards
-    fig_b = _plot_panel_b_choices(dataset, model, participant_ids, session_idx, n_trials_show, cluster_labels)
+    fig_b = _plot_panel_b_choices(dataset, model, participant_ids, session_idx, n_trials_show, participant_labels)
     save_panel(fig_b, output_dir, 'panel_b_choices')
 
     # Panel c: Action probabilities
-    fig_c = _plot_panel_c_probs(dataset, model, participant_ids, session_idx, n_trials_show, cluster_labels)
+    fig_c = _plot_panel_c_probs(dataset, model, participant_ids, session_idx, n_trials_show, participant_labels)
     save_panel(fig_c, output_dir, 'panel_c_action_probs')
 
     # Panel d: Combined dynamics (P(action), V_reward, V_choice)
-    fig_d = _plot_panel_d_dynamics(dataset, model, participant_ids, session_idx, n_trials_show, cluster_labels)
+    fig_d = _plot_panel_d_dynamics(dataset, model, participant_ids, session_idx, n_trials_show, participant_labels)
     save_panel(fig_d, output_dir, 'panel_d_dynamics')
 
     print(f"\nAll Figure 2 panels saved to {output_dir}/")

@@ -29,6 +29,7 @@ import importlib
 import os
 import sys
 import math
+import textwrap
 import warnings
 from pathlib import Path
 
@@ -36,6 +37,7 @@ import numpy as np
 import pandas as pd
 import torch
 import matplotlib.pyplot as plt
+from matplotlib.patches import Rectangle
 import seaborn as sns
 from scipy import stats
 from scipy.stats import spearmanr, kruskal, norm, chi2, f_oneway
@@ -69,10 +71,61 @@ def get_significance(p):
 
 
 def clean_name(col):
-    return (col.replace("x_", "").replace("_", " ").title())[:50]
+    """Readable, full-length term name. Kept on one line so it stays usable in
+    CSVs and printed summaries; wrap it with `wrap_label` for plot axes."""
+    return col.replace("x_", "").replace("_", " ").title()
+
+
+def wrap_label(name, width=30):
+    """Soft-wrap a term name across lines for use as an axis label.
+
+    Truncating instead would silently merge distinct terms: several SPICE
+    coefficients share a long common prefix and differ only in the trailing
+    lag, which is exactly the part a fixed-width cut removes.
+    """
+    return "\n".join(textwrap.wrap(str(name), width=width, break_long_words=False)) or str(name)
+
+
+def split_module_term(name, module=None):
+    """Split a coefficient name into (module, term).
+
+    Handles both spellings in the codebase: `module:term` (the SPICE model's
+    own naming) and `module_term` (the underscore-joined columns built here).
+    The latter is ambiguous on its own -- module names contain underscores --
+    so pass `module` when it is known.
+    """
+    if module:
+        for sep in ("_", ":"):
+            if name.startswith(module + sep):
+                return module, name[len(module) + 1:]
+    head, sep, tail = name.partition(':')
+    return (head, tail) if sep else (name, '')
+
+
+def term_axis_label(module, term, prefix='', width=22):
+    """Axis label for one coefficient: `module :` on its own line(s), term below.
+
+    Shared by the fingerprint heatmap and the forest plots so a term reads the
+    same in both. The colon is welded to the module half rather than left as a
+    free-standing token, so wrapping can never move it to the start of a line
+    or strand it alone.
+    """
+    module = f"{prefix}{module.replace('value_', 'V_')}"
+    term = term.replace('value_', 'V_')
+    if not term:
+        return wrap_label(module, width=width)
+    return f'{wrap_label(module, width=width)} :\n{wrap_label(term, width=width)}'
+
+def max_label_lines(names, width=30):
+    """Line count of the tallest wrapped label, for sizing axes."""
+    return max((wrap_label(n, width).count("\n") + 1 for n in names), default=1)
 
 
 SIG_COLORS = {"***": "#FF0000", "**": "#FFA500", "*": "#FFD700", "ns": "#999999"}
+
+# Gap between two adjacent modules' blocks, in row heights -- matches the
+# fingerprint panel's module separation.
+MODULE_BLOCK_GAP = 0.22
 
 
 # ---------------------------------------------------------------------------
@@ -189,6 +242,10 @@ def prepare(criterion_col, data_path: str, dataset_kwargs: dict = {}, spice_mode
         rows.append(row)
 
     sindy_df = pd.DataFrame(rows)
+    # Column -> module, so plots can group terms the way the fingerprint does.
+    # The names are joined with '_' and module names contain '_' themselves, so
+    # this mapping cannot be recovered by splitting the string afterwards.
+    module_of = {f"{m}_{c}": m for m in modules for c in candidate_terms[m]}
     print(f"Extracted {len(sindy_cols)} SINDy coefficient columns for {len(sindy_df)} participants.")
     
     # --- build criterion column per participant from raw data ---
@@ -212,6 +269,7 @@ def prepare(criterion_col, data_path: str, dataset_kwargs: dict = {}, spice_mode
     df = sindy_df.merge(crit_df, on="participant_id", how="inner")
     df = df.merge(volume, on="participant_id", how="left")
     df = df.dropna(subset=[criterion_col])
+    df.attrs["module_of"] = module_of
     print(f"After merge: {len(df)} participants with criterion '{criterion_col}'.")
     return df, sindy_cols
 
@@ -257,10 +315,53 @@ def _logistic_beta(presence, is_reference):
         return np.nan, np.nan, np.nan
 
 
-def run_discrete(df, sindy_cols, criterion_col, reference_group, output_dir):
+def _apply_discrete_fdr(res_df, reference_group, comparison_groups, fdr_alpha=0.05):
+    """Benjamini-Hochberg across every (coefficient, comparison) pair tested.
+
+    Adds a `_p_fdr` column per comparison and rewrites `_sig` from the corrected
+    values, in place. Rows with no p-value (no_variation / insufficient_data)
+    keep their status string. Returns the count significant before correction.
+    """
+    # Build the column triples explicitly -- group names may themselves contain
+    # "_p", so deriving these by string replacement is not safe.
+    col_sets = [(f"{reference_group}_vs_{cg}_p",
+                 f"{reference_group}_vs_{cg}_p_fdr",
+                 f"{reference_group}_vs_{cg}_sig") for cg in comparison_groups]
+    col_sets = [cs for cs in col_sets if cs[0] in res_df.columns]
+
+    # Pool every tested p-value into one family so the correction is shared
+    pooled, origin = [], []
+    for p_col, fdr_col, sig_col in col_sets:
+        res_df[fdr_col] = np.nan
+        for idx, p_val in res_df[p_col].items():
+            if pd.notna(p_val):
+                pooled.append(p_val)
+                origin.append((fdr_col, sig_col, idx))
+
+    if not pooled:
+        return 0
+
+    n_raw_sig = int(np.sum(np.array(pooled) < 0.05))
+    corrected = multipletests(pooled, alpha=fdr_alpha, method="fdr_bh")[1]
+
+    for (fdr_col, sig_col, idx), p_adj in zip(origin, corrected):
+        res_df.loc[idx, fdr_col] = p_adj
+        res_df.loc[idx, sig_col] = get_significance(p_adj)
+
+    return n_raw_sig
+
+def run_discrete(df, sindy_cols, criterion_col, reference_group, output_dir,
+                 fdr_alpha=0.05):
     """Pairwise logistic regression of coefficient presence between
     the reference group and every other group.  Produces forest plots
-    (beta effect sizes with 95% CIs) and presence-rate plots."""
+    (beta effect sizes with 95% CIs) and presence-rate plots.
+
+    Raw likelihood-ratio p-values are kept in `<ref>_vs_<group>_p`; the
+    Benjamini-Hochberg corrected values land in `<ref>_vs_<group>_p_fdr` and
+    drive the `<ref>_vs_<group>_sig` labels that every downstream plot reads.
+    Correction is applied jointly over all (coefficient, comparison) pairs
+    actually tested, since the forest plots show those contrasts side by side.
+    """
 
     groups = sorted(df[criterion_col].unique())
     if reference_group not in groups:
@@ -274,6 +375,7 @@ def run_discrete(df, sindy_cols, criterion_col, reference_group, output_dir):
     for g in groups:
         print(f"  {g}: n={len(df[df[criterion_col] == g])}")
 
+    module_of = df.attrs.get("module_of", {})
     results = []
     for col in sindy_cols:
         vals = df[col].values
@@ -289,6 +391,7 @@ def run_discrete(df, sindy_cols, criterion_col, reference_group, output_dir):
         result = {
             "coefficient": col,
             "coefficient_clean": clean_name(col),
+            "module": module_of.get(col, ""),
             "n_total": int(mask.sum()),
             "presence_rate": rate,
         }
@@ -318,39 +421,72 @@ def run_discrete(df, sindy_cols, criterion_col, reference_group, output_dir):
         results.append(result)
 
     res_df = pd.DataFrame(results)
+    n_raw_sig = _apply_discrete_fdr(res_df, reference_group, comparison_groups, fdr_alpha)
+
     os.makedirs(output_dir, exist_ok=True)
     res_df.to_csv(os.path.join(output_dir, "discrete_odds_ratio_results.csv"), index=False)
 
     # ---- print summary ----
-    print(f"\nAnalysed {len(res_df)} coefficients.")
+    n_tested = sum(res_df[f"{reference_group}_vs_{cg}_p"].notna().sum()
+                   for cg in comparison_groups
+                   if f"{reference_group}_vs_{cg}_p" in res_df.columns)
+    print(f"\nAnalysed {len(res_df)} coefficients "
+          f"({n_tested} tests, Benjamini-Hochberg alpha={fdr_alpha}).")
+    print(f"  significant before correction: {n_raw_sig}")
     for cg in comparison_groups:
         sig_col = f"{reference_group}_vs_{cg}_sig"
         if sig_col not in res_df.columns:
             continue
         sig = res_df[res_df[sig_col].isin(["*", "**", "***"])]
-        print(f"\n{reference_group} vs {cg}: {len(sig)} significant coefficients")
+        print(f"\n{reference_group} vs {cg}: {len(sig)} significant coefficients (FDR)")
         for _, row in sig.head(5).iterrows():
             beta = row[f"{reference_group}_vs_{cg}_beta"]
-            p_val = row[f"{reference_group}_vs_{cg}_p"]
             direction = f"more present in {reference_group}" if beta > 0 else f"less present in {reference_group}"
             print(f"  {row['coefficient_clean']}: β={beta:.3f}, "
-                  f"p={p_val:.4f} {row[sig_col]} ({direction})")
+                  f"p_raw={row[f'{reference_group}_vs_{cg}_p']:.4f}, "
+                  f"p_fdr={row[f'{reference_group}_vs_{cg}_p_fdr']:.4f} "
+                  f"{row[sig_col]} ({direction})")
 
     # ---- plots ----
-    _plot_odds_ratios(res_df, reference_group, comparison_groups, output_dir)
+    _plot_odds_ratios(res_df, reference_group, comparison_groups, output_dir,
+                      module_order=list(dict.fromkeys(module_of.values())))
     _plot_presence_rates(res_df, df, criterion_col, reference_group,
                          comparison_groups, output_dir)
     return res_df
 
 
-def _plot_forest(df_plot, ax, title="", xlabel="Effect (β)"):
-    """Forest plot: horizontal point + 95% CI, colored by significance."""
+def _plot_forest(df_plot, ax, title="", xlabel="Effect (β)", module_order=None):
+    """Forest plot: horizontal point + 95% CI, colored by significance.
+
+    `module_order` fixes the top-to-bottom module sequence; pass the model's own
+    module order so the term axis matches the fingerprint panel. Without it the
+    modules fall in order of first appearance, which depends on the sort.
+    """
     if df_plot.empty:
-        ax.text(0.5, 0.5, "No valid data", ha="center", va="center",
-                transform=ax.transAxes)
+        ax.text(0.5, 0.5, "No significant effects", ha="center", va="center",
+                transform=ax.transAxes, color="grey")
+        ax.set_title(title)
         return
 
-    df_plot = df_plot.sort_values("beta", key=abs, ascending=True).reset_index(drop=True)
+    # Order terms the way the fingerprint panel does: grouped by module (in the
+    # model's own module order), strongest effect first within each module.
+    # Without a module column, fall back to a plain effect-size ordering.
+    grouped = "module" in df_plot.columns and df_plot["module"].ne("").any()
+    if grouped:
+        ordering = module_order if module_order is not None else dict.fromkeys(df_plot["module"])
+        module_rank = {m: r for r, m in enumerate(ordering)}
+        # Anything not named in module_order sorts after the known modules
+        module_rank = {m: module_rank.get(m, len(module_rank))
+                       for m in df_plot["module"].unique()}
+        df_plot = (df_plot
+                   .assign(_mod=df_plot["module"].map(module_rank),
+                           _eff=df_plot["beta"].abs())
+                   .sort_values(["_mod", "_eff"], ascending=[True, False])
+                   .drop(columns=["_mod", "_eff"])
+                   .reset_index(drop=True))
+    else:
+        df_plot = df_plot.sort_values("beta", key=abs, ascending=True).reset_index(drop=True)
+
     y_pos = np.arange(len(df_plot))
     colors = df_plot["significance"].map(SIG_COLORS).values
 
@@ -376,49 +512,105 @@ def _plot_forest(df_plot, ax, title="", xlabel="Effect (β)"):
     # Reference line at zero
     ax.axvline(0, color="black", linestyle="--", linewidth=0.8, alpha=0.7)
 
+    # Black frame around each module's terms, separated by a narrow white gap --
+    # the same grouping the fingerprint panel uses, rotated onto the y axis.
+    if grouped:
+        modules = list(df_plot["module"])
+        n_terms = len(modules)
+        starts = [0] + [j for j in range(1, n_terms) if modules[j] != modules[j - 1]]
+        bounds = starts + [n_terms]
+        ax.set_ylim(-0.5, n_terms - 0.5)
+        x_lo, x_hi = ax.get_xlim()
+        for start, end in zip(bounds[:-1], bounds[1:]):
+            y0 = (start - 0.5) + (MODULE_BLOCK_GAP / 2 if start > 0 else 0.0)
+            y1 = (end - 0.5) - (MODULE_BLOCK_GAP / 2 if end < n_terms else 0.0)
+            ax.add_patch(Rectangle((x_lo, y0), x_hi - x_lo, y1 - y0,
+                                   fill=False, edgecolor="black", linewidth=1.0,
+                                   zorder=6, clip_on=False))
+        ax.set_xlim(x_lo, x_hi)
+        ax.invert_yaxis()  # first module on top, matching the fingerprint's left-to-right
+
     ax.set_yticks(y_pos)
-    ax.set_yticklabels(df_plot["coefficient_clean"], fontsize=8)
+    if grouped and "coefficient" in df_plot.columns:
+        tick_labels = [term_axis_label(*split_module_term(c, m))
+                       for c, m in zip(df_plot["coefficient"], df_plot["module"])]
+    else:
+        tick_labels = [wrap_label(n) for n in df_plot["coefficient_clean"]]
+    ax.set_yticklabels(tick_labels, fontsize=7)
     ax.set_xlabel(xlabel)
     ax.set_title(title)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
 
 
-def _forest_legend(ax):
-    """Add shared significance legend to a forest plot axis."""
+SIG_LEVELS = ("***", "**", "*")
+SIG_LABELS = {"***": "p<0.001", "**": "p<0.01", "*": "p<0.05", "ns": "ns"}
+
+
+def keep_significant(df, sig_col="significance"):
+    """Rows whose significance label survived FDR correction."""
+    if sig_col not in df.columns:
+        return df
+    return df[df[sig_col].isin(SIG_LEVELS)]
+
+
+def _forest_legend(ax, levels=None):
+    """Significance legend for a forest plot axis, limited to the levels shown."""
+    levels = [lv for lv in ("***", "**", "*", "ns")
+              if levels is None or lv in set(levels)]
+    if not levels:
+        return
     handles = [plt.Line2D([0], [0], marker="o", color=SIG_COLORS[s], linestyle="-",
                markersize=6, markeredgecolor="black", markeredgewidth=0.5)
-               for s in ["***", "**", "*", "ns"]]
-    ax.legend(handles, ["p<0.001", "p<0.01", "p<0.05", "ns"],
+               for s in levels]
+    ax.legend(handles, [SIG_LABELS[s] for s in levels],
               title="Significance", loc="best", framealpha=0.9)
 
 
-def _plot_odds_ratios(res_df, ref, comparisons, output_dir):
+def _plot_odds_ratios(res_df, ref, comparisons, output_dir, module_order=None,
+                      significant_only=True):
     n_plots = len(comparisons)
-    n_rows = max(len(res_df), 1)
-    fig, axes = plt.subplots(1, max(n_plots, 1),
-                             figsize=(8 * max(n_plots, 1), max(6, n_rows * 0.25)))
-    if n_plots == 1:
-        axes = [axes]
 
-    for i, cg in enumerate(comparisons):
+    # Build each panel's frame first: the figure height has to follow the number
+    # of rows that survive the filter, not the number tested.
+    panels = []
+    for cg in comparisons:
         beta_col = f"{ref}_vs_{cg}_beta"
-        se_col = f"{ref}_vs_{cg}_se"
         sig_col = f"{ref}_vs_{cg}_sig"
         if beta_col not in res_df.columns:
+            panels.append((cg, pd.DataFrame()))
             continue
         valid = res_df.dropna(subset=[beta_col]).copy()
         valid = valid[valid[sig_col].isin(["***", "**", "*", "ns"])]
         df_plot = pd.DataFrame({
             "beta": valid[beta_col].values,
-            "se": valid[se_col].values,
+            "se": valid[f"{ref}_vs_{cg}_se"].values,
+            "coefficient": valid["coefficient"].values,
             "coefficient_clean": valid["coefficient_clean"].values,
             "significance": valid[sig_col].values,
+            "module": valid["module"].values if "module" in valid.columns else "",
         })
-        _plot_forest(df_plot, axes[i], title=f"{ref} vs {cg}",
-                     xlabel="Effect β (>0: more present in reference)")
+        if significant_only:
+            df_plot = keep_significant(df_plot)
+        panels.append((cg, df_plot))
 
-    _forest_legend(axes[-1])
+    n_rows = max(max((len(d) for _, d in panels), default=0), 1)
+    labels = pd.concat([d["coefficient_clean"] for _, d in panels if not d.empty]) \
+        if any(not d.empty for _, d in panels) else pd.Series(dtype=object)
+    row_height = 0.25 * (max_label_lines(labels) if len(labels) else 1)
+    fig, axes = plt.subplots(1, max(n_plots, 1),
+                             figsize=(8 * max(n_plots, 1), max(6, n_rows * row_height)))
+    if n_plots == 1:
+        axes = [axes]
+
+    for i, (cg, df_plot) in enumerate(panels):
+        _plot_forest(df_plot, axes[i], title=f"{ref} vs {cg}",
+                     xlabel="Effect β (>0: more present in reference)",
+                     module_order=module_order)
+
+    shown = pd.concat([d["significance"] for _, d in panels if not d.empty]) \
+        if any(not d.empty for _, d in panels) else []
+    _forest_legend(axes[-1], levels=shown)
     plt.tight_layout()
     plt.savefig(os.path.join(output_dir, "forest_plot.png"), dpi=300, bbox_inches="tight")
     plt.close()
@@ -586,6 +778,7 @@ def run_continuous(df, sindy_cols, criterion_col, output_dir,
         Z = None
         print("No nuisance covariates applied.")
 
+    module_of = df.attrs.get("module_of", {})
     results = []
     skipped = []
 
@@ -605,6 +798,7 @@ def run_continuous(df, sindy_cols, criterion_col, output_dir,
         if n_present == n_total:
             results.append({
                 "coefficient": col, "coefficient_clean": clean_name(col),
+                "module": module_of.get(col, ""),
                 "beta": np.nan, "se": np.nan, "p_value": np.nan,
                 "ci_lo": np.nan, "ci_hi": np.nan,
                 "n_nonzero": n_present, "n_total": n_total,
@@ -620,6 +814,7 @@ def run_continuous(df, sindy_cols, criterion_col, output_dir,
         fit = _logistic_effect(y, crit_std[mask], None if Z is None else Z[mask])
         results.append({
             "coefficient": col, "coefficient_clean": clean_name(col),
+            "module": module_of.get(col, ""),
             **fit, "n_nonzero": n_present, "n_total": n_total,
             "significance": "ns",
         })
@@ -676,20 +871,28 @@ def run_continuous(df, sindy_cols, criterion_col, output_dir,
 
     # ---- plots ----
     if not reg_df.empty:
-        _plot_beta_bars(reg_df, criterion_col, output_dir)
+        _plot_beta_bars(reg_df, criterion_col, output_dir,
+                        module_order=list(dict.fromkeys(module_of.values())))
         _plot_logistic_curves(reg_df, criterion_col, crit_min, crit_max, output_dir)
     return res_df
 
 
-def _plot_beta_bars(df, criterion_col, output_dir):
-    cols = [c for c in ["beta", "se", "ci_lo", "ci_hi", "coefficient_clean", "significance"]
+def _plot_beta_bars(df, criterion_col, output_dir, module_order=None,
+                    significant_only=True):
+    cols = [c for c in ["beta", "se", "ci_lo", "ci_hi", "coefficient",
+                        "coefficient_clean", "significance", "module"]
             if c in df.columns]
     df_plot = df[cols].dropna(subset=["beta"]).copy()
-    fig, ax = plt.subplots(figsize=(8, max(6, len(df_plot) * 0.25)))
+    if significant_only:
+        df_plot = keep_significant(df_plot)
+    row_height = 0.25 * (max_label_lines(df_plot["coefficient_clean"])
+                         if not df_plot.empty else 1)
+    fig, ax = plt.subplots(figsize=(8, max(6, len(df_plot) * row_height)))
     _plot_forest(df_plot, ax,
                  title=f"Effect of {criterion_col} on coefficient presence",
-                 xlabel=f"Effect β (>0: presence increases with {criterion_col})")
-    _forest_legend(ax)
+                 xlabel=f"Effect β (>0: presence increases with {criterion_col})",
+                 module_order=module_order)
+    _forest_legend(ax, levels=df_plot["significance"] if not df_plot.empty else [])
     plt.tight_layout()
     plt.savefig(os.path.join(output_dir, "forest_plot.png"), dpi=300, bbox_inches="tight")
     plt.close()
@@ -710,7 +913,7 @@ def _plot_logistic_curves(df, criterion_col, crit_min, crit_max, output_dir):
     for ax, (_, row) in zip(axes_flat, top.iterrows()):
         p = 1 / (1 + np.exp(-row["beta"] * xs_std))
         ax.plot(xs, p, color=SIG_COLORS[row["significance"]], linewidth=2)
-        ax.set_title(row["coefficient_clean"], fontsize=9)
+        ax.set_title(wrap_label(row["coefficient_clean"], width=34), fontsize=8)
         ax.set_ylim(0, 1)
         ax.set_xlabel(criterion_col)
         ax.set_ylabel("Prob(present)")
@@ -954,7 +1157,7 @@ def analysis_coefficients_individuals(
     print("=" * 70)
     if analysis == "disc":
         res = run_discrete(df, sindy_cols, criterion,
-                           reference, output_dir)
+                           reference, output_dir, fdr_alpha=fdr_alpha)
     else:
         res = run_continuous(df, sindy_cols, criterion, output_dir,
                              covariates=covariates, min_presence=min_presence,
