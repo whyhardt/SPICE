@@ -29,7 +29,7 @@ N_REPEATS = 100
 # PATHS
 # -------------------------------------------------------------------------------------------
 
-path_data = 'weinhardt2026/studies/kolff2025/data/kolff2025.csv'
+path_data = 'weinhardt2026/studies/kolff2025/data/kolff2025_original.csv'
 path_spice = 'weinhardt2026/studies/kolff2025/params/spice_kolff2025.pkl'
 path_gru = 'weinhardt2026/studies/kolff2025/params/gru_kolff2025.pkl'
 path_benchmark = 'weinhardt2026/studies/kolff2025/params/benchmark_kolff2025.pkl'

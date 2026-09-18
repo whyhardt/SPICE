@@ -26,7 +26,7 @@ N_REPEATS = 100
 # DATALOADER
 # -------------------------------------------------------------------------------------------
 
-path_data = 'weinhardt2026/studies/ganesh2024a/data/ganesh2024a_choice.csv'
+path_data = 'weinhardt2026/studies/ganesh2024a/data/ganesh2024a.csv'
 test_blocks = (3, 6, 9)
 
 dataset_train, dataset_test, info_dataset = get_dataset(path_data=path_data, test_blocks=test_blocks, verbose=True)

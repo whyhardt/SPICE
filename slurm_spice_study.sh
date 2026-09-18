@@ -101,9 +101,9 @@ case "$STUDY" in
   kolff2025_groom)
     STUDY_DIR="weinhardt2026/studies/kolff2025"
     MODULE="studies.kolff2025.spice_kolff2025_groom"
-    # kolff2025_groom.csv is the perspective dataframe as get_dataset() saves it:
+    # kolff2025.csv is the perspective dataframe as get_dataset() saves it:
     # already filtered to bouts >= 5 events and with rank_diff_centered computed.
-    DATA="${STUDY_DIR}/data/kolff2025_groom.csv"
+    DATA="${STUDY_DIR}/data/kolff2025.csv"
     # The 56 held-out interactions of get_dataset(test_fraction=0.2, seed=42) — the same
     # split the notebook and the benchmark models use. Regenerate after a data change with:
     #   interactions = np.sort(df['interaction_id'].unique())
@@ -115,7 +115,7 @@ case "$STUDY" in
   ganesh2024a)
     # 'contrast_difference_next' is derived by spice_ganesh2024a.prepare_dataset
     MODULE="studies.ganesh2024a.spice_ganesh2024a"
-    DATA="${STUDY_DIR}/data/ganesh2024a_choice.csv"
+    DATA="${STUDY_DIR}/data/ganesh2024a.csv"
     TEST_BLOCKS="3,6,9"
     DATA_KWARGS='{"df_participant_id": "subjID", "df_choice": "choice", "df_feedback": "reward", "df_block": "blocks", "additional_inputs": ["contrast_difference"]}'
     ;;

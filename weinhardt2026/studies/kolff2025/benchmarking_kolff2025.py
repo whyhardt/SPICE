@@ -12,7 +12,7 @@ from weinhardt2026.studies.kolff2025.spice_kolff2025 import CONFIG
 
 # --- Constants ---
 
-DEFAULT_DATA_PATH = 'weinhardt2026/studies/kolff2025/data/kolff2025.csv'
+DEFAULT_DATA_PATH = 'weinhardt2026/studies/kolff2025/data/kolff2025_original.csv'
 N_ACTIONS = 5  # action, grooming, gesture, scratching, waiting
 N_TRIALS_DEFAULT = 20
 WAITING_ACTION = 4

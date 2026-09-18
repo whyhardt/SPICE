@@ -7,8 +7,8 @@ from spice import SpiceDataset, csv_to_dataset, split_data_along_blockdim
 from weinhardt2026.studies.kolff2025.spice_kolff2025_groom import CONFIG
 
 
-DEFAULT_DATA_PATH = 'weinhardt2026/studies/kolff2025/data/kolff2025.csv'
-PERSPECTIVE_DATA_PATH = 'weinhardt2026/studies/kolff2025/data/kolff2025_groom.csv'
+DEFAULT_DATA_PATH = 'weinhardt2026/studies/kolff2025/data/kolff2025_original.csv'
+PERSPECTIVE_DATA_PATH = 'weinhardt2026/studies/kolff2025/data/kolff2025.csv'
 
 # signalling-act alphabet of the raw data (the *control signal* alphabet)
 N_SIGNAL_ACTS = 5

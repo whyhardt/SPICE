@@ -20,7 +20,7 @@ KAPPA_MAX = 0.1
 def get_dataset(path_data: str = None, test_blocks: tuple[int] = None, verbose: bool = False) -> tuple[SpiceDataset, SpiceDataset, dict]:
 
     if path_data is None:
-        path_data = 'data/ganesh2024a_choice.csv'
+        path_data = 'data/ganesh2024a.csv'
 
     dataset = csv_to_dataset(
         file=path_data,
@@ -388,7 +388,7 @@ def fit(
     parameters through the shared training utility.
 
     Args:
-        path_data: Path to CSV data file (default: data/ganesh2024a_choice.csv).
+        path_data: Path to CSV data file (default: data/ganesh2024a.csv).
         test_blocks: Session indices for test split (default: (3, 6, 9)).
         epochs: Number of training epochs.
         lr: Learning rate for Adam optimizer.

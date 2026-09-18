@@ -26,7 +26,7 @@ train_benchmark = True
 # PATHS
 # -------------------------------------------------------------------------------------------
 
-path_data = 'weinhardt2026/studies/kolff2025/data/kolff2025.csv'
+path_data = 'weinhardt2026/studies/kolff2025/data/kolff2025_original.csv'
 path_spice = 'weinhardt2026/studies/kolff2025/params/spice_kolff2025_groom.pkl'
 path_gru = 'weinhardt2026/studies/kolff2025/params/gru_kolff2025_groom.pkl'
 output_dir = 'weinhardt2026/studies/kolff2025/results/groom'
@@ -168,7 +168,7 @@ analysis_coefficients_distributions(
 #
 # `rank_own` is normalized within community (the two hierarchies have different depth), and
 # is constant per ape, so the per-participant coefficients merge against it unambiguously.
-# Reads the perspective-encoded CSV that get_dataset() wrote, not the raw kolff2025.csv --
+# Reads the perspective-encoded CSV that get_dataset() wrote, not the raw kolff2025_original.csv --
 # the participant column there is `focal` and the target is the 3-way `outcome`.
 
 analysis_coefficients_individuals(
