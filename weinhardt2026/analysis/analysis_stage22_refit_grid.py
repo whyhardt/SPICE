@@ -110,8 +110,7 @@ def load_study(study: str):
 @contextmanager
 def averaged_coefficients(model):
     """Temporarily collapse the ensemble to its mean coefficient set (the
-    equation `print_spice_model` reports). Zeros carry the 'inactive' meaning,
-    matching `CompressedSpiceModel._write`."""
+    equation `print_spice_model` reports). Zeros carry the 'inactive' meaning."""
     modules = model.get_modules()
     saved = {m: (model.sindy_coefficients[m].data.clone(),
                  model.sindy_coefficients_presence[m].clone()) for m in modules}

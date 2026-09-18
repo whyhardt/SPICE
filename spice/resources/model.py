@@ -966,8 +966,7 @@ class BaseModel(nn.Module):
         # RSS(c) = c^T A^T A c - 2 c^T A^T b + b^T b is computable in closed form
         # from the accumulators alone, with no forward pass. sindy_ridge_finalize
         # ignores both -- they exist for consumers that need absolute (not just
-        # relative) residuals, e.g. the noise-scale estimate a Gaussian BIC needs
-        # (see spice/resources/sindy_concepts.py).
+        # relative) residuals, e.g. the noise-scale estimate a Gaussian BIC needs.
         btb_samples = (target ** 2).sum(dim=2).squeeze(-1)  # (E, B)
         n_rows_samples = torch.full_like(btb_samples, float(library.shape[2]))
 

@@ -580,3 +580,149 @@ def get_morphed_coefficients(result: dict) -> dict:
         }
 
     return output
+
+
+# ---------------------------------------------------------------------------
+# Validation and full pipeline
+# ---------------------------------------------------------------------------
+
+def _avg_reward_per_participant(dataset: SpiceDataset, n_participants: int) -> np.ndarray:
+    """Mean observed reward per participant, read straight off a SpiceDataset."""
+    xs = dataset.xs  # (B, T, W, F)
+    n_actions = dataset.n_actions
+
+    avg_rewards = []
+    for participant_index in range(n_participants):
+        sessions = xs[xs[:, 0, 0, -1].long() == participant_index]
+        rewards = sessions[:, :, 0, n_actions:2 * n_actions]
+        valid = ~torch.isnan(rewards)
+        avg_rewards.append(rewards[valid].mean().item() if valid.any() else float('nan'))
+    return np.array(avg_rewards)
+
+
+def validate_morphing(
+    result: dict,
+    dataset: SpiceDataset,
+    environment,
+    n_runs: int = 5,
+    member: int = 0,
+    verbose: bool = True,
+) -> dict:
+    """Generate behavior from the morphed model and track reward along the axis.
+
+    Morphing moves each participant's embedding along a direction fitted to a
+    behavioral metric; this checks that the metric actually follows. The
+    *environment* is the study's task (a ``weinhardt2026.utils.task.Env``), which
+    is the only task-specific piece, so it is passed in rather than imported.
+    """
+    from weinhardt2026.utils.task import generate_behavior
+
+    n_participants, n_steps = result['n_participants'], result['n_steps']
+    morphed_estimator = result['member_results'][member]['estimator']
+    morphed_dataset = _create_morphed_dataset(dataset, n_participants, n_steps)
+
+    # The RNN is more stable than the refitted SINDy equations for generation.
+    morphed_estimator.model.eval(use_sindy=False)
+
+    runs = []
+    for run_index in range(n_runs):
+        if verbose:
+            print(f"  Run {run_index + 1}/{n_runs}...")
+        generated = generate_behavior(
+            dataset=morphed_dataset, model=morphed_estimator, environment=environment,
+        )
+        rewards = _avg_reward_per_participant(generated, n_participants * n_steps)
+        runs.append(np.nanmean(rewards.reshape(n_participants, n_steps), axis=0))
+
+    runs = np.stack(runs)  # (n_runs, n_steps)
+    mean = runs.mean(axis=0)
+    differences = np.diff(mean)
+
+    output = {
+        'avg_reward_mean': mean,
+        'avg_reward_se': runs.std(axis=0) / np.sqrt(n_runs),
+        'avg_rewards_all_runs': runs,
+        'n_increasing': int((differences > 0).sum()),
+        'n_steps_compared': len(differences),
+        'correlation': float(np.corrcoef(np.arange(n_steps), mean)[0, 1]),
+    }
+
+    if verbose:
+        print(f"    Avg reward range: [{mean.min():.4f}, {mean.max():.4f}]")
+        print(f"    Monotonicity: {output['n_increasing']}/{output['n_steps_compared']} "
+              f"steps increasing")
+        print(f"    Correlation (step vs avg_reward): r = {output['correlation']:.3f}")
+    return output
+
+
+def analysis_morphing(
+    estimator: SpiceEstimator,
+    dataset: SpiceDataset,
+    metric_values: np.ndarray,
+    output_dir: str,
+    environment=None,
+    n_steps: int = 20,
+    morphing_range_sd: float = 1.0,
+    save_dir: str = None,
+    n_validation_runs: int = 5,
+    prefix: str = 'morphing',
+    verbose: bool = True,
+) -> dict:
+    """Morph embeddings along *metric_values*, refit, and save the curves.
+
+    Writes ``<prefix>_coefficients.npz`` and, when an *environment* is given,
+    ``<prefix>_validation.npz``.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+
+    result = run_morphing(
+        estimator=estimator,
+        dataset=dataset,
+        metric_values=metric_values,
+        n_steps=n_steps,
+        morphing_range_sd=morphing_range_sd,
+        save_dir=save_dir,
+        verbose=verbose,
+    )
+
+    morphed = get_morphed_coefficients(result)
+    step_values = morphed[next(iter(morphed))]['step_values']
+
+    if verbose:
+        for module, data in morphed.items():
+            active = (data['inclusion_probability'] > 0).sum(axis=1)
+            print(f"  {module}: {len(data['term_names'])} terms, "
+                  f"active per step: [{active.min():.0f}, {active.max():.0f}]")
+
+    coefficients_path = os.path.join(output_dir, f'{prefix}_coefficients.npz')
+    keys = ('mean_coefficients', 'se_coefficients', 'inclusion_probability',
+            'se_inclusion_probability', 'term_names', 'all_coefficients',
+            'all_inclusion_probability')
+    np.savez(
+        coefficients_path,
+        step_values=step_values,
+        n_steps=result['n_steps'],
+        n_participants=result['n_participants'],
+        n_ensemble_members=result['n_ensemble_members'],
+        metric_values=result['metric_values'],
+        **{f'{module}_{key}': data[key]
+           for module, data in morphed.items() for key in keys},
+    )
+    if verbose:
+        print(f"  Saved morphed coefficients to {coefficients_path}")
+
+    validation = None
+    if environment is not None:
+        if verbose:
+            print(f"\nValidation: generating behavior ({n_validation_runs} runs)...")
+        validation = validate_morphing(
+            result=result, dataset=dataset, environment=environment,
+            n_runs=n_validation_runs, verbose=verbose,
+        )
+        validation_path = os.path.join(output_dir, f'{prefix}_validation.npz')
+        np.savez(validation_path, step_values=step_values,
+                 **{k: v for k, v in validation.items() if isinstance(v, np.ndarray)})
+        if verbose:
+            print(f"  Saved validation results to {validation_path}")
+
+    return {'result': result, 'coefficients': morphed, 'validation': validation}

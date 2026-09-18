@@ -105,7 +105,16 @@ def generate_behavior(model, path_data=None, dataset=None, save_dataset=None):
 
 ## Cross-Study Analysis Pipelines (`weinhardt2026/analysis/`)
 
-All analyses below are study-agnostic functions that take a fitted `SpiceEstimator` (loaded from a `.pkl` checkpoint or passed in-memory) plus a `SpiceDataset`, and write CSVs/plots to an `output_dir`. Each study's `analysis_generative.py` / notebook wires these into its own data paths.
+All analyses below are study-agnostic functions that take a fitted `SpiceEstimator` (loaded from a `.pkl` checkpoint or passed in-memory) plus a `SpiceDataset`, and write CSVs/plots to an `output_dir`. Each study wires these into its own data paths from `weinhardt2026/studies/<study>/<study>.py` — there are no per-study analysis runner scripts; anything reusable belongs here instead.
+
+Analyses that only read coefficients do not need the training data. `weinhardt2026/utils/checkpoints.py` loads a checkpoint on its own:
+
+```python
+load_estimator(model_path, spice_class, spice_config, n_actions=2,
+               n_participants=None, polynomial_degree=2, model_kwargs=None)
+```
+
+inferring `ensemble_size` and `n_participants` from the saved tensors. It also provides `select_lowest_bic_checkpoint(hpscan_csv, params_dir)`, `participant_label_map(data_path, label_col)` (SPICE's 0-based participant index → a label column) and `log_trials_per_participant(data_path)` (the data-volume covariate that presence regressions adjust for).
 
 ### Model Evaluation — `analysis_model_evaluation.py`
 
@@ -149,6 +158,19 @@ run_morphing(
 2. `_create_morphed_dataset` / `_create_morphed_estimator` — steps `n_steps` points along that direction, refitting SINDy coefficients at each point with a fast **ridge → prune → ridge → prune → ... → ridge** cycle (closed-form solves, no SGD — orders of magnitude faster than full retraining).
 3. Aggregates across ensemble members (each has its own RNN/embedding space, so morphing directions are found independently per member) into mean ± SE coefficient curves.
 4. `get_morphed_coefficients(result)` extracts the coefficient trajectories for plotting.
+
+`analysis_morphing(...)` wraps all of the above and is the entry point a study calls:
+
+```python
+analysis_morphing(
+    estimator, dataset, metric_values, output_dir,
+    environment=None,           # a weinhardt2026.utils.task.Env; enables validation
+    n_steps=20, morphing_range_sd=1.0, save_dir=None,
+    n_validation_runs=5, prefix='morphing',
+)
+```
+
+It writes `<prefix>_coefficients.npz` and, when an `environment` is given, calls `validate_morphing()` — which generates behavior from the morphed model at each step and checks that the metric actually follows the axis (monotonicity count + step/metric correlation), writing `<prefix>_validation.npz`. The environment is the only task-specific piece, so it is passed in rather than imported.
 - **Result**: for each SINDy term, a curve of its coefficient value as a function of position along the morphing axis — showing e.g. a nonlinear exploration term's coefficient collapsing toward zero as depression severity increases. This is how SPICE reveals *structural* (not just parametric) individual differences.
 
 ### Generative Comparison — `analysis_generative_comparison.py`
@@ -197,38 +219,81 @@ analysis_coefficients_individuals(
 - **Continuous** (`run_continuous`): regresses coefficient *magnitude* on a continuous criterion, with beta-coefficient bar plots and fitted logistic curves; `jonckheere_terpstra` tests for monotonic trend across ordered groups.
 - **Result**: statistical evidence for *which mechanisms* (equation terms) differ between groups or scale with a trait — the individual-level counterpart to the morphing analysis above.
 
-### Coefficient Compression — `analysis_coefficient_compression.py`
+### Coefficient Clustering — `analysis_coefficient_dendrogram.py`
 
-When many sparse SINDy coefficients are fit per participant, this compresses them into a small number of interpretable "mechanisms" via per-module NMF (non-negative matrix factorization), `MODEL ≈ U @ H` (optionally `mean + U @ H` with `center=True`).
+Groups the candidate terms *within each submodule* by how their per-participant coefficients covary across the population, drawing one dendrogram per module. Terms that move together (or in exact opposition, e.g. `c_reward = -c_value` = a learning rate) form a **tie** that can be read as a single cognitive mechanism rather than as free parameters.
 
 ```python
-analysis_coefficient_compression(
-    spice_model=None, model_path=None, dataset=None,
-    dataset_train=None, dataset_test=None,
-    k_per_module_values=None, alpha_w_values=None, alpha_h_values=None,   # hyperparameter grid search
-    chosen_K_per_module=None, chosen_alpha_W=None, chosen_alpha_H=None,   # or fixed values
-    mechanism_names_override=None, mechanism_threshold_ratio=0.15,
-    output_dir="analysis_coefficient_compression",
+analysis_coefficient_dendrogram(
+    output_dir, spice_model=None, model_path=None, spice_class=None, spice_config=None,
+    mode="coefficients",          # or "presence"
+    metric="abs",                 # 1-|r| (sign-flipped ties join early) or "signed" (1-r)
+    linkage_method="average", distance_threshold=0.5,
+    min_active_fraction=0.05, min_overlap=30, pairwise_complete=True,
+    n_bootstrap=0, bootstrap_seed=0, prefix=None,
 )
 ```
 
-`run_nmf_per_module_hyperparameter_search` + `plot_hyperparameter_search` sweep `K` (mechanisms per module) and regularization strengths, selecting the setting that best reconstructs held-out coefficients (`evaluate_compressed_model`). **Result**: a per-participant `loadings_df` (`participant_index` + one loading column per discovered mechanism) — this is the direct input to `analysis_mechanism_individuals.py` below.
+Two axes, deliberately kept separate:
 
-This wraps the lower-level `spice.resources.sindy_compression` module (also reachable directly as `SpiceEstimator.compress_sindy_equations()`, see [training.md](training.md)), which implements several compression methods compared in its docstring: `"nmf_per_module"` (default — sign-split NMF fit independently per module, wins on predictive cost, genuine sparsity, and module-localization), `"svd"` (dense PCA, best reconstruction fidelity but every participant loads on every mechanism), `"sparse"`/`"sparse_per_module"` (L1 dictionary learning), `"nmf"` (joint, not module-localized), and `"family"` (block-diagonal PCA within hand-classified syntactic term families — most legible names, but families are asserted rather than learned, and costs some predictive performance). The result is a `CompressedSpiceModel` with `print_population()`, `print_mechanisms()`, `print_participant(id)`, and an `apply(estimator)` context manager for temporary inference; `commit(estimator)` overwrites permanently but note that afterward `count_sindy_coefficients()` will overstate complexity (the population mean is dense) — report `K` mechanisms × active-mechanism count via `.sparsity()` instead.
+- **parametric** (`mode="coefficients"`) — given both terms are present, are their magnitudes locked? This is the axis that counts as model reduction.
+- **structural** (`mode="presence"`) — do the terms switch on and off together across participants (Jaccard distance on the presence masks)? An individual difference in equation *form*.
 
-### Mechanism-Level Group Differences — `analysis_mechanism_individuals.py`
+A pruned term is stored as an exact zero, so correlating full columns mixes the two axes: two terms absent in the *same* participants correlate strongly without their magnitudes being related. `pairwise_complete=True` (the default) therefore correlates each pair **only over participants in which both terms are present**. Pairs with fewer than `min_overlap` such participants cannot be judged and are set to `r = 0`; the count of untestable pairs is printed per module and is worth reading alongside the tree. `--full-columns` restores the old, mixed behaviour.
 
-Same idea as `analysis_coefficients_individuals.py` but operating on the compressed *mechanisms* from `analysis_coefficient_compression.py` rather than raw coefficients — tests whether a mechanism's activation differs between reference and comparison groups.
+With `n_bootstrap > 0`, participants are resampled with replacement and reclustered, giving per-cluster **Hennig clusterwise Jaccard** (mean best-match overlap across draws; ≥0.75 conventionally "stable") plus the weakest member pair's co-assignment probability, and a term-by-term co-assignment heatmap. These are *reproducibility* measures, not p-values — a cluster driven by estimation-noise correlation resamples just as stably as a real one.
+
+- **Outputs**: `dendrogram_*.png` (one panel per module), `dendrogram_heatmaps_*.png` (similarity, in leaf order), `dendrogram_clusters_*.csv`, and with bootstrapping `dendrogram_stability_*.csv` + `dendrogram_coassignment_*.png`.
+
+### Coefficient Beta Effects — `analysis_coefficient_betas.py`
+
+Standardized effect of each SINDy coefficient on a per-participant behavioral criterion.
 
 ```python
-analysis_mechanism_individuals(
-    loadings_df,       # from analysis_coefficient_compression
-    path_data, reference, criterion, output_dir,
-    df_participant_id="participant", active_threshold=1e-6,
-) -> res_df  # one row per mechanism: beta/SE/p-value/significance per group comparison
+analysis_coefficient_betas(
+    data_path, output_dir, spice_model=None, model_path=None, ...,
+    criterion_col="mean_reward", participant_col="participant", criterion_aggregate="mean",
+    alpha=0.05, adjust_for_volume=True, include_singletons=True,
+    distance_threshold=0.5, min_active_fraction=0.05, prefix=None,
+)
 ```
 
-Produces forest plots (`_plot_mechanism_forest`) and per-group mechanism activation-rate plots (`_plot_mechanism_activation_rates`).
+Two Benjamini-Hochberg-corrected families, each corrected across all modules:
+
+1. **single coefficients** — one univariate model per candidate term. This is a pre-specified regressor set and is the family to report.
+2. **clusters** — the same against the cluster scores from the dendrogram above, where a cluster score is the sign-aligned mean of its z-scored members. With `include_singletons=True` (default) terms that joined no cluster enter as themselves, so the regressors partition the kept terms.
+
+Every row also carries `beta_adjusted` / `p_adjusted`, the same effect with `log_n_trials` partialled out. **Check these**: a criterion like "reward per block" can be dominated by how many trials a participant played rather than by performance, in which case the adjusted column collapses and a per-trial reward rate (`criterion_col="reward"`, `criterion_aggregate="mean"`) is the better criterion.
+
+A joint model over all cluster scores is also written (`betas_clusters_joint_*.csv`), giving partial betas — each regressor's contribution beyond the others. It is only interpretable with enough participants per regressor and moderate collinearity; with singletons included the regressor count rises and partial estimates can flip sign relative to their univariate values, which is suppression, not mechanism.
+
+Two caveats on the cluster family: the clusters are derived from the same participants the regression then uses, so their q-values are optimistic in a way the FDR correction does not capture (a split-half — discover on one half, test on the other — fixes this); and every model here is cross-sectional across participants, so a coefficient predicting performance does not establish that changing it would change performance. On the studies checked so far the cluster betas have not exceeded their own best member's effect, so the single-term family alone is usually sufficient for inference, with the clustering serving interpretation.
+
+- **Outputs**: `betas_terms_*.csv`, `betas_clusters_*.csv`, `betas_clusters_joint_*.csv`, and forest plots (filled markers = significant after FDR).
+
+### Deeper Look at One Checkpoint — `analysis_bestbic.py`
+
+Four analyses that read a single fitted checkpoint (typically the lowest-BIC one from the sparsity scan, via `select_lowest_bic_checkpoint`) and describe how its discovered equations vary across participants.
+
+```python
+analysis_embedding_dynamics(estimator, dataset, output_dir, results_dir,
+                            label_map=None, module_symbols=None, n_select=3)
+analysis_metric_fingerprint(estimator, output_dir, results_dir, metrics_csv,
+                            data_path, metric='avg_reward', label_map=None)
+analysis_group_betas(estimator, output_dir, results_dir, data_path,
+                     criterion='diag', reference='Control')
+analysis_metric_betas(estimator, output_dir, results_dir, data_path,
+                      metrics_csv, metric='avg_reward')
+```
+
+1. **Embedding extremes** — the participants furthest apart in participant-embedding space, with their choice / value-update dynamics and their equations rendered as LaTeX (`format_equations_latex`; `module_symbols` maps a module name to its LaTeX symbol, and modules it omits are printed by name).
+2. **Fingerprint** — structural (presence) and parametric (magnitude) coefficient differences ordered by a behavioral metric, adjusted for log data volume.
+3. **Group betas** — presence regression of every coefficient on a discrete grouping column, wrapping `analysis_coefficients_individuals` and dropping near-constant terms.
+4. **Metric betas** — the same against a continuous participant-level metric, attaching it to the behavioural CSV as a participant-constant column first.
+
+### Archived — coefficient compression and mechanism-level differences
+
+`analysis_coefficient_compression.py`, `analysis_mechanism_individuals.py`, `analysis_concepts.py` and `analysis_coefficient_ties.py` have moved to `weinhardt2026/analysis/archive/`, together with the core modules they wrapped (`sindy_compression.py`, `sindy_concepts.py`, `sindy_ties.py`, now under `archive/core/`). They compressed per-participant coefficients into a small number of "mechanisms" via per-module NMF and re-tested group differences at the mechanism level. `analysis_coefficient_dendrogram.py` above covers the same question — which coefficients belong together — without the factorization step.
 
 ### Behavioral Clustering — `analysis_behavioral_clustering.py`
 
@@ -278,6 +343,7 @@ Evaluates a batch of checkpoints from a pruning-threshold × pruning-test hyperp
 1. Fit `SpiceEstimator` on training data, evaluate on held-out data with `analysis_model_evaluation.py`.
 2. Run `analysis_sindy_onestepahead.py` if SINDy test performance lags the RNN, to see whether it's a per-step or accumulation problem.
 3. Inspect population-level equation structure with `analysis_coefficients_distributions.py`.
-4. Relate coefficients to external criteria: `analysis_coefficients_individuals.py` (discrete groups or continuous traits) and/or `run_morphing` for a continuous structural trajectory.
+4. Relate coefficients to external criteria: `analysis_coefficients_individuals.py` (discrete groups or continuous traits), `analysis_coefficient_betas.py` for standardized effects of each term on a behavioral criterion, and/or `analysis_morphing.py` for a continuous structural trajectory.
 5. Generate synthetic behavior (`generate_behavior`) and validate it against real data with `analysis_generative_comparison.py` and `compute_reward_history_kernel`.
-6. Optionally compress coefficients into interpretable mechanisms (`analysis_coefficient_compression.py`) and re-test group differences at the mechanism level (`analysis_mechanism_individuals.py`), or check behavioral-cluster/equation alignment (`analysis_behavioral_clustering.py`).
+6. Read the fitted equations as a small number of mechanisms with `analysis_coefficient_dendrogram.py` (one dendrogram per module, bootstrap stability), or check behavioral-cluster/equation alignment with `analysis_behavioral_clustering.py`.
+7. For the selected checkpoint, run the four `analysis_bestbic.py` analyses (embedding extremes, fingerprint, group and metric betas) to describe how the equations vary across participants.

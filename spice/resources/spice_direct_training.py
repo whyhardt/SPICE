@@ -266,10 +266,9 @@ def averaged_coefficients(model: BaseModel):
     """Temporarily collapse the ensemble to its mean coefficient set.
 
     This is the model `print_spice_model` / `get_sindy_coefficients(aggregate=True)`
-    describe -- the single equation you would publish. Same convention as
-    `CompressedSpiceModel._write`: aggregated values are already zero wherever a
-    term is inactive in every member, so presence is set all-True and the zeros
-    carry the 'inactive' meaning.
+    describe -- the single equation you would publish. Aggregated values are
+    already zero wherever a term is inactive in every member, so presence is set
+    all-True and the zeros carry the 'inactive' meaning.
     """
     modules = model.get_modules()
     saved = {m: (model.sindy_coefficients[m].data.clone(),
