@@ -1,7 +1,7 @@
 import torch
 
 
-from spice import SpiceConfig, BaseModel
+from spice import SpiceConfig, BaseModel, SpiceDataset
 
 
 CONFIG = SpiceConfig(
@@ -18,6 +18,25 @@ CONFIG = SpiceConfig(
     },
     additional_inputs=('contrast_difference', 'contrast_difference_next'),
 )
+
+
+def prepare_dataset(dataset: SpiceDataset) -> SpiceDataset:
+    """Append the next trial's contrast difference as an additional input.
+
+    'contrast_difference_next' is not a column of the CSV: it is the within-session
+    lead of 'contrast_difference'. Building it here costs the last trial of each
+    session, which is dropped from both xs and ys.
+    """
+    n_actions = dataset.ys.shape[-1]
+    contr_diff = dataset.xs[..., n_actions * 2].unsqueeze(-1)
+    contr_diff_next = contr_diff[:, 1:]
+    xs = torch.cat((
+        dataset.xs[:, :-1, :, :n_actions * 2],
+        contr_diff[:, :-1, :],
+        contr_diff_next,
+        dataset.xs[:, :-1, :, 2 * n_actions + 1:],
+    ), dim=-1)
+    return SpiceDataset(xs, dataset.ys[:, :-1])
 
 
 class SpiceModel(BaseModel):

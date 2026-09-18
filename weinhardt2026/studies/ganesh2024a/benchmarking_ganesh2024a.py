@@ -10,7 +10,7 @@ from spice import SpiceEstimator, SpiceDataset, csv_to_dataset, split_data_along
 sys.path.append('../../..')
 from weinhardt2026.utils.task import Env, generate_behavior as _generate_behavior
 from weinhardt2026.utils.benchmarking_gru import training
-from weinhardt2026.studies.ganesh2024a.spice_ganesh2024a import CONFIG
+from weinhardt2026.studies.ganesh2024a.spice_ganesh2024a import CONFIG, prepare_dataset
 
 
 N_GRID = 100
@@ -36,15 +36,7 @@ def get_dataset(path_data: str = None, test_blocks: tuple[int] = None, verbose: 
     n_actions = dataset.ys.shape[-1]
 
     # Add next-trial contrast difference as additional input
-    contr_diff = dataset.xs[..., n_actions * 2].unsqueeze(-1)
-    contr_diff_next = contr_diff[:, 1:]
-    xs = torch.cat((
-        dataset.xs[:, :-1, :, :n_actions * 2],
-        contr_diff[:, :-1, :],
-        contr_diff_next,
-        dataset.xs[:, :-1, :, 2 * n_actions + 1:],
-    ), dim=-1)
-    dataset = SpiceDataset(xs, dataset.ys[:, :-1])
+    dataset = prepare_dataset(dataset)
 
     if verbose:
         print(f"Shape of dataset: {dataset.xs.shape}")

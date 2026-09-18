@@ -1,6 +1,12 @@
+import pandas as pd
 import torch
 
 from spice import SpiceConfig, BaseModel
+
+
+# Screen positions (bucket, outcome, helicopter) are given in pixels and
+# normalized to [0, 1] by this scale before training.
+POSITION_SCALE = 300.0
 
 
 CONFIG = SpiceConfig(
@@ -42,6 +48,38 @@ CONFIG = SpiceConfig(
         'c_t',
     ),
 )
+
+
+def mse_loss(prediction: torch.Tensor, target: torch.Tensor, **kwargs) -> torch.Tensor:
+    """MSE loss for continuous position prediction.
+
+    Same interface as cross_entropy_loss: (prediction, target) -> scalar.
+    Both tensors have shape (..., 1) after NaN masking in the training loop.
+    Extra kwargs (e.g. label_smoothing) are accepted and ignored for compatibility.
+    """
+    return torch.nn.functional.mse_loss(prediction.reshape(-1), target.reshape(-1))
+
+
+def prepare_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    """Derive 'z_next', normalize screen positions and mask unobserved helicopter positions."""
+    # next trial's initial bucket position (within each block)
+    df['z_next'] = df.groupby(['participant', 'experiment', 'block'])['z_t'].shift(-1)
+
+    # normalize positions to [0, 1]
+    for col in ['b_t', 'x_t', 'mu_t', 'z_next', 'sigma']:
+        df[col] = df[col] / POSITION_SCALE
+
+    # participants can only observe the helicopter position when v_t = 1
+    df.loc[df['v_t'] != 1, 'mu_t'] = float('nan')
+
+    return df
+
+
+# Hooks read by weinhardt2026/run.py
+NORMALIZE_REWARDS = False       # outcomes are positions, already scaled by prepare_dataframe
+LOSS_FN = mse_loss
+LOSS_FN_KWARGS = {}
+ESTIMATOR_KWARGS = {'n_items': 1}
 
 
 class SpiceModel(BaseModel):

@@ -9,7 +9,8 @@ import os
 from spice import SpiceEstimator, SpiceDataset, split_data_along_blockdim
 
 from spice_weber2024 import SpiceModel, CONFIG
-from benchmarking_weber2024 import get_dataset, clamped_angular_mse, generate_behavior, ChangePointModel
+from spice_weber2024 import clamped_angular_mse
+from benchmarking_weber2024 import get_dataset, generate_behavior, ChangePointModel
 from analysis_generative import analysis_generative_behavior
 
 from weinhardt2026.utils.benchmarking_gru import GRUModel, training

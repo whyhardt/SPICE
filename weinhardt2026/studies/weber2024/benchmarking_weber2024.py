@@ -9,12 +9,12 @@ from tqdm import tqdm
 
 from spice import SpiceEstimator, SpiceDataset, csv_to_dataset, split_data_along_blockdim
 
-from weinhardt2026.studies.weber2024.spice_weber2024 import CONFIG
+from weinhardt2026.studies.weber2024.spice_weber2024 import (
+    CONFIG, MOVEMENT_SPEED, clamped_angular_mse, prepare_dataframe, prepare_dataset,
+)
 
 
 # --- Constants ---
-
-MOVEMENT_SPEED = 1.0        # degrees per frame
 
 def angular_distance(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     """Shortest circular distance in degrees between two angles.
@@ -253,38 +253,6 @@ class ChangePointModel(torch.nn.Module):
         return 2
 
 
-# --- Loss function with physical speed clamping ---
-
-def clamped_angular_mse(prediction: torch.Tensor, target: torch.Tensor, speed: float = MOVEMENT_SPEED, **kwargs) -> torch.Tensor:
-    """MSE loss with physical movement speed clamping.
-
-    The model predicts a raw belief position in (sin, cos) space.
-    This loss clamps the predicted movement to be physically feasible
-    given the inter-beam interval (dt) and movement speed.
-
-    Args:
-        prediction: (N, 2) model output [belief_sin, belief_cos]
-        target: (N, 5) packed target [sin(shield_{t+1}), cos(shield_{t+1}),
-                sin(shield_t), cos(shield_t), dt]
-        speed: movement speed in degrees per frame
-    """
-    belief = prediction[..., :2]                    # model's belief
-    actual = target[..., :2]                        # actual shield at t+1
-    shield_t = target[..., 2:4]                     # shield at t (sin, cos)
-    dt = target[..., 4:5]                           # inter-beam interval (frames)
-
-    delta = belief - shield_t
-    delta_mag = delta.norm(dim=-1, keepdim=True)
-
-    # Max angular movement in sin/cos space ≈ speed * dt * (pi/180) for small angles
-    # For large angles, the sin/cos delta saturates, but this is a reasonable approximation
-    max_move = speed * dt * (math.pi / 180.0)
-    fraction = torch.clamp_max(max_move / (delta_mag + 1e-8), 1.0)
-
-    clamped_pred = shield_t + fraction * delta
-    return F.mse_loss(clamped_pred, actual)
-
-
 # --- Data Loading ---
 
 def get_dataset(
@@ -314,16 +282,7 @@ def get_dataset(
     if path_data is None:
         path_data = 'weinhardt2026/studies/weber2024/data/weber2024.csv'
 
-    df = pd.read_csv(path_data)
-
-    # Convert angular positions to sin/cos (degrees → radians → trig)
-    shield_rad = df['shieldRotation'] * (math.pi / 180.0)
-    laser_rad = df['laserRotation'] * (math.pi / 180.0)
-
-    df['shield_sin'] = shield_rad.apply(math.sin)
-    df['shield_cos'] = shield_rad.apply(math.cos)
-    df['laser_sin'] = laser_rad.apply(math.sin)
-    df['laser_cos'] = laser_rad.apply(math.cos)
+    df = prepare_dataframe(pd.read_csv(path_data))
 
     # Build the continuous dataset using csv_to_dataset
     # Action = shield position (sin, cos) — what the model observes as its own position
@@ -339,18 +298,8 @@ def get_dataset(
         continuous_action=True,
     )
 
-    # Expand ys: append shield_t and dt for loss function clamping
-    # csv_to_dataset produces ys = [next_shield_sin, next_shield_cos] (2 cols)
-    # We need ys = [next_shield_sin, next_shield_cos, shield_sin_t, shield_cos_t, dt] (5 cols)
-    n_actions = 2
-    n_rewards = 2
-    dt_col = n_actions + n_rewards + 3  # column index 7: trial_duration_frames
-
-    shield_t = dataset.xs[:, :, :, :n_actions].clone()
-    dt = dataset.xs[:, :, :, dt_col:dt_col + 1].clone()
-    new_ys = torch.cat([dataset.ys, shield_t, dt], dim=-1)
-
-    dataset = SpiceDataset(dataset.xs, new_ys, n_reward_features=n_rewards, continuous_action=True)
+    # Expand ys with the metadata the clamped loss needs
+    dataset = prepare_dataset(dataset)
 
     if test_blocks is not None:
         return split_data_along_blockdim(dataset, test_blocks)

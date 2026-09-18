@@ -7,11 +7,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import torch
 
 from spice import SpiceEstimator, SpiceDataset, split_data_along_blockdim
-from spice_bruckner2025 import SpiceModel, CONFIG
+from spice_bruckner2025 import SpiceModel, CONFIG, mse_loss, POSITION_SCALE
 from weinhardt2026.utils.generation import generate_repeated
 from weinhardt2026.utils.benchmarking_gru import GRUModel, training
 from weinhardt2026.studies.bruckner2025.benchmarking_bruckner2025 import (
-    get_dataset, mse_loss, generate_behavior, RationalResourceModel, POSITION_SCALE,
+    get_dataset, generate_behavior, RationalResourceModel,
 )
 from weinhardt2026.studies.bruckner2025.analysis_generative import analysis_generative_behavior
 from weinhardt2026.analysis.analysis_model_evaluation import analysis_model_evaluation_mse

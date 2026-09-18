@@ -11,7 +11,8 @@ import pandas as pd
 import json
 import importlib
 
-from spice import SpiceEstimator, csv_to_dataset, split_data_along_blockdim, split_data_along_timedim
+from spice import SpiceEstimator, SpiceDataset, csv_to_dataset, split_data_along_blockdim, split_data_along_timedim
+from spice.resources.spice_training import cross_entropy_loss
 from spice.resources.spice_training import _get_terminal_width
 
 from studies.synthetic.benchmarking_qlearning import QLearning
@@ -54,6 +55,7 @@ if __name__=='__main__':
     parser.add_argument('--train_ratio_time', type=float, default=None, help='Ratio of data used for training. Split along time dimension. Not combinable with test_blocks')
     parser.add_argument('--test_blocks', type=str, default=None, help='Comma-separated list of integeres which indicate test sessions. Not combinable with train_ratio_time')
 
+    parser.add_argument('--prototyping', action='store_true', help='Rapid prototyping: truncate the data to the first 100 trials and 50 participants.')
     parser.add_argument('--results', action='store_true', help='Shows the results using a fitted SPICE model. The results are value-dynamics-over-time plot, a parameter distribution histogram, and the corresponding symbolic SPICE model.')
     
     args = parser.parse_args()
@@ -100,11 +102,35 @@ if __name__=='__main__':
     print("\n"+"="*_get_terminal_width())
     print(f"Module: {args.module}")
     print(f"Dataset: {args.data}")
+
+    # The study module is the single source of truth for everything task-specific.
+    # Besides SpiceModel and CONFIG it may define these optional hooks, which keep
+    # studies that need preprocessing runnable through this generic entry point:
+    #   prepare_dataframe(df) -> df        applied to the raw CSV before csv_to_dataset
+    #   prepare_dataset(dataset) -> dataset applied to the SpiceDataset before splitting
+    #   NORMALIZE_REWARDS: bool            skip reward normalization (continuous tasks)
+    #   LOSS_FN / LOSS_FN_KWARGS           behavioral loss (defaults to cross-entropy)
+    #   ESTIMATOR_KWARGS: dict             overrides for auto-detected estimator kwargs
+    spice_module = importlib.import_module(args.module)
+    spice_model = spice_module.SpiceModel
+    spice_config = spice_module.CONFIG
+    prepare_dataframe = getattr(spice_module, 'prepare_dataframe', None)
+    prepare_dataset = getattr(spice_module, 'prepare_dataset', None)
+
+    data = args.data
+    if prepare_dataframe is not None:
+        print(f"Preprocessing: {args.module}.prepare_dataframe")
+        data = prepare_dataframe(pd.read_csv(args.data))
+
     dataset = csv_to_dataset(
-        file=args.data,
+        file=data,
         **args.data_kwargs,
     )
-    dataset.normalize_rewards()
+    if getattr(spice_module, 'NORMALIZE_REWARDS', True):
+        dataset.normalize_rewards()
+    if prepare_dataset is not None:
+        print(f"Preprocessing: {args.module}.prepare_dataset")
+        dataset = prepare_dataset(dataset)
     
     if args.train_ratio_time:
         args.test_blocks = None
@@ -119,21 +145,28 @@ if __name__=='__main__':
     
     # --------------------------------------------------------------------------------------------
     # RAPID PROTOTYPING
-    from spice import SpiceDataset
+    if args.prototyping:
+        print("Rapid prototyping: truncating to 100 trials and 50 participants")
 
-    # keep only 100 timesteps
-    dataset_train = SpiceDataset(dataset_train.xs[:, :100], dataset_train.ys[:, :100])
+        def truncate(dataset):
+            return SpiceDataset(
+                dataset.xs[:, :100], dataset.ys[:, :100],
+                n_reward_features=dataset.n_reward_features,
+                continuous_action=dataset.continuous_action,
+            )
 
-    # keep only 50 participants for rapid prototyping
-    keep_participants = torch.arange(0, 50)
+        def keep_subset(dataset, subset):
+            participant_ids = dataset.xs[:, 0, 0, -1]
+            mask = torch.isin(participant_ids, subset)
+            return SpiceDataset(
+                dataset.xs[mask], dataset.ys[mask],
+                n_reward_features=dataset.n_reward_features,
+                continuous_action=dataset.continuous_action,
+            )
 
-    def keep_subset(dataset, subset):
-        participant_ids = dataset.xs[:, 0, 0, -1]
-        mask = torch.isin(participant_ids, subset)
-        return SpiceDataset(dataset.xs[mask], dataset.ys[mask])
-
-    dataset_train = keep_subset(dataset_train, keep_participants)
-    dataset_test = keep_subset(dataset_test, keep_participants)    
+        keep_participants = torch.arange(0, 50)
+        dataset_train = keep_subset(truncate(dataset_train), keep_participants)
+        dataset_test = keep_subset(truncate(dataset_test), keep_participants)
     # --------------------------------------------------------------------------------------------
     
     
@@ -144,10 +177,18 @@ if __name__=='__main__':
     n_experiments = len(dataset_train.xs[..., -2].unique())
     n_items = args.n_items if args.n_items else n_actions
     n_sessions = dataset.xs.shape[0]
-    
-    spice_module = importlib.import_module(args.module)
-    spice_model = spice_module.SpiceModel
-    spice_config = spice_module.CONFIG 
+
+    # Studies whose ys carry extra columns (e.g. loss metadata) declare the true
+    # action/item count themselves; everything else is inferred from the data.
+    estimator_kwargs = dict(
+        n_actions=n_actions,
+        n_items=n_items,
+        n_reward_features=dataset_train.n_reward_features,
+        loss_fn=getattr(spice_module, 'LOSS_FN', cross_entropy_loss),
+        loss_fn_kwargs=getattr(spice_module, 'LOSS_FN_KWARGS', args.loss_kwargs),
+    )
+    estimator_kwargs.update(getattr(spice_module, 'ESTIMATOR_KWARGS', {}))
+    n_actions, n_items = estimator_kwargs['n_actions'], estimator_kwargs['n_items']
 
     print(f"Dataset size: {n_participants} participants, {n_actions} actions, {n_items} items")
     
@@ -158,9 +199,8 @@ if __name__=='__main__':
         spice_config=spice_config,
         n_participants=n_participants,
         n_experiments=n_experiments,
-        n_actions=n_actions,
-        n_items=n_items,
         kwargs_spice_class=args.model_kwargs,
+        **estimator_kwargs,
         
         # rnn training parameters
         epochs=args.epochs,
@@ -168,7 +208,6 @@ if __name__=='__main__':
         warmup_steps=args.epochs_warmup,
         ensemble_size=args.ensemble,
         l2_rnn=args.rnn_l2_lambda,
-        loss_fn_kwargs=args.loss_kwargs,
         dropout=0.1,
         embedding_size=args.embedding,
 

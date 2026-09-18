@@ -1,6 +1,13 @@
-import torch
+import math
 
-from spice import SpiceConfig, BaseModel
+import pandas as pd
+import torch
+import torch.nn.functional as F
+
+from spice import SpiceConfig, BaseModel, SpiceDataset
+
+
+MOVEMENT_SPEED = 1.0        # degrees per frame
 
 
 CONFIG = SpiceConfig(
@@ -31,6 +38,79 @@ CONFIG = SpiceConfig(
         'trueMean',
     ),
 )
+
+
+def clamped_angular_mse(prediction: torch.Tensor, target: torch.Tensor, speed: float = MOVEMENT_SPEED, **kwargs) -> torch.Tensor:
+    """MSE loss with physical movement speed clamping.
+
+    The model predicts a raw belief position in (sin, cos) space.
+    This loss clamps the predicted movement to be physically feasible
+    given the inter-beam interval (dt) and movement speed.
+
+    Args:
+        prediction: (N, 2) model output [belief_sin, belief_cos]
+        target: (N, 5) packed target [sin(shield_{t+1}), cos(shield_{t+1}),
+                sin(shield_t), cos(shield_t), dt]
+        speed: movement speed in degrees per frame
+    """
+    belief = prediction[..., :2]                    # model's belief
+    actual = target[..., :2]                        # actual shield at t+1
+    shield_t = target[..., 2:4]                     # shield at t (sin, cos)
+    dt = target[..., 4:5]                           # inter-beam interval (frames)
+
+    delta = belief - shield_t
+    delta_mag = delta.norm(dim=-1, keepdim=True)
+
+    # Max angular movement in sin/cos space ≈ speed * dt * (pi/180) for small angles
+    # For large angles, the sin/cos delta saturates, but this is a reasonable approximation
+    max_move = speed * dt * (math.pi / 180.0)
+    fraction = torch.clamp_max(max_move / (delta_mag + 1e-8), 1.0)
+
+    clamped_pred = shield_t + fraction * delta
+    return F.mse_loss(clamped_pred, actual)
+
+
+def prepare_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    """Convert the angular shield/laser positions (degrees) into sin/cos components.
+
+    Action = shield position (sin, cos) — the model's own position.
+    Reward = laser position (sin, cos) — the outcome / prediction error source.
+    """
+    shield_rad = df['shieldRotation'] * (math.pi / 180.0)
+    laser_rad = df['laserRotation'] * (math.pi / 180.0)
+
+    df['shield_sin'] = shield_rad.apply(math.sin)
+    df['shield_cos'] = shield_rad.apply(math.cos)
+    df['laser_sin'] = laser_rad.apply(math.sin)
+    df['laser_cos'] = laser_rad.apply(math.cos)
+
+    return df
+
+
+def prepare_dataset(dataset: SpiceDataset) -> SpiceDataset:
+    """Pack the loss metadata into ys, which `clamped_angular_mse` needs.
+
+    csv_to_dataset produces ys = [next_shield_sin, next_shield_cos]; the clamping
+    additionally needs the current shield position and the inter-beam interval:
+    ys = [next_shield_sin, next_shield_cos, shield_sin_t, shield_cos_t, dt]
+    """
+    n_actions = 2
+    n_rewards = 2
+    dt_col = n_actions + n_rewards + 3  # column index 7: trial_duration_frames
+
+    shield_t = dataset.xs[:, :, :, :n_actions].clone()
+    dt = dataset.xs[:, :, :, dt_col:dt_col + 1].clone()
+    ys = torch.cat([dataset.ys, shield_t, dt], dim=-1)
+
+    return SpiceDataset(dataset.xs, ys, n_reward_features=n_rewards, continuous_action=True)
+
+
+# Hooks read by weinhardt2026/run.py
+NORMALIZE_REWARDS = False       # laser positions are sin/cos, already in [-1, 1]
+LOSS_FN = clamped_angular_mse
+LOSS_FN_KWARGS = {}
+# ys carries 3 extra metadata columns, so the action count cannot be inferred from it
+ESTIMATOR_KWARGS = {'n_actions': 2, 'n_items': 2}
 
 
 class SpiceModel(BaseModel):

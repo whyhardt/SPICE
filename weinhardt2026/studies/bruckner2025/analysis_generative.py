@@ -7,7 +7,8 @@ import torch
 import matplotlib.pyplot as plt
 
 from spice import SpiceDataset
-from weinhardt2026.studies.bruckner2025.benchmarking_bruckner2025 import get_dataset, POSITION_SCALE, _AI_MU_T, _AI_C_T
+from weinhardt2026.studies.bruckner2025.spice_bruckner2025 import POSITION_SCALE
+from weinhardt2026.studies.bruckner2025.benchmarking_bruckner2025 import get_dataset, _AI_MU_T, _AI_C_T
 from weinhardt2026.analysis.analysis_generative_comparison import compute_generative_comparison
 
 

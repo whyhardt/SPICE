@@ -8,12 +8,11 @@ from tqdm import tqdm
 
 from spice import SpiceEstimator, SpiceDataset, BaseModel, split_data_along_blockdim, dataset_to_csv, csv_to_dataset
 
-from spice_bruckner2025 import CONFIG
+from weinhardt2026.studies.bruckner2025.spice_bruckner2025 import CONFIG, POSITION_SCALE, mse_loss, prepare_dataframe
 
 
 # --- Constants ---
 
-POSITION_SCALE = 300.0
 SIGMA = 15.0 / POSITION_SCALE          # normalized outcome noise std
 N_BLOCKS = 4
 N_TRIALS_PER_BLOCK = 100
@@ -27,18 +26,6 @@ _AI_SIGMA = 3        # outcome noise std (normalized)
 _AI_R_T = 4          # coin value (0.25=stone, 1.0=gold, 4.0=jackpot)
 _AI_MU_T = 5         # true helicopter position (normalized; NaN when v_t=0)
 _AI_C_T = 6          # change point indicator (never observable)
-
-
-# --- MSE loss compatible with SPICE training pipeline ---
-
-def mse_loss(prediction: torch.Tensor, target: torch.Tensor, **kwargs) -> torch.Tensor:
-    """MSE loss for continuous position prediction.
-
-    Same interface as cross_entropy_loss: (prediction, target) -> scalar.
-    Both tensors have shape (..., 1) after NaN masking in the training loop.
-    Extra kwargs (e.g. label_smoothing) are accepted and ignored for compatibility.
-    """
-    return torch.nn.functional.mse_loss(prediction.reshape(-1), target.reshape(-1))
 
 
 # --- Data Loading ---
@@ -72,18 +59,7 @@ def get_dataset(
     if path_data is None:
         path_data = 'weinhardt2026/studies/bruckner2025/data/bruckner2025.csv'
 
-    df = pd.read_csv(path_data)
-
-    # Precompute z_next = next trial's initial bucket position (within each block)
-    df['z_next'] = df.groupby(['participant', 'experiment', 'block'])['z_t'].shift(-1)
-
-    # Normalize positions to [0, 1]
-    for col in ['b_t', 'x_t', 'mu_t', 'z_next', 'sigma']:
-        df[col] = df[col] / POSITION_SCALE
-
-    # Mask mu_t on non-visible trials: participants can only observe
-    # the helicopter position when v_t=1
-    df.loc[df['v_t'] != 1, 'mu_t'] = float('nan')
+    df = prepare_dataframe(pd.read_csv(path_data))
 
     dataset = csv_to_dataset(
         file=df,
