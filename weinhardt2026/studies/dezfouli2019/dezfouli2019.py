@@ -273,13 +273,36 @@ analysis_coefficient_dendrogram(
     n_bootstrap=500,
 )
 
-# Standardized effects of every candidate term on the participant's reward rate.
-# Terms are the tested family; the cluster scores above are descriptive only.
+# Structural counterpart: which terms switch on together across participants
+# (phi on presence). Merges are tested by permutation (FWER per module); the
+# significant ones are the groups, and they are the leaves of the beta analysis.
+analysis_coefficient_dendrogram(
+    spice_model=estimator,
+    output_dir=output_dir,
+    prefix='dezfouli2019',
+    mode='presence',
+    n_permutations=10000,
+)
+
+# Structural beta effects: does the presence of a term — or of a group of terms
+# that switch on together — relate to the participant's reward rate? The metric
+# must not scale with trial count; the analysis checks and warns.
 analysis_coefficient_betas(
     spice_model=estimator,
     data_path=path_data,
     output_dir=output_dir,
     criterion_col='reward',
+    prefix='dezfouli2019',
+)
+
+# Same structural question against diagnosis, for every pair of groups.
+analysis_coefficient_betas(
+    spice_model=estimator,
+    data_path=path_data,
+    output_dir=output_dir,
+    criterion_col='diag',
+    criterion_type='discrete',
+    comparisons=[('Depression', 'Control'), ('Bipolar', 'Control'), ('Bipolar', 'Depression')],
     prefix='dezfouli2019',
 )
 

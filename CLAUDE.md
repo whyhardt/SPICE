@@ -28,8 +28,7 @@ SPICE/
 │   │   ├── model.py                    # BaseModel — core RNN + SINDy architecture
 │   │   ├── spice_utils.py              # SpiceConfig, SpiceDataset, SpiceSignals
 │   │   ├── spice_training.py           # Two-stage training pipeline
-│   │   ├── sindy_differentiable.py     # Differentiable SINDy polynomial library
-│   │   └── sindy_compression.py        # Per-participant coefficient compression (mechanism discovery)
+│   │   └── sindy_differentiable.py     # Differentiable SINDy polynomial library
 │   ├── precoded/                       # Pre-built cognitive model architectures
 │   │   ├── rescorlawagner.py           # Rescorla-Wagner learning model
 │   │   ├── choice.py                   # Choice perseveration
@@ -84,11 +83,11 @@ Full details, current constructor signatures, and internals: **[docs/training.md
 - **`SpiceConfig`** (`spice/resources/spice_utils.py`) — declares a model's architecture: which submodules exist (`library_setup`), the latent memory states they update (`memory_state`), and which states feed the output logits (`states_in_logit`).
 - **`BaseModel`** (`spice/resources/model.py`) — the RNN + SINDy architecture task-specific models subclass. Register submodules with `setup_module()`, run them each trial with `call_module()`.
 - **`SpiceDataset`** (`spice/resources/spice_utils.py`) — the training data container; build one from a behavioral CSV via `csv_to_dataset()` (`spice/utils/convert_dataset.py`).
-- **`SpiceEstimator`** (`spice/resources/estimator.py`) — the sklearn-style entry point: `.fit(data, targets)`, `.predict(conditions)`, `.print_spice_model()`, `.get_sindy_coefficients()`, `.compress_sindy_equations()`, `.save_spice()`/`.load_spice()`.
+- **`SpiceEstimator`** (`spice/resources/estimator.py`) — the sklearn-style entry point: `.fit(data, targets)`, `.predict(conditions)`, `.print_spice_model()`, `.get_sindy_coefficients()`, `.save_spice()`/`.load_spice()`.
 
 **Precoded models** (`spice/precoded/`): Rescorla-Wagner, Choice Perseveration, Forgetting, Learning Rate, Interaction, Embedding, DDM, Working Memory (+ variants) — ready-made `BaseModel` subclasses for common cognitive mechanisms.
 
-**Downstream analysis** (`weinhardt2026/analysis/`, see **[docs/analyses.md](docs/analyses.md)**): model evaluation (BIC/AIC/likelihood), model morphing (continuous structural trajectories along a behavioral axis), individual-differences regression on equation coefficients, coefficient compression into interpretable mechanisms, generative behavior comparison, behavioral clustering, and more — plus generative benchmarking (`weinhardt2026/utils/task.py`) for simulating new behavior from a fitted model.
+**Downstream analysis** (`weinhardt2026/analysis/`, see **[docs/analyses.md](docs/analyses.md)**): model evaluation (BIC/AIC/likelihood), model morphing (continuous structural trajectories along a behavioral axis), individual-differences regression on equation coefficients, coefficient clustering (per-module dendrograms of co-occurring terms, permutation-tested) with structural beta effects of those groups on a behavioral metric or between diagnostic groups, generative behavior comparison, behavioral clustering, and more — plus generative benchmarking (`weinhardt2026/utils/task.py`) for simulating new behavior from a fitted model.
 
 ---
 
@@ -125,6 +124,6 @@ A living list of gotchas (tensor device reassignment, action-mask overlap, `Spic
 ## Documentation
 
 - **[docs/training.md](docs/training.md)** — `BaseModel`, `SpiceConfig`, `SpiceDataset`, `SpiceEstimator` internals; the two-stage training pipeline; dimension conventions; the precoded-model pattern; architecture design guidelines; common pitfalls.
-- **[docs/analyses.md](docs/analyses.md)** — generative benchmarking and the full `weinhardt2026/analysis/` pipeline (model evaluation, morphing, coefficient distributions/individuals/compression, behavioral clustering, reward-history kernels, parameter recovery), with a suggested analysis sequence for a new study.
+- **[docs/analyses.md](docs/analyses.md)** — generative benchmarking and the full `weinhardt2026/analysis/` pipeline (model evaluation, morphing, coefficient distributions/individuals, coefficient clustering and structural beta effects, behavioral clustering, reward-history kernels, parameter recovery), with a suggested analysis sequence for a new study.
 - **[docs/studies.md](docs/studies.md)** — what each study in `weinhardt2026/studies/` models, its population, and its benchmark comparison model.
 - Full hosted documentation: https://whyhardt.github.io/SPICE/

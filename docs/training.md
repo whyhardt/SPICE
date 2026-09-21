@@ -201,7 +201,7 @@ PyTorch Dataset with auto-promotion (2D→3D→4D: unsqueezes a session dim, the
 
 Main user-facing class implementing sklearn's estimator interface.
 
-**Methods:** `fit(data, targets, data_test, target_test)`, `predict(conditions)` → single prediction array (ensemble mean in RNN mode, member-0 in SINDy mode — **not** a `(rnn_pred, spice_pred)` tuple), `save_spice(path)`, `load_spice(path)`, `get_sindy_coefficients()`, `get_participant_embeddings()`, `print_spice_model()`, `count_sindy_coefficients()`, `get_modules()`, `get_candidate_terms()`, `compress_sindy_equations()`
+**Methods:** `fit(data, targets, data_test, target_test)`, `predict(conditions)` → single prediction array (ensemble mean in RNN mode, member-0 in SINDy mode — **not** a `(rnn_pred, spice_pred)` tuple), `save_spice(path)`, `load_spice(path)`, `get_sindy_coefficients()`, `get_participant_embeddings()`, `print_spice_model()`, `count_sindy_coefficients()`, `get_modules()`, `get_candidate_terms()`
 
 **Constructor arguments:**
 
@@ -253,7 +253,6 @@ Main user-facing class implementing sklearn's estimator interface.
 
 `predict()` returns a single array: the ensemble mean in RNN mode, or ensemble member 0 in SINDy mode (all members are fit toward consensus targets in Stage 2, so any one member is representative).
 
-`compress_sindy_equations(K=None, method="nmf_per_module", **method_kwargs)` — fits a reparameterization of the model's per-participant SINDy coefficients into `coefficients[participant] ≈ population_mean + loadings[participant] @ components`: a shared population equation plus a handful of "mechanism loading" numbers per participant. Returns a `CompressedSpiceModel` (`spice/resources/sindy_compression.py`), exposing `print_population()`, `print_mechanisms()`, `print_participant(participant_id)`, and `apply(estimator)` as a context manager for temporary inference with the compressed coefficients. See [analyses.md](analyses.md) ("Coefficient Compression") for the full method comparison and typical usage — `SpiceEstimator.compress_sindy_equations()` only fits/prints the reparameterization; it does not select hyperparameters or evaluate held-out predictive cost (use `weinhardt2026.analysis.analysis_coefficient_compression` for that).
 
 ---
 

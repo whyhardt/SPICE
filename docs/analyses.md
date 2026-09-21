@@ -3,7 +3,7 @@
 Two layers of downstream analysis sit on top of a fitted `SpiceEstimator`:
 
 1. **Generative benchmarking** (`weinhardt2026/utils/task.py`) — simulate new behavior by running the fitted model through the task environment, for comparison against real data.
-2. **Cross-study analysis pipelines** (`weinhardt2026/analysis/`) — model evaluation, morphing, coefficient-level statistics, clustering, compression. These operate on a fitted `SpiceEstimator` (and optionally its generated behavior) and are shared across all studies in `weinhardt2026/studies/`.
+2. **Cross-study analysis pipelines** (`weinhardt2026/analysis/`) — model evaluation, morphing, coefficient-level statistics, clustering. These operate on a fitted `SpiceEstimator` (and optionally its generated behavior) and are shared across all studies in `weinhardt2026/studies/`.
 
 See [training.md](training.md) for the model/training internals these analyses consume, and [studies.md](studies.md) for how individual studies wire them together.
 
@@ -216,60 +216,80 @@ analysis_coefficients_individuals(
 ```
 
 - **Discrete** (`run_discrete`): logistic regression of term *presence* on group membership (e.g. patient vs. control), reported as odds ratios with forest plots (`_plot_forest`, `_plot_odds_ratios`) and per-group presence rates (`_plot_presence_rates`).
-- **Continuous** (`run_continuous`): regresses coefficient *magnitude* on a continuous criterion, with beta-coefficient bar plots and fitted logistic curves; `jonckheere_terpstra` tests for monotonic trend across ordered groups.
+- **Continuous** (`run_continuous`): logistic regression of term *presence* on the standardized criterion, adjusted for log data volume, with profile-likelihood CIs, forest plots and fitted logistic curves; `jonckheere_terpstra` tests for monotonic trend across ordered groups.
 - **Result**: statistical evidence for *which mechanisms* (equation terms) differ between groups or scale with a trait — the individual-level counterpart to the morphing analysis above.
 
 ### Coefficient Clustering — `analysis_coefficient_dendrogram.py`
 
-Groups the candidate terms *within each submodule* by how their per-participant coefficients covary across the population, drawing one dendrogram per module. Terms that move together (or in exact opposition, e.g. `c_reward = -c_value` = a learning rate) form a **tie** that can be read as a single cognitive mechanism rather than as free parameters.
+Groups the candidate terms *within each submodule* and draws one dendrogram per module, so a fitted model can be read as a handful of co-occurring groups rather than as dozens of separate terms.
 
 ```python
 analysis_coefficient_dendrogram(
     output_dir, spice_model=None, model_path=None, spice_class=None, spice_config=None,
     mode="coefficients",          # or "presence"
-    metric="abs",                 # 1-|r| (sign-flipped ties join early) or "signed" (1-r)
+    metric="abs",                 # coefficients mode: 1-|r| or "signed" (1-r)
     linkage_method="average", distance_threshold=0.5,
     min_active_fraction=0.05, min_overlap=30, pairwise_complete=True,
+    n_permutations=0, grouping_alpha=0.05, permutation_seed=0,
+    split_signs=True,             # presence mode: split every term by sign
     n_bootstrap=0, bootstrap_seed=0, prefix=None,
 )
 ```
 
-Two axes, deliberately kept separate:
+Two modes, one per axis:
 
-- **parametric** (`mode="coefficients"`) — given both terms are present, are their magnitudes locked? This is the axis that counts as model reduction.
-- **structural** (`mode="presence"`) — do the terms switch on and off together across participants (Jaccard distance on the presence masks)? An individual difference in equation *form*.
+- **structural** (`mode="presence"`) — do the terms switch on and off together across participants? Distance is **1 − phi**, where phi is the correlation between two terms' 0/1 presence columns. Phi measures co-occurrence *beyond what the terms' frequencies imply* and counts shared absence as much as shared presence. (Jaccard is deliberately not used: two terms that are each present in most participants overlap heavily even when entirely independent, so Jaccard merges common terms rather than co-occurring ones.) Terms that exclude each other have phi < 0 and are pushed apart. This is the mode the beta analysis builds on.
 
-A pruned term is stored as an exact zero, so correlating full columns mixes the two axes: two terms absent in the *same* participants correlate strongly without their magnitudes being related. `pairwise_complete=True` (the default) therefore correlates each pair **only over participants in which both terms are present**. Pairs with fewer than `min_overlap` such participants cannot be judged and are set to `r = 0`; the count of untestable pairs is printed per module and is worth reading alongside the tree. `--full-columns` restores the old, mixed behaviour.
+  **Signs are part of the structure.** With `split_signs=True` (default), every term is first replaced by two pseudo-terms, `term (+)` and `term (-)` (`split_by_sign`): a pseudo-term is present in a participant who has the term *with that sign*. A term that points one way in some participants and the other way in others describes two different mechanisms — e.g. a choice bias that makes a participant repeat vs one that makes them switch — so a group like `{1 (-), choice[t-3] (+)}` says which terms switch on together *and in which direction*. The two signs of one term are never present together, so their phi is negative and they never group. A sign nobody carries is dropped; a rare one (below `min_active_fraction`) falls to the activity filter. The trade-off: splitting reveals effects that cancel out when both signs are pooled, but costs power for terms whose direction does not matter to the question, and makes rare terms rarer.
+- **parametric** (`mode="coefficients"`) — given both terms are present, do their magnitudes move together? A pruned term is stored as an exact zero, so correlating full columns would mix this with the structural question. `pairwise_complete=True` (default) correlates each pair **only over participants in which both terms are present**; pairs with fewer than `min_overlap` such participants are set to `r = 0` and counted as untestable.
 
-With `n_bootstrap > 0`, participants are resampled with replacement and reclustered, giving per-cluster **Hennig clusterwise Jaccard** (mean best-match overlap across draws; ≥0.75 conventionally "stable") plus the weakest member pair's co-assignment probability, and a term-by-term co-assignment heatmap. These are *reproducibility* measures, not p-values — a cluster driven by estimation-noise correlation resamples just as stably as a real one.
+**Significance-based grouping** (`n_permutations > 0`). Instead of a fixed `distance_threshold`, every merge gets a permutation p-value (`merge_significance`):
 
-- **Outputs**: `dendrogram_*.png` (one panel per module), `dendrogram_heatmaps_*.png` (similarity, in leaf order), `dendrogram_clusters_*.csv`, and with bootstrapping `dendrogram_stability_*.csv` + `dendrogram_coassignment_*.png`.
+1. Shuffle each term's column across participants independently. This keeps how common every term is but destroys any link between terms.
+2. Rebuild the tree from the shuffled data and record its tightest merge — the strongest chance pair anywhere in the module.
+3. Repeat `n_permutations` times (10,000 resolves p-values down to 1e-4 in ~13 s per model).
 
-### Coefficient Beta Effects — `analysis_coefficient_betas.py`
+A real merge's p-value is the share of shuffled trees whose tightest merge was at least as tight, `p = (1 + #{null ≤ h}) / (N + 1)`. Because every merge is compared against the strongest chance pair in the whole module, this controls the **family-wise error rate per module** — no further correction is needed within a module; it is conservative for looser merges higher up the tree. Merge heights only increase up the tree, so "p < α" is exactly "height below a critical distance": the cut for α is the k-th smallest null tightest merge, `k = ⌈α(N+1) − 1⌉` (the 500th / 100th / 10th of 10,000 for α = .05 / .01 / .001). The **groups are the significant merges**: the tree is cut just below the `grouping_alpha` critical distance. Cuts differ per module, since more terms (more pairs for luck to work with) and rarer terms both produce tighter chance merges.
 
-Standardized effect of each SINDy coefficient on a per-participant behavioral criterion.
+In the figure, each merge — the bracket joining its two children — is coloured by significance tier (dark = p < .001, mid = p < .01, light = p < .05, grey = n.s.), and the three critical distances are drawn as dashed lines in the matching tier colours. Tiers are defined once (`STAR_TIERS`) and shared by stars, colours and cut lines.
+
+Significant co-occurrence means the terms switch on together *more than chance* — not that participants usually have all of them. Read the per-merge **all** (share with every term present) next to **any** (share with at least one): a large gap marks a loose group.
+
+With `n_bootstrap > 0`, participants are resampled with replacement and reclustered at the module's cut, giving per-cluster **Hennig clusterwise Jaccard** (mean best-match overlap of cluster memberships across draws; ≥0.75 conventionally "stable") plus the weakest member pair's co-assignment probability. These are *reproducibility* measures, not p-values.
+
+- **Outputs**: `dendrogram_*.png` (one panel per module), `dendrogram_heatmaps_*.png` (similarity, in leaf order), `dendrogram_clusters_*.csv` (term → group, with group all/any activity), with permutations `dendrogram_merges_*.csv` (one row per merge — every grouping level — with distance, p, stars, all, any), and with bootstrapping `dendrogram_stability_*.csv` + `dendrogram_coassignment_*.png`.
+
+### Structural Beta Effects — `analysis_coefficient_betas.py`
+
+Does the **presence** of a term — or of a group of terms that switch on together — relate to a per-participant behavioral metric? SPICE's claim is about structural individual differences, so this tests presence only, never coefficient magnitude.
 
 ```python
 analysis_coefficient_betas(
     data_path, output_dir, spice_model=None, model_path=None, ...,
-    criterion_col="mean_reward", participant_col="participant", criterion_aggregate="mean",
-    alpha=0.05, adjust_for_volume=True, include_singletons=True,
-    distance_threshold=0.5, min_active_fraction=0.05, prefix=None,
+    criterion_col="reward",
+    criterion_type="continuous",  # or "discrete" (e.g. a diagnosis column)
+    reference=None,               # discrete: compare every group against this one
+    comparisons=None,             # discrete: explicit [(group, reference), ...] pairs
+    participant_col="participant", criterion_aggregate="mean",
+    min_active_fraction=0.05, n_permutations=10000, grouping_alpha=0.05,
+    split_signs=True, invariant_bounds=(0.05, 0.95), alpha=0.05, prefix=None,
 )
 ```
 
-Two Benjamini-Hochberg-corrected families, each corrected across all modules:
+1. **Groups** come from the presence dendrogram with significance-based grouping and sign splitting (above). A group counts as present in a participant only when *all* of its terms are, with their signs. The grouping never looks at the criterion, so it is computed once on all participants and shared by every contrast.
+2. **Every node inside every group** — the group, its subgroups, down to its single terms — plus every ungrouped term is tested: logistic regression of presence on the criterion. Nodes present in fewer than 5% or more than 95% of the contrast's participants carry no structural variation and are marked invariant instead of tested. Fits that separate perfectly, fail to converge, or — for a group comparison — have a group in which nobody (or everybody) carries the node are marked not estimable: the odds ratio is infinite there, and statsmodels only flags *complete* separation, so the 2x2 cells are checked directly.
+3. **Benjamini-Hochberg** runs once over all tested nodes. The family is fixed up front: counting only the nodes the rule below visits would make the family shrink exactly when a group looks significant, so groups that look good would face a milder correction.
+4. **Break-up rule** (`select_reported`): each branch starts at its largest significant group. If that group's effect is significant it is reported and its subgroups are not; if it is n.s., invariant or not estimable, it is broken into its two children, down to single terms. The reported nodes partition the terms. The rule only decides what is *reported*, never how strict the correction is.
 
-1. **single coefficients** — one univariate model per candidate term. This is a pre-specified regressor set and is the family to report.
-2. **clusters** — the same against the cluster scores from the dendrogram above, where a cluster score is the sign-aligned mean of its z-scored members. With `include_singletons=True` (default) terms that joined no cluster enter as themselves, so the regressors partition the kept terms.
+**Continuous vs discrete criteria.** A continuous criterion (e.g. reward rate) is one contrast over all participants, predictor = z(criterion); beta is the log-odds of presence per SD. A discrete criterion (e.g. diagnosis) is compared pair by pair — every group against `reference`, or the pairs in `comparisons` — each contrast over the participants of its two groups only, predictor = 1 for the group and 0 for the reference; beta is the log odds ratio of presence in the group vs the reference. **Each contrast is its own analysis**, with its own FDR family and its own break-up, so a group can hold in one contrast and break up in another; as in `analysis_coefficients_individuals`, there is no correction across contrasts. A discrete criterion is read as each participant's first value, whatever `criterion_aggregate` says.
 
-Every row also carries `beta_adjusted` / `p_adjusted`, the same effect with `log_n_trials` partialled out. **Check these**: a criterion like "reward per block" can be dominated by how many trials a participant played rather than by performance, in which case the adjusted column collapses and a per-trial reward rate (`criterion_col="reward"`, `criterion_aggregate="mean"`) is the better criterion.
+Larger groups tend to break up for two reasons: members whose relation to the metric differs cancel out once all of them are required, and requiring every term shrinks the group toward its rarest member.
 
-A joint model over all cluster scores is also written (`betas_clusters_joint_*.csv`), giving partial betas — each regressor's contribution beyond the others. It is only interpretable with enough participants per regressor and moderate collinearity; with singletons included the regressor count rises and partial estimates can flip sign relative to their univariate values, which is suppression, not mechanism.
+**Metric choice.** Term survival depends on data volume through pruning, so a criterion that scales with how much a participant played (e.g. rewards per *block*) produces spurious presence effects. The analysis does not adjust for trial count; it checks on every run — Pearson correlation with log trial count for a continuous criterion, Kruskal-Wallis of log trial count across groups for a discrete one — and warns when they are related. Use a metric that does not scale with trial count, such as reward rate (`criterion_col="reward"`, `criterion_aggregate="mean"`).
 
-Two caveats on the cluster family: the clusters are derived from the same participants the regression then uses, so their q-values are optimistic in a way the FDR correction does not capture (a split-half — discover on one half, test on the other — fixes this); and every model here is cross-sectional across participants, so a coefficient predicting performance does not establish that changing it would change performance. On the studies checked so far the cluster betas have not exceeded their own best member's effect, so the single-term family alone is usually sufficient for inference, with the clustering serving interpretation.
+Every model here is cross-sectional across participants: a term whose presence predicts performance does not establish that adding it would change performance.
 
-- **Outputs**: `betas_terms_*.csv`, `betas_clusters_*.csv`, `betas_clusters_joint_*.csv`, and forest plots (filled markers = significant after FDR).
+- **Outputs**: per contrast, `betas_structural_<prefix>_<criterion>.{csv,png}` for a continuous criterion and `betas_structural_<prefix>_<criterion>_<group>_vs_<reference>.{csv,png}` for each discrete contrast, so separate runs never overwrite each other. The CSV lists every node (contrast, group, parent, children, depth, all/any, beta, OR, p, q, status, `reported`, `broken_up`); the forest plot shows the reported, tested leaves (filled markers = significant after FDR).
 
 ### Deeper Look at One Checkpoint — `analysis_bestbic.py`
 
@@ -293,7 +313,7 @@ analysis_metric_betas(estimator, output_dir, results_dir, data_path,
 
 ### Archived — coefficient compression and mechanism-level differences
 
-`analysis_coefficient_compression.py`, `analysis_mechanism_individuals.py`, `analysis_concepts.py` and `analysis_coefficient_ties.py` have moved to `weinhardt2026/analysis/archive/`, together with the core modules they wrapped (`sindy_compression.py`, `sindy_concepts.py`, `sindy_ties.py`, now under `archive/core/`). They compressed per-participant coefficients into a small number of "mechanisms" via per-module NMF and re-tested group differences at the mechanism level. `analysis_coefficient_dendrogram.py` above covers the same question — which coefficients belong together — without the factorization step.
+`analysis_coefficient_compression.py`, `analysis_mechanism_individuals.py`, `analysis_concepts.py` and `analysis_coefficient_ties.py` have moved to `weinhardt2026/analysis/archive/`, together with the core modules they wrapped (`sindy_compression.py`, `sindy_concepts.py`, `sindy_ties.py`, now under `archive/core/`). They compressed per-participant coefficients into a small number of "mechanisms" via per-module NMF and re-tested group differences at the mechanism level. `analysis_coefficient_dendrogram.py` above covers the same question — which coefficients belong together — without a factorization step, and is used for interpretation only.
 
 ### Behavioral Clustering — `analysis_behavioral_clustering.py`
 
@@ -343,7 +363,7 @@ Evaluates a batch of checkpoints from a pruning-threshold × pruning-test hyperp
 1. Fit `SpiceEstimator` on training data, evaluate on held-out data with `analysis_model_evaluation.py`.
 2. Run `analysis_sindy_onestepahead.py` if SINDy test performance lags the RNN, to see whether it's a per-step or accumulation problem.
 3. Inspect population-level equation structure with `analysis_coefficients_distributions.py`.
-4. Relate coefficients to external criteria: `analysis_coefficients_individuals.py` (discrete groups or continuous traits), `analysis_coefficient_betas.py` for standardized effects of each term on a behavioral criterion, and/or `analysis_morphing.py` for a continuous structural trajectory.
+4. Relate coefficients to external criteria: `analysis_coefficients_individuals.py` (discrete groups or continuous traits), `analysis_coefficient_betas.py` for structural effects of co-occurring groups and single terms on a behavioral metric, and/or `analysis_morphing.py` for a continuous structural trajectory.
 5. Generate synthetic behavior (`generate_behavior`) and validate it against real data with `analysis_generative_comparison.py` and `compute_reward_history_kernel`.
-6. Read the fitted equations as a small number of mechanisms with `analysis_coefficient_dendrogram.py` (one dendrogram per module, bootstrap stability), or check behavioral-cluster/equation alignment with `analysis_behavioral_clustering.py`.
+6. Read the fitted equations as a small number of co-occurring groups with `analysis_coefficient_dendrogram.py` (`mode="presence"`, `n_permutations=10000`), or check behavioral-cluster/equation alignment with `analysis_behavioral_clustering.py`.
 7. For the selected checkpoint, run the four `analysis_bestbic.py` analyses (embedding extremes, fingerprint, group and metric betas) to describe how the equations vary across participants.
