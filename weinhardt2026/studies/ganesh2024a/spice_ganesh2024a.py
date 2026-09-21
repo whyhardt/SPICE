@@ -20,6 +20,10 @@ CONFIG = SpiceConfig(
 )
 
 
+# Binary indicator control signals (x^2 = x): reward is 0/1, choice is one-hot.
+BINARY_SIGNALS = {'reward[t]', 'choice[t]'}
+
+
 def prepare_dataset(dataset: SpiceDataset) -> SpiceDataset:
     """Append the next trial's contrast difference as an additional input.
 
@@ -50,7 +54,23 @@ class SpiceModel(BaseModel):
         
         # perception: signed contr_diff → sigmoid
         self.setup_module(key_module='perception_certainty', input_size=1, include_state=False)
+
+        self.preprocess_coefficients()
         
+    def preprocess_coefficients(self):
+        """Zero out SINDy terms that are structurally redundant for binary indicators.
+
+        Binary indicators satisfy x^2 = x, so the squared term duplicates the linear one.
+        """
+        candidate_terms = self.get_candidate_terms()
+        for module in self.get_modules():
+            binary_signals = [s for s in self.spice_config.library_setup[module] if s in BINARY_SIGNALS]
+            for index_term, term in enumerate(candidate_terms[module]):
+                factors = term.split('*')
+                if any(signal + '^2' in factors for signal in binary_signals):
+                    self.sindy_coefficients_presence[module][..., index_term] = 0
+                    self.sindy_coefficients_prior_mask[module][..., index_term] = 0
+
     def forward(self, inputs, state = None):
         spice_signals = self.init_forward_pass(inputs, state)
         

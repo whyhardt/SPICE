@@ -50,6 +50,10 @@ CONFIG = SpiceConfig(
 )
 
 
+# Binary indicator control signals (x^2 = x): coin caught, helicopter visible.
+BINARY_SIGNALS = {'catch', 'v_t'}
+
+
 def mse_loss(prediction: torch.Tensor, target: torch.Tensor, **kwargs) -> torch.Tensor:
     """MSE loss for continuous position prediction.
 
@@ -92,6 +96,22 @@ class SpiceModel(BaseModel):
         # setup customized modules
         # anchor_update: 1 control signal (anchor_shift); no state in library (always reset to 0)
         self.setup_module(key_module='anchor_update', include_state=False)
+
+        self.preprocess_coefficients()
+
+    def preprocess_coefficients(self):
+        """Zero out SINDy terms that are structurally redundant for binary indicators.
+
+        Binary indicators satisfy x^2 = x, so the squared term duplicates the linear one.
+        """
+        candidate_terms = self.get_candidate_terms()
+        for module in self.get_modules():
+            binary_signals = [s for s in self.spice_config.library_setup[module] if s in BINARY_SIGNALS]
+            for index_term, term in enumerate(candidate_terms[module]):
+                factors = term.split('*')
+                if any(signal + '^2' in factors for signal in binary_signals):
+                    self.sindy_coefficients_presence[module][..., index_term] = 0
+                    self.sindy_coefficients_prior_mask[module][..., index_term] = 0
 
     def forward(self, inputs, prev_state=None):
 

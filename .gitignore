@@ -66,3 +66,4 @@ weinhardt2026/data/weber2024_raw
 
 # Exceptions
 !figures/*.png
+slurm_jobs/*

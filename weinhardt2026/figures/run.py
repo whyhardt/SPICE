@@ -15,6 +15,11 @@ import torch
 from spice import SpiceEstimator, csv_to_dataset
 from spice.precoded import workingmemory
 from weinhardt2026.studies.eckstein2026 import spice_eckstein2026
+from weinhardt2026.studies.braun2018 import spice_braun2018
+from weinhardt2026.studies.bruckner2025 import spice_bruckner2025
+from weinhardt2026.studies.bustamante2023 import spice_bustamante2023
+from weinhardt2026.studies.ganesh2024a import spice_ganesh2024a
+from weinhardt2026.studies.kolff2025 import spice_kolff2025_groom
 from weinhardt2026.figures.figure2 import plot_figure2
 from weinhardt2026.figures.figure3 import plot_figure3
 from weinhardt2026.figures.figure4 import plot_figure4
@@ -39,7 +44,7 @@ STUDY_REGISTRY = {
         'beta_csv': 'discrete_odds_ratio_results.csv',
         'n_clusters': 3,
         'n_trials_show': 100,
-        'stability_pattern': 'weinhardt2026/studies/dezfouli2019/params_array/spice_dezfouli2019_stability_[0-9].pkl',
+        'stability_pattern': 'weinhardt2026/studies/dezfouli2019/params/params/spice_dezfouli2019_stability_[0-9].pkl',
         'hpscan_csv': 'weinhardt2026/studies/dezfouli2019/results/hpscan_results.csv',
         'model_kwargs': {'reward_binary': True},
     },
@@ -56,9 +61,45 @@ STUDY_REGISTRY = {
         'beta_csv': 'continuous_effect_results_all.csv',
         'n_clusters': 3,
         'n_trials_show': 100,
-        # 'stability_pattern': 'weinhardt2026/studies/eckstein2026/params_array/spice_dezfouli2019_stability_[0-9].pkl',
-        # 'hpscan_csv': 'weinhardt2026/studies/dezfouli2019/results/hpscan_results.csv',
-        # 'model_kwargs': {'reward_binary': True},
+        'stability_pattern': 'weinhardt2026/studies/eckstein2026/params/params/spice_eckstein2026_stability_[0-9].pkl',
+    },
+
+    # ── Stability-only entries (figure 5) ─────────────────────────────
+    # Checkpoints from slurm_jobs/spice_stability_studies.sh, downloaded into params/params/.
+    'braun2018': {
+        'spice_class': spice_braun2018.SpiceModel,
+        'spice_config': spice_braun2018.CONFIG,
+        'n_actions': 2,
+        'figures_dir': 'weinhardt2026/studies/braun2018/figures',
+        'stability_pattern': 'weinhardt2026/studies/braun2018/params/params/spice_braun2018_stability_[0-9].pkl',
+    },
+    'bruckner2025': {
+        'spice_class': spice_bruckner2025.SpiceModel,
+        'spice_config': spice_bruckner2025.CONFIG,
+        'n_actions': 1,
+        'figures_dir': 'weinhardt2026/studies/bruckner2025/figures',
+        'stability_pattern': 'weinhardt2026/studies/bruckner2025/params/params/spice_bruckner2025_stability_[0-9].pkl',
+    },
+    'bustamante2023': {
+        'spice_class': spice_bustamante2023.SpiceModel,
+        'spice_config': spice_bustamante2023.CONFIG,
+        'n_actions': 2,
+        'figures_dir': 'weinhardt2026/studies/bustamante2023/figures',
+        'stability_pattern': 'weinhardt2026/studies/bustamante2023/params/params/spice_bustamante2023_stability_[0-9].pkl',
+    },
+    'ganesh2024a': {
+        'spice_class': spice_ganesh2024a.SpiceModel,
+        'spice_config': spice_ganesh2024a.CONFIG,
+        'n_actions': 2,
+        'figures_dir': 'weinhardt2026/studies/ganesh2024a/figures',
+        'stability_pattern': 'weinhardt2026/studies/ganesh2024a/params/params/spice_ganesh2024a_stability_[0-9].pkl',
+    },
+    'kolff2025_groom': {
+        'spice_class': spice_kolff2025_groom.SpiceModel,
+        'spice_config': spice_kolff2025_groom.CONFIG,
+        'n_actions': 3,
+        'figures_dir': 'weinhardt2026/studies/kolff2025/figures',
+        'stability_pattern': 'weinhardt2026/studies/kolff2025/params/params/spice_kolff2025_groom_stability_[0-9].pkl',
     },
 }
 
@@ -186,7 +227,7 @@ def main():
     if args.params is not None:
         study_cfg['params'] = args.params
     print(f"Generating figures for: {args.study}")
-    print(f"Params: {study_cfg['params']}")
+    print(f"Params: {study_cfg.get('params', '<none>')}")
     print(f"Figures: {', '.join(args.figures)}")
     print(f"Output: {study_cfg['figures_dir']}/\n")
 

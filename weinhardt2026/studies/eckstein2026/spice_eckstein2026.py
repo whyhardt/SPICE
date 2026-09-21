@@ -57,6 +57,12 @@ CONFIG = SpiceConfig(
 )
 
 
+# Binary indicator control signals (x^2 = x) and mutually exclusive indicator groups
+# (x_i * x_j = 0; with 4 options no item is both adjacent and opposite to the choice).
+BINARY_SIGNALS = {'action[t]', 'action[t-1]', 'is_adjacent', 'is_opposite'}
+EXCLUSIVE_GROUPS = [{'is_adjacent', 'is_opposite'}]
+
+
 class SpiceModel(BaseModel):
     """
     v2: merged choice with spatial absorbed, split exploration, loss aversion.
@@ -81,6 +87,27 @@ class SpiceModel(BaseModel):
         self.setup_module(key_module='value_exploration_chosen', input_size=2, dropout=self.dropout)
         self.setup_module(key_module='value_exploration_not_chosen', input_size=2, dropout=self.dropout)
         self.setup_module(key_module='bias_attention', input_size=3, dropout=self.dropout)
+
+        self.preprocess_coefficients()
+
+    def preprocess_coefficients(self):
+        """Zero out SINDy terms that are structurally redundant for binary indicators.
+
+        Binary indicators satisfy x^2 = x, so the squared term duplicates the linear one.
+        Two indicators of the same mutually exclusive group satisfy x_i * x_j = 0.
+        """
+        candidate_terms = self.get_candidate_terms()
+        for module in self.get_modules():
+            control_signals = self.spice_config.library_setup[module]
+            binary_signals = [s for s in control_signals if s in BINARY_SIGNALS]
+            for index_term, term in enumerate(candidate_terms[module]):
+                factors = term.split('*')
+                redundant = any(signal + '^2' in factors for signal in binary_signals)
+                for group in EXCLUSIVE_GROUPS:
+                    redundant |= sum(signal in factors for signal in group if signal in control_signals) > 1
+                if redundant:
+                    self.sindy_coefficients_presence[module][..., index_term] = 0
+                    self.sindy_coefficients_prior_mask[module][..., index_term] = 0
 
     def forward(self, inputs, state=None):
         spice_signals = self.init_forward_pass(inputs, state)
