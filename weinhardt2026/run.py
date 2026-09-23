@@ -55,6 +55,7 @@ if __name__=='__main__':
     parser.add_argument('--train_ratio_time', type=float, default=None, help='Ratio of data used for training. Split along time dimension. Not combinable with test_blocks')
     parser.add_argument('--test_blocks', type=str, default=None, help='Comma-separated list of integeres which indicate test sessions. Not combinable with train_ratio_time')
 
+    parser.add_argument('--seed', type=int, default=None, help='Random seed for weight initialization and training. Default None: no seeding. Set it to compare model configurations on identical initialization.')
     parser.add_argument('--prototyping', action='store_true', help='Rapid prototyping: truncate the data to the first 100 trials and 50 participants.')
     parser.add_argument('--results', action='store_true', help='Shows the results using a fitted SPICE model. The results are value-dynamics-over-time plot, a parameter distribution histogram, and the corresponding symbolic SPICE model.')
     
@@ -98,6 +99,12 @@ if __name__=='__main__':
     
     if args.train_ratio_time and args.test_blocks:
         raise ValueError("kwargs train_ratio_time and test_blocks cannot be assigned at the same time.")
+
+    if args.seed is not None:
+        torch.manual_seed(args.seed)
+        torch.cuda.manual_seed_all(args.seed)
+        np.random.seed(args.seed)
+        print(f"Random seed: {args.seed}")
     
     print("\n"+"="*_get_terminal_width())
     print(f"Module: {args.module}")

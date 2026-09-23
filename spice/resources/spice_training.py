@@ -247,7 +247,7 @@ def _run_batch_training(
         loss_step = loss_fn(ys_pred, ys_step, **loss_fn_kwargs)
 
         if torch.is_grad_enabled():
-            # Add SINDy losses (decoupled gradients: sindy_loss_reg → RNN, sindy_loss_fit → SINDy coefficients)
+            # Add SINDy losses (sindy_loss_reg → RNN and SINDy coefficients)
             if sindy_weight > 0 and model.sindy_loss_reg != 0:
                 loss_step = loss_step + sindy_weight * model.sindy_loss_reg #+ sindy_weight_fit * model.sindy_loss_fit
 

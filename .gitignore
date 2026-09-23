@@ -65,5 +65,5 @@ weinhardt2026/data/weber2024_raw
 *.npz
 
 # Exceptions
-!figures/*.png
 slurm_jobs/*
+weinhardt2026/studies/*/figures/*

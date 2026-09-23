@@ -827,8 +827,8 @@ class BaseModel(nn.Module):
         Compute differentiable SINDy reconstruction loss for one module.
         Direct comparison per ensemble member (no cross-ensemble averaging).
 
-        Returns two decoupled loss terms:
-        - sindy_loss_reg: gradients flow only to RNN parameters (h_next_sindy detached).
+        Returns two loss terms:
+        - sindy_loss_reg: gradients flow to both RNN parameters and SINDy coefficients.
           Scaled by sindy_weight in the training loop to control RNN regularization strength.
         - sindy_loss_fit: gradients flow only to SINDy coefficients (h_next_rnn detached).
           Independent of sindy_weight so coefficient fitting is decoupled from RNN regularization.
@@ -860,7 +860,7 @@ class BaseModel(nn.Module):
             polynomial_degree=polynomial_degree,
         )  # [W, E, B, I]
 
-        # Decoupled losses: detach opposite side so gradients flow to one param set only.
+        # diff_reg keeps full gradients (RNN + SINDy); diff_fit detaches the RNN side.
         # Both h_next_rnn and h_next_sindy are h_current + dt*(...), so their raw
         # difference carries a factor of dt that gets squared away to dt^2 -- for
         # dt << 1 this silently attenuates sindy_weight by ~dt^2, well below any
