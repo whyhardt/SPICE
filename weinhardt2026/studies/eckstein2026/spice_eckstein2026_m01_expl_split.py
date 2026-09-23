@@ -1,4 +1,4 @@
-"""eckstein2026 variant m01_expl_split: exploration on relu(dvalue), relu(-dvalue), as in the original.
+"""eckstein2026 variant m01_expl_split: Exploration on the split value change; reward modules without the mean input.
 
 See model_variants.md in this directory for the full list of variants.
 """
@@ -33,9 +33,10 @@ CONFIG = SpiceConfig(
 )
 
 
-# Binary indicator control signals (x^2 = x) and mutually exclusive indicator groups (x_i * x_j = 0).
+# Binary indicator control signals (x^2 = x) and mutually exclusive signal groups (x_i * x_j = 0;
+# relu(dvalue) * relu(-dvalue) = 0 for the sign-split value change).
 BINARY_SIGNALS = {'action[t]', 'action[t-1]', 'is_adjacent', 'is_opposite'}
-EXCLUSIVE_GROUPS = [{'is_adjacent', 'is_opposite'}]
+EXCLUSIVE_GROUPS = [{'is_adjacent', 'is_opposite'}, {'dvalue_pos', 'dvalue_neg'}]
 # Modules without state x input terms: these made the exploration equations self-amplifying.
 NO_STATE_PRODUCTS = {'value_exploration_chosen', 'value_exploration_not_chosen'}
 

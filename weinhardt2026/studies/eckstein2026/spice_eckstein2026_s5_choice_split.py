@@ -1,4 +1,4 @@
-"""eckstein2026 variant s5_choice_split: Final model with value_choice split into chosen / not-chosen, both with action[t-1].
+"""eckstein2026 variant s5_choice_split: Ablation winner with value_choice split into chosen / not-chosen, both with action[t-1].
 
 See model_variants.md in this directory for the full list of variants.
 """
@@ -31,15 +31,16 @@ CONFIG = SpiceConfig(
 )
 
 
-# Binary indicator control signals (x^2 = x) and mutually exclusive indicator groups (x_i * x_j = 0).
+# Binary indicator control signals (x^2 = x) and mutually exclusive signal groups (x_i * x_j = 0;
+# relu(dvalue) * relu(-dvalue) = 0 for the sign-split value change).
 BINARY_SIGNALS = {'action[t]', 'action[t-1]', 'is_adjacent', 'is_opposite'}
-EXCLUSIVE_GROUPS = [{'is_adjacent', 'is_opposite'}]
+EXCLUSIVE_GROUPS = [{'is_adjacent', 'is_opposite'}, {'dvalue_pos', 'dvalue_neg'}]
 # Modules without state x input terms: these made the exploration equations self-amplifying.
 NO_STATE_PRODUCTS = {'value_choice_not_chosen', 'value_exploration_chosen'}
 
 
 class SpiceModel(BaseModel):
-    """Final model with value_choice split into chosen / not-chosen, both with action[t-1]."""
+    """Ablation winner with value_choice split into chosen / not-chosen, both with action[t-1]."""
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)

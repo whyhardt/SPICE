@@ -1,4 +1,4 @@
-"""eckstein2026 variant s2_mean: Step 2: step-1 winner with reward inputs mean.
+"""eckstein2026 variant s2_mean: Ablation winner: reward modules with the mean input, split dvalue exploration on the chosen item only.
 
 See model_variants.md in this directory for the full list of variants.
 """
@@ -30,15 +30,16 @@ CONFIG = SpiceConfig(
 )
 
 
-# Binary indicator control signals (x^2 = x) and mutually exclusive indicator groups (x_i * x_j = 0).
+# Binary indicator control signals (x^2 = x) and mutually exclusive signal groups (x_i * x_j = 0;
+# relu(dvalue) * relu(-dvalue) = 0 for the sign-split value change).
 BINARY_SIGNALS = {'action[t]', 'action[t-1]', 'is_adjacent', 'is_opposite'}
-EXCLUSIVE_GROUPS = [{'is_adjacent', 'is_opposite'}]
+EXCLUSIVE_GROUPS = [{'is_adjacent', 'is_opposite'}, {'dvalue_pos', 'dvalue_neg'}]
 # Modules without state x input terms: these made the exploration equations self-amplifying.
 NO_STATE_PRODUCTS = {'value_exploration_chosen'}
 
 
 class SpiceModel(BaseModel):
-    """Step 2: step-1 winner with reward inputs mean."""
+    """Ablation winner: reward modules with the mean input, split dvalue exploration on the chosen item only."""
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
