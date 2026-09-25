@@ -294,7 +294,8 @@ def _vectorize_state(
         verbose: Print auto-batch info
 
     Returns:
-        Tuple of (input_state_buffer, target_state_buffer, xs_flat, ys_flat)
+        Tuple of (input_state_buffer, target_state_buffer, xs_flat, ys_flat, valid_mask),
+        where valid_mask (E, n_samples) marks each member's non-padded samples.
     """
     _E, B, T, W, F = xs_train.shape
     n_features_y = ys_train.shape[-1]
@@ -316,7 +317,7 @@ def _vectorize_state(
 
     # Apply learnable per-participant initial values
     if hasattr(model, 'learnable_initial_values') and model.learnable_initial_values:
-        participant_ids = xs_train[0, :, 0, 0, -1].long().to(model.device)
+        participant_ids = xs_train[:, :, 0, 0, -1].long().to(model.device)  # (E, B)
         E_idx = torch.arange(E, device=model.device).unsqueeze(1)
         for key, param in model.learnable_initial_values.items():
             init_val = param[E_idx, participant_ids]  # [E, B]
@@ -356,20 +357,25 @@ def _vectorize_state(
     # Flatten to (E, flat_total, 1, 1, F)
     flat_total = W * T * B
     xs_flat = xs_train.permute(0, 2, 1, 3, 4).reshape(E, flat_total, 1, 1, F)
-    ys_flat = ys_train.permute(0, 2, 1, 3, 4).reshape(E, flat_total, 1, 1, n_features_y)[0]
+    ys_flat = ys_train.permute(0, 2, 1, 3, 4).reshape(E, flat_total, 1, 1, n_features_y)
 
     # Reshape state buffers: (W, E, T*B, items) -> (1, E, flat_total, items)
     for s in state_keys:
         state_buffer_current[s] = state_buffer_current[s].permute(1, 2, 0, 3).reshape(1, E, flat_total, model.n_items)
         state_buffer_next[s] = state_buffer_next[s].permute(1, 2, 0, 3).reshape(1, E, flat_total, model.n_items)
 
-    # Remove NaN-padded samples
-    nan_mask = ~torch.isnan(xs_flat[0, :, 0, 0, :model.n_actions].sum(dim=(-1)))
-    xs_flat = xs_flat[:, nan_mask]
-    state_buffer_current = {s: state_buffer_current[s][:, :, nan_mask] for s in state_buffer_current}
-    state_buffer_next = {s: state_buffer_next[s][:, :, nan_mask] for s in state_buffer_next}
+    # Per-member validity (bootstrapped members pad different samples): (E, flat_total).
+    # Drop samples padded in every member; the rest keep valid_mask so padded
+    # samples of individual members can be excluded downstream.
+    valid_mask = ~torch.isnan(xs_flat[:, :, 0, 0, :model.n_actions].sum(dim=(-1)))
+    keep = valid_mask.any(dim=0)
+    valid_mask = valid_mask[:, keep]
+    xs_flat = xs_flat[:, keep]
+    ys_flat = ys_flat[:, keep]
+    state_buffer_current = {s: state_buffer_current[s][:, :, keep] for s in state_buffer_current}
+    state_buffer_next = {s: state_buffer_next[s][:, :, keep] for s in state_buffer_next}
 
-    return state_buffer_current, state_buffer_next, xs_flat, ys_flat
+    return state_buffer_current, state_buffer_next, xs_flat, ys_flat, valid_mask
 
 
 def _ensemble_pruning(
@@ -481,7 +487,7 @@ def _ridge_solve_sindy(
         model.sindy_alpha = alpha
 
     model.eval(use_sindy=False)
-    input_state_buffer, _, xs_flat, _ = _vectorize_state(model, xs_train, ys_train)
+    input_state_buffer, _, xs_flat, _, valid_mask = _vectorize_state(model, xs_train, ys_train)
 
     flat_total = xs_flat.shape[1]
     chunk_size = flat_total
@@ -498,9 +504,7 @@ def _ridge_solve_sindy(
 
     with torch.no_grad():
         model.ridge_mode = True
-        model.train(use_sindy=True)
-        for rnn_module in model.submodules_rnn.values():
-            rnn_module.eval()
+        model.eval(use_sindy=True)  # eval: no dropout in embeddings/RNN during the solve
 
         while True:
             try:
@@ -508,9 +512,11 @@ def _ridge_solve_sindy(
                 for start in range(0, flat_total, chunk_size):
                     end = min(start + chunk_size, flat_total)
                     chunk_state = {s: t[:, :, start:end].clone() for s, t in input_state_buffer.items()}
+                    model.ridge_sample_mask = valid_mask[:, start:end].to(model.device)
                     model(xs_flat[:, start:end].to(model.device), chunk_state)
                 break
             except (torch.cuda.OutOfMemoryError, RuntimeError) as e:
+                model.ridge_sample_mask = None
                 if _check_cuda_oom(e):
                     raise
                 if chunk_size <= 1:
@@ -519,6 +525,7 @@ def _ridge_solve_sindy(
                 torch.cuda.empty_cache()
                 chunk_size = max(1, chunk_size // 2)
 
+        model.ridge_sample_mask = None
         success = all(
             model.sindy_ridge_finalize(module_name)
             for module_name in model.submodules_rnn.keys()
@@ -562,7 +569,8 @@ def _vectorize_state_sequential(
         Tuple of (state_trajectories, nan_mask) where:
         - state_trajectories: Dict[state_key -> (W, E, B, T+1, I)] containing the
           full state trajectory including the initial state at t=0.
-        - nan_mask: (B, T) boolean mask where True = valid trial
+        - nan_mask: (E, B, T) boolean mask where True = valid trial (per member,
+          since bootstrapped members hold different sessions)
     """
     _E, B, T, W, F = xs_train.shape
     E = model.ensemble_size
@@ -588,7 +596,7 @@ def _vectorize_state_sequential(
 
     # Apply learnable per-participant initial values
     if hasattr(model, 'learnable_initial_values') and model.learnable_initial_values:
-        participant_ids = xs_train[0, :, 0, 0, -1].long().to(model.device)
+        participant_ids = xs_train[:, :, 0, 0, -1].long().to(model.device)  # (E, B)
         E_idx = torch.arange(E, device=model.device).unsqueeze(1)
         for key, param in model.learnable_initial_values.items():
             init_val = param[E_idx, participant_ids]  # [E, B]
@@ -612,8 +620,8 @@ def _vectorize_state_sequential(
 
     del session_states
 
-    # Build NaN mask: (B, T) — True where trial is valid
-    nan_mask = ~torch.isnan(xs_train[0, :, :, 0, :model.n_actions].sum(dim=-1))  # (B, T)
+    # Build NaN mask: (E, B, T) — True where trial is valid
+    nan_mask = ~torch.isnan(xs_train[:, :, :, 0, :model.n_actions].sum(dim=-1))  # (E, B, T)
 
     return state_trajectories, nan_mask
 
@@ -639,13 +647,13 @@ def _flatten_state_trajectories_onestep(
         xs_train: 5D tensor (E, B, T, W, F)
         state_trajectories: Dict[state_key -> (W, E, B, T+1, I)] from
             _vectorize_state_sequential
-        nan_mask: (B, T) boolean validity mask
+        nan_mask: (E, B, T) boolean validity mask
 
     Returns:
         Tuple of (xs_flat, state_trajectories_flat, nan_mask_flat, B_flat):
         - xs_flat: (E, B*T*W, 1, 1, F)
         - state_trajectories_flat: Dict[state_key -> (1, E, B*T*W, 2, I)]
-        - nan_mask_flat: (B*T*W, 1)
+        - nan_mask_flat: (E, B*T*W, 1)
         - B_flat: number of flattened pseudo-sessions
     """
     E, B, T, W, F = xs_train.shape
@@ -662,7 +670,7 @@ def _flatten_state_trajectories_onestep(
         h_next_flat = h_next.permute(1, 2, 3, 0, 4).reshape(E, B * T * W, I)
         state_trajectories_flat[s] = torch.stack((h_current_flat, h_next_flat), dim=2).unsqueeze(0)  # (1, E, B*T*W, 2, I)
 
-    nan_mask_flat = nan_mask.unsqueeze(-1).expand(-1, -1, W).reshape(B * T * W).unsqueeze(-1)  # (B*T*W, 1)
+    nan_mask_flat = nan_mask.unsqueeze(-1).expand(-1, -1, -1, W).reshape(E, B * T * W).unsqueeze(-1)  # (E, B*T*W, 1)
 
     return xs_flat, state_trajectories_flat, nan_mask_flat, B * T * W
 
@@ -692,7 +700,7 @@ def _run_shooting_epoch_vectorized(
         optimizer: SINDy coefficient optimizer
         xs_train: 5D training data (E, B, T, W, F)
         state_trajectories: Dict[state_key -> (W, E, B, T+1, I)]
-        nan_mask: (B, T) boolean validity mask
+        nan_mask: (E, B, T) boolean validity mask
         window_starts: List of trial indices where shooting windows begin
         K: Shooting window size
         batch_sessions: Session indices for this batch (tensor)
@@ -701,7 +709,7 @@ def _run_shooting_epoch_vectorized(
     Returns:
         Mean loss over all valid steps
     """
-    T = nan_mask.shape[1]
+    T = nan_mask.shape[-1]
     B_batch = len(batch_sessions)
     n_windows = len(window_starts)
     B_eff = B_batch * n_windows
@@ -741,7 +749,7 @@ def _run_shooting_epoch_vectorized(
             break
         t_k_safe = torch.clamp(t_k, max=T - 1)       # safe index for gathering
 
-        valid = (nan_mask[session_idx, t_k_safe] & in_bounds).to(model.device)
+        valid = (nan_mask[:, session_idx, t_k_safe] & in_bounds).to(model.device)  # (E, B_eff)
         if not valid.any():
             continue
 
@@ -762,7 +770,7 @@ def _run_shooting_epoch_vectorized(
         for s_key in model.spice_config.states_in_logit:
             target = state_trajectories[s_key][:, :, session_idx, t_k_safe + 1].to(model.device)
             pred = next_state[s_key]
-            mask = valid.view(1, 1, -1, 1).expand_as(pred)
+            mask = valid.unsqueeze(0).unsqueeze(-1).expand_as(pred)  # (W, E, B_eff, I)
             diff = (pred - target) ** 2
             step_loss = step_loss + (diff * mask).sum() / mask.sum().clamp(min=1)
 
@@ -1614,11 +1622,13 @@ def fit_spice(
 
     epochs: int = 1,
     batch_size: int = None,
+    n_warmup_steps: int = 0,
+    bootstrap: bool = True,
     n_steps: int = None,
     convergence_threshold: float = 1e-7,
     loss_fn: callable = cross_entropy_loss,
     loss_fn_kwargs: dict = {},
-
+    
     sindy_weight: float = 0.,
     sindy_alpha: float = 0.,
     sindy_pruning_frequency: int = 1,
@@ -1632,7 +1642,6 @@ def fit_spice(
 
     verbose: bool = True,
     keep_log: bool = False,
-    n_warmup_steps: int = 0,
     path_save_checkpoints: str = None,
 ) -> Tuple[BaseModel, torch.optim.Optimizer, float]:
     """
@@ -1659,6 +1668,9 @@ def fit_spice(
         optimizer: PyTorch optimizer
         epochs: Total training epochs
         batch_size: Training batch size (None = auto-detect max via GPU probing, int = fixed)
+        bootstrap: Resample training sessions with replacement per ensemble member
+            (only when ensemble_size > 1). False = every member sees the full dataset,
+            so members differ only by initialization and dropout.
         n_steps: BPTT truncation length
         convergence_threshold: Early stopping threshold
         loss_fn: Loss function for behavioral prediction
@@ -1724,17 +1736,18 @@ def fit_spice(
         else:
             print("\tSINDy refit: [ ]")
         print(status_lines)
-
-    # Bootstrap training data once: 4D (B, T, W, F) -> 5D (E, B, T, W, F)
+    
+    # Promote training data once: 4D (B, T, W, F) -> 5D (E, B, T, W, F)
     E = model.ensemble_size
     B = dataset_train.xs.shape[0]
-    if E > 1:
+    bootstrap = bootstrap and E > 1
+    if bootstrap:
         bootstrap_indices = torch.randint(0, B, (E, B))
         xs_train_5d = dataset_train.xs[bootstrap_indices]
         ys_train_5d = dataset_train.ys[bootstrap_indices]
     else:
-        xs_train_5d = dataset_train.xs.unsqueeze(0)
-        ys_train_5d = dataset_train.ys.unsqueeze(0)
+        xs_train_5d = dataset_train.xs.unsqueeze(0).expand(E, -1, -1, -1, -1).contiguous()
+        ys_train_5d = dataset_train.ys.unsqueeze(0).expand(E, -1, -1, -1, -1).contiguous()
 
     # Auto-compute sindy_pruning_terms: distribute total terms evenly across
     # available pruning events so the model can reach 0 coefficients within
@@ -1826,8 +1839,9 @@ def fit_spice(
             model=model,
             xs_train=xs_train_5d.to(torch.device('cpu')),
             ys_train=ys_train_5d.to(torch.device('cpu')),
-            xs_train_original=dataset_train.xs,
-            ys_train_original=dataset_train.ys,
+            # Only needed to undo bootstrapping for Stage 2.2
+            xs_train_original=dataset_train.xs if bootstrap else None,
+            ys_train_original=dataset_train.ys if bootstrap else None,
             epochs=1000,
             n_warmup_steps=100,
             sindy_alpha=sindy_alpha,

@@ -232,6 +232,7 @@ class BaseModel(nn.Module):
         self.n_sessions = n_participants * n_experiments
         self.use_sindy = use_sindy
         self.ridge_mode = False
+        self.ridge_sample_mask = None  # (E, B) validity of the current ridge chunk; None = all valid
         self._ridge_accumulators = {}
         self.n_items = n_items if n_items is not None else n_actions
         self.ensemble_size = ensemble_size
@@ -618,6 +619,7 @@ class BaseModel(nn.Module):
                         h_next=next_value,
                         h_current=torch.concat((value_0, next_value[:-1])),
                         controls=inputs,
+                        sample_mask=self.ridge_sample_mask,
                     )
             
             if self.use_sindy:
@@ -895,7 +897,8 @@ class BaseModel(nn.Module):
         self._ridge_accumulators = {}
 
     def sindy_ridge_accumulate(self, key_module: str, participant_ids: torch.Tensor, experiment_ids: torch.Tensor,
-                          h_next: torch.Tensor, h_current: torch.Tensor, controls: torch.Tensor) -> None:
+                          h_next: torch.Tensor, h_current: torch.Tensor, controls: torch.Tensor,
+                          sample_mask: torch.Tensor = None) -> None:
         """Accumulate one chunk's normal-equation contribution toward key_module's ridge solve.
 
         Builds the polynomial library from (h_current, controls) for this chunk and scatter-adds
@@ -913,6 +916,9 @@ class BaseModel(nn.Module):
             h_next: (W, E, B, I) RNN target states.
             h_current: (W, E, B, I) current states (or None → zeros).
             controls: (W, E, B, I, n_controls) control signals.
+            sample_mask: (E, B) boolean validity per (member, sample), or None (all valid).
+                Invalid samples (e.g. NaN padding of one member's bootstrapped session)
+                contribute nothing to any accumulator.
         """
         W, E, B, I = h_next.shape
         P = self.n_participants
@@ -939,8 +945,16 @@ class BaseModel(nn.Module):
         # Apply presence mask: zero out pruned library columns per (E, P, X) group
         # mask: (E, P, X, T) -> gather per-sample mask via participant/experiment ids
         E_idx = torch.arange(E, device=self.device).unsqueeze(1)  # (E, 1)
-        sample_mask = self.sindy_coefficients_presence[key_module][E_idx, participant_ids, experiment_ids]  # (E, B, T)
-        library = library * sample_mask.float().unsqueeze(0).unsqueeze(3)  # (1, E, B, 1, T) -> broadcasts to (W, E, B, I, T)
+        presence_mask = self.sindy_coefficients_presence[key_module][E_idx, participant_ids, experiment_ids]  # (E, B, T)
+        library = library * presence_mask.float().unsqueeze(0).unsqueeze(3)  # (1, E, B, 1, T) -> broadcasts to (W, E, B, I, T)
+
+        # Zero out invalid samples entirely (library rows and targets)
+        if sample_mask is None:
+            sample_weight = torch.ones(E, B, device=self.device, dtype=library.dtype)
+        else:
+            sample_weight = sample_mask.to(device=self.device, dtype=library.dtype)  # (E, B)
+        library = library * sample_weight.view(1, E, B, 1, 1)
+        target = target * sample_weight.view(1, E, B, 1)
 
         # Build group index for each (ensemble, batch) sample -> (participant, experiment) pair
         # participant_ids, experiment_ids: (E, B)
@@ -968,7 +982,7 @@ class BaseModel(nn.Module):
         # ignores both -- they exist for consumers that need absolute (not just
         # relative) residuals, e.g. the noise-scale estimate a Gaussian BIC needs.
         btb_samples = (target ** 2).sum(dim=2).squeeze(-1)  # (E, B)
-        n_rows_samples = torch.full_like(btb_samples, float(library.shape[2]))
+        n_rows_samples = sample_weight * float(library.shape[2])
 
         accum = self._ridge_accumulators.get(key_module)
         if accum is None:
@@ -983,7 +997,7 @@ class BaseModel(nn.Module):
 
         accum['AtA'].scatter_add_(1, group_idx.expand_as(AtA_samples), AtA_samples)
         accum['Atb'].scatter_add_(1, group_idx.expand_as(Atb_samples), Atb_samples)
-        accum['count'].scatter_add_(1, group_ids, torch.ones_like(group_ids, dtype=library.dtype))
+        accum['count'].scatter_add_(1, group_ids, sample_weight)
         accum['btb'].scatter_add_(1, group_ids, btb_samples)
         accum['n_rows'].scatter_add_(1, group_ids, n_rows_samples)
 

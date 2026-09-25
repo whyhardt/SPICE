@@ -41,7 +41,7 @@ class SpiceEstimator(BaseEstimator):
         # RNN training parameters
         epochs: Optional[int] = 1,
         warmup_steps: Optional[int] = 0,
-        bagging: Optional[bool] = False,
+        bootstrap: Optional[bool] = True,
         n_steps_per_call: Optional[int] = None,  # number of timesteps in one backward-call; -1 for full sequence
         batch_size: Optional[int] = None,  # -1 for a batch-size equal to the number of participants in the data
         learning_rate: Optional[float] = 1e-2,
@@ -86,7 +86,8 @@ class SpiceEstimator(BaseEstimator):
             n_reward_features: Number of reward feature columns in the dataset.
             epochs: Number of training epochs.
             warmup_steps: Epochs of exponential SINDy weight warmup (no pruning during warmup).
-            bagging: Whether to use bagging.
+            bootstrap: Resample training sessions with replacement per ensemble member
+                (only when ensemble_size > 1). False = every member sees the full dataset.
             n_steps_per_call: BPTT truncation length (None = full sequence).
             batch_size: Training batch size (None = auto-detect max via GPU probing).
             learning_rate: Learning rate for RNN parameters.
@@ -122,6 +123,7 @@ class SpiceEstimator(BaseEstimator):
         # Training parameters
         self.epochs = epochs
         self.warmup_steps = warmup_steps
+        self.bootstrap = bootstrap
         self.n_steps_per_call = n_steps_per_call
         self.batch_size = batch_size
         self.learning_rate = learning_rate
@@ -229,6 +231,7 @@ class SpiceEstimator(BaseEstimator):
 
             epochs=self.epochs,
             n_warmup_steps=self.warmup_steps,
+            bootstrap=self.bootstrap,
             batch_size=self.batch_size,
             n_steps=self.n_steps_per_call,
 

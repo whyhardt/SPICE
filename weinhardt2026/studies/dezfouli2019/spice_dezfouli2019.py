@@ -3,172 +3,135 @@ import torch
 from spice import BaseModel
 from spice import SpiceConfig
 
+
 CONFIG = SpiceConfig(
     library_setup={
-        'value_reward_chosen': ['reward'],   # --> n_terms = 6
-        'value_reward_not_chosen': [],       # --> n_terms = 3
-        'value_choice_chosen': [],           # --> n_terms = 3
-        'value_choice_not_chosen': [],       # --> n_terms = 3
-        # 'dvalue_reward_chosen': ['dvalue'],  # --> n_terms = 6
-        # 'dvalue_reward_not_chosen': [],      # --> n_terms = 6
-        # 'dvalue_choice': ['dvalue'],         # --> n_terms = 6
-    },                                       # --> n_terms_total = 21
+        'value_reward_chosen': [
+            'reward[t]',
+            'value_reward_mean',
+        ],
+        'value_reward_not_chosen': [
+            'value_reward_mean',
+        ],
+        'value_choice_chosen': [
+            'action[t-1]',
+        ],
+        'value_choice_not_chosen': [
+            'action[t-1]',
+        ],
+    },
     memory_state={
-        'value_reward': 0.,
-        'value_choice': 0.,
-        # 'dvalue_reward': 0.,
-        # 'dvalue_choice': 0.,
-
-        # Buffer (excluded from logits)
-        # 'value_reward[t-1]': 0.,
-        # 'value_choice[t-1]': 0.,
+        'value_reward': None,
+        'value_choice': None,
+        
+        # Buffers (excluded from logits)
+        'action[t-1]': 0,
     },
     states_in_logit=[
-        'value_reward',
-        'value_choice',
-        # 'dvalue_reward',
-        # 'dvalue_choice',
-    ],
+        'value_reward', 
+        'value_choice', 
+        ],
 )
 
 
+# Binary indicator control signals (x^2 = x) and mutually exclusive signal groups
+# (x_i * x_j = 0): with 4 options no item is both adjacent and opposite to the choice,
+# and the sign-split value change satisfies relu(dvalue) * relu(-dvalue) = 0. The squares
+# of the sign-split signals are kept — unlike indicators, they are continuous.
+BINARY_SIGNALS = {'reward[t]', 'action[t]', 'action[t-1]'}
+
 class SpiceModel(BaseModel):
 
-    def __init__(self, reward_binary: bool = True, **kwargs):
+    def __init__(self, **kwargs):
         super().__init__(**kwargs)
 
-        dropout = 0.1
+        self.participant_embedding = self.setup_embedding(
+            num_embeddings=self.n_participants, dropout=self.dropout,
+        )
 
-        # set up the participant-embedding layer
-        self.participant_embedding = self.setup_embedding(self.n_participants, self.embedding_size, dropout=dropout)
+        self.preprocess_coefficients()
 
-        self.preprocess_coefficients(reward_binary=reward_binary)
-        
-    def forward(self, inputs, prev_state=None):
-        """Forward pass of the RNN
+    def preprocess_coefficients(self):
+        """Zero out SINDy terms that are structurally redundant for binary indicators.
 
-        Args:
-            inputs (torch.Tensor): includes all necessary inputs (action, reward, participant id) to the RNN to let it compute the next action
-            prev_state (Tuple[torch.Tensor], optional): That's the previous memory state of the RNN containing the reward-based value. Defaults to None.
+        Binary indicators satisfy x^2 = x, so the squared term duplicates the linear one.
+        Two indicators of the same mutually exclusive group satisfy x_i * x_j = 0.
         """
+        candidate_terms = self.get_candidate_terms()
+        for module in self.get_modules():
+            control_signals = self.spice_config.library_setup[module]
+            binary_signals = [s for s in control_signals if s in BINARY_SIGNALS]
+            for index_term, term in enumerate(candidate_terms[module]):
+                factors = term.split('*')
+                redundant = any(signal + '^2' in factors for signal in binary_signals)
+                if redundant:
+                    self.sindy_coefficients_presence[module][..., index_term] = 0
+                    self.sindy_coefficients_prior_mask[module][..., index_term] = 0
 
-        # First, we have to initialize all the inputs and outputs (i.e. logits)
-        spice_signals = self.init_forward_pass(inputs, prev_state)
+    def forward(self, inputs, state=None):
+        spice_signals = self.init_forward_pass(inputs, state)
 
-        # We compute now the participant embeddings before the for-loop because they are anyways time-invariant
         participant_embedding = self.participant_embedding(spice_signals.participant_ids)
 
-        for timestep in spice_signals.trials:
+        item_indices = torch.arange(self.n_actions, device=self.device)
 
-            # updates for value_reward
+        for trial in spice_signals.trials:
+
+            # --- REWARD VALUE UPDATES ---
+            mean_value_reward = self.state['value_reward'].mean(
+                dim=-1, keepdim=True,
+            ).expand_as(self.state['value_reward']).detach()
+
             self.call_module(
                 key_module='value_reward_chosen',
                 key_state='value_reward',
-                action_mask=spice_signals.actions[timestep],
-                inputs=spice_signals.feedback[timestep],
+                action_mask=spice_signals.actions[trial],
+                inputs=(
+                    spice_signals.feedback[trial],
+                    mean_value_reward,
+                ),
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
-                experiment_index=spice_signals.experiment_ids,
             )
 
             self.call_module(
                 key_module='value_reward_not_chosen',
                 key_state='value_reward',
-                action_mask=1-spice_signals.actions[timestep],
-                inputs=None,
+                action_mask=1 - spice_signals.actions[trial],
+                inputs=(
+                    mean_value_reward,
+                ),
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
-                experiment_index=spice_signals.experiment_ids,
             )
 
-            # updates for value_choice            
+            # --- CHOICE VALUE UPDATES (split by chosen / not chosen) ---
             self.call_module(
                 key_module='value_choice_chosen',
                 key_state='value_choice',
-                action_mask=spice_signals.actions[timestep],
-                inputs=None,
+                action_mask=spice_signals.actions[trial],
+                inputs=self.state['action[t-1]'],
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
-                experiment_index=spice_signals.experiment_ids,
             )
 
             self.call_module(
                 key_module='value_choice_not_chosen',
                 key_state='value_choice',
-                action_mask=1-spice_signals.actions[timestep],
-                inputs=None,
+                action_mask=1 - spice_signals.actions[trial],
+                inputs=self.state['action[t-1]'],
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
-                experiment_index=spice_signals.experiment_ids,
             )
 
-            # # tracking of the reward-value change of the chosen option
-            # dvalue_reward = (self.state['value_reward'] - self.state['value_reward[t-1]']).detach()
+            # --- BUFFER UPDATES ---
+            self.state['action[t-1]'] = spice_signals.actions[trial]
 
-            # self.call_module(
-            #     key_module='dvalue_reward_chosen',
-            #     key_state='dvalue_reward',
-            #     action_mask=spice_signals.actions[timestep],
-            #     inputs=dvalue_reward,
-            #     participant_index=spice_signals.participant_ids,
-            #     participant_embedding=participant_embedding,
-            #     experiment_index=spice_signals.experiment_ids,
-            # )
-            
-            # self.call_module(
-            #     key_module='dvalue_reward_not_chosen',
-            #     key_state='dvalue_reward',
-            #     action_mask=1-spice_signals.actions[timestep],
-            #     inputs=None,
-            #     participant_index=spice_signals.participant_ids,
-            #     participant_embedding=participant_embedding,
-            #     experiment_index=spice_signals.experiment_ids,
-            # )
-            
-            # # buffer update
-            # self.state['value_reward[t-1]'] = self.state['value_reward']
-            
-            # # tracking of the reward-value change of the chosen option
-            # dvalue_choice = (self.state['value_choice'] - self.state['value_choice[t-1]']).detach()
-
-            # self.call_module(
-            #     key_module='dvalue_choice',
-            #     key_state='dvalue_choice',
-            #     action_mask=None,
-            #     inputs=dvalue_choice,
-            #     participant_index=spice_signals.participant_ids,
-            #     participant_embedding=participant_embedding,
-            #     experiment_index=spice_signals.experiment_ids,
-            # )
-
-            # # buffer update
-            # self.state['value_reward[t-1]'] = self.state['value_reward']
-            # self.state['value_choice[t-1]'] = self.state['value_choice']
-
-            # Now keep track of the logit in the output array
-            spice_signals.logits[timestep] = (
-                self.state['value_reward'] \
-                + self.state['value_choice'] \
-                # + self.state['dvalue_reward'] \
-                # + self.state['dvalue_choice'] \
+            # --- LOGITS ---
+            spice_signals.logits[trial] = (
+                self.state['value_reward']
+                + self.state['value_choice']
             )
 
-        # post-process the forward pass
         spice_signals = self.post_forward_pass(spice_signals)
-
         return spice_signals.logits, self.get_state()
-    
-    def preprocess_coefficients(self, reward_binary: bool = True):
-        # remove unnecessary candidate terms, e.g. polynomials of binary signals
-        # if reward_binary: reward[t] = reward[t]^2 -> presence[reward[t]^2] = 0
-        # accounts for ALL control signals in workingmemory model if reward is binary; else only choice signals
-
-        candidate_terms = self.get_candidate_terms()
-        for module in self.get_modules():
-            if ('reward' in module and reward_binary) or 'choice' in module:
-                control_signals = self.spice_config.library_setup[module]
-                for cs in control_signals:
-                    for ict, ct in enumerate(candidate_terms[module]):
-                        if cs+'^' in ct:
-                            self.sindy_coefficients_presence[module][..., ict] = 0
-                            self.sindy_coefficients_prior_mask[module][..., ict] = 0

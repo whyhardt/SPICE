@@ -36,7 +36,7 @@ CONFIG = SpiceConfig(
         #     # 'dvalue_neg',
         # ],
         'bias_attention': [
-            'action[t-1]',
+            # 'action[t-1]',
             'is_adjacent',
             'is_opposite',
         ],
@@ -219,7 +219,7 @@ class SpiceModel(BaseModel):
                 key_module='bias_attention',
                 key_state='bias_attention',
                 inputs=(
-                    self.state['action[t-1]'],
+                    # self.state['action[t-1]'],
                     is_adjacent,
                     is_opposite,
                 ),

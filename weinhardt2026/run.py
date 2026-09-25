@@ -56,6 +56,7 @@ if __name__=='__main__':
     parser.add_argument('--test_blocks', type=str, default=None, help='Comma-separated list of integeres which indicate test sessions. Not combinable with train_ratio_time')
 
     parser.add_argument('--seed', type=int, default=None, help='Random seed for weight initialization and training. Default None: no seeding. Set it to compare model configurations on identical initialization.')
+    parser.add_argument('--bootstrap', action='store_true', help='Bootstrap the data for each ensemble member (Only active if ensemble>1)')
     parser.add_argument('--prototyping', action='store_true', help='Rapid prototyping: truncate the data to the first 100 trials and 50 participants.')
     parser.add_argument('--results', action='store_true', help='Shows the results using a fitted SPICE model. The results are value-dynamics-over-time plot, a parameter distribution histogram, and the corresponding symbolic SPICE model.')
     
@@ -217,6 +218,7 @@ if __name__=='__main__':
         l2_rnn=args.rnn_l2_lambda,
         dropout=0.1,
         embedding_size=args.embedding,
+        bootstrap=args.bootstrap,
 
         # sindy fitting parameters
         sindy_weight=args.sindy_weight,
