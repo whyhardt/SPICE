@@ -18,6 +18,7 @@ CONFIG = SpiceConfig(
         'value_wm_reward': None,
         'value_reward': None,
         'value_choice': None,
+        'bias_attention': None,
     },
     states_in_logit=[
         'value_wm_reward',
