@@ -50,7 +50,10 @@ estimator = SpiceEstimator(
 
     epochs=1000,
     warmup_steps=500,
-
+    
+    sindy_threshold_pruning=0.05,
+    sindy_alpha=0.0005,
+    
     device=device,
     verbose=True,
     save_path_spice=path_spice,

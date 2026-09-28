@@ -6,57 +6,23 @@ from spice import SpiceConfig
 
 CONFIG = SpiceConfig(
     library_setup={
-        # 'value_reward_env': [
-        #     'reward[t]',
-        # ],
-        'value_reward_chosen': [
-            # 'reward_env',
-            'reward[t]',
-            'value_reward_mean',
-        ],
-        'value_reward_not_chosen': [
-            # 'reward_env',
-            'value_reward_mean',
-        ],
-        # Split by choice: action[t] becomes the action mask, which frees
-        # value_choice_chosen*action[t-1] — a choice trace whose retention differs
-        # between repeating and switching (a streak that collapses on a switch).
-        'value_choice_chosen': [
-            'action[t-1]',
-        ],
-        'value_choice_not_chosen': [
-            'action[t-1]',
-        ],
-        # 'value_exploration_chosen': [
-        #     'dvalue_pos',
-        #     'dvalue_neg',
-        # ],
-        # 'value_exploration_not_chosen': [
-        #     # 'dvalue_pos',
-        #     # 'dvalue_neg',
-        # ],
-        'bias_attention': [
-            # 'action[t-1]',
-            'is_adjacent',
-            'is_opposite',
-        ],
+        'value_wm_reward_chosen': ['reward[t]'],
+        'value_wm_reward_not_chosen': [],
+        'value_reward_chosen': ['reward[t]'],
+        'value_reward_not_chosen': [],
+        'value_choice_chosen': [],
+        'value_choice_not_chosen': [],
+        'bias_attention': ['is_adjacent','is_opposite'],
     },
     memory_state={
-        # 'value_reward_env': None,
+        'value_wm_reward': None,
         'value_reward': None,
         'value_choice': None,
-        # 'value_exploration': None,
-        'bias_attention': None,
-        
-        # Buffers (excluded from logits)
-        'value_reward[t-1]': None,
-        'action[t-1]': 0,
     },
     states_in_logit=[
-        # 'value_reward_env',
+        'value_wm_reward',
         'value_reward', 
         'value_choice', 
-        # 'value_exploration', 
         'bias_attention',
         ],
 )
@@ -66,21 +32,11 @@ CONFIG = SpiceConfig(
 # (x_i * x_j = 0): with 4 options no item is both adjacent and opposite to the choice,
 # and the sign-split value change satisfies relu(dvalue) * relu(-dvalue) = 0. The squares
 # of the sign-split signals are kept — unlike indicators, they are continuous.
-BINARY_SIGNALS = {'action[t]', 'action[t-1]', 'is_adjacent', 'is_opposite'}
-EXCLUSIVE_GROUPS = [{'is_adjacent', 'is_opposite'}]#, {'dvalue_pos', 'dvalue_neg'}]
+BINARY_SIGNALS = {'is_adjacent', 'is_opposite'}
+EXCLUSIVE_GROUPS = [{'is_adjacent', 'is_opposite'}]
 
 
 class SpiceModel(BaseModel):
-    """
-    v3: choice split by chosen / not chosen, split exploration, loss aversion.
-
-    value_choice_chosen / value_choice_not_chosen share the value_choice state and
-    take action[t-1]; the spatial biases live in bias_attention. The pre-split
-    architecture is kept in spice_eckstein2026_legacy_merged_choice.py, which the
-    checkpoints trained before the split still load with.
-
-    8 modules, 5 logit states.
-    """
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -88,6 +44,8 @@ class SpiceModel(BaseModel):
         self.participant_embedding = self.setup_embedding(
             num_embeddings=self.n_participants, dropout=self.dropout,
         )
+        
+        self.setup_module(key_module='value_wm_reward_chosen', include_state=False)
 
         self.preprocess_coefficients()
 
@@ -109,39 +67,44 @@ class SpiceModel(BaseModel):
                 if redundant:
                     self.sindy_coefficients_presence[module][..., index_term] = 0
                     self.sindy_coefficients_prior_mask[module][..., index_term] = 0
-
+    
     def forward(self, inputs, state=None):
         spice_signals = self.init_forward_pass(inputs, state)
 
-        reward_full = spice_signals.feedback.sum(dim=-1, keepdim=True).expand_as(spice_signals.actions)
         participant_embedding = self.participant_embedding(spice_signals.participant_ids)
 
         item_indices = torch.arange(self.n_actions, device=self.device)
-
+        
         for trial in spice_signals.trials:
-
-            # --- ENV REWARD ---
-            # value_reward_env = self.call_module(
-            #     key_module='value_reward_env',
-            #     key_state='value_reward_env',
-            #     inputs=reward_full[trial],
-            #     participant_index=spice_signals.participant_ids,
-            #     participant_embedding=participant_embedding,
-            # )
-
+            
+            # --- WORKING MEMORY UPDATES ---
+            self.call_module(
+                key_module='value_wm_reward_chosen',
+                key_state='value_wm_reward',
+                action_mask=spice_signals.actions[trial],
+                inputs=(
+                    spice_signals.feedback[trial],
+                    # self.state['reward[t-1]'],
+                ),
+                participant_index=spice_signals.participant_ids,
+                participant_embedding=participant_embedding,
+            )
+            
+            self.call_module(
+                key_module='value_wm_reward_not_chosen',
+                key_state='value_wm_reward',
+                action_mask=1-spice_signals.actions[trial],
+                participant_index=spice_signals.participant_ids,
+                participant_embedding=participant_embedding,
+            )
+            
             # --- REWARD VALUE UPDATES ---
-            mean_value_reward = self.state['value_reward'].mean(
-                dim=-1, keepdim=True,
-            ).expand_as(self.state['value_reward']).detach()
-
             self.call_module(
                 key_module='value_reward_chosen',
                 key_state='value_reward',
                 action_mask=spice_signals.actions[trial],
                 inputs=(
-                    # value_reward_env,
                     spice_signals.feedback[trial],
-                    mean_value_reward,
                 ),
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
@@ -151,20 +114,18 @@ class SpiceModel(BaseModel):
                 key_module='value_reward_not_chosen',
                 key_state='value_reward',
                 action_mask=1 - spice_signals.actions[trial],
-                inputs=(
-                    # value_reward_env,
-                    mean_value_reward,
-                ),
+                # inputs=(
+                # ),
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
             )
 
-            # --- CHOICE VALUE UPDATES (split by chosen / not chosen) ---
+            # --- CHOICE VALUE UPDATES ---
             self.call_module(
                 key_module='value_choice_chosen',
                 key_state='value_choice',
                 action_mask=spice_signals.actions[trial],
-                inputs=self.state['action[t-1]'],
+                # inputs=self.state['action[t-1]'],
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
             )
@@ -173,40 +134,11 @@ class SpiceModel(BaseModel):
                 key_module='value_choice_not_chosen',
                 key_state='value_choice',
                 action_mask=1 - spice_signals.actions[trial],
-                inputs=self.state['action[t-1]'],
+                # inputs=self.state['action[t-1]'],
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
             )
-
-            # # --- EXPLORATION VALUE UPDATES ---
-            # dvalue = (self.state['value_reward'] - self.state['value_reward[t-1]']).detach()
-            # dvalue_pos = torch.relu(dvalue)
-            # dvalue_neg = torch.relu(-dvalue)
-
-            # self.call_module(
-            #     key_module='value_exploration_chosen',
-            #     key_state='value_exploration',
-            #     action_mask=spice_signals.actions[trial],
-            #     inputs=(
-            #         dvalue_pos,
-            #         dvalue_neg,
-            #     ),
-            #     participant_index=spice_signals.participant_ids,
-            #     participant_embedding=participant_embedding,
-            # )
-
-            # self.call_module(
-            #     key_module='value_exploration_not_chosen',
-            #     key_state='value_exploration',
-            #     action_mask=1 - spice_signals.actions[trial],
-            #     # inputs=(
-            #         # dvalue_pos,
-            #         # dvalue_neg,
-            #     # ),
-            #     participant_index=spice_signals.participant_ids,
-            #     participant_embedding=participant_embedding,
-            # )
-
+            
             # --- ATTENTION BIAS UPDATE ---
             chosen_idx = spice_signals.actions[trial].argmax(dim=-1, keepdim=True)
             items = item_indices.expand_as(spice_signals.actions[trial])
@@ -219,7 +151,6 @@ class SpiceModel(BaseModel):
                 key_module='bias_attention',
                 key_state='bias_attention',
                 inputs=(
-                    # self.state['action[t-1]'],
                     is_adjacent,
                     is_opposite,
                 ),
@@ -228,14 +159,13 @@ class SpiceModel(BaseModel):
             )
 
             # --- BUFFER UPDATES ---
-            self.state['value_reward[t-1]'] = self.state['value_reward']
-            self.state['action[t-1]'] = spice_signals.actions[trial]
+            # self.state['action[t-1]'] = spice_signals.actions[trial]
 
             # --- LOGITS ---
             spice_signals.logits[trial] = (
                 self.state['value_reward']
+                + self.state['value_wm_reward']
                 + self.state['value_choice']
-                # + self.state['value_exploration']
                 + self.state['bias_attention']
             )
 

@@ -9,7 +9,7 @@ import torch
 from spice import SpiceEstimator
 from weinhardt2026.studies.eckstein2026.spice_eckstein2026 import SpiceModel, CONFIG
 from weinhardt2026.utils.benchmarking_gru import GRUModel, training
-from weinhardt2026.studies.eckstein2026.benchmarking_eckstein2026 import Castro2025Model, RWForgettingChoiceModel, get_dataset, generate_behavior
+from weinhardt2026.studies.eckstein2026.benchmarking_eckstein2026 import Castro2025Model, BestRLModel, get_dataset, generate_behavior
 from weinhardt2026.studies.eckstein2026.analysis_generative import analysis_generative_behavior
 from weinhardt2026.analysis.analysis_model_evaluation import analysis_model_evaluation
 from weinhardt2026.analysis.analysis_coefficients_distributions import analysis_coefficients_distributions
@@ -78,7 +78,7 @@ benchmark = Castro2025Model(
     batch_first=True,
 )
 
-# benchmark = RWForgettingChoiceModel(
+# benchmark = BestRLModel(
 #     n_participants=dataset_train.n_participants,
 #     n_actions=dataset_train.n_actions,
 #     batch_first=True,

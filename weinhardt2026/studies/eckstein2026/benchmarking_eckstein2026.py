@@ -408,48 +408,40 @@ class Castro2025Model(torch.nn.Module):
         return self.state
     
     
-class RWForgettingChoiceModel(torch.nn.Module):
+class BestRLModel(torch.nn.Module):
     """
-    Rescorla-Wagner + forgetting + choice-perseveration benchmark model for the
-    Eckstein 2026 multi-armed bandit task.
+    Best RL benchmark model of Eckstein et al. (2026), Nature Human Behaviour
+    10:972-987, "Model architectures / Q-learning model architectures".
 
-    Value update (chosen action only) with a dynamic (Pearce-Hall-style)
-    learning rate — the "simple variable learning rate model" of Eckstein
-    et al. (2026), extending the static-alpha Rescorla-Wagner update:
-        delta_t       = reward - Q_t[chosen]
-        Q_t+1[chosen] = Q_t[chosen] + alpha_t * delta_t
-        alpha_t+1     = w * |delta_t| + (1 - w) * alpha_t
-    alpha_0 = alpha_reward_init (free, per participant). At w = 0, alpha_t
-    stays constant and the model reduces to fixed-alpha Best RL.
+    The winner of their systematic comparison over 48 Q-learning variants, with
+    six free parameters per participant (alpha, beta, f, kappa, b, Q_init).
 
-    Forgetting (decay toward the initial value q_init, applied to ALL actions
-    after the value update — following Ito & Doya / DeepMind's alpha-beta RL
-    formulation, not just the unchosen ones):
-        Q[a] <- (1 - forget_rate) * Q[a] + forget_rate * q_init     for all a
+    Per trial, in this order:
 
-    Choice trace (perseveration). alpha_choice is fixed to 1, so the trace
-    reduces to the one-hot of the previous choice (no memory beyond one trial):
-        C[a] <- C[a] + alpha_choice * (choice[a] - C[a]) = choice[a]
+    1. Value update of the CHOSEN action only, with the linear update bias b that
+       they added to match the freedom of their neural-network models (their eq. 2):
+           Q(a_chosen) <- Q(a_chosen) + alpha * (r - Q(a_chosen)) + b
+    2. Forgetting of ALL action values toward Q_init (their eq. 5):
+           Q(a) <- (1 - f) * Q(a) + f * Q_init
+    3. Perseveration (their eq. 4) — a bonus kappa on the action chosen on the
+       previous trial, zero elsewhere:
+           c(a_prev) = kappa,  c(not a_prev) = 0
+    4. Additive choice rule with a single inverse temperature (their eq. 3):
+           h = Q + c
+           p = softmax(beta * h)
 
-    Choice logits (beta_reward, beta_choice act as inverse noise temperatures):
-        logit[a] = beta_reward * Q[a] + beta_choice * C[a]
+    This is the fixed-learning-rate model: the Pearce-Hall variable learning rate
+    (their eqs. 6-8, parameter w) belongs to other variants in their comparison and
+    is NOT part of Best RL.
 
-    Model parameters (per participant):
-    - alpha_reward_init: initial learning rate for the RW value update (alpha_0)
-    - w:                 meta-learning rate governing how much alpha_t adapts
-                         to |prediction error| each trial (w=0 -> static alpha)
-    - forget_rate:       forgetting rate decaying all action values toward q_init
-    - beta_reward:       inverse noise temperature scaling action values
-    - beta_choice:       inverse noise temperature scaling the choice trace
+    Parameter ranges are the ones they enforce:
+        0 < alpha < 1,  -1 < b < 1,  0 < beta,  -1 < kappa < 1,  0 < f < 1,
+        Q_init unrestricted.
 
     State variables (per trial):
     - q_values:     (B, n_actions) — action values
-    - choice_trace: (B, n_actions) — one-hot trace of the previous choice
-    - alpha_t:      (B, 1)         — current trial-varying learning rate
+    - choice_trace: (B, n_actions) — kappa on the previous choice, 0 elsewhere
     """
-
-    ALPHA_CHOICE = 1.0
-    Q_INIT = 0.5
 
     def __init__(
         self,
@@ -463,14 +455,15 @@ class RWForgettingChoiceModel(torch.nn.Module):
         self.n_participants = n_participants
         self.batch_first = batch_first
 
-        self.alpha_reward_init_raw = torch.nn.Parameter(torch.zeros(n_participants))
-        self.w_raw             = torch.nn.Parameter(torch.zeros(n_participants))
+        self.alpha_raw         = torch.nn.Parameter(torch.zeros(n_participants))
+        self.beta_raw          = torch.nn.Parameter(torch.zeros(n_participants))
         self.forget_rate_raw   = torch.nn.Parameter(torch.zeros(n_participants))
-        self.beta_reward_raw   = torch.nn.Parameter(torch.zeros(n_participants))
-        self.beta_choice_raw   = torch.nn.Parameter(torch.zeros(n_participants))
+        self.perseveration_raw = torch.nn.Parameter(torch.zeros(n_participants))
+        self.update_bias_raw   = torch.nn.Parameter(torch.zeros(n_participants))
+        self.q_init            = torch.nn.Parameter(torch.zeros(n_participants))
 
     # ------------------------------------------------------------------
-    # Parameter transforms (raw → constrained)
+    # Parameter transforms (raw → constrained), ranges as in the paper
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -478,24 +471,24 @@ class RWForgettingChoiceModel(torch.nn.Module):
         return torch.clamp(x, -5.0, 5.0)
 
     @property
-    def alpha_reward_init(self):
-        return torch.clamp(torch.sigmoid(self._clip_raw(self.alpha_reward_init_raw)), 0.01, 0.99)
+    def alpha(self):                       # 0 < alpha < 1
+        return torch.clamp(torch.sigmoid(self._clip_raw(self.alpha_raw)), 0.01, 0.99)
 
     @property
-    def w(self):
-        return torch.clamp(torch.sigmoid(self._clip_raw(self.w_raw)), 0.0, 1.0)
+    def beta(self):                        # 0 < beta
+        return torch.clamp(torch.nn.functional.softplus(self._clip_raw(self.beta_raw)), 0.0, 20.0)
 
     @property
-    def forget_rate(self):
+    def forget_rate(self):                 # 0 < f < 1
         return torch.clamp(torch.sigmoid(self._clip_raw(self.forget_rate_raw)), 0.0, 0.99)
 
     @property
-    def beta_reward(self):
-        return torch.clamp(torch.nn.functional.softplus(self._clip_raw(self.beta_reward_raw)), 0.0, 20.0)
+    def perseveration(self):               # -1 < kappa < 1
+        return torch.tanh(self._clip_raw(self.perseveration_raw))
 
     @property
-    def beta_choice(self):
-        return torch.clamp(torch.nn.functional.softplus(self._clip_raw(self.beta_choice_raw)), 0.0, 20.0)
+    def update_bias(self):                 # -1 < b < 1
+        return torch.tanh(self._clip_raw(self.update_bias_raw))
 
     # ------------------------------------------------------------------
     # Forward pass
@@ -510,7 +503,7 @@ class RWForgettingChoiceModel(torch.nn.Module):
 
         Returns:
             logits: (T, B, n_actions) or (B, T, n_actions) if batch_first
-            state:  dict of final state tensors (detached from graph)
+            state:  dict of final state tensors
         """
 
         if self.batch_first:
@@ -523,58 +516,46 @@ class RWForgettingChoiceModel(torch.nn.Module):
         # Participant IDs are stored in the last feature column (SPICE convention)
         participant_ids = inputs[0, :, -1].long()  # (B,)
 
-        alpha_reward_init = self.alpha_reward_init[participant_ids]  # (B,)
-        w            = self.w[participant_ids]              # (B,)
-        forget_rate  = self.forget_rate[participant_ids]    # (B,)
-        beta_reward  = self.beta_reward[participant_ids]    # (B,)
-        beta_choice  = self.beta_choice[participant_ids]    # (B,)
+        alpha         = self.alpha[participant_ids].unsqueeze(-1)          # (B, 1)
+        beta          = self.beta[participant_ids].unsqueeze(-1)           # (B, 1)
+        forget_rate   = self.forget_rate[participant_ids].unsqueeze(-1)    # (B, 1)
+        perseveration = self.perseveration[participant_ids].unsqueeze(-1)  # (B, 1)
+        update_bias   = self.update_bias[participant_ids].unsqueeze(-1)    # (B, 1)
+        q_init        = self.q_init[participant_ids].unsqueeze(-1)         # (B, 1)
 
-        # Initialise or restore state
         if prev_state is not None:
             self.set_state(prev_state)
         else:
-            self.set_initial_state(batch_size=B, alpha_reward_init=alpha_reward_init)
+            self.set_initial_state(batch_size=B, q_init=q_init)
 
         logits = torch.zeros(T, B, self.n_actions, device=inputs.device)
 
         for t in range(T):
             actions_t = inputs[t, :, :self.n_actions]                       # (B, n_actions) one-hot
-            rewards_t = inputs[t, :, self.n_actions:2 * self.n_actions]     # (B, n_actions) one-hot
+            rewards_t = inputs[t, :, self.n_actions:2 * self.n_actions]     # (B, n_actions)
 
-            q       = self.state['q_values']       # (B, n_actions)
-            c       = self.state['choice_trace']   # (B, n_actions)
-            alpha_t = self.state['alpha_t']        # (B, 1)
+            q = self.state['q_values']                                      # (B, n_actions)
+            c = self.state['choice_trace']                                  # (B, n_actions)
 
             had_choice = actions_t.sum(dim=-1, keepdim=True) > 0            # (B, 1)
 
-            # Scalar reward and prediction error for the chosen action
+            # 1. RW update of the chosen action, with the linear update bias b (eq. 2)
             reward_scalar = (rewards_t * actions_t).sum(dim=-1, keepdim=True)  # (B, 1)
             q_chosen = (q * actions_t).sum(dim=-1, keepdim=True)               # (B, 1)
             delta = reward_scalar - q_chosen                                   # (B, 1)
+            q_updated = q + (alpha * delta + update_bias) * actions_t
 
-            # RW update for the chosen action only, using the current trial-varying alpha_t
-            q_updated = q + alpha_t * delta * actions_t
-
-            # Forgetting: decay ALL action values toward q_init
-            q_forgotten = (1.0 - forget_rate.unsqueeze(-1)) * q_updated + forget_rate.unsqueeze(-1) * self.Q_INIT
-
+            # 2. Forgetting of ALL action values toward Q_init (eq. 5)
+            q_forgotten = (1.0 - forget_rate) * q_updated + forget_rate * q_init
             q = torch.where(had_choice, q_forgotten, q)
 
-            # Choice trace: alpha_choice == 1 → trace is exactly the last one-hot choice
-            c = torch.where(had_choice, actions_t, c)
+            # 3. Perseveration bonus on the action just chosen (eq. 4)
+            c = torch.where(had_choice, perseveration * actions_t, c)
 
-            logits[t] = beta_reward.unsqueeze(-1) * q + beta_choice.unsqueeze(-1) * c
+            # 4. Additive choice rule with a single inverse temperature (eq. 3)
+            logits[t] = beta * (q + c)
 
-            # Dynamic learning rate update: alpha_t+1 = w*|delta| + (1-w)*alpha_t
-            alpha_next = w.unsqueeze(-1) * delta.abs() + (1.0 - w.unsqueeze(-1)) * alpha_t
-            alpha_next = torch.clamp(alpha_next, 0.01, 0.99)
-            alpha_t = torch.where(had_choice, alpha_next, alpha_t)
-
-            self.state = {
-                'q_values':     q,
-                'choice_trace': c,
-                'alpha_t':      alpha_t,
-            }
+            self.state = {'q_values': q, 'choice_trace': c}
 
         logits = logits.unsqueeze(1)
         if self.batch_first:
@@ -586,15 +567,14 @@ class RWForgettingChoiceModel(torch.nn.Module):
     # State management
     # ------------------------------------------------------------------
 
-    def set_initial_state(self, batch_size: int = 1, alpha_reward_init: torch.Tensor = None):
-        """Reset state to initial values for a new session."""
-        device = self.alpha_reward_init_raw.device
-        if alpha_reward_init is None:
-            alpha_reward_init = self.alpha_reward_init[:batch_size]
+    def set_initial_state(self, batch_size: int = 1, q_init: torch.Tensor = None):
+        """Reset state to initial values for a new session: Q starts at Q_init."""
+        device = self.alpha_raw.device
+        if q_init is None:
+            q_init = self.q_init[:batch_size].unsqueeze(-1)
         self.state = {
-            'q_values':     torch.full((batch_size, self.n_actions), self.Q_INIT, device=device),
+            'q_values':     q_init.expand(batch_size, self.n_actions).clone(),
             'choice_trace': torch.zeros(batch_size, self.n_actions, device=device),
-            'alpha_t':      alpha_reward_init.reshape(batch_size, 1).clone(),
         }
         return self.get_state()
 
@@ -607,8 +587,8 @@ class RWForgettingChoiceModel(torch.nn.Module):
         return self.state
 
     def count_parameters(self):
-        """Free parameters per participant: alpha_reward_init, w, forget_rate, beta_reward, beta_choice."""
-        return 5
+        """Free parameters per participant: alpha, beta, f, kappa, b, Q_init."""
+        return 6
 
 
 class EnvironmentEckstein2024(Env):

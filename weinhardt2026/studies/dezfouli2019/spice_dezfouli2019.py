@@ -6,28 +6,36 @@ from spice import SpiceConfig
 
 CONFIG = SpiceConfig(
     library_setup={
+        'value_wm_reward_chosen': [
+            'reward[t]',
+            # 'reward[t-1]',
+        ],
+        'value_wm_reward_not_chosen': [],
         'value_reward_chosen': [
             'reward[t]',
-            'value_reward_mean',
+            # 'value_reward_mean',
         ],
         'value_reward_not_chosen': [
-            'value_reward_mean',
+            # 'value_reward_mean',
         ],
         'value_choice_chosen': [
-            'action[t-1]',
+            # 'action[t-1]',
         ],
         'value_choice_not_chosen': [
-            'action[t-1]',
+            # 'action[t-1]',
         ],
     },
     memory_state={
+        'value_wm_reward': None,
         'value_reward': None,
         'value_choice': None,
         
         # Buffers (excluded from logits)
-        'action[t-1]': 0,
+        # 'action[t-1]': 0,
+        # 'reward[t-1]': 0,
     },
     states_in_logit=[
+        'value_wm_reward',
         'value_reward', 
         'value_choice', 
         ],
@@ -38,7 +46,13 @@ CONFIG = SpiceConfig(
 # (x_i * x_j = 0): with 4 options no item is both adjacent and opposite to the choice,
 # and the sign-split value change satisfies relu(dvalue) * relu(-dvalue) = 0. The squares
 # of the sign-split signals are kept — unlike indicators, they are continuous.
-BINARY_SIGNALS = {'reward[t]', 'action[t]', 'action[t-1]'}
+BINARY_SIGNALS = {
+    'reward[t]', 
+    'reward[t-1]', 
+    # 'action[t]', 
+    # 'action[t-1]',
+    }
+
 
 class SpiceModel(BaseModel):
 
@@ -48,6 +62,8 @@ class SpiceModel(BaseModel):
         self.participant_embedding = self.setup_embedding(
             num_embeddings=self.n_participants, dropout=self.dropout,
         )
+        
+        self.setup_module(key_module='value_wm_reward_chosen', include_state=False)
 
         self.preprocess_coefficients()
 
@@ -73,22 +89,36 @@ class SpiceModel(BaseModel):
 
         participant_embedding = self.participant_embedding(spice_signals.participant_ids)
 
-        item_indices = torch.arange(self.n_actions, device=self.device)
-
         for trial in spice_signals.trials:
-
+            
+            # --- WORKING MEMORY UPDATES ---
+            self.call_module(
+                key_module='value_wm_reward_chosen',
+                key_state='value_wm_reward',
+                action_mask=spice_signals.actions[trial],
+                inputs=(
+                    spice_signals.feedback[trial],
+                    # self.state['reward[t-1]'],
+                ),
+                participant_index=spice_signals.participant_ids,
+                participant_embedding=participant_embedding,
+            )
+            
+            self.call_module(
+                key_module='value_wm_reward_not_chosen',
+                key_state='value_wm_reward',
+                action_mask=1-spice_signals.actions[trial],
+                participant_index=spice_signals.participant_ids,
+                participant_embedding=participant_embedding,
+            )
+            
             # --- REWARD VALUE UPDATES ---
-            mean_value_reward = self.state['value_reward'].mean(
-                dim=-1, keepdim=True,
-            ).expand_as(self.state['value_reward']).detach()
-
             self.call_module(
                 key_module='value_reward_chosen',
                 key_state='value_reward',
                 action_mask=spice_signals.actions[trial],
                 inputs=(
                     spice_signals.feedback[trial],
-                    mean_value_reward,
                 ),
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
@@ -98,19 +128,18 @@ class SpiceModel(BaseModel):
                 key_module='value_reward_not_chosen',
                 key_state='value_reward',
                 action_mask=1 - spice_signals.actions[trial],
-                inputs=(
-                    mean_value_reward,
-                ),
+                # inputs=(
+                # ),
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
             )
 
-            # --- CHOICE VALUE UPDATES (split by chosen / not chosen) ---
+            # --- CHOICE VALUE UPDATES ---
             self.call_module(
                 key_module='value_choice_chosen',
                 key_state='value_choice',
                 action_mask=spice_signals.actions[trial],
-                inputs=self.state['action[t-1]'],
+                # inputs=self.state['action[t-1]'],
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
             )
@@ -119,17 +148,18 @@ class SpiceModel(BaseModel):
                 key_module='value_choice_not_chosen',
                 key_state='value_choice',
                 action_mask=1 - spice_signals.actions[trial],
-                inputs=self.state['action[t-1]'],
+                # inputs=self.state['action[t-1]'],
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
             )
 
             # --- BUFFER UPDATES ---
-            self.state['action[t-1]'] = spice_signals.actions[trial]
+            # self.state['action[t-1]'] = spice_signals.actions[trial]
 
             # --- LOGITS ---
             spice_signals.logits[trial] = (
                 self.state['value_reward']
+                + self.state['value_wm_reward']
                 + self.state['value_choice']
             )
 
