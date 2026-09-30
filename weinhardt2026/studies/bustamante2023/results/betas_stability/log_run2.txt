@@ -1,0 +1,91 @@
+Trial-count check: reward ~ log trials, r = -0.55 (p = 1.79e-21)
+  WARNING: 'reward' is related to trial count. Term survival depends on data volume, so presence effects against it can be spurious. Use a criterion that does not scale with trial count.
+
+=== structural beta effects — reward ===
+  13 nodes tested (FDR family), 31 reported leaves, 5 significant at FDR 0.05
+  * depletion_patch_harvest {1 (-), depletion_patch_harvest^2 (-)}                       all=0.34 any=0.58 beta=+2.587 OR=13.29 q=0.000
+  * depletion_patch_harvest {1 (+), depletion_patch_harvest^2 (+)}                       all=0.41 any=0.65 beta=-1.403 OR=0.25 q=0.000
+  * depletion_patch_exit depletion_patch_exit^2 (+)                                   all=0.61 any=0.61 beta=+1.178 OR=3.25 q=0.000
+  * reward_patch_harvest reward_patch_harvest^2 (+)                                   all=0.06 any=0.06 beta=-0.846 OR=0.43 q=0.000
+  * reward_patch_harvest {reward_patch_harvest^2 (-), reward_patch_harvest*reward[t]  all=0.92 any=0.99 beta=+0.786 OR=2.19 q=0.000
+    depletion_patch_exit depletion_patch_exit^2 (-)                                   all=0.23 any=0.23 beta=-0.242 OR=0.79 q=0.110
+    reward_environment   reward_environment^2 (-)                                     all=0.94 any=0.94 beta=+0.106 OR=1.11 q=0.677
+
+  reported but not tested (24):
+    reward_environment   1 (-)                                                        all=1.00  [invariant]
+    reward_environment   reward_environment (-)                                       all=1.00  [invariant]
+    reward_environment   reward[t] (+)                                                all=1.00  [invariant]
+    reward_environment   reward[t]^2 (-)                                              all=1.00  [invariant]
+    reward_environment   reward_environment*reward[t] (+)                             all=1.00  [invariant]
+    reward_patch_harvest 1 (-)                                                        all=0.96  [invariant]
+    reward_patch_harvest reward_patch_harvest (-)                                     all=1.00  [invariant]
+    reward_patch_harvest reward[t] (+)                                                all=1.00  [invariant]
+    reward_patch_harvest reward[t]^2 (-)                                              all=1.00  [invariant]
+    reward_patch_exit    1 (+)                                                        all=1.00  [invariant]
+    reward_patch_exit    reward_patch_exit (-)                                        all=1.00  [invariant]
+    reward_patch_exit    reward_patch_exit^2 (+)                                      all=0.98  [invariant]
+    depletion_patch_harvest dreward[t]^2 (-)                                             all=0.99  [invariant]
+    depletion_patch_harvest depletion_patch_harvest (-)                                  all=1.00  [invariant]
+    depletion_patch_harvest dreward[t] (+)                                               all=1.00  [invariant]
+    depletion_patch_harvest depletion_patch_harvest*dreward[t] (-)                       all=1.00  [invariant]
+    depletion_patch_exit 1 (+)                                                        all=1.00  [invariant]
+    depletion_patch_exit depletion_patch_exit (-)                                     all=1.00  [invariant]
+    continuation_patch   1 (+)                                                        all=1.00  [invariant]
+    continuation_patch   continuation_patch (-)                                       all=1.00  [invariant]
+    continuation_patch   action[t-1] (-)                                              all=1.00  [invariant]
+    continuation_patch   continuation_patch*action[t-1] (-)                           all=1.00  [invariant]
+    continuation_patch   continuation_patch^2 (-)                                     all=1.00  [invariant]
+    continuation_patch   action[t-1]^2 (-)                                            all=1.00  [invariant]
+
+  groups broken up (1):
+    reward_environment   {1 (-), reward_environment^2 (-)}                            [n.s., q=0.677]
+Saved /home/daniel/repositories/SPICE/weinhardt2026/studies/bustamante2023/results/betas_stability/betas_structural_run2_reward.csv
+Saved /home/daniel/repositories/SPICE/weinhardt2026/studies/bustamante2023/results/betas_stability/betas_structural_run2_reward.png
+Trial-count check: effort_cost ~ log trials, r = +0.01 (p = 0.839)
+
+=== structural beta effects — effort_cost ===
+  13 nodes tested (FDR family), 34 reported leaves, 0 significant at FDR 0.05
+    reward_environment   reward_environment^2 (-)                                     all=0.94 any=0.94 beta=+0.472 OR=1.60 q=0.591
+    depletion_patch_harvest depletion_patch_harvest^2 (-)                                all=0.42 any=0.42 beta=+0.184 OR=1.20 q=0.591
+    depletion_patch_harvest depletion_patch_harvest^2 (+)                                all=0.55 any=0.55 beta=-0.172 OR=0.84 q=0.591
+    reward_patch_harvest reward_patch_harvest^2 (+)                                   all=0.06 any=0.06 beta=-0.217 OR=0.80 q=0.917
+    reward_patch_harvest reward_patch_harvest^2 (-)                                   all=0.92 any=0.92 beta=+0.136 OR=1.15 q=0.923
+    depletion_patch_exit depletion_patch_exit^2 (-)                                   all=0.23 any=0.23 beta=+0.037 OR=1.04 q=0.953
+    depletion_patch_harvest 1 (+)                                                        all=0.51 any=0.51 beta=+0.017 OR=1.02 q=0.953
+    depletion_patch_harvest 1 (-)                                                        all=0.49 any=0.49 beta=-0.017 OR=0.98 q=0.953
+    depletion_patch_exit depletion_patch_exit^2 (+)                                   all=0.61 any=0.61 beta=+0.008 OR=1.01 q=0.953
+
+  reported but not tested (25):
+    reward_environment   1 (-)                                                        all=1.00  [invariant]
+    reward_environment   reward_environment (-)                                       all=1.00  [invariant]
+    reward_environment   reward[t] (+)                                                all=1.00  [invariant]
+    reward_environment   reward[t]^2 (-)                                              all=1.00  [invariant]
+    reward_environment   reward_environment*reward[t] (+)                             all=1.00  [invariant]
+    reward_patch_harvest reward_patch_harvest*reward[t] (+)                           all=0.99  [invariant]
+    reward_patch_harvest 1 (-)                                                        all=0.96  [invariant]
+    reward_patch_harvest reward_patch_harvest (-)                                     all=1.00  [invariant]
+    reward_patch_harvest reward[t] (+)                                                all=1.00  [invariant]
+    reward_patch_harvest reward[t]^2 (-)                                              all=1.00  [invariant]
+    reward_patch_exit    1 (+)                                                        all=1.00  [invariant]
+    reward_patch_exit    reward_patch_exit (-)                                        all=1.00  [invariant]
+    reward_patch_exit    reward_patch_exit^2 (+)                                      all=0.98  [invariant]
+    depletion_patch_harvest dreward[t]^2 (-)                                             all=0.99  [invariant]
+    depletion_patch_harvest depletion_patch_harvest (-)                                  all=1.00  [invariant]
+    depletion_patch_harvest dreward[t] (+)                                               all=1.00  [invariant]
+    depletion_patch_harvest depletion_patch_harvest*dreward[t] (-)                       all=1.00  [invariant]
+    depletion_patch_exit 1 (+)                                                        all=1.00  [invariant]
+    depletion_patch_exit depletion_patch_exit (-)                                     all=1.00  [invariant]
+    continuation_patch   1 (+)                                                        all=1.00  [invariant]
+    continuation_patch   continuation_patch (-)                                       all=1.00  [invariant]
+    continuation_patch   action[t-1] (-)                                              all=1.00  [invariant]
+    continuation_patch   continuation_patch*action[t-1] (-)                           all=1.00  [invariant]
+    continuation_patch   continuation_patch^2 (-)                                     all=1.00  [invariant]
+    continuation_patch   action[t-1]^2 (-)                                            all=1.00  [invariant]
+
+  groups broken up (4):
+    reward_environment   {1 (-), reward_environment^2 (-)}                            [n.s., q=0.591]
+    reward_patch_harvest {reward_patch_harvest^2 (-), reward_patch_harvest*reward[t]  [n.s., q=0.923]
+    depletion_patch_harvest {1 (-), depletion_patch_harvest^2 (-)}                       [n.s., q=0.917]
+    depletion_patch_harvest {1 (+), depletion_patch_harvest^2 (+)}                       [n.s., q=0.923]
+Saved /home/daniel/repositories/SPICE/weinhardt2026/studies/bustamante2023/results/betas_stability/betas_structural_run2_effort_cost.csv
+Saved /home/daniel/repositories/SPICE/weinhardt2026/studies/bustamante2023/results/betas_stability/betas_structural_run2_effort_cost.png

@@ -44,6 +44,7 @@ if __name__=='__main__':
     parser.add_argument('--shooting_steps', type=int, default=100, help='Multi-step shooting horizon for Stage 2 SINDy refit (1=one-step-ahead, default: 100)')
     parser.add_argument('--sindy_weight', type=float, default=0.01, help='Weight for SINDy regularization during RNN training')
     parser.add_argument('--sindy_alpha', type=float, default=0.0001, help='Degree-weighted coefficient penalty strength (ridge alpha)')
+    parser.add_argument('--polynomial_degree', type=int, default=2, help='Polynomial degree of the SINDy candidate library')
     parser.add_argument('--pruning_test', type=float, default=0.5, help='Minimum fraction of ensemble members that must exceed pruning_threshold for a term to survive (ensemble ratio test)')
     parser.add_argument('--pruning_threshold', type=float, default=0.01, help='Significance threshold value for SINDy coefficients')
     parser.add_argument('--pruning_frequency', type=int, default=100, help='Epochs between pruning events')
@@ -223,7 +224,7 @@ if __name__=='__main__':
         # sindy fitting parameters
         sindy_weight=args.sindy_weight,
         sindy_alpha=args.sindy_alpha,
-        sindy_library_polynomial_degree=2,
+        sindy_library_polynomial_degree=args.polynomial_degree,
         sindy_pruning_frequency=args.pruning_frequency,
         sindy_threshold_pruning=args.pruning_threshold,
         sindy_ensemble_pruning=args.pruning_test,

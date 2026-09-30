@@ -27,6 +27,7 @@ from matplotlib.cm import ScalarMappable
 
 from spice import SpiceEstimator
 from weinhardt2026.figures.panel_utils import save_panel
+from weinhardt2026.utils.checkpoints import load_estimator
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -91,6 +92,48 @@ def _load_stability_runs(pkl_paths, spice_class, spice_config, n_actions,
             coefficients[m] = c.numpy()
 
         runs.append({'presence': presence, 'coefficients': coefficients})
+
+    return runs, candidate_terms, modules, prior_mask
+
+
+def _load_ensemble_members(pkl_path, spice_class, spice_config, n_actions,
+                           polynomial_degree=2, model_kwargs=None):
+    """Load one checkpoint and return each ensemble member as a separate "run".
+
+    Same return structure as `_load_stability_runs`, so a single fit can be checked for
+    within-run stability (agreement across ensemble members) before stability runs exist.
+    """
+    estimator = load_estimator(
+        model_path=pkl_path,
+        spice_class=spice_class,
+        spice_config=spice_config,
+        n_actions=n_actions,
+        polynomial_degree=polynomial_degree,
+        model_kwargs=model_kwargs,
+    )
+    candidate_terms = estimator.get_candidate_terms()
+    modules = estimator.get_modules()
+    prior_mask = {
+        m: estimator.model.sindy_coefficients_prior_mask[m][0, 0, 0].detach().cpu().float().numpy()
+        for m in modules
+    }
+
+    coefficients = estimator.get_sindy_coefficients(aggregate=False)  # (E, P, X, C)
+    presence = {
+        m: estimator.model.sindy_coefficients_presence[m].detach().cpu().float().numpy()[:, :, 0]
+        for m in modules
+    }
+    ensemble_size = presence[modules[0]].shape[0]
+
+    runs = []
+    for member in range(ensemble_size):
+        runs.append({
+            'presence': {m: presence[m][member] for m in modules},
+            'coefficients': {
+                m: coefficients[m][member, :, 0].detach().cpu().numpy() * presence[m][member]
+                for m in modules
+            },
+        })
 
     return runs, candidate_terms, modules, prior_mask
 
@@ -362,13 +405,14 @@ def _plot_hpscan_heatmaps(hpscan_df, output_dir):
 
 def plot_figure5(stability_pkl_paths, spice_class, spice_config, n_actions,
                  output_dir, polynomial_degree=2, model_kwargs=None,
-                 hpscan_csv=None):
+                 hpscan_csv=None, per_member=False):
     """Generate Figure 5: across-run stability analysis.
 
     Parameters
     ----------
     stability_pkl_paths : list[str]
-        Paths to the stability run .pkl files.
+        Paths to the stability run .pkl files. With ``per_member=True``, a single
+        path whose ensemble members are compared instead of separate runs.
     spice_class : type
         Model class (e.g. workingmemory.SpiceModel).
     spice_config : SpiceConfig
@@ -384,12 +428,23 @@ def plot_figure5(stability_pkl_paths, spice_class, spice_config, n_actions,
     hpscan_csv : str, optional
         Path to HP scan results CSV (from analysis_sparsity_hpscan).
         If provided, generates the HP sensitivity heatmap panel.
+    per_member : bool
+        Treat the ensemble members of a single checkpoint as the runs.
     """
-    print("Loading stability runs...")
-    runs, candidate_terms, modules, prior_mask = _load_stability_runs(
-        stability_pkl_paths, spice_class, spice_config, n_actions,
-        polynomial_degree=polynomial_degree, model_kwargs=model_kwargs,
-    )
+    if per_member:
+        if len(stability_pkl_paths) != 1:
+            raise ValueError('per_member=True expects exactly one checkpoint path.')
+        print("Loading ensemble members...")
+        runs, candidate_terms, modules, prior_mask = _load_ensemble_members(
+            stability_pkl_paths[0], spice_class, spice_config, n_actions,
+            polynomial_degree=polynomial_degree, model_kwargs=model_kwargs,
+        )
+    else:
+        print("Loading stability runs...")
+        runs, candidate_terms, modules, prior_mask = _load_stability_runs(
+            stability_pkl_paths, spice_class, spice_config, n_actions,
+            polynomial_degree=polynomial_degree, model_kwargs=model_kwargs,
+        )
     print(f"  Loaded {len(runs)} runs, {len(modules)} modules")
 
     print("Plotting figure 5 stability panel...")

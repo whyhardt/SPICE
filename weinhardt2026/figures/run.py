@@ -19,7 +19,7 @@ from weinhardt2026.studies.braun2018 import spice_braun2018
 from weinhardt2026.studies.bruckner2025 import spice_bruckner2025
 from weinhardt2026.studies.bustamante2023 import spice_bustamante2023
 from weinhardt2026.studies.ganesh2024a import spice_ganesh2024a
-from weinhardt2026.studies.kolff2025 import spice_kolff2025_groom
+from weinhardt2026.studies.kolff2025 import spice_kolff2025_groom, spice_kolff2025_tobeto
 from weinhardt2026.figures.figure2 import plot_figure2
 from weinhardt2026.figures.figure3 import plot_figure3
 from weinhardt2026.figures.figure4 import plot_figure4
@@ -93,6 +93,14 @@ STUDY_REGISTRY = {
         'n_actions': 2,
         'figures_dir': 'weinhardt2026/studies/ganesh2024a/figures',
         'stability_pattern': 'weinhardt2026/studies/ganesh2024a/params/params/spice_ganesh2024a_stability_[0-9].pkl',
+    },
+    'kolff2025_tobeto': {
+        'spice_class': spice_kolff2025_tobeto.SpiceModel,
+        'spice_config': spice_kolff2025_tobeto.CONFIG,
+        'n_actions': 4,
+        'polynomial_degree': 1,
+        'figures_dir': 'weinhardt2026/studies/kolff2025/figures',
+        'stability_pattern': 'weinhardt2026/studies/kolff2025/params/params/spice_kolff2025_tobeto_stability_[0-9].pkl',
     },
     'kolff2025_groom': {
         'spice_class': spice_kolff2025_groom.SpiceModel,

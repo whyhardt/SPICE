@@ -15,7 +15,7 @@ from weinhardt2026.analysis.analysis_model_evaluation import analysis_model_eval
 from weinhardt2026.utils.generation import generate_repeated
 
 
-train_spice = True
+train_spice = False
 train_bay = False
 train_gru = False
 

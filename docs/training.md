@@ -271,7 +271,7 @@ Main user-facing class implementing sklearn's estimator interface.
 | X | Experiments | |
 | C | Candidate terms | SINDy library size |
 
-**Items vs. Actions:** Items and actions can be decoupled. `n_items` is the number of latent value representations the model maintains internally (state shape uses I). `n_actions` is the observable action space (logits shape uses A). By default `n_items = n_actions`, but they can differ — e.g., in a two-armed bandit with multiple symbol pairs, items might be contrast-specific values (low vs. high) while actions are position-specific (left vs. right). See `weinhardt2026/studies/ganesh2024a/ganesh2024a.ipynb` for an example.
+**Items vs. Actions:** Items and actions can be decoupled. `n_items` is the number of latent value representations the model maintains internally (state shape uses I). `n_actions` is the observable action space (logits shape uses A). By default `n_items = n_actions`, but they can differ — e.g., in a two-armed bandit with multiple symbol pairs, items might be contrast-specific values (low vs. high) while actions are position-specific (left vs. right). See `weinhardt2026/studies/ganesh2024a/spice_ganesh2024a.py` for an example.
 
 **Canonical internal shapes:**
 - Input: `(T, W, E, B, F)` — after `init_forward_pass()` promotes from batch-first `(B, T, W, F)`
