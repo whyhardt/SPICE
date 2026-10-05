@@ -100,20 +100,35 @@ class EnsembleRNNModule(nn.Module):
     Input:  (within_ts, ensemble, batch, n_items, features)
     Output: (within_ts, ensemble, batch, n_items, 1)
     """
-    def __init__(self, ensemble_size, input_size, embedding_size, dropout=0., compiled_forward=True, dt: float = 1., include_state: bool = True, **kwargs):
+    def __init__(
+        self, 
+        ensemble_size, 
+        input_size, 
+        embedding_size, 
+        dropout=0., 
+        compiled_forward=True, 
+        dt: float = 1., 
+        include_state: bool = True, 
+        include_bias: bool = True,
+        **kwargs):
         super().__init__()
 
         proj_size = 8 + input_size + embedding_size
 
+        self.input_size = input_size
+        self.embedding_size = embedding_size
         self._compile = compiled_forward
         self.dropout = nn.Dropout(p=dropout)
         self.dt = dt
         self.include_state = include_state
+        self.include_bias = include_bias
 
         # Linear projection: (E, proj_size, input_size)
-        self.weight_linear = nn.Parameter(torch.empty(ensemble_size, proj_size, input_size+embedding_size+1))
-        self.bias_linear = nn.Parameter(torch.zeros(ensemble_size, proj_size))
-        nn.init.xavier_uniform_(self.weight_linear.view(ensemble_size, proj_size, input_size+embedding_size+1))
+        self.weight_context = nn.Parameter(torch.empty(ensemble_size, proj_size, embedding_size))
+        self.weight_feature = nn.Parameter(torch.empty(ensemble_size, proj_size, input_size+1))
+        self.bias_feature = nn.Parameter(torch.zeros(ensemble_size, proj_size))
+        nn.init.xavier_uniform_(self.weight_feature.view(ensemble_size, proj_size, input_size+1))
+        nn.init.xavier_uniform_(self.weight_context.view(ensemble_size, proj_size, embedding_size))
         
         # GRU cell parameters: 3 gates (reset, update, new) x hidden_size
         self.weight_n = nn.Parameter(torch.empty(ensemble_size, 1, proj_size))
@@ -133,24 +148,37 @@ class EnsembleRNNModule(nn.Module):
         # state:  (W, E, B, I) — last row is current hidden state
         W, E, B, I, F = inputs.shape
 
-        x = inputs.reshape(W, E, B * I, F)                          # (W, E, B*I, F)
+        inputs = inputs.reshape(W, E, B * I, F)
+        embedding = inputs[0, ..., self.input_size:]
+        x = inputs[..., :self.input_size]
         h = state[-1].contiguous().reshape(E, B * I, 1) if self.include_state and state is not None else torch.zeros(E, B * I, 1, device=inputs.device)
 
+        # context computation -> individual mechanism activation
+        context = self.dropout(torch.nn.functional.sigmoid(torch.einsum('eoi,ebi->ebo', self.weight_context, embedding)))
+        
         # GRU cell over within-trial timesteps
         outputs = []
         for t in range(W):
-
+            
+            # -------- GROUP LEVEL FEATURE COMPUTATION ---------            
             # include_state=False: this module's own state is never a valid
             # input to its dynamics -- not just at the first within-trial step
             # but at every step, so a W>1 module doesn't silently become
             # self-referential after step 0 while its output still accumulates.
             h_in = h if self.include_state else torch.zeros_like(h)
             x_t = torch.concat((x[t], h_in), dim=-1)
-            gi = torch.einsum('eoi,ebi->ebo', self.weight_linear, x_t) + self.bias_linear.unsqueeze(1)  # (E, B*I, proj)
-            gi = self.dropout(torch.nn.functional.gelu(gi))
+            y_t = torch.einsum('eoi,ebi->ebo', self.weight_feature, x_t)      # (E, B*I, proj)
+            if self.include_bias:
+                y_t = y_t + self.bias_feature.unsqueeze(1)
+            y_t = self.dropout(torch.nn.functional.gelu(y_t))
+            
+            # -------- INDIVIDUAL LEVEL FEATURE EXTRACTION ---------
+            y_t = y_t * context
             
             # New candidate
-            n = torch.einsum('ego,ebo->ebg', self.weight_n, gi) + self.bias_n.unsqueeze(1)     # (E, B*I, 1)
+            n = torch.einsum('ego,ebo->ebg', self.weight_n, y_t)       # (E, B*I, 1)
+            if self.include_bias:
+                n = n + self.bias_n.unsqueeze(1)
 
             # New hidden state: bounded + learnable rescaling
             h = h + self.dt * n
@@ -491,7 +519,16 @@ class BaseModel(nn.Module):
         if dropout is None:
             dropout = self.dropout
         
-        self.submodules_rnn[key_module] = EnsembleRNNModule(ensemble_size=self.ensemble_size, input_size=input_size, embedding_size=embedding_size, dropout=dropout, compiled_forward=self.compiled_forward, dt=dt, include_state=include_state)
+        self.submodules_rnn[key_module] = EnsembleRNNModule(
+            ensemble_size=self.ensemble_size, 
+            input_size=input_size, 
+            embedding_size=embedding_size, 
+            dropout=dropout, 
+            compiled_forward=self.compiled_forward, 
+            dt=dt, 
+            include_state=include_state, 
+            include_bias=include_bias,
+            )
         self.sindy_specs[key_module] = {}
         self.sindy_specs[key_module]['include_bias'] = include_bias
         self.sindy_specs[key_module]['interaction_only'] = interaction_only

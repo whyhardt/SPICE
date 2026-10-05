@@ -26,9 +26,9 @@ CONFIG = SpiceConfig(
         ],
     },
     memory_state={
-        'value_wm_reward': None,
-        'value_reward': None,
-        'value_choice': None,
+        'value_wm_reward': 0,
+        'value_reward': 0,
+        'value_choice': 0,
         
         # Buffers (excluded from logits)
         # 'action[t-1]': 0,
@@ -64,7 +64,7 @@ class SpiceModel(BaseModel):
         )
         
         self.setup_module(key_module='value_wm_reward_chosen', include_state=False)
-
+                
         self.preprocess_coefficients()
 
     def preprocess_coefficients(self):

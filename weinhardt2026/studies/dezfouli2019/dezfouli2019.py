@@ -40,7 +40,7 @@ from weinhardt2026.utils.checkpoints import (
 from weinhardt2026.utils.generation import generate_repeated
 
 
-train_spice = True
+train_spice = False
 train_benchmark = False
 train_gru = False
 
@@ -54,7 +54,7 @@ N_REPEATS = 100
 path_data = 'weinhardt2026/studies/dezfouli2019/data/dezfouli2019.csv'
 data_dir = 'weinhardt2026/studies/dezfouli2019/data'
 output_dir = 'weinhardt2026/studies/dezfouli2019/results'
-path_spice = 'weinhardt2026/studies/dezfouli2019/params/spice_dezfouli2019_new.pkl'
+path_spice = 'weinhardt2026/studies/dezfouli2019/params/spice_dezfouli2019_original_sw_0.001.pkl'
 path_benchmark = 'weinhardt2026/studies/dezfouli2019/params/benchmark_dezfouli2019.pkl'
 path_gru = 'weinhardt2026/studies/dezfouli2019/params/gru_dezfouli2019.pkl'
 params_array_dir = 'weinhardt2026/studies/dezfouli2019/params_array'
