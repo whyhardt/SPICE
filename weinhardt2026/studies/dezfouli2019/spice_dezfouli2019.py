@@ -18,12 +18,15 @@ CONFIG = SpiceConfig(
         'value_reward_not_chosen': [
             # 'value_reward_mean',
         ],
-        'value_choice_chosen': [
-            # 'action[t-1]',
+        'value_choice': [
+            'choice[t]',
         ],
-        'value_choice_not_chosen': [
-            # 'action[t-1]',
-        ],
+        # 'value_choice_chosen': [
+        #     # 'action[t-1]',
+        # ],
+        # 'value_choice_not_chosen': [
+        #     # 'action[t-1]',
+        # ],
     },
     memory_state={
         'value_wm_reward': 0,
@@ -48,8 +51,8 @@ CONFIG = SpiceConfig(
 # of the sign-split signals are kept — unlike indicators, they are continuous.
 BINARY_SIGNALS = {
     'reward[t]', 
-    'reward[t-1]', 
-    # 'action[t]', 
+    # 'reward[t-1]', 
+    'choice[t]', 
     # 'action[t-1]',
     }
 
@@ -136,22 +139,30 @@ class SpiceModel(BaseModel):
 
             # --- CHOICE VALUE UPDATES ---
             self.call_module(
-                key_module='value_choice_chosen',
+                key_module='value_choice',
                 key_state='value_choice',
-                action_mask=spice_signals.actions[trial],
-                # inputs=self.state['action[t-1]'],
+                inputs=spice_signals.actions[trial],
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
             )
+            
+            # self.call_module(
+            #     key_module='value_choice_chosen',
+            #     key_state='value_choice',
+            #     action_mask=spice_signals.actions[trial],
+            #     # inputs=self.state['action[t-1]'],
+            #     participant_index=spice_signals.participant_ids,
+            #     participant_embedding=participant_embedding,
+            # )
 
-            self.call_module(
-                key_module='value_choice_not_chosen',
-                key_state='value_choice',
-                action_mask=1 - spice_signals.actions[trial],
-                # inputs=self.state['action[t-1]'],
-                participant_index=spice_signals.participant_ids,
-                participant_embedding=participant_embedding,
-            )
+            # self.call_module(
+            #     key_module='value_choice_not_chosen',
+            #     key_state='value_choice',
+            #     action_mask=1 - spice_signals.actions[trial],
+            #     # inputs=self.state['action[t-1]'],
+            #     participant_index=spice_signals.participant_ids,
+            #     participant_embedding=participant_embedding,
+            # )
 
             # --- BUFFER UPDATES ---
             # self.state['action[t-1]'] = spice_signals.actions[trial]

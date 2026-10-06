@@ -13,8 +13,9 @@ CONFIG = SpiceConfig(
     library_setup = {
         'value_reward_chosen': ['reward'],  # --> n_terms = 6
         'value_reward_not_chosen': [],      # --> n_terms = 3
-        'value_choice_chosen': [],  # --> n_terms = 6
-        'value_choice_not_chosen': [],
+        'value_choice': ['choice'],  # --> n_terms = 6
+        # 'value_choice_chosen': [],  # --> n_terms = 6
+        # 'value_choice_not_chosen': [],
         },                                  # --> n_terms_total = 15
     memory_state={
             'value_reward': 0.,
@@ -71,22 +72,30 @@ class SpiceModel(BaseModel):
 
             # updates for value_choice
             self.call_module(
-                key_module='value_choice_chosen',
+                key_module='value_choice',
                 key_state='value_choice',
-                action_mask=spice_signals.actions[timestep],
+                inputs=spice_signals.actions[timestep],
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
                 experiment_index=spice_signals.experiment_ids,
                 )
+            # self.call_module(
+            #     key_module='value_choice_chosen',
+            #     key_state='value_choice',
+            #     action_mask=spice_signals.actions[timestep],
+            #     participant_index=spice_signals.participant_ids,
+            #     participant_embedding=participant_embedding,
+            #     experiment_index=spice_signals.experiment_ids,
+            #     )
             
-            self.call_module(
-                key_module='value_choice_not_chosen',
-                key_state='value_choice',
-                action_mask=1-spice_signals.actions[timestep],
-                participant_index=spice_signals.participant_ids,
-                participant_embedding=participant_embedding,
-                experiment_index=spice_signals.experiment_ids,
-                )
+            # self.call_module(
+            #     key_module='value_choice_not_chosen',
+            #     key_state='value_choice',
+            #     action_mask=1-spice_signals.actions[timestep],
+            #     participant_index=spice_signals.participant_ids,
+            #     participant_embedding=participant_embedding,
+            #     experiment_index=spice_signals.experiment_ids,
+            #     )
             
             # Now keep track of the logit in the output array
             # spice_signals.logits[timestep] = self.state['value_reward'] * beta_reward + self.state['value_choice'] * beta_choice

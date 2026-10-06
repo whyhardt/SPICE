@@ -11,13 +11,14 @@ CONFIG = SpiceConfig(
         'value_wm_reward_not_chosen': ['certainty[t]'],
         'value_reward_chosen': ['reward[t]', 'certainty[t]'],
         'value_reward_not_chosen': ['certainty[t]'],
-        'value_choice_chosen': ['certainty[t]', 'certainty_next[t+1]'],
-        'value_choice_not_chosen': ['certainty[t]', 'certainty_next[t+1]'],
+        'value_choice': ['choice[t]', 'certainty[t]', 'certainty_next[t+1]'],
+        # 'value_choice_chosen': ['certainty[t]', 'certainty_next[t+1]'],
+        # 'value_choice_not_chosen': ['certainty[t]', 'certainty_next[t+1]'],
     },
     memory_state={
-        'value_wm_reward': None,
-        'value_reward': None,
-        'value_choice': None,
+        'value_wm_reward': 0,
+        'value_reward': 0,
+        'value_choice': 0,
     },
     states_in_logit=[
         'value_wm_reward',
@@ -29,7 +30,7 @@ CONFIG = SpiceConfig(
 
 
 # Binary indicator control signals (x^2 = x): reward is 0/1.
-BINARY_SIGNALS = {'reward[t]'}
+BINARY_SIGNALS = {'reward[t]', 'choice[t]'}
 
 
 def prepare_dataset(dataset: SpiceDataset) -> SpiceDataset:
@@ -173,28 +174,40 @@ class SpiceModel(BaseModel):
 
             # --- CHOICE VALUE UPDATES ---
             self.call_module(
-                key_module='value_choice_chosen',
+                key_module='value_choice',
                 key_state='value_choice',
-                action_mask=action_contrast[trial],
                 inputs=(
+                    action_contrast[trial],
                     certainty_current,
                     certainty_next,
                 ),
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embeddings,
             )
+            
+            # self.call_module(
+            #     key_module='value_choice_chosen',
+            #     key_state='value_choice',
+            #     action_mask=action_contrast[trial],
+            #     inputs=(
+            #         certainty_current,
+            #         certainty_next,
+            #     ),
+            #     participant_index=spice_signals.participant_ids,
+            #     participant_embedding=participant_embeddings,
+            # )
 
-            self.call_module(
-                key_module='value_choice_not_chosen',
-                key_state='value_choice',
-                action_mask=1 - action_contrast[trial],
-                inputs=(
-                    certainty_current,
-                    certainty_next,
-                ),
-                participant_index=spice_signals.participant_ids,
-                participant_embedding=participant_embeddings,
-            )
+            # self.call_module(
+            #     key_module='value_choice_not_chosen',
+            #     key_state='value_choice',
+            #     action_mask=1 - action_contrast[trial],
+            #     inputs=(
+            #         certainty_current,
+            #         certainty_next,
+            #     ),
+            #     participant_index=spice_signals.participant_ids,
+            #     participant_embedding=participant_embeddings,
+            # )
 
             # --- LOGITS ---
             logits_item_space = (

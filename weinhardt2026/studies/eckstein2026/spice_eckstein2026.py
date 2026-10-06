@@ -10,15 +10,16 @@ CONFIG = SpiceConfig(
         'value_wm_reward_not_chosen': [],
         'value_reward_chosen': ['reward[t]'],
         'value_reward_not_chosen': [],
-        'value_choice_chosen': [],
-        'value_choice_not_chosen': [],
+        'value_choice': ['choice[t]'],
+        # 'value_choice_chosen': [],
+        # 'value_choice_not_chosen': [],
         'bias_attention': ['is_adjacent','is_opposite'],
     },
     memory_state={
-        'value_wm_reward': None,
-        'value_reward': None,
-        'value_choice': None,
-        'bias_attention': None,
+        'value_wm_reward': 0,
+        'value_reward': 0,
+        'value_choice': 0,
+        'bias_attention': 0,
     },
     states_in_logit=[
         'value_wm_reward',
@@ -33,7 +34,7 @@ CONFIG = SpiceConfig(
 # (x_i * x_j = 0): with 4 options no item is both adjacent and opposite to the choice,
 # and the sign-split value change satisfies relu(dvalue) * relu(-dvalue) = 0. The squares
 # of the sign-split signals are kept — unlike indicators, they are continuous.
-BINARY_SIGNALS = {'is_adjacent', 'is_opposite'}
+BINARY_SIGNALS = {'is_adjacent', 'is_opposite', 'choice[t]'}
 EXCLUSIVE_GROUPS = [{'is_adjacent', 'is_opposite'}]
 
 
@@ -123,22 +124,30 @@ class SpiceModel(BaseModel):
 
             # --- CHOICE VALUE UPDATES ---
             self.call_module(
-                key_module='value_choice_chosen',
+                key_module='value_choice',
                 key_state='value_choice',
-                action_mask=spice_signals.actions[trial],
-                # inputs=self.state['action[t-1]'],
+                inputs=spice_signals.actions[trial],
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
             )
+            
+            # self.call_module(
+            #     key_module='value_choice_chosen',
+            #     key_state='value_choice',
+            #     action_mask=spice_signals.actions[trial],
+            #     # inputs=self.state['action[t-1]'],
+            #     participant_index=spice_signals.participant_ids,
+            #     participant_embedding=participant_embedding,
+            # )
 
-            self.call_module(
-                key_module='value_choice_not_chosen',
-                key_state='value_choice',
-                action_mask=1 - spice_signals.actions[trial],
-                # inputs=self.state['action[t-1]'],
-                participant_index=spice_signals.participant_ids,
-                participant_embedding=participant_embedding,
-            )
+            # self.call_module(
+            #     key_module='value_choice_not_chosen',
+            #     key_state='value_choice',
+            #     action_mask=1 - spice_signals.actions[trial],
+            #     # inputs=self.state['action[t-1]'],
+            #     participant_index=spice_signals.participant_ids,
+            #     participant_embedding=participant_embedding,
+            # )
             
             # --- ATTENTION BIAS UPDATE ---
             chosen_idx = spice_signals.actions[trial].argmax(dim=-1, keepdim=True)

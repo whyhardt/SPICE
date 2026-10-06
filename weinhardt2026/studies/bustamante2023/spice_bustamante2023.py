@@ -13,14 +13,15 @@ CONFIG = SpiceConfig(
         'value_wm_reward_not_chosen': [],
         # 'value_reward_chosen': ['reward[t]'],
         # 'value_reward_not_chosen': [],
-        'value_choice_chosen': [],
-        'value_choice_not_chosen': [],
+        'value_choice': ['choice[t]'],
+        # 'value_choice_chosen': [],
+        # 'value_choice_not_chosen': [],
         # 'value_reward_environment': ['reward[t]'],
     },
     memory_state={
-        'value_wm_reward': None,
+        'value_wm_reward': 0,
         # 'value_reward': None,
-        'value_choice': None,
+        'value_choice': 0,
         # 'value_reward_environment': None,
     },
     states_in_logit=[
@@ -33,6 +34,9 @@ CONFIG = SpiceConfig(
 )
 
 
+BINARY_SIGNALS = ['choice[t]']
+
+
 class SpiceModel(BaseModel):
 
     def __init__(self, **kwargs):
@@ -43,6 +47,25 @@ class SpiceModel(BaseModel):
         )
 
         self.setup_module(key_module='value_wm_reward_chosen', include_state=False)
+        
+        self.preprocess_coefficients()
+        
+    def preprocess_coefficients(self):
+        """Zero out SINDy terms that are structurally redundant for binary indicators.
+
+        Binary indicators satisfy x^2 = x, so the squared term duplicates the linear one.
+        Two indicators of the same mutually exclusive group satisfy x_i * x_j = 0.
+        """
+        candidate_terms = self.get_candidate_terms()
+        for module in self.get_modules():
+            control_signals = self.spice_config.library_setup[module]
+            binary_signals = [s for s in control_signals if s in BINARY_SIGNALS]
+            for index_term, term in enumerate(candidate_terms[module]):
+                factors = term.split('*')
+                redundant = any(signal + '^2' in factors for signal in binary_signals)
+                if redundant:
+                    self.sindy_coefficients_presence[module][..., index_term] = 0
+                    self.sindy_coefficients_prior_mask[module][..., index_term] = 0
 
     def forward(self, inputs, state=None):
         spice_signals = self.init_forward_pass(inputs, state)
@@ -110,20 +133,29 @@ class SpiceModel(BaseModel):
 
             # --- CHOICE VALUE UPDATES (continuation) ---
             self.call_module(
-                key_module='value_choice_chosen',
+                key_module='value_choice',
                 key_state='value_choice',
-                action_mask=harvested,
+                action_mask=mask_harvest_value,
+                inputs=harvested,
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
             )
+            
+            # self.call_module(
+            #     key_module='value_choice_chosen',
+            #     key_state='value_choice',
+            #     action_mask=harvested,
+            #     participant_index=spice_signals.participant_ids,
+            #     participant_embedding=participant_embedding,
+            # )
 
-            self.call_module(
-                key_module='value_choice_not_chosen',
-                key_state='value_choice',
-                action_mask=exited,
-                participant_index=spice_signals.participant_ids,
-                participant_embedding=participant_embedding,
-            )
+            # self.call_module(
+            #     key_module='value_choice_not_chosen',
+            #     key_state='value_choice',
+            #     action_mask=exited,
+            #     participant_index=spice_signals.participant_ids,
+            #     participant_embedding=participant_embedding,
+            # )
 
             # --- LOGITS ---
             spice_signals.logits[trial] = (
