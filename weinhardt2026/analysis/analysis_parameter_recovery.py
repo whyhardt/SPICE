@@ -1,19 +1,21 @@
+import sys, os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
+
 import numpy as np
 import matplotlib.pyplot as plt
 import torch
 
 from spice import SpiceEstimator, csv_to_dataset
-from spice.precoded import workingmemory, workingmemory_counterfactual
-
-import sys, os
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 from weinhardt2026.studies.synthetic.benchmarking_qlearning import QLearning
 
+from spice.precoded.choice import SpiceModel, CONFIG
+# from spice.precoded.workingmemory import SpiceModel, CONFIG
+# from weinhardt2026.studies.dezfouli2019.spice_dezfouli2019 import SpiceModel, CONFIG
 
-path_data = 'weinhardt2026/studies/synthetic/data//synthetic_PARp_IT_0.csv'
-path_model = 'weinhardt2026/studies/synthetic/params/spice_synthetic_PARp_IT_0.pkl'
 
-spice_model = workingmemory#_counterfactual
+path_data = 'weinhardt2026/studies/synthetic/data/synthetic_PARp_IT_0.csv'
+path_model = 'weinhardt2026/studies/synthetic/params/spice_synthetic_PARp_IT_6_choice.pkl'
+
 rl_parameters = ['beta_reward', 'beta_choice', 'alpha_reward', 'alpha_penalty', 'alpha_choice', 'forget_rate']
 participants = [256]#[32, 64, 128, 256, 512]
 iterations = 1
@@ -39,8 +41,8 @@ sample_dataset = csv_to_dataset(
 )
 sample_dataset.normalize_rewards()
 sample_model = SpiceEstimator(
-    spice_class=spice_model.SpiceModel,
-    spice_config=spice_model.CONFIG,
+    spice_class=SpiceModel,
+    spice_config=CONFIG,
     n_actions=sample_dataset.ys.shape[-1],
     n_participants=1,
     sindy_library_polynomial_degree=2,
@@ -54,20 +56,50 @@ print(f"Detected n_coefficients_fitted_model = {n_coefficients_fitted_model}")
 # get coefficients storage
 true_coefs = np.zeros((len(participants), participants[-1]*iterations, n_coefficients_fitted_model))
 fitted_coefs = np.zeros((len(participants), participants[-1]*iterations, n_coefficients_fitted_model))
-active_params = np.zeros((len(participants), participants[-1]*iterations, 1))
+active_params = np.zeros((len(participants), participants[-1]*iterations), dtype=int)
+active_mechanisms = np.full((len(participants), participants[-1]*iterations), None, dtype=object)
 
-def count_active_params(dict_rl_parameters):
-    
-    n_participants = dict_rl_parameters[rl_parameters[0]].shape[0]
-    n_active_params = torch.zeros((n_participants, 1)) + len(rl_parameters)
-    
-    n_active_params = torch.where(torch.logical_or(dict_rl_parameters['beta_reward'] == 0, dict_rl_parameters['alpha_reward'] == 0), n_active_params-4, n_active_params)  # if beta_reward == 0: no alpha_reward, alpha_penalty, forget_rate as well
-    n_active_params = torch.where(torch.logical_or(dict_rl_parameters['beta_choice'] == 0, dict_rl_parameters['alpha_choice'] == 0), n_active_params-2, n_active_params)  # if beta_choice == 0: no alpha_choice as well
-    
-    n_active_params = torch.where(dict_rl_parameters['alpha_penalty'] == 0, n_active_params-1, n_active_params)
-    n_active_params = torch.where(dict_rl_parameters['forget_rate'] == 0, n_active_params-1, n_active_params)
-    
-    return n_active_params.reshape(n_participants).numpy()
+# number of parameters each mechanism adds to the ground-truth model
+mechanism_n_params = {'Reward': 2, 'Asymmetry': 1, 'Forgetting': 1, 'Choice': 2}
+
+# ground-truth mechanism a module requires; without it the module has no (identifiable) dynamics:
+# value_reward never enters the logits without Reward, value_reward_not_chosen only changes through Forgetting,
+# value_choice never enters the logits (or stays 0) without Choice
+module_mechanism = {
+    'value_reward_chosen': 'Reward',
+    'value_reward_not_chosen': 'Forgetting',
+    'value_choice_chosen': 'Choice',
+    'value_choice_not_chosen': 'Choice',
+}
+
+def get_mechanism_masks(dict_rl_parameters):
+    """Boolean array (n_participants,) per mechanism: is it active in the ground-truth model?
+
+    alpha_penalty is never zero in the synthetic data; asymmetry means alpha_penalty != alpha_reward.
+    """
+
+    reward = (dict_rl_parameters['beta_reward'] != 0) & (dict_rl_parameters['alpha_reward'] != 0)
+    choice = (dict_rl_parameters['beta_choice'] != 0) & (dict_rl_parameters['alpha_choice'] != 0)
+    masks = {
+        'Reward': reward,
+        'Asymmetry': reward & (dict_rl_parameters['alpha_penalty'] != dict_rl_parameters['alpha_reward']),
+        'Forgetting': reward & (dict_rl_parameters['forget_rate'] != 0),
+        'Choice': choice,
+    }
+    return {name: mask.reshape(-1).cpu().numpy() for name, mask in masks.items()}
+
+def get_active_mechanisms(mechanism_masks):
+    """Label each participant's ground-truth model by its active mechanisms.
+
+    Returns a list of labels and an array of parameter counts, one entry per participant.
+    """
+
+    labels, n_params_total = [], []
+    for index_participant in range(len(mechanism_masks['Reward'])):
+        active = [(name, mechanism_n_params[name]) for name, is_active in mechanism_masks.items() if is_active[index_participant]]
+        labels.append('\n'.join(name for name, _ in active) if active else 'None')
+        n_params_total.append(sum(n_params for _, n_params in active))
+    return labels, np.array(n_params_total)
 
 # -------------------------------------------------------------------------------
 # Get true and fitted SINDy coefficients
@@ -82,6 +114,7 @@ for index_par, par in enumerate(participants):
         n_actions = dataset.ys.shape[-1]
         mask = dataset.xs[:, 0, 0, -3] == 0  # block -> 0; each participant only once
         rl_parameters_dataset = {param: dataset.xs[mask, 0, 0, n_actions*2+index_param].unsqueeze(-1) for index_param, param in enumerate(rl_parameters)}
+        mechanism_masks = get_mechanism_masks(rl_parameters_dataset)
 
         # load true model
         true_model = QLearning(
@@ -92,8 +125,8 @@ for index_par, par in enumerate(participants):
         
         # load fitted model
         fitted_model = SpiceEstimator(
-            spice_class=spice_model.SpiceModel,
-            spice_config=spice_model.CONFIG,
+            spice_class=SpiceModel,
+            spice_config=CONFIG,
             n_actions=n_actions,
             n_participants=par,
             sindy_library_polynomial_degree=2,
@@ -110,17 +143,22 @@ for index_par, par in enumerate(participants):
 
             # get candidate terms from true model to map into fitted model coef positions
             candidate_terms_fitted_model = fitted_model.sindy_candidate_terms[module]
-            candidate_terms_true_model = true_model.sindy_candidate_terms[module]
+            # modules absent from the true model (e.g. working memory) keep true coefficients at 0
+            module_in_true_model = module in true_model.sindy_candidate_terms
+            candidate_terms_true_model = true_model.sindy_candidate_terms[module] if module_in_true_model else []
+            # participants whose ground truth contains the module (requires its mechanism); others are treated like absent modules
+            # all coefficients are compared in delta form (v[t+1] = v[t] + delta): 0 = term inactive
+            module_present = mechanism_masks[module_mechanism[module]] if module in module_mechanism else np.full(par, module_in_true_model)
             for term in candidate_terms_true_model:
-                if term not in candidate_terms_fitted_model:
-                    raise ValueError(f"Candidate term {term} of the true model was not found among the candidate terms of the fitted model ({candidate_terms_fitted_model}).")
-
-                index_coef = candidate_terms_fitted_model.index(term)
                 # Extract coefficient values: shape is (n_ensemble, n_participants, n_experiments, n_terms)
                 true_coef_vals = true_model.sindy_coefficients[module][0, :, 0, candidate_terms_true_model.index(term)].detach().cpu().numpy()
-                if module == term:
-                    true_coef_vals += 1
-                true_coefs[index_par, par*it:par*(it+1), index_coefs_all+index_coef] = true_coef_vals
+                if term not in candidate_terms_fitted_model:
+                    if np.any(true_coef_vals != 0):
+                        raise ValueError(f"Candidate term {term} of the true model was not found among the candidate terms of the fitted model ({candidate_terms_fitted_model}).")
+                    continue  # term inactive for everyone in the true model and absent from the fitted library
+
+                index_coef = candidate_terms_fitted_model.index(term)
+                true_coefs[index_par, par*it:par*(it+1), index_coefs_all+index_coef] = true_coef_vals * module_present
 
             # term collapsing
             for term in term_collapsing:
@@ -136,15 +174,15 @@ for index_par, par in enumerate(participants):
             #     fitted_model.sindy_coefficients_presence[module][0, :, 0, :]
             # ).detach().cpu().numpy()
             # fitted_coef_vals = (fitted_model.sindy_coefficients[module][:, :, 0, :].median(dim=0)[0] * fitted_model.sindy_coefficients_presence[module][:, :, 0, :].float().median(dim=0)[0]).detach().cpu().numpy()
-            index_ident = candidate_terms_fitted_model.index(module)
-            fitted_coef_vals[module][:, 0, index_ident] += 1
             fitted_coefs[index_par, par*it:par*(it+1), index_coefs_all:index_coefs_all+n_terms_module] = fitted_coef_vals[module][:, 0]
             
             index_coefs_all += n_terms_module
 
-        # store number of active params per participant
-        active_params[index_par, par*it:par*(it+1), 0] = count_active_params(rl_parameters_dataset)
-        
+        # store active mechanisms and number of active params per participant
+        labels_mechanisms, n_params_mechanisms = get_active_mechanisms(mechanism_masks)
+        active_mechanisms[index_par, par*it:par*(it+1)] = labels_mechanisms
+        active_params[index_par, par*it:par*(it+1)] = n_params_mechanisms
+
 # -------------------------------------------------------------------------------
 # POST-PROCESSING: Compute classification metrics
 # -------------------------------------------------------------------------------
@@ -154,68 +192,77 @@ true_active = np.abs(true_coefs) >= coefficient_threshold
 fitted_active = np.abs(fitted_coefs) >= coefficient_threshold
 
 # Get unique active param counts for x-axis
-max_active_params = int(np.nanmax(active_params)) + 1
+max_active_params = int(np.max(active_params)) + 1
 n_param_bins = max_active_params
 
-# Initialize metric storage: (n_participant_sizes, n_active_param_bins)
-true_pos_count = np.zeros((len(participants), n_param_bins))
-true_neg_count = np.zeros((len(participants), n_param_bins))
-false_pos_count = np.zeros((len(participants), n_param_bins))
-false_neg_count = np.zeros((len(participants), n_param_bins))
-sample_count = np.zeros((len(participants), n_param_bins))
+def compute_confusion_counts(group_index, n_groups):
+    """Sum TP/TN/FP/FN over all coefficients per (participant size, group).
 
-# Compute confusion matrix counts
-for index_par in range(len(participants)):
-    par = participants[index_par]
-    n_samples = par * iterations
+    group_index: int array (n_participant_sizes, n_samples) assigning each sample to a group; -1 = skip.
+    """
 
-    for i in range(n_samples):
-        n_active = int(active_params[index_par, i, 0])
-        if n_active == 0:
-            continue
+    counts = {key: np.zeros((len(participants), n_groups)) for key in ('tp', 'tn', 'fp', 'fn', 'samples')}
+    for index_par, par in enumerate(participants):
+        for i in range(par * iterations):
+            group = group_index[index_par, i]
+            if group < 0:
+                continue
 
-        true_act = true_active[index_par, i]
-        fitted_act = fitted_active[index_par, i]
+            true_act = true_active[index_par, i]
+            fitted_act = fitted_active[index_par, i]
 
-        # Compute TP, TN, FP, FN for this sample
-        tp = np.sum(true_act & fitted_act)
-        tn = np.sum(~true_act & ~fitted_act)
-        fp = np.sum(~true_act & fitted_act)
-        fn = np.sum(true_act & ~fitted_act)
+            counts['tp'][index_par, group] += np.sum(true_act & fitted_act)
+            counts['tn'][index_par, group] += np.sum(~true_act & ~fitted_act)
+            counts['fp'][index_par, group] += np.sum(~true_act & fitted_act)
+            counts['fn'][index_par, group] += np.sum(true_act & ~fitted_act)
+            counts['samples'][index_par, group] += 1
+    return counts
 
-        true_pos_count[index_par, n_active] += tp
-        true_neg_count[index_par, n_active] += tn
-        false_pos_count[index_par, n_active] += fp
-        false_neg_count[index_par, n_active] += fn
-        sample_count[index_par, n_active] += 1
+def compute_classification_metrics(counts, eps=1e-9):
+    """Confusion rates and classification metrics from counts; groups without samples are NaN."""
 
-# Compute rates (avoid division by zero)
-eps = 1e-9
-total_count = true_pos_count + true_neg_count + false_pos_count + false_neg_count + eps
+    tp, tn, fp, fn = counts['tp'], counts['tn'], counts['fp'], counts['fn']
+    precision = tp / (tp + fp + eps)
+    recall = tp / (tp + fn + eps)
+    metrics = {
+        'true_pos_rate': recall,
+        'true_neg_rate': tn / (tn + fp + eps),
+        'false_pos_rate': fp / (fp + tn + eps),
+        'false_neg_rate': fn / (fn + tp + eps),
+        'accuracy': (tp + tn) / (tp + tn + fp + fn + eps),
+        'precision': precision,
+        'recall': recall,
+        'f1_score': 2 * (precision * recall) / (precision + recall + eps),
+        'f2_score': 5 * (precision * recall) / (4 * precision + recall + eps),
+    }
+    for metric in metrics.values():
+        metric[counts['samples'] == 0] = np.nan
+    return metrics
 
-true_pos_rate = true_pos_count / (true_pos_count + false_neg_count + eps)
-true_neg_rate = true_neg_count / (true_neg_count + false_pos_count + eps)
-false_pos_rate = false_pos_count / (false_pos_count + true_neg_count + eps)
-false_neg_rate = false_neg_count / (false_neg_count + true_pos_count + eps)
+# Metrics binned by number of active parameters (0 active parameters are skipped)
+group_index_params = active_params.copy()
+group_index_params[group_index_params == 0] = -1
+metrics_params = compute_classification_metrics(compute_confusion_counts(group_index_params, n_param_bins))
 
-# Compute classification metrics
-accuracy = (true_pos_count + true_neg_count) / total_count
-precision = true_pos_count / (true_pos_count + false_pos_count + eps)
-recall = true_pos_count / (true_pos_count + false_neg_count + eps)
-f1_score = 2 * (precision * recall) / (precision + recall + eps)
-f2_score = 5 * (precision * recall) / (4 * precision + recall + eps)
+true_pos_rate = metrics_params['true_pos_rate']
+true_neg_rate = metrics_params['true_neg_rate']
+false_pos_rate = metrics_params['false_pos_rate']
+false_neg_rate = metrics_params['false_neg_rate']
+accuracy = metrics_params['accuracy']
+precision = metrics_params['precision']
+recall = metrics_params['recall']
+f1_score = metrics_params['f1_score']
+f2_score = metrics_params['f2_score']
 
-# Mask out bins with no samples
-mask_no_samples = sample_count == 0
-true_pos_rate[mask_no_samples] = np.nan
-true_neg_rate[mask_no_samples] = np.nan
-false_pos_rate[mask_no_samples] = np.nan
-false_neg_rate[mask_no_samples] = np.nan
-accuracy[mask_no_samples] = np.nan
-precision[mask_no_samples] = np.nan
-recall[mask_no_samples] = np.nan
-f1_score[mask_no_samples] = np.nan
-f2_score[mask_no_samples] = np.nan
+# Metrics binned by ground-truth model type (active mechanisms), sorted by number of parameters
+mechanism_types = sorted(
+    {(n_params, label) for n_params, label in zip(active_params.ravel(), active_mechanisms.ravel()) if label is not None}
+)
+mechanism_labels = [label for _, label in mechanism_types]
+mechanism_label_to_index = {label: index for index, label in enumerate(mechanism_labels)}
+group_index_mechanisms = np.vectorize(lambda label: mechanism_label_to_index.get(label, -1), otypes=[int])(active_mechanisms)
+counts_mechanisms = compute_confusion_counts(group_index_mechanisms, len(mechanism_labels))
+metrics_mechanisms = compute_classification_metrics(counts_mechanisms)
 
 print(precision)
 
@@ -311,15 +358,154 @@ plt.tight_layout()
 plt.show()
 
 # -------------------------------------------------------------------------------
-# PLOTTING: Parameter Recovery Box Plots
+# PLOTTING: 2x2 Classification Metrics per ground-truth model type
+# -------------------------------------------------------------------------------
+
+n_mechanism_types = len(mechanism_labels)
+mechanism_n_samples = counts_mechanisms['samples'].sum(axis=0).astype(int)
+x_labels_mechanisms = [
+    f"{label}\n(k={n_params}, n={n_samples})"
+    for (n_params, label), n_samples in zip(mechanism_types, mechanism_n_samples)
+]
+
+fig, axs = plt.subplots(nrows=2, ncols=3, figsize=(max(12, 1.6 * n_mechanism_types), 9),
+                        gridspec_kw={'width_ratios': [10, 10, 1]})
+
+metrics_matrices = [
+    [metrics_mechanisms['accuracy'], metrics_mechanisms['precision']],
+    [metrics_mechanisms['recall'], metrics_mechanisms['f1_score']],
+]
+metrics_titles = [
+    ['Accuracy', 'Precision'],
+    ['Recall', 'F1 Score'],
+]
+
+for row in range(2):
+    for col in range(2):
+        sns.heatmap(
+            metrics_matrices[row][col],
+            annot=True,
+            fmt='.2f',
+            cmap='viridis',
+            ax=axs[row, col],
+            cbar=(col == 1),
+            cbar_ax=axs[row, 2] if col == 1 else None,
+            xticklabels=x_labels_mechanisms if row == 1 else [''] * n_mechanism_types,
+            yticklabels=y_labels if col == 0 else [''] * len(participants),
+            vmin=0,
+            vmax=1,
+            mask=np.isnan(metrics_matrices[row][col]),
+        )
+        axs[row, col].set_title(metrics_titles[row][col], fontsize=12)
+        if row == 1:
+            axs[row, col].set_xlabel('Ground-Truth Mechanisms (k = parameters, n = participants)', fontsize=10)
+            axs[row, col].tick_params(axis='x', labelsize=7, rotation=0)
+        if col == 0:
+            axs[row, col].set_ylabel('Number of Participants', fontsize=10)
+
+plt.suptitle('Classification Metrics by Ground-Truth Model', fontsize=14)
+plt.tight_layout()
+plt.show()
+
+# -------------------------------------------------------------------------------
+# PLOTTING: Per-term recovery (ground-truth terms) and inclusion (non-ground-truth terms)
 # -------------------------------------------------------------------------------
 
 # Build flat list of term names matching coefficient storage layout (module by module)
 term_names = []
+term_collapsed = []  # source terms of term collapsing are zero by construction
+collapsed_source_terms = {source for _, source in term_collapsing}
 for module in sample_model.model.get_modules():
     for term in sample_model.model.sindy_candidate_terms[module]:
         term_names.append(f"{module}: {term}")
+        term_collapsed.append(term in collapsed_source_terms)
 n_terms = true_coefs.shape[-1]
+term_indices_plot = [index for index in range(n_terms) if not term_collapsed[index]]
+
+# per-term outcome counts over participants: (n_participant_sizes, n_terms_plot)
+term_counts = {key: np.zeros((len(participants), len(term_indices_plot)), dtype=int) for key in ('tp', 'fn', 'fp', 'tn')}
+for index_par, par in enumerate(participants):
+    n_samples = par * iterations
+    valid_samples = active_mechanisms[index_par, :n_samples] != None
+    true_act = true_active[index_par, :n_samples][valid_samples][:, term_indices_plot]
+    fitted_act = fitted_active[index_par, :n_samples][valid_samples][:, term_indices_plot]
+
+    term_counts['tp'][index_par] = (true_act & fitted_act).sum(axis=0)
+    term_counts['fn'][index_par] = (true_act & ~fitted_act).sum(axis=0)
+    term_counts['fp'][index_par] = (~true_act & fitted_act).sum(axis=0)
+    term_counts['tn'][index_par] = (~true_act & ~fitted_act).sum(axis=0)
+
+# recovery rate: P(fitted active | term in ground truth); inclusion rate: P(fitted active | term not in ground truth)
+n_term_true = term_counts['tp'] + term_counts['fn']
+n_term_false = term_counts['fp'] + term_counts['tn']
+with np.errstate(invalid='ignore', divide='ignore'):
+    recovery_rate = np.where(n_term_true > 0, term_counts['tp'] / n_term_true, np.nan)
+    inclusion_rate = np.where(n_term_false > 0, term_counts['fp'] / n_term_false, np.nan)
+
+# short tick labels (module's own state written as 'v') grouped under module headers
+term_modules_plot, term_labels_plot = [], []
+for index in term_indices_plot:
+    module, term = term_names[index].split(': ')
+    term_modules_plot.append(module)
+    term_labels_plot.append(term.replace(module, 'v'))
+module_groups = []  # (module, first index, last index + 1) in plotting order
+for index, module in enumerate(term_modules_plot):
+    if module_groups and module_groups[-1][0] == module:
+        module_groups[-1] = (module, module_groups[-1][1], index + 1)
+    else:
+        module_groups.append((module, index, index + 1))
+
+def draw_module_groups(axs_column, offset):
+    """Separate module groups by vertical lines and label them on top of the first axis.
+
+    offset: x position of the left edge of term 0 (heatmap: 0, bars centered on integers: -0.5).
+    """
+    for ax in axs_column:
+        for _, start, _ in module_groups[1:]:
+            ax.axvline(start + offset, color='dimgray', linewidth=1)
+    top_axis = axs_column[0].secondary_xaxis('top')
+    top_axis.set_xticks([offset + (start + end) / 2 for _, start, end in module_groups])
+    top_axis.set_xticklabels([module for module, _, _ in module_groups], fontsize=8)
+    top_axis.tick_params(length=0, pad=6)
+    top_axis.spines['top'].set_visible(False)
+
+fig, axs = plt.subplots(nrows=2, ncols=2, sharex='col', figsize=(max(10, 0.6 * len(term_indices_plot) + 3), 2 + 1.6 * len(participants)),
+                        gridspec_kw={'width_ratios': [30, 1]})
+
+term_panels = (
+    ('Recovered | term in ground truth (grey: never in ground truth)', recovery_rate),
+    ('Included | term not in ground truth (grey: always in ground truth)', inclusion_rate),
+)
+
+for row, (title, rates) in enumerate(term_panels):
+    axs[row, 0].set_facecolor('lightgrey')  # masked (NaN) tiles show the background
+    sns.heatmap(
+        rates,
+        annot=True,
+        fmt='.2f',
+        cmap='viridis',
+        ax=axs[row, 0],
+        cbar_ax=axs[row, 1],
+        xticklabels=term_labels_plot,
+        yticklabels=participants,
+        vmin=0,
+        vmax=1,
+        mask=np.isnan(rates),
+    )
+    axs[row, 0].set_title(title, fontsize=11, pad=22 if row == 0 else 6)
+fig.supylabel('Number of Participants', fontsize=10)
+axs[0, 0].tick_params(axis='x', bottom=False, labelbottom=False)
+axs[1, 0].tick_params(axis='x', labelsize=8, rotation=0)
+axs[1, 0].set_xlabel("Candidate Term (v = module's own state)", fontsize=10)
+draw_module_groups(axs[:, 0], offset=0)
+
+plt.suptitle('Per-Term Recovery', fontsize=14)
+plt.tight_layout()
+plt.show()
+
+# -------------------------------------------------------------------------------
+# PLOTTING: Parameter Recovery Box Plots
+# -------------------------------------------------------------------------------
 
 # Find which terms have any non-zero true coefficients (active terms)
 active_term_mask = np.any(np.abs(true_coefs) > coefficient_threshold, axis=(0, 1))
