@@ -11,14 +11,19 @@ from weinhardt2026.studies.synthetic.benchmarking_qlearning import QLearning
 
 
 # --- Configuration ---
-list_n_participants = [32, 64, 128, 256, 512]
-n_trials_per_session = 100
-n_blocks_per_session = 4
-n_iterations_per_n_sessions = 8
+list_n_participants = [256]#[32, 64, 128, 256, 512]
+n_trials_per_block = 100
+n_blocks_per_participant = 4
+n_iterations_per_participant = 1#8
 n_actions = 2
 sigma = [0.2]
 
-base_name = 'weinhardt2026/data/synthetic/synthetic_*.csv'
+# 'raw': parameters sampled independently; model types (active mechanisms) occur with the resulting
+#            frequencies (e.g. ~90% with choice perseveration)
+# 'balanced': model type sampled uniformly from MODEL_TYPES first, then parameters conditional on it
+sampling =  'balanced' #'raw'
+
+base_name = 'weinhardt2026/studies/synthetic/data/synthetic_*.csv' if sampling == 'raw' else 'weinhardt2026/studies/synthetic/data/synthetic_balanced_*.csv'
 
 zero_threshold = 0.2
 parameter_variance = 0.2
@@ -30,6 +35,22 @@ parameters_mean = {
     'forget_rate': 0.2,
     'alpha_choice': 0.5,
 }
+
+
+# Model types for balanced sampling: active mechanisms per type (definitions as in analysis_parameter_recovery):
+# Reward: beta_reward > 0; Asymmetry: alpha_penalty != alpha_reward; Forgetting: forget_rate > 0;
+# Choice: beta_choice > 0 and alpha_choice > 0. Asymmetry and Forgetting require Reward.
+MODEL_TYPES = (
+    ('Reward',),
+    ('Choice',),
+    ('Reward', 'Asymmetry'),
+    ('Reward', 'Forgetting'),
+    ('Reward', 'Choice'),
+    ('Reward', 'Asymmetry', 'Forgetting'),
+    ('Reward', 'Asymmetry', 'Choice'),
+    ('Reward', 'Forgetting', 'Choice'),
+    ('Reward', 'Asymmetry', 'Forgetting', 'Choice'),
+)
 
 
 # --- Utility functions ---
@@ -96,6 +117,63 @@ def sample_parameters_for_n(n_participants: int) -> dict:
     mean_alpha = (parameters['alpha_reward'][idx_sym] + parameters['alpha_penalty'][idx_sym]) / 2
     parameters['alpha_reward'][idx_sym] = mean_alpha
     parameters['alpha_penalty'][idx_sym] = mean_alpha
+
+    return parameters
+
+
+def sample_above_threshold(sampler, n: int) -> np.ndarray:
+    """Draw n values from sampler(k) -> (k,) by rejection, keeping only values above zero_threshold."""
+    values = np.empty(0)
+    while len(values) < n:
+        draws = sampler(2 * (n - len(values)) + 1)
+        values = np.concatenate([values, draws[draws > zero_threshold]])
+    return values[:n]
+
+
+def sample_parameters_balanced(n_participants: int) -> dict:
+    """Sample Q-learning parameters with model types (active mechanisms) balanced across participants.
+
+    Each model type of MODEL_TYPES is assigned to n_participants / len(MODEL_TYPES) participants (as evenly as
+    possible, in random order). Parameters of active mechanisms come from the same distributions as in
+    sample_parameters_for_n, restricted to the active range (above zero_threshold, or asymmetric by at least
+    zero_threshold); parameters of inactive mechanisms are switched off.
+
+    Returns:
+        dict of (n_participants,) arrays
+    """
+    types = np.random.permutation(np.resize(np.arange(len(MODEL_TYPES)), n_participants))
+    active = {mechanism: np.array([mechanism in MODEL_TYPES[t] for t in types])
+              for mechanism in ('Reward', 'Asymmetry', 'Forgetting', 'Choice')}
+    # inverse temperatures: threshold on the unscaled Beta(0.5, var) draw, then scaled by 2*mean (as in sample_parameters_for_n)
+    beta_raw_sampler = lambda k: np.random.beta(*compute_beta_dist_params(0.5, parameter_variance), k)
+    rate_sampler = lambda mean: lambda k: np.random.beta(*compute_beta_dist_params(mean, parameter_variance), k)
+
+    parameters = {key: np.zeros(n_participants) for key in parameters_mean}
+
+    # Reward: inverse temperature above threshold; symmetric learning rate unless Asymmetry
+    n_reward = active['Reward'].sum()
+    parameters['beta_reward'][active['Reward']] = 2 * parameters_mean['beta_reward'] * sample_above_threshold(beta_raw_sampler, n_reward)
+    alpha = rate_sampler(parameters_mean['alpha_reward'])(n_participants)
+    parameters['alpha_reward'] = alpha.copy()
+    parameters['alpha_penalty'] = alpha.copy()
+
+    # Asymmetry: redraw the pair until the learning rates differ by at least zero_threshold
+    for idx in np.where(active['Asymmetry'])[0]:
+        while True:
+            a_reward = rate_sampler(parameters_mean['alpha_reward'])(1)[0]
+            a_penalty = rate_sampler(parameters_mean['alpha_penalty'])(1)[0]
+            if abs(a_reward - a_penalty) >= zero_threshold:
+                parameters['alpha_reward'][idx], parameters['alpha_penalty'][idx] = a_reward, a_penalty
+                break
+
+    # Forgetting
+    parameters['forget_rate'][active['Forgetting']] = sample_above_threshold(
+        rate_sampler(parameters_mean['forget_rate']), active['Forgetting'].sum())
+
+    # Choice perseveration: inverse temperature and learning rate above threshold
+    n_choice = active['Choice'].sum()
+    parameters['beta_choice'][active['Choice']] = 2 * parameters_mean['beta_choice'] * sample_above_threshold(beta_raw_sampler, n_choice)
+    parameters['alpha_choice'][active['Choice']] = sample_above_threshold(rate_sampler(parameters_mean['alpha_choice']), n_choice)
 
     return parameters
 
@@ -236,12 +314,12 @@ def generate_all():
     """
 
     # Total participant pool
-    total_participants = sum(list_n_participants) * n_iterations_per_n_sessions
+    total_participants = sum(list_n_participants) * n_iterations_per_participant
 
     # Build index mapping: (start_idx, end_idx, n_p, iteration)
     participant_groups = []
     idx = 0
-    for iteration in range(n_iterations_per_n_sessions):
+    for iteration in range(n_iterations_per_participant):
         for n_p in list_n_participants:
             participant_groups.append((idx, idx + n_p, n_p, iteration))
             idx += n_p
@@ -251,8 +329,12 @@ def generate_all():
 
     for experiment_id in range(len(sigma)):
 
-        # Sample parameters for the entire pool
-        params = sample_parameters_for_n(total_participants)
+        # Sample parameters for the entire pool; balanced sampling per dataset (participant group)
+        if sampling == 'balanced':
+            group_params = [sample_parameters_balanced(n_p) for _, _, n_p, _ in participant_groups]
+            params = {key: np.concatenate([g[key] for g in group_params]) for key in parameters_mean}
+        else:
+            params = sample_parameters_for_n(total_participants)
 
         # Create the QLearning model with all participants
         model = QLearning(
@@ -270,13 +352,13 @@ def generate_all():
         all_xs_blocks = []
         all_ys_blocks = []
 
-        for block_idx in range(n_blocks_per_session):
+        for block_idx in range(n_blocks_per_participant):
             # Reset environment and model state
             env.new_sess()
             model.init_state(batch_size=total_participants)
 
             # Storage for this block
-            T = n_trials_per_session
+            T = n_trials_per_block
             choices_block = np.zeros((T + 1, total_participants), dtype=int)
             rewards_block = np.full((T + 1, total_participants, n_actions), np.nan)
 
@@ -342,7 +424,7 @@ def generate_all():
             # Gather all blocks for this participant group
             block_slices = []
             ys_slices = []
-            for block_idx in range(n_blocks_per_session):
+            for block_idx in range(n_blocks_per_participant):
                 offset = block_idx * total_participants
                 block_slices.append(all_xs[offset + start : offset + end])
                 ys_slices.append(all_ys[offset + start : offset + end])

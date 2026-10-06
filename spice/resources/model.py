@@ -128,11 +128,12 @@ class EnsembleRNNModule(nn.Module):
         self.weight_feature = nn.Parameter(torch.empty(ensemble_size, proj_size, input_size+1))
         self.bias_feature = nn.Parameter(torch.zeros(ensemble_size, proj_size))
         nn.init.xavier_uniform_(self.weight_feature.view(ensemble_size, proj_size, input_size+1))
-        nn.init.xavier_uniform_(self.weight_context.view(ensemble_size, proj_size, embedding_size))
+        if embedding_size > 0:  # modules without embedding (e.g. QLearning ground truth) have an empty context
+            nn.init.xavier_uniform_(self.weight_context.view(ensemble_size, proj_size, embedding_size))
         
         # GRU cell parameters: 3 gates (reset, update, new) x hidden_size
         self.weight_n = nn.Parameter(torch.empty(ensemble_size, 1, proj_size))
-        self.bias_n = nn.Parameter(torch.zeros(ensemble_size, 1))
+        # self.bias_n = nn.Parameter(torch.zeros(ensemble_size, 1))
         nn.init.xavier_uniform_(self.weight_n.view(ensemble_size, 1, proj_size))
 
         # Output rescaling layer: learns to rescale bounded [-1,1] values
@@ -154,7 +155,7 @@ class EnsembleRNNModule(nn.Module):
         h = state[-1].contiguous().reshape(E, B * I, 1) if self.include_state and state is not None else torch.zeros(E, B * I, 1, device=inputs.device)
 
         # context computation -> individual mechanism activation
-        context = self.dropout(torch.nn.functional.sigmoid(torch.einsum('eoi,ebi->ebo', self.weight_context, embedding)))
+        context = self.dropout(self.compute_gates(embedding))
         
         # GRU cell over within-trial timesteps
         outputs = []
@@ -177,8 +178,8 @@ class EnsembleRNNModule(nn.Module):
             
             # New candidate
             n = torch.einsum('ego,ebo->ebg', self.weight_n, y_t)       # (E, B*I, 1)
-            if self.include_bias:
-                n = n + self.bias_n.unsqueeze(1)
+            # if self.include_bias:
+            #     n = n + self.bias_n.unsqueeze(1)
 
             # New hidden state: bounded + learnable rescaling
             h = h + self.dt * n
@@ -189,6 +190,17 @@ class EnsembleRNNModule(nn.Module):
             
         output = torch.stack(outputs)              # (W, E, B*I, H)
         return output.reshape(W, E, B, I, 1)
+
+    def compute_gates(self, embedding):
+        """Individual-level gates over the group-level features: sigmoid(U @ embedding) in (0, 1).
+
+        Args:
+            embedding: (E, N, embedding_size)
+
+        Returns:
+            (E, N, n_features); gates near 0 switch a feature off for that individual
+        """
+        return torch.sigmoid(torch.einsum('eoi,ebi->ebo', self.weight_context, embedding))
 
     def forward(self, inputs, state):
         if self._compile:
@@ -299,6 +311,8 @@ class BaseModel(nn.Module):
 
         # Setup initial values of RNN
         self.sindy_loss_reg = torch.tensor(0, requires_grad=True, device=device, dtype=torch.float32)
+        self.gate_loss = torch.tensor(0, requires_grad=True, device=device, dtype=torch.float32)
+        self._modules_gate_penalized = set()
         self.sindy_loss_fit = torch.tensor(0, requires_grad=True, device=device, dtype=torch.float32)
         self.state = None
         self.init_state()  # initial memory state
@@ -324,6 +338,8 @@ class BaseModel(nn.Module):
             inputs = inputs.permute(2, 3, 0, 1, 4)  # (E, B, T, W, F) -> (T, W, E, B, F)
 
         self.sindy_loss_reg = torch.tensor(0, requires_grad=True, device=self.device, dtype=torch.float32)
+        self.gate_loss = torch.tensor(0, requires_grad=True, device=self.device, dtype=torch.float32)
+        self._modules_gate_penalized = set()
         self.sindy_loss_fit = torch.tensor(0, requires_grad=True, device=self.device, dtype=torch.float32)
 
         spice_signals = SpiceSignals()
@@ -637,6 +653,14 @@ class BaseModel(nn.Module):
         
         if key_module in self.submodules_rnn.keys():
             if not self.use_sindy or self.ridge_mode:
+                # L1 on the individual-level gates (time-invariant -> once per forward pass and module);
+                # gates are non-negative, so their mean is the L1 norm
+                rnn_module = self.submodules_rnn[key_module]
+                if self.training and rnn_module.embedding_size > 0 and key_module not in self._modules_gate_penalized:
+                    gates = rnn_module.compute_gates(embedding[0, :, :, 0])  # (E, B, n_features)
+                    self.gate_loss = self.gate_loss + gates.mean() / len(self.submodules_rnn)
+                    self._modules_gate_penalized.add(key_module)
+
                 # Get RNN module prediction
                 inputs_rnn = torch.cat((inputs, embedding), dim=-1)  # [W, E, B, I, feat+emb]
                 next_value = self.submodules_rnn[key_module](inputs_rnn, state=value).squeeze(-1)  # [W, E, B, I]

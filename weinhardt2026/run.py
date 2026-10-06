@@ -35,6 +35,8 @@ if __name__=='__main__':
     parser.add_argument('--epochs_warmup', type=int, default=500, help='Number of training epochs for warmup (exp increase of sindy-weight; no pruning)')
     parser.add_argument('--lr', type=float, default=0.01, help='Learning rate')
     parser.add_argument('--rnn_l2_lambda', type=float, default=0., help='L2 Reg of the RNN parameters')
+    parser.add_argument('--feature_penalty', type=float, default=0., help='L2 weight decay on the group-level RNN weights (features, readout incl. bias)')
+    parser.add_argument('--gate_penalty', type=float, default=0., help='L1 penalty on the individual-level gates of the RNN modules')
     parser.add_argument('--loss_kwargs', type=json.loads, default='{"label_smoothing": 0.01}', help='Learning rate')
     parser.add_argument('--ensemble', type=int, default=10, help='Number of independent members in the ensemble setup')
     parser.add_argument('--embedding', type=int, default=8, help='Embedding size of participants')
@@ -217,6 +219,8 @@ if __name__=='__main__':
         warmup_steps=args.epochs_warmup,
         ensemble_size=args.ensemble,
         l2_rnn=args.rnn_l2_lambda,
+        feature_penalty=args.feature_penalty,
+        gate_penalty=args.gate_penalty,
         dropout=0.1,
         embedding_size=args.embedding,
         bootstrap=args.bootstrap,

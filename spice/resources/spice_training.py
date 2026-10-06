@@ -204,6 +204,7 @@ def _run_batch_training(
     sindy_weight: float = 0.,
     sindy_weight_fit: float = 0.1,
     sindy_alpha: float = 0.,
+    gate_penalty: float = 0.,
     n_steps: int = None,
     loss_fn: callable = cross_entropy_loss,
     loss_fn_kwargs: dict = {},
@@ -253,6 +254,9 @@ def _run_batch_training(
 
             if sindy_weight > 0 and sindy_alpha > 0:
                 loss_step = loss_step + model.compute_weighted_coefficient_penalty(sindy_alpha=sindy_alpha)
+
+            if gate_penalty > 0:
+                loss_step = loss_step + gate_penalty * model.gate_loss
                 
             # backpropagation
             optimizer.zero_grad()
@@ -1288,6 +1292,7 @@ def _run_joint_training(
 
     sindy_weight: float = 0,
     sindy_alpha: float = 0,
+    gate_penalty: float = 0,
     sindy_pruning_frequency: int = None,
     sindy_threshold_pruning: float = None,
     sindy_ensemble_pruning: float = None,
@@ -1328,7 +1333,7 @@ def _run_joint_training(
         mode='min', 
         factor=0.5, 
         patience=50, 
-        min_lr=[optimizer.param_groups[0]['lr'], 1e-5], # SINDy stays at 0.01, RNN can reduce to 1e-5
+        min_lr=[optimizer.param_groups[0]['lr']] + [1e-5] * (len(optimizer.param_groups) - 1), # SINDy stays at 0.01, RNN groups can reduce to 1e-5
     )
 
     # Handle zero epochs case
@@ -1394,6 +1399,7 @@ def _run_joint_training(
                         sindy_weight=sindy_weight_epoch,
                         sindy_weight_fit=sindy_weight_fit_epoch,
                         sindy_alpha=sindy_alpha,
+                        gate_penalty=gate_penalty,
                         loss_fn=loss_fn,
                         loss_fn_kwargs=loss_fn_kwargs,
                     )
@@ -1631,6 +1637,7 @@ def fit_spice(
     
     sindy_weight: float = 0.,
     sindy_alpha: float = 0.,
+    gate_penalty: float = 0.,
     sindy_pruning_frequency: int = 1,
     sindy_threshold_pruning: float = None,
     sindy_ensemble_pruning: float = None,
@@ -1676,6 +1683,7 @@ def fit_spice(
         loss_fn: Loss function for behavioral prediction
         sindy_weight: λ_sindy regularization strength
         sindy_alpha: Degree-weighted L1 penalty strength
+        gate_penalty: L1 penalty on the individual-level gates sigmoid(U @ embedding) of the RNN modules (0 = disabled)
         sindy_threshold_pruning: Minimum |coefficient| for a member to count as
             supporting a term in the ensemble ratio test. When
             sindy_ensemble_pruning is None, falls back to per-member hard
@@ -1792,6 +1800,7 @@ def fit_spice(
 
                     sindy_weight=sindy_weight,
                     sindy_alpha=sindy_alpha,
+                    gate_penalty=gate_penalty,
                     sindy_threshold_pruning=sindy_threshold_pruning,
                     sindy_pruning_frequency=sindy_pruning_frequency,
                     sindy_ensemble_pruning=sindy_ensemble_pruning,

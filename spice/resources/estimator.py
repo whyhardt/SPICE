@@ -49,6 +49,8 @@ class SpiceEstimator(BaseEstimator):
         device: Optional[torch.device] = torch.device('cpu'),
         ensemble_size: Optional[int] = 10,
         l2_rnn: Optional[float] = 0,
+        feature_penalty: Optional[float] = 0,  # L2 weight decay on the RNN modules' group-level weights
+        gate_penalty: Optional[float] = 0,  # L1 on the RNN modules' individual-level gates
         dropout: Optional[float] = 0.1,
         loss_fn: Optional[callable] = cross_entropy_loss,
         loss_fn_kwargs: Optional[dict] = {'label_smoothing': 0.01},
@@ -95,6 +97,12 @@ class SpiceEstimator(BaseEstimator):
             device: Compute device (default: 'cpu').
             ensemble_size: Number of independent RNN ensemble members.
             l2_rnn: L2 weight decay for RNN parameters.
+            feature_penalty: Additional L2 weight decay on the RNN modules' group-level weights (feature
+                weights/biases, readout weights/bias); keeps shrinking individual-level gates from being
+                compensated by larger group-level weights and favors the minimum-norm solution among
+                behaviorally equivalent ones (e.g. constant drives equal for all options).
+            gate_penalty: L1 penalty on the individual-level gates sigmoid(U @ embedding) in Stage 1;
+                gates near 0 switch features (and with all of them the module) off per individual.
             dropout: Dropout rate in GRU modules.
             loss_fn: Behavioral loss function (prediction, target) -> scalar.
             use_sindy: Enable SINDy integration.
@@ -142,6 +150,7 @@ class SpiceEstimator(BaseEstimator):
         # SINDy training parameters
         self.sindy_weight = sindy_weight
         self.sindy_alpha = sindy_alpha
+        self.gate_penalty = gate_penalty
         self.sindy_library_polynomial_degree = sindy_library_polynomial_degree
         self.sindy_pruning_frequency = sindy_pruning_frequency
         self.sindy_threshold_pruning = sindy_threshold_pruning
@@ -190,11 +199,17 @@ class SpiceEstimator(BaseEstimator):
 
         self.use_sindy(use_sindy)
         
+        # group-level weights of the RNN modules (shared features and readout) get the additional feature_penalty;
+        # the individual-level gates (weight_context, embeddings) stay in rnn_params
+        group_level_names = ('weight_feature', 'bias_feature', 'weight_n', 'bias_n')
         sindy_params = []
         rnn_params = []
+        rnn_group_params = []
         for name, param in self.model.named_parameters():
             if 'sindy' in name:
                 sindy_params.append(param)
+            elif name.startswith('submodules_rnn.') and name.split('.')[-1] in group_level_names:
+                rnn_group_params.append(param)
             else:
                 rnn_params.append(param)
         # Separate optimizer param groups: SINDy coefficients get fixed lr, RNN params get configurable lr + weight decay
@@ -202,6 +217,7 @@ class SpiceEstimator(BaseEstimator):
             [
             {'params': sindy_params, 'weight_decay': 0, 'lr': 0.01},
             {'params': rnn_params, 'weight_decay': l2_rnn, 'lr': learning_rate},
+            {'params': rnn_group_params, 'weight_decay': l2_rnn + feature_penalty, 'lr': learning_rate},
             ],
             )
         
@@ -241,6 +257,7 @@ class SpiceEstimator(BaseEstimator):
 
             sindy_weight=self.sindy_weight,
             sindy_alpha=self.sindy_alpha,
+            gate_penalty=self.gate_penalty,
             sindy_pruning_frequency=self.sindy_pruning_frequency,
             sindy_threshold_pruning=self.sindy_threshold_pruning,
             sindy_ensemble_pruning=self.sindy_ensemble_pruning,

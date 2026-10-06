@@ -13,8 +13,8 @@ from spice.precoded.choice import SpiceModel, CONFIG
 # from weinhardt2026.studies.dezfouli2019.spice_dezfouli2019 import SpiceModel, CONFIG
 
 
-path_data = 'weinhardt2026/studies/synthetic/data/synthetic_PARp_IT_0.csv'
-path_model = 'weinhardt2026/studies/synthetic/params/spice_synthetic_PARp_IT_6_choice.pkl'
+path_data = 'weinhardt2026/studies/synthetic/data/synthetic_balanced_PARp_IT_0.csv'
+path_model = 'weinhardt2026/studies/synthetic/params/spice_synthetic_balanced_PARp_IT_0_al0.001_gp0.001_fp0.0001.pkl'
 
 rl_parameters = ['beta_reward', 'beta_choice', 'alpha_reward', 'alpha_penalty', 'alpha_choice', 'forget_rate']
 participants = [256]#[32, 64, 128, 256, 512]
@@ -24,6 +24,7 @@ ensemble_size = 10
 
 # term collapsing in fitted model from term tuple[1] -> tuple[0]; used for binary signals where signal^1=signal^2, e.g. binary reward or choice
 term_collapsing = (
+    ('reward', 'reward^2'),
     ('reward[t]', 'reward[t]^2'),
     ('reward[t-1]', 'reward[t-1]^2'),
     ('reward[t-2]', 'reward[t-2]^2'),
@@ -33,6 +34,17 @@ term_collapsing = (
     ('choice[t-2]', 'choice[t-2]^2'),
     ('choice[t-3]', 'choice[t-3]^2'),
 )
+
+# signal names that differ between the ground-truth (QLearning) and the fitted library: ground truth -> fitted
+signal_aliases = {'reward[t]': 'reward'}
+
+def translate_term(term, fitted_terms):
+    """Name of a ground-truth term in the fitted library (identity if it exists there)."""
+    if term in fitted_terms:
+        return term
+    for name_true, name_fitted in signal_aliases.items():
+        term = term.replace(name_true, name_fitted)
+    return term
 
 # Dynamically determine n_coefficients from a sample model
 sample_dataset = csv_to_dataset(
@@ -152,12 +164,13 @@ for index_par, par in enumerate(participants):
             for term in candidate_terms_true_model:
                 # Extract coefficient values: shape is (n_ensemble, n_participants, n_experiments, n_terms)
                 true_coef_vals = true_model.sindy_coefficients[module][0, :, 0, candidate_terms_true_model.index(term)].detach().cpu().numpy()
-                if term not in candidate_terms_fitted_model:
+                term_fitted = translate_term(term, candidate_terms_fitted_model)
+                if term_fitted not in candidate_terms_fitted_model:
                     if np.any(true_coef_vals != 0):
                         raise ValueError(f"Candidate term {term} of the true model was not found among the candidate terms of the fitted model ({candidate_terms_fitted_model}).")
                     continue  # term inactive for everyone in the true model and absent from the fitted library
 
-                index_coef = candidate_terms_fitted_model.index(term)
+                index_coef = candidate_terms_fitted_model.index(term_fitted)
                 true_coefs[index_par, par*it:par*(it+1), index_coefs_all+index_coef] = true_coef_vals * module_present
 
             # term collapsing
