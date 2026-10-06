@@ -11,12 +11,13 @@ from weinhardt2026.studies.synthetic.benchmarking_qlearning import QLearning
 
 
 # --- Configuration ---
-list_n_participants = [256]#[32, 64, 128, 256, 512]
+list_n_participants = [32, 64, 128, 256, 512]
 n_trials_per_block = 100
 n_blocks_per_participant = 4
-n_iterations_per_participant = 1#8
+n_iterations_per_participant = 8
 n_actions = 2
 sigma = [0.2]
+seed = 42  # parameters, environment and choices are reproducible across regenerations
 
 # 'raw': parameters sampled independently; model types (active mechanisms) occur with the resulting
 #            frequencies (e.g. ~90% with choice perseveration)
@@ -443,4 +444,6 @@ def generate_all():
 
 
 if __name__ == '__main__':
+    np.random.seed(seed)
+    torch.manual_seed(seed)
     generate_all()

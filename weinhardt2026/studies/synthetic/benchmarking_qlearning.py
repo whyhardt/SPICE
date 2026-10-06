@@ -25,9 +25,7 @@ class QLearning(BaseModel):
             library_setup={
                 'value_reward_chosen': ['reward[t]'],
                 'value_reward_not_chosen': [],
-                # 'value_choice': ['choice[t]'],
-                'value_choice_chosen': [],
-                'value_choice_not_chosen': [],
+                'value_choice': ['choice[t]'],
             },
             memory_state=['value_reward', 'value_choice'],
         )
@@ -53,9 +51,7 @@ class QLearning(BaseModel):
         self.setup_module(key_module='value_reward_chosen', input_size=1, embedding_size=0)
         self.setup_module(key_module='value_reward_not_chosen', input_size=0, embedding_size=0)
         
-        # self.setup_module(key_module='value_choice', input_size=1, embedding_size=0)
-        self.setup_module(key_module='value_choice_chosen', input_size=0)
-        self.setup_module(key_module='value_choice_not_chosen', input_size=0)
+        self.setup_module(key_module='value_choice', input_size=1, embedding_size=0)
         
         if not fit_full_model:
             self.update_coefficients(
@@ -105,26 +101,12 @@ class QLearning(BaseModel):
             )
             
             # perform update for choice perseverance
-            # self.call_module(
-            #     key_module='value_choice',
-            #     key_state='value_choice',
-            #     inputs=(
-            #         spice_signals.actions[timestep],
-            #     ),
-            #     participant_index=spice_signals.participant_ids,
-            # )
             self.call_module(
-                key_module='value_choice_chosen',
+                key_module='value_choice',
                 key_state='value_choice',
-                action_mask=spice_signals.actions[timestep],
-                inputs=None,
-                participant_index=spice_signals.participant_ids,
-            )
-            self.call_module(
-                key_module='value_choice_not_chosen',
-                key_state='value_choice',
-                action_mask=1-spice_signals.actions[timestep],
-                inputs=None,
+                inputs=(
+                    spice_signals.actions[timestep],
+                ),
                 participant_index=spice_signals.participant_ids,
             )
             
@@ -169,18 +151,12 @@ class QLearning(BaseModel):
                 # ('reward_chosen_fail', self.beta_reward[participant_id.unsqueeze(1), experiment_id]*self.countefactual_learning[participant_id.unsqueeze(1), experiment_id]),
             ),
             # choice perseverance:
-            #   update = choice_perseverance choice
-            # 'value_choice': (
-            #     ('value_choice', -self.alpha_choice[participant_id.unsqueeze(1), experiment_id] * (self.beta_choice[participant_id.unsqueeze(1), experiment_id] > 0) ),
-            #     ('choice[t]', self.beta_choice[participant_id.unsqueeze(1), experiment_id]*self.alpha_choice[participant_id.unsqueeze(1), experiment_id]),
-            # ) 
-            'value_choice_chosen': (
-                ('1', self.beta_choice[participant_id.unsqueeze(1), experiment_id]*self.alpha_choice[participant_id.unsqueeze(1), experiment_id]),
-                ('value_choice_chosen', -self.alpha_choice[participant_id.unsqueeze(1), experiment_id] * (self.beta_choice[participant_id.unsqueeze(1), experiment_id] > 0) ),                
+            #   update = alpha_choice*(beta_choice*choice - value_choice)
+            #   update = -alpha_choice value_choice + beta_choice*alpha_choice choice
+            'value_choice': (
+                ('value_choice', -self.alpha_choice[participant_id.unsqueeze(1), experiment_id] * (self.beta_choice[participant_id.unsqueeze(1), experiment_id] > 0) ),
+                ('choice[t]', self.beta_choice[participant_id.unsqueeze(1), experiment_id]*self.alpha_choice[participant_id.unsqueeze(1), experiment_id]),
             ),
-            'value_choice_not_chosen': (
-                ('value_choice_not_chosen', -self.alpha_choice[participant_id.unsqueeze(1), experiment_id] * (self.beta_choice[participant_id.unsqueeze(1), experiment_id] > 0) ),                
-            ) 
         }
         
         for module in self.get_modules():

@@ -14,24 +14,18 @@ from spice.precoded.choice import SpiceModel, CONFIG
 
 
 path_data = 'weinhardt2026/studies/synthetic/data/synthetic_balanced_PARp_IT_0.csv'
-path_model = 'weinhardt2026/studies/synthetic/params/spice_synthetic_balanced_256p_0_0_al0.001_gp0.001_fp0.0001_hardsigmoid.pkl'
+path_model = 'weinhardt2026/studies/synthetic/params/spice_synthetic_balanced_PARp_IT_0_th0.05_al0.001_er0.7_gp0.01_fp0.0001.pkl'
 
 rl_parameters = ['beta_reward', 'beta_choice', 'alpha_reward', 'alpha_penalty', 'alpha_choice', 'forget_rate']
-participants = [256]#[32, 64, 128, 256, 512]
-iterations = 1
+participants = [32, 64, 128, 256, 512]
+iterations = 8
 coefficient_threshold = 0.01
 ensemble_size = 10
-
-# Compare the choice trace in the minimum-norm gauge: the ground-truth choice values in [0, beta_choice] are
-# shifted to [-beta_choice/2, beta_choice/2]. A common shift of both options' values is behaviorally invisible
-# (equal update rates in the chosen and not-chosen module), and the L2 penalty on the RNN weights prefers the
-# centered representation: constant +alpha*beta/2 in the chosen module and -alpha*beta/2 in the not-chosen
-# module instead of +alpha*beta and 0. Reward values stay in their native gauge (anchored by the reward input).
-center_choice_gauge = True
 
 # term collapsing in fitted model from term tuple[1] -> tuple[0]; used for binary signals where signal^1=signal^2, e.g. binary reward or choice
 term_collapsing = (
     ('reward', 'reward^2'),
+    ('choice', 'choice^2'),
     ('reward[t]', 'reward[t]^2'),
     ('reward[t-1]', 'reward[t-1]^2'),
     ('reward[t-2]', 'reward[t-2]^2'),
@@ -43,7 +37,7 @@ term_collapsing = (
 )
 
 # signal names that differ between the ground-truth (QLearning) and the fitted library: ground truth -> fitted
-signal_aliases = {'reward[t]': 'reward'}
+signal_aliases = {'reward[t]': 'reward', 'choice[t]': 'choice'}
 
 def translate_term(term, fitted_terms):
     """Name of a ground-truth term in the fitted library (identity if it exists there)."""
@@ -89,23 +83,8 @@ module_mechanism = {
     'value_reward_not_chosen': 'Forgetting',
     'value_choice_chosen': 'Choice',
     'value_choice_not_chosen': 'Choice',
+    'value_choice': 'Choice',
 }
-
-def center_choice_trace(true_model, chosen='value_choice_chosen', not_chosen='value_choice_not_chosen'):
-    """Shift the ground-truth choice trace by half its value range (in place, delta-form coefficients).
-
-    Chosen module: dv = c - a*v with value range [0, c/a]; shifting all values by b = c/(2a) gives
-    dv' = (c - a*b) - a*v' in the chosen and dv' = -a_nc*b - a_nc*v' in the not-chosen module.
-    """
-    coefs = true_model.sindy_coefficients
-    terms_ch, terms_nc = true_model.sindy_candidate_terms[chosen], true_model.sindy_candidate_terms[not_chosen]
-    with torch.no_grad():
-        c = coefs[chosen][..., terms_ch.index('1')]
-        a = -coefs[chosen][..., terms_ch.index(chosen)]
-        a_nc = -coefs[not_chosen][..., terms_nc.index(not_chosen)]
-        b = torch.where(a > 0, c / (2 * a.clamp(min=1e-12)), torch.zeros_like(c))
-        coefs[chosen][..., terms_ch.index('1')] = c - a * b
-        coefs[not_chosen][..., terms_nc.index('1')] = coefs[not_chosen][..., terms_nc.index('1')] - a_nc * b
 
 def get_mechanism_masks(dict_rl_parameters):
     """Boolean array (n_participants,) per mechanism: is it active in the ground-truth model?
@@ -157,8 +136,6 @@ for index_par, par in enumerate(participants):
             n_participants=par,
             **rl_parameters_dataset,
         )
-        if center_choice_gauge:
-            center_choice_trace(true_model)
         
         # load fitted model
         fitted_model = SpiceEstimator(
