@@ -1862,8 +1862,16 @@ def fit_spice(
             sindy_ridge=sindy_ridge,
             verbose=verbose,
         )
-        
-        
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # Module cleanup: remove SINDy terms without influence on the predictions
+    # ══════════════════════════════════════════════════════════════════════════
+    removed = model.module_cleanup(xs=dataset_train.xs, ys=dataset_train.ys)
+    if verbose:
+        n_removed = sum(mask.sum().item() for mask in removed.values())
+        print(f"\nModule cleanup: removed {n_removed} SINDy terms without influence on the predictions "
+              f"({n_removed / (model.ensemble_size * model.n_participants):.2f} per ensemble member and participant).")
+
     # ══════════════════════════════════════════════════════════════════════════
     # Final evaluation summary
     # ══════════════════════════════════════════════════════════════════════════

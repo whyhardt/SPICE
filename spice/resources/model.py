@@ -1362,7 +1362,60 @@ class BaseModel(nn.Module):
             # sindy_coefficients[module][..., identity_idx] += 1
             
         return sindy_coefficients
-    
+
+    def module_cleanup(self, xs: torch.Tensor, ys: torch.Tensor, tolerance: float = 1e-6, seed: int = 0) -> Dict[str, torch.Tensor]:
+        """Remove active SINDy terms without influence on the predicted choice probabilities.
+
+        One backward pass of the SINDy model over the data: the gradient of the random projection
+        sum_t r_t . z_t of the centered logits z_t (softmax is invariant only to a shift common to all
+        options) is zero (almost surely) for a coefficient iff the coefficient changes no prediction.
+        This catches e.g. decay terms on states that are never driven away from a pinned initial value,
+        modules whose updates never reach the logits, and constants that shift all options equally.
+
+        A term is removed per ensemble member and participant if its gradient is below `tolerance`
+        relative to the largest gradient of that member and participant (float precision).
+
+        Args:
+            xs: Input data (B, T, W, F)
+            ys: Targets (B, T, W, A); NaN marks padded trials
+            tolerance: Relative gradient below which a term counts as without influence
+            seed: Seed of the random projection
+
+        Returns:
+            Dict of bool masks (E, P, X, T) per module: removed terms
+        """
+        was_training, use_sindy = self.training, self.use_sindy
+        xs, ys = xs.to(self.device), ys.to(self.device)
+        valid = ~torch.isnan(ys).any(-1)  # (B, T, W)
+
+        coefficients = {module: self.sindy_coefficients[module] for module in self.get_modules()}
+        requires_grad = {module: c.requires_grad for module, c in coefficients.items()}
+        for c in coefficients.values():
+            c.requires_grad_(True)
+            c.grad = None
+
+        self.eval(use_sindy=True)
+        logits = self(xs)[0]  # (E, B, T, W, A)
+        logits_centered = logits - logits.mean(dim=-1, keepdim=True)
+        projection = torch.randn(logits.shape, generator=torch.Generator().manual_seed(seed)).to(self.device)
+        (projection * logits_centered * valid.unsqueeze(0).unsqueeze(-1)).sum().backward()
+
+        influence = {module: c.grad.abs() * self.sindy_coefficients_presence[module].float() for module, c in coefficients.items()}
+        scale = torch.stack([g.amax(dim=-1) for g in influence.values()]).amax(dim=0).clamp(min=1e-30)  # (E, P, X)
+
+        removed = {}
+        with torch.no_grad():
+            for module, c in coefficients.items():
+                c.grad = None
+                c.requires_grad_(requires_grad[module])
+                presence = self.sindy_coefficients_presence[module]
+                removed[module] = (presence > 0) & (influence[module] / scale.unsqueeze(-1) < tolerance)
+                presence[removed[module]] = 0
+                c[removed[module]] = 0
+
+        self.train(was_training, use_sindy=use_sindy)
+        return removed
+
     def eval(self, use_sindy=True):
         super().eval()
         self.use_sindy = use_sindy

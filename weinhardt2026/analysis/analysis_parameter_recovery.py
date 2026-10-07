@@ -12,15 +12,24 @@ from spice.precoded.choice import SpiceModel, CONFIG
 # from spice.precoded.workingmemory import SpiceModel, CONFIG
 # from weinhardt2026.studies.dezfouli2019.spice_dezfouli2019 import SpiceModel, CONFIG
 
+import matplotlib as mpl
+mpl.rcParams['figure.dpi'] = 300
+mpl.rcParams['svg.fonttype'] = 'none'  # keep text as editable text in vector exports
+mpl.rcParams['pdf.fonttype'] = 42
 
 path_data = 'weinhardt2026/studies/synthetic/data/synthetic_balanced_PARp_IT_0.csv'
-path_model = 'weinhardt2026/studies/synthetic/params/spice_synthetic_balanced_PARp_IT_0_th0.05_al0.001_er0.7_gp0.01_fp0.0001.pkl'
+path_model = 'weinhardt2026/studies/synthetic/params/spice_synthetic_balanced_PARp_IT_0_th0.05_al0.001_er0.5_gp0.01_fp0.0001.pkl'
 
 rl_parameters = ['beta_reward', 'beta_choice', 'alpha_reward', 'alpha_penalty', 'alpha_choice', 'forget_rate']
 participants = [32, 64, 128, 256, 512]
 iterations = 8
 coefficient_threshold = 0.01
 ensemble_size = 10
+
+# figures: all annotations (titles, axis labels, tick labels, numbers inside heatmaps) are stripped unless enabled
+show_annotations = False
+path_results = 'weinhardt2026/studies/synthetic/results'
+figure_prefix = os.path.splitext(os.path.basename(path_model))[0]
 
 # term collapsing in fitted model from term tuple[1] -> tuple[0]; used for binary signals where signal^1=signal^2, e.g. binary reward or choice
 term_collapsing = (
@@ -122,8 +131,16 @@ def get_active_mechanisms(mechanism_masks):
 for index_par, par in enumerate(participants):
     for it in range(iterations):
         
+        path_data_replaced = path_data.replace('PAR', str(par)).replace('IT', str(it))
+        path_model_replaced = path_model.replace('PAR', str(par)).replace('IT', str(it))
+        
+        if not os.path.isfile(path_model_replaced):
+            print("FileNotFoundWarning: No such file or directory:", path_model_replaced)
+            print("Skipping file and continuing with next one.")
+            continue
+        
         # load dataset and collect true rl parameters
-        dataset = csv_to_dataset(file=path_data.replace('PAR', str(par)).replace('IT', str(it)), additional_inputs=rl_parameters)
+        dataset = csv_to_dataset(file=path_data_replaced, additional_inputs=rl_parameters)
         dataset.normalize_rewards()
         n_actions = dataset.ys.shape[-1]
         mask = dataset.xs[:, 0, 0, -3] == 0  # block -> 0; each participant only once
@@ -146,7 +163,7 @@ for index_par, par in enumerate(participants):
             sindy_library_polynomial_degree=2,
             ensemble_size=ensemble_size,
         )
-        fitted_model.load_spice(path_model=path_model.replace('PAR', str(par)).replace('IT', str(it)))
+        fitted_model.load_spice(path_model=path_model_replaced)
         fitted_model = fitted_model.model
         fitted_coef_vals = fitted_model.get_sindy_coefficients(aggregate=True)
 
@@ -289,6 +306,32 @@ import seaborn as sns
 from matplotlib.gridspec import GridSpec
 from sklearn.linear_model import LinearRegression
 
+def strip_annotations(fig):
+    """Remove titles, axis labels, tick labels and text inside the axes (heatmap numbers)."""
+    for figure_label in (fig._suptitle, fig._supxlabel, fig._supylabel):
+        if figure_label is not None:
+            figure_label.set_text('')
+    for ax in fig.axes:
+        ax.set_title('')
+        ax.set_xlabel('')
+        ax.set_ylabel('')
+        ax.tick_params(labelbottom=False, labeltop=False, labelleft=False, labelright=False)
+        for text in list(ax.texts):
+            text.remove()
+        # secondary axes (e.g. module group headers) only carry tick labels
+        for child_axis in ax.child_axes:
+            child_axis.tick_params(labelbottom=False, labeltop=False, labelleft=False, labelright=False)
+
+def finalize_figure(fig, name):
+    """Strip annotations if disabled, then save the figure to path_results and show it."""
+    if not show_annotations:
+        strip_annotations(fig)
+        name += '_clean'
+    fig.tight_layout()
+    os.makedirs(path_results, exist_ok=True)
+    fig.savefig(os.path.join(path_results, f'{figure_prefix}_{name}.png'), bbox_inches='tight')
+    plt.show()
+
 fig, axs = plt.subplots(nrows=2, ncols=3, figsize=(12, 8),
                         gridspec_kw={'width_ratios': [10, 10, 1]})
 
@@ -327,8 +370,7 @@ for row in range(2):
             axs[row, col].set_ylabel('Number of Participants', fontsize=10)
 
 plt.suptitle('Confusion Matrix Rates', fontsize=14)
-plt.tight_layout()
-plt.show()
+finalize_figure(fig, 'confusion_rates')
 
 # -------------------------------------------------------------------------------
 # PLOTTING: 2x2 Classification Metrics
@@ -369,58 +411,53 @@ for row in range(2):
             axs[row, col].set_ylabel('Number of Participants', fontsize=10)
 
 plt.suptitle('Classification Metrics', fontsize=14)
-plt.tight_layout()
-plt.show()
+finalize_figure(fig, 'classification_metrics')
 
 # -------------------------------------------------------------------------------
-# PLOTTING: 2x2 Classification Metrics per ground-truth model type
+# PLOTTING: Precision, Recall, F1 per ground-truth model type (mechanisms on y-axis)
 # -------------------------------------------------------------------------------
 
 n_mechanism_types = len(mechanism_labels)
 mechanism_n_samples = counts_mechanisms['samples'].sum(axis=0).astype(int)
-x_labels_mechanisms = [
-    f"{label}\n(k={n_params}, n={n_samples})"
+y_labels_mechanisms = [
+    f"{label.replace(chr(10), ' + ')} (k={n_params}, n={n_samples})"
     for (n_params, label), n_samples in zip(mechanism_types, mechanism_n_samples)
 ]
 
-fig, axs = plt.subplots(nrows=2, ncols=3, figsize=(max(12, 1.6 * n_mechanism_types), 9),
-                        gridspec_kw={'width_ratios': [10, 10, 1]})
+metrics_panels = (
+    ('Precision', metrics_mechanisms['precision']),
+    ('Recall', metrics_mechanisms['recall']),
+    ('F1 Score', metrics_mechanisms['f1_score']),
+)
 
-metrics_matrices = [
-    [metrics_mechanisms['accuracy'], metrics_mechanisms['precision']],
-    [metrics_mechanisms['recall'], metrics_mechanisms['f1_score']],
-]
-metrics_titles = [
-    ['Accuracy', 'Precision'],
-    ['Recall', 'F1 Score'],
-]
+fig, axs = plt.subplots(nrows=1, ncols=len(metrics_panels) + 1, figsize=(14, 1.5 + 0.45 * n_mechanism_types),
+                        gridspec_kw={'width_ratios': [10] * len(metrics_panels) + [1]})
 
-for row in range(2):
-    for col in range(2):
-        sns.heatmap(
-            metrics_matrices[row][col],
-            annot=True,
-            fmt='.2f',
-            cmap='viridis',
-            ax=axs[row, col],
-            cbar=(col == 1),
-            cbar_ax=axs[row, 2] if col == 1 else None,
-            xticklabels=x_labels_mechanisms if row == 1 else [''] * n_mechanism_types,
-            yticklabels=y_labels if col == 0 else [''] * len(participants),
-            vmin=0,
-            vmax=1,
-            mask=np.isnan(metrics_matrices[row][col]),
-        )
-        axs[row, col].set_title(metrics_titles[row][col], fontsize=12)
-        if row == 1:
-            axs[row, col].set_xlabel('Ground-Truth Mechanisms (k = parameters, n = participants)', fontsize=10)
-            axs[row, col].tick_params(axis='x', labelsize=7, rotation=0)
-        if col == 0:
-            axs[row, col].set_ylabel('Number of Participants', fontsize=10)
+for col, (title, metric) in enumerate(metrics_panels):
+    # (participant sizes, mechanisms) -> (mechanisms, participant sizes)
+    metric = metric.T
+    sns.heatmap(
+        metric,
+        annot=True,
+        fmt='.2f',
+        cmap='viridis',
+        ax=axs[col],
+        cbar=(col == len(metrics_panels) - 1),
+        cbar_ax=axs[-1] if col == len(metrics_panels) - 1 else None,
+        xticklabels=y_labels,
+        yticklabels=y_labels_mechanisms if col == 0 else [''] * n_mechanism_types,
+        vmin=0,
+        vmax=1,
+        mask=np.isnan(metric),
+    )
+    axs[col].set_title(title, fontsize=12)
+    axs[col].set_xlabel('Number of Participants', fontsize=10)
+    if col == 0:
+        axs[col].set_ylabel('Ground-Truth Mechanisms', fontsize=10)
+        axs[col].tick_params(axis='y', labelsize=7, rotation=0)
 
 plt.suptitle('Classification Metrics by Ground-Truth Model', fontsize=14)
-plt.tight_layout()
-plt.show()
+finalize_figure(fig, 'classification_metrics_by_mechanism')
 
 # -------------------------------------------------------------------------------
 # PLOTTING: Per-term recovery (ground-truth terms) and inclusion (non-ground-truth terms)
@@ -515,8 +552,7 @@ axs[1, 0].set_xlabel("Candidate Term (v = module's own state)", fontsize=10)
 draw_module_groups(axs[:, 0], offset=0)
 
 plt.suptitle('Per-Term Recovery', fontsize=14)
-plt.tight_layout()
-plt.show()
+finalize_figure(fig, 'per_term_recovery')
 
 # -------------------------------------------------------------------------------
 # PLOTTING: Parameter Recovery Box Plots
@@ -615,7 +651,6 @@ else:
             axs[idx // n_cols, idx % n_cols].set_visible(False)
 
         plt.suptitle(f'Parameter Recovery (N={par})', fontsize=13)
-        plt.tight_layout()
-        plt.show()
+        finalize_figure(fig, f'coefficients_{par}p')
 
 print("Analysis complete.")
