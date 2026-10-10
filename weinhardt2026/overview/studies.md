@@ -8,7 +8,7 @@ Conventions and infrastructure shared across studies are described in [training.
 
 ## Active Studies
 
-The task battery of the paper. Full architectures, benchmark equations and dataset details: [weinhardt2026/model_descriptions.md](../weinhardt2026/model_descriptions.md). The study-to-model mapping used for the paper runs is in `slurm_jobs/spice_stability_studies.sh`.
+The task battery of the paper. Full architectures, benchmark equations and dataset details: [model_descriptions.md](model_descriptions.md). The study-to-model mapping used for the paper runs is in `slurm_jobs/spice_stability_studies.sh`.
 
 **Shared RL architecture.** The bandit-style studies (`synthetic`, `dezfouli2019`, `eckstein2026`, `ganesh2024a`, `bustamante2023`) share one architecture of up to three value states, summed into the logits:
 - a working-memory reward value (stateless chosen update, decaying unchosen update);
@@ -52,7 +52,7 @@ Perceptual decision-making combined with reward learning. Participants choose be
 Benchmarked against a normative `BayesianModel` (Ganesh et al., 2024).
 
 ### `kolff2025` — Chimpanzee grooming negotiation
-Video-coded dyadic grooming interactions of wild chimpanzees. Each interaction is modeled from each ape's perspective, so apes are participants and interactions are blocks. The raw behaviors are recoded into Groom + five Negotiation categories (see `kolff2025/data/PREPROCESSING.md`).
+Video-coded dyadic grooming interactions of wild chimpanzees. Each interaction is modeled from each ape's perspective, so apes are participants and interactions are blocks. The raw behaviors are recoded into Groom + five Negotiation categories (see [kolff2025_preprocessing.md](kolff2025_preprocessing.md)).
 
 The paper model is the **TOBETO** model (`spice_kolff2025_tobeto.py`). It predicts the focal ape's next act as `none` / to-be-groomed signal / to-groom signal / groom. Three latent drives are updated from both apes' last act and the centered dominance-rank difference. The SINDy library is linear (degree 1). Benchmarked against a lag-1 conditional frequency table (`ConditionalTobetoModel`). The grooming-expectation variant (`*_groom.py`) and the original 5-action model (`spice_kolff2025.py`) are not part of the paper.
 

@@ -115,7 +115,7 @@ Full details, current constructor signatures, and internals: **[docs/training.md
 
 ### Designing Polynomial-Amenable Architectures
 
-When designing `BaseModel` subclasses, the architecture determines how well SINDy polynomials can approximate the learned RNN dynamics. Full guidelines (externalizing gating via action masks, keeping 1-3 control signals per module, matching polynomial degree to mechanism, etc.): **[docs/training.md](docs/training.md#designing-polynomial-amenable-architectures)** and [docs/guidelines_polynomial_amenable_architectures.md](docs/guidelines_polynomial_amenable_architectures.md).
+When designing `BaseModel` subclasses, the architecture determines how well SINDy polynomials can approximate the learned RNN dynamics. Full guidelines (externalizing gating via action masks with an anchor per split pair, keeping the candidate library small, inputs in [-1, 1], additive logits, etc.): **[docs/training.md](docs/training.md#designing-polynomial-amenable-architectures)** and [docs/guidelines_polynomial_amenable_architectures.md](docs/guidelines_polynomial_amenable_architectures.md).
 
 ## Common Pitfalls
 

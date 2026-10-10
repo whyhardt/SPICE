@@ -1,6 +1,6 @@
 # SPICE Training Mechanisms
 
-Internals of `BaseModel`, `SpiceConfig`, `SpiceDataset`, `SpiceEstimator`, and the training pipeline, verified against the current code in `spice/resources/`. See [CLAUDE.md](../CLAUDE.md) for the project overview and where this fits in the repo.
+Internals of `BaseModel`, `SpiceConfig`, `SpiceDataset`, `SpiceEstimator`, and the training pipeline, verified against the current code in `spice/resources/`. Paths refer to the SPICE code repository.
 
 ---
 

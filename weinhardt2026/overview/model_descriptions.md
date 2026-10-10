@@ -35,7 +35,7 @@ Each module has a SINDy library of polynomial candidate terms (degree 2 by defau
 
 ### 1.3. Training
 
-Two-stage training as described in the main methods and [docs/training.md](../docs/training.md):
+Two-stage training as described in the main methods and [training.md](training.md):
 1. **Stage 1, joint RNN + SINDy training.** The objective is
 $$\mathcal{L} = \mathcal{L}_{\text{beh}} + \lambda_{\text{sindy}}\,\mathcal{L}_{\text{sindy}} + \alpha\,\lVert\xi\rVert_1 + \lambda_{\text{gate}}\,\mathcal{L}_{\text{gate}} + \lambda_{\text{feature}}\,\lVert\theta_{\text{group}}\rVert_2^2$$
    - $\mathcal{L}_{\text{beh}}$: behavioral loss (cross-entropy by default).
@@ -462,7 +462,7 @@ $$\text{logits} = \beta \cdot [V_{a=0}, V_{a=1}]$$
 
 ### 3.7. Kolff 2025: Chimpanzee Grooming Negotiation
 
-**Task.** An observational dataset, not an experiment: video-coded grooming interactions between pairs of wild chimpanzees from two communities (CE and WE). Grooming is preceded by a *negotiation* phase, in which the two apes exchange behaviors that may lead to grooming and decide who grooms whom. Each interaction is coded as a sequence of events; in each event, either ape (or occasionally both) performs a behavioral element. The raw elements (6334 events, 311 interactions, 41 apes) are recoded into one *Groom* category and five *Negotiation* categories (agreed with the primatologists; see [studies/kolff2025/data/PREPROCESSING.md](studies/kolff2025/data/PREPROCESSING.md)):
+**Task.** An observational dataset, not an experiment: video-coded grooming interactions between pairs of wild chimpanzees from two communities (CE and WE). Grooming is preceded by a *negotiation* phase, in which the two apes exchange behaviors that may lead to grooming and decide who grooms whom. Each interaction is coded as a sequence of events; in each event, either ape (or occasionally both) performs a behavioral element. The raw elements (6334 events, 311 interactions, 41 apes) are recoded into one *Groom* category and five *Negotiation* categories (agreed with the primatologists; see [kolff2025_preprocessing.md](kolff2025_preprocessing.md)):
 - **Self_Reposition**: the ape changes its own posture without presenting a body part.
 - **Reposition_Body**: the ape moves the partner into a position for grooming (`touch`, `grab-pull limb`, `push`, `touch hold`).
 - **Grooming_Process**: `maintain contact`, i.e. a hand kept on the partner between grooming bouts.

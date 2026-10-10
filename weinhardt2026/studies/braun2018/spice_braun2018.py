@@ -25,6 +25,9 @@ On repeat/switch bias:
 
 BINARY_SIGNALS = {'repeat'}
 
+# Task values are integers in [0, 10], so their difference lies in [-10, 10]; scaled to [-1, 1]
+MAX_VALUE_DIFFERENCE = 10.
+
 
 CONFIG = SpiceConfig(
     library_setup={
@@ -101,6 +104,7 @@ class SpiceModel(BaseModel):
         spice_signals = self.init_forward_pass(inputs, prev_state)
         
         blocks = spice_signals.blocks.unsqueeze(0).unsqueeze(-1).expand_as(spice_signals.actions[0]) / self.n_blocks
+        dreward_tasks = spice_signals.additional_inputs['difference'] / MAX_VALUE_DIFFERENCE
         
         repeat = torch.zeros_like(spice_signals.actions)
         repeat += spice_signals.actions[..., :1]
@@ -121,7 +125,7 @@ class SpiceModel(BaseModel):
                 key_module='reward_repeat',
                 key_state='value_reward',
                 action_mask=repeat_mask,
-                inputs=-spice_signals.additional_inputs['difference'][trial],
+                inputs=-dreward_tasks[trial],
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
             )
@@ -129,7 +133,7 @@ class SpiceModel(BaseModel):
                 key_module='reward_switch',
                 key_state='value_reward',
                 action_mask=switch_mask,
-                inputs=spice_signals.additional_inputs['difference'][trial],
+                inputs=dreward_tasks[trial],
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
             )

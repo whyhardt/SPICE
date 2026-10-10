@@ -364,6 +364,57 @@ def cluster_module(
             "significance": significance, "distance_threshold": distance_threshold}
 
 
+def multi_term_clusters(result: dict) -> List[List[str]]:
+    """Member terms of every cluster with at least two terms."""
+    if result["clusters"] is None:
+        return []
+    return [[t for t, c in zip(result["terms"], result["clusters"]) if c == cluster_id]
+            for cluster_id in np.unique(result["clusters"])
+            if (result["clusters"] == cluster_id).sum() > 1]
+
+
+def stacked_clustering(
+    data: dict,
+    n_permutations: int = 10000,
+    grouping_alpha: float = 0.05,
+    min_active_fraction: float = 0.05,
+    min_overlap: int = 30,
+    metric: str = "abs",
+    linkage_method: str = "average",
+    seed: int = 0,
+) -> dict:
+    """Two-stage mechanism discovery for one module.
+
+    Stage 1 groups signed terms (see ``split_by_sign``) whose presence co-occurs
+    across participants -- each significant group is a mechanism. Stage 2 runs
+    the coefficient dendrogram inside every multi-term group, correlating only
+    over participants who carry both terms, to find which members' values move
+    together (ties such as ``c_a = -c_b``). Both stages use the per-module
+    permutation test, stage 2 with the group as its own family.
+    """
+    split = split_by_sign(data)
+    presence_result = cluster_module(
+        values=split["values"], presence=split["presence"], terms=split["terms"],
+        mode="presence", linkage_method=linkage_method, min_active_fraction=min_active_fraction,
+        n_permutations=n_permutations, grouping_alpha=grouping_alpha, seed=seed,
+    )
+
+    index_of = {term: i for i, term in enumerate(split["terms"])}
+    groups = []
+    for members in multi_term_clusters(presence_result):
+        columns = [index_of[term] for term in members]
+        tie_result = cluster_module(
+            values=split["values"][:, columns], presence=split["presence"][:, columns], terms=members,
+            mode="coefficients", metric=metric, linkage_method=linkage_method,
+            # membership was already filtered in stage 1
+            min_active_fraction=0.0, min_overlap=min_overlap, pairwise_complete=True,
+            n_permutations=n_permutations, grouping_alpha=grouping_alpha, seed=seed,
+        )
+        groups.append({"members": members, "ties": multi_term_clusters(tie_result),
+                       "tie_result": tie_result})
+    return {"presence": presence_result, "groups": groups}
+
+
 def bootstrap_stability(
     values: np.ndarray,
     presence: np.ndarray,
