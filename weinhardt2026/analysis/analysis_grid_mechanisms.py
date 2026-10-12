@@ -21,6 +21,13 @@ Two views per grid cell (one cell = all seeds of one hyperparameter setting):
     mean coefficient of the agreeing seeds. Its dendrograms give the consensus mechanisms; `recovery_consensus` is the
     share of them that at least `votes` individual seeds also find.
 
+Groups from different seeds that describe the same mechanism often differ by a
+term or two. **Core mechanisms** strip those: within a module, groups of
+different seeds sharing >= 2 terms form a family, and the family's core is the
+largest term set that at least k seeds all contain (k = all seeds, or the
+majority vote). Terms of the family outside the core are reported as spurious,
+with how many seeds carried them.
+
 Usage:
     python weinhardt2026/analysis/analysis_grid_mechanisms.py
 """
@@ -29,7 +36,7 @@ import importlib
 import os
 import pickle
 import sys
-from itertools import permutations
+from itertools import combinations, permutations
 from pathlib import Path
 
 import numpy as np
@@ -128,41 +135,136 @@ def summarize_cell(seed_sets, consensus_set, votes):
     }
 
 
+def mechanism_families(seed_sets, min_shared=2):
+    """Link groups of different seeds within a module that share >= `min_shared` terms.
+
+    Returns (module, {seed index: union of that seed's terms in the family}) per family.
+    """
+    groups = [(index, module, terms) for index, mechanisms in enumerate(seed_sets) for module, terms in mechanisms]
+    parent = list(range(len(groups)))
+
+    def root(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    for a, b in combinations(range(len(groups)), 2):
+        if groups[a][1] == groups[b][1] and len(groups[a][2] & groups[b][2]) >= min_shared:
+            parent[root(a)] = root(b)
+
+    families = {}
+    for i, (index, module, terms) in enumerate(groups):
+        module_of, per_seed = families.setdefault(root(i), (module, {}))
+        per_seed[index] = per_seed.get(index, frozenset()) | terms
+    return list(families.values())
+
+
+def family_core(per_seed, votes):
+    """Largest term set contained in at least `votes` seeds' groups, and how many seeds contain it."""
+    best = frozenset()
+    for subset in combinations(per_seed, votes):
+        shared = frozenset.intersection(*(per_seed[s] for s in subset))
+        if len(shared) > len(best):
+            best = shared
+    return best, sum(best <= terms for terms in per_seed.values())
+
+
+def core_mechanisms(seed_sets, votes):
+    """Per family: core (>= 2 terms, else empty), its seed support, and spurious terms with seed counts."""
+    cores = []
+    for module, per_seed in mechanism_families(seed_sets):
+        core, support = family_core(per_seed, votes) if len(per_seed) >= votes else (frozenset(), 0)
+        if len(core) < 2:
+            core, support = frozenset(), 0
+        union = frozenset().union(*per_seed.values())
+        cores.append({
+            'module': module, 'core': core, 'support': support, 'n_seeds_in_family': len(per_seed),
+            'spurious': {t: sum(t in terms for terms in per_seed.values()) for t in union - core},
+            # share of each supporting seed's terms that lie outside the core
+            'spurious_share': (np.mean([len(per_seed[s] - core) / len(per_seed[s])
+                                        for s in per_seed if core and core <= per_seed[s]])
+                               if core else np.nan),
+        })
+    return cores
+
+
+def summarize_cores(seed_sets, votes):
+    cores = [c for c in core_mechanisms(seed_sets, votes) if c['core']]
+    return {
+        'n_cores': len(cores),
+        'core_size': float(np.mean([len(c['core']) for c in cores])) if cores else np.nan,
+        'spurious_share': float(np.nanmean([c['spurious_share'] for c in cores])) if cores else np.nan,
+    }
+
+
 def format_mechanism(mechanism):
     module, terms = mechanism
     return f"{module}: {{{', '.join(sorted(terms))}}}"
 
 
-def analysis_grid_mechanisms(runs, votes=2, n_permutations=10000, n_jobs=-1):
-    """Per-cell recovery table (columns prefixed by level), plus the mechanism sets behind it."""
+def cluster_grid(runs, votes=2, n_permutations=10000, n_jobs=-1, cache_path=None):
+    """Mechanism sets of every seed model and every cell's consensus model (cached: clustering is the slow part)."""
     names = sorted(runs)
+    if cache_path and os.path.exists(cache_path):
+        cached = pickle.load(open(cache_path, 'rb'))
+        if cached['names'] == names and cached['votes'] == votes:
+            return cached['seed'], cached['consensus']
+
     print(f"Clustering {len(names)} seed models ...")
     seed_mechanisms = dict(zip(names, Parallel(n_jobs=n_jobs)(
         delayed(find_mechanisms)(runs[n]['matrices'], n_permutations) for n in names)))
 
-    frame = pd.DataFrame([{**runs[n]['tags'], 'name': n} for n in names])
-    tags = swept_tags(frame)
-    cells = [(key, group['name'].tolist()) for key, group in frame.groupby(tags)]
-    eligible = [(key, members) for key, members in cells if len(members) >= votes]
+    eligible = [(key, members) for key, members in grid_cells(runs) if len(members) >= votes]
     print(f"Clustering {len(eligible)} consensus models ({votes}-vote) ...")
     consensus_sets = Parallel(n_jobs=n_jobs)(
         delayed(find_mechanisms)(consensus_matrices([runs[n] for n in members], votes), n_permutations)
         for _, members in eligible)
     consensus_of = {key: s for (key, _), s in zip(eligible, consensus_sets)}
 
-    rows, details = [], []
+    if cache_path:
+        pickle.dump({'names': names, 'votes': votes, 'seed': seed_mechanisms, 'consensus': consensus_of},
+                    open(cache_path, 'wb'))
+    return seed_mechanisms, consensus_of
+
+
+def grid_cells(runs):
+    """[(cell key, member run names)] grouped by the swept hyperparameters."""
+    frame = pd.DataFrame([{**runs[n]['tags'], 'name': n} for n in sorted(runs)])
+    return [(key, group['name'].tolist()) for key, group in frame.groupby(swept_tags(frame))]
+
+
+def analysis_grid_mechanisms(runs, votes=2, n_permutations=10000, n_jobs=-1, cache_path=None):
+    """Per-cell recovery + core table (columns prefixed by level), the mechanisms and the cores behind it."""
+    seed_mechanisms, consensus_of = cluster_grid(runs, votes, n_permutations, n_jobs, cache_path)
+    tags = swept_tags(pd.DataFrame([runs[n]['tags'] for n in runs]))
+    cells = grid_cells(runs)
+
+    rows, details, core_rows = [], [], []
     for key, members in cells:
         row = {**dict(zip(tags, key)), 'n_seeds': len(members)}
         for level in LEVELS:
             seed_sets = [seed_mechanisms[n][level] for n in members]
             consensus_set = consensus_of.get(key, {}).get(level, set())
             row.update({f'{level}_{k}': v for k, v in summarize_cell(seed_sets, consensus_set, votes).items()})
+            for label, k in (('all', len(members)), ('majority', votes)):
+                if len(members) < k:
+                    continue
+                row.update({f'{level}_{key_}_{label}': v for key_, v in summarize_cores(seed_sets, k).items()})
+                for core in core_mechanisms(seed_sets, k):
+                    core_rows.append({
+                        **dict(zip(tags, key)), 'level': level, 'votes': f'{k}/{len(members)}',
+                        'module': core['module'],
+                        'core': ', '.join(sorted(core['core'])) if core['core'] else '(no core)',
+                        'support': core['support'], 'n_seeds_in_family': core['n_seeds_in_family'],
+                        'spurious': ', '.join(f'{t} [{n}]' for t, n in sorted(core['spurious'].items())),
+                    })
             for mechanism in set().union(*seed_sets) | consensus_set:
                 details.append({**dict(zip(tags, key)), 'level': level, 'mechanism': format_mechanism(mechanism),
                                 'n_seeds_found': sum(mechanism in s for s in seed_sets),
                                 'in_consensus': mechanism in consensus_set})
         rows.append(row)
-    return pd.DataFrame(rows), pd.DataFrame(details)
+    return pd.DataFrame(rows), pd.DataFrame(details), pd.DataFrame(core_rows)
 
 
 # ── Standalone execution ─────────────────────────────────────────────
@@ -187,7 +289,8 @@ if __name__ == '__main__':
         cache_path=os.path.join(results_dir, 'grid_search_matrices.pkl'),
         exclude=failed,
     )
-    table, details = analysis_grid_mechanisms(runs, votes=votes)
+    table, details, cores = analysis_grid_mechanisms(
+        runs, votes=votes, n_jobs=8, cache_path=os.path.join(results_dir, 'grid_search_mechanism_sets.pkl'))
 
     # scores from the likelihood evaluation, for reading recovery against fit
     scores = evaluation[~evaluation['sindy_failed']].groupby(swept_tags(evaluation))[['BIC', 'AIC']].mean()
@@ -209,4 +312,13 @@ if __name__ == '__main__':
 
     table.to_csv(os.path.join(results_dir, 'grid_search_mechanism_recovery.csv'), index=False)
     details.to_csv(os.path.join(results_dir, 'grid_search_mechanisms.csv'), index=False)
+    cores.to_csv(os.path.join(results_dir, 'grid_search_core_mechanisms.csv'), index=False)
+
+    for level in LEVELS:
+        columns = hps + ['n_seeds'] + [f'{level}_{c}_{v}' for v in ('all', 'majority')
+                                       for c in ('n_cores', 'core_size', 'spurious_share')] + ['BIC', 'AIC']
+        print(f'\n[{level}] core mechanisms — ranked by cores shared by a {votes}-seed majority:')
+        print(table[table['n_seeds'] >= 3].sort_values([f'{level}_n_cores_majority', f'{level}_n_cores_all'],
+                                                       ascending=False)[columns]
+              .head(12).to_string(index=False, float_format='{:.3f}'.format))
     print(f'\nSaved recovery tables to {results_dir}')

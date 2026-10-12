@@ -1363,14 +1363,16 @@ class BaseModel(nn.Module):
             
         return sindy_coefficients
 
-    def module_cleanup(self, xs: torch.Tensor, ys: torch.Tensor, tolerance: float = 1e-6, seed: int = 0) -> Dict[str, torch.Tensor]:
-        """Remove active SINDy terms without influence on the predicted choice probabilities.
+    def module_cleanup(self, xs: torch.Tensor, ys: torch.Tensor, tolerance: float = 1e-6, seed: int = 0, softmax_outputs: bool = True) -> Dict[str, torch.Tensor]:
+        """Remove active SINDy terms without influence on the predictions.
 
         One backward pass of the SINDy model over the data: the gradient of the random projection
-        sum_t r_t . z_t of the centered logits z_t (softmax is invariant only to a shift common to all
-        options) is zero (almost surely) for a coefficient iff the coefficient changes no prediction.
+        sum_t r_t . z_t of the outputs z_t is zero (almost surely) for a coefficient iff the coefficient
+        changes no prediction. For softmax outputs z_t are the centered logits (softmax is invariant only
+        to a shift common to all options); continuous outputs are used as they are -- centering a single
+        output would zero it and remove every term.
         This catches e.g. decay terms on states that are never driven away from a pinned initial value,
-        modules whose updates never reach the logits, and constants that shift all options equally.
+        modules whose updates never reach the outputs, and (softmax) constants that shift all options equally.
 
         A term is removed per ensemble member and participant if its gradient is below `tolerance`
         relative to the largest gradient of that member and participant (float precision).
@@ -1380,6 +1382,7 @@ class BaseModel(nn.Module):
             ys: Targets (B, T, W, A); NaN marks padded trials
             tolerance: Relative gradient below which a term counts as without influence
             seed: Seed of the random projection
+            softmax_outputs: Outputs are logits of a softmax (center them); False for continuous outputs
 
         Returns:
             Dict of bool masks (E, P, X, T) per module: removed terms
@@ -1396,9 +1399,10 @@ class BaseModel(nn.Module):
 
         self.eval(use_sindy=True)
         logits = self(xs)[0]  # (E, B, T, W, A)
-        logits_centered = logits - logits.mean(dim=-1, keepdim=True)
+        if softmax_outputs:
+            logits = logits - logits.mean(dim=-1, keepdim=True)
         projection = torch.randn(logits.shape, generator=torch.Generator().manual_seed(seed)).to(self.device)
-        (projection * logits_centered * valid.unsqueeze(0).unsqueeze(-1)).sum().backward()
+        (projection * logits * valid.unsqueeze(0).unsqueeze(-1)).sum().backward()
 
         influence = {module: c.grad.abs() * self.sindy_coefficients_presence[module].float() for module, c in coefficients.items()}
         scale = torch.stack([g.amax(dim=-1) for g in influence.values()]).amax(dim=0).clamp(min=1e-30)  # (E, P, X)

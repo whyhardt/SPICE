@@ -25,7 +25,7 @@ train_benchmark = False
 generate_data = False
 N_REPEATS = 100
 
-truncate_dataset = True
+truncate_dataset = False   # full blocks; the first-100-trial GRU did not generalize beyond trial 100
 
 output_dir = 'weinhardt2026/studies/weber2024/results'
 

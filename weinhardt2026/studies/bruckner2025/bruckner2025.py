@@ -33,7 +33,7 @@ output_dir='weinhardt2026/studies/bruckner2025/results'
 # -------------------------------------------------------------------------------------------
 
 path_data = 'weinhardt2026/studies/bruckner2025/data/bruckner2025.csv'
-test_blocks = (1,2)   # hold out one block per participant   # use different block split -> anchoring shift was block-wise given
+test_blocks = (2, 4)   # blocks 1-2 no-push, 3-4 push: hold out one block per condition
 
 dataset, _ = get_dataset(path_data=path_data)
 

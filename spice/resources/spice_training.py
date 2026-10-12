@@ -1866,7 +1866,8 @@ def fit_spice(
     # ══════════════════════════════════════════════════════════════════════════
     # Module cleanup: remove SINDy terms without influence on the predictions
     # ══════════════════════════════════════════════════════════════════════════
-    removed = model.module_cleanup(xs=dataset_train.xs, ys=dataset_train.ys)
+    removed = model.module_cleanup(xs=dataset_train.xs, ys=dataset_train.ys,
+                                   softmax_outputs=loss_fn is cross_entropy_loss)
     if verbose:
         n_removed = sum(mask.sum().item() for mask in removed.values())
         print(f"\nModule cleanup: removed {n_removed} SINDy terms without influence on the predictions "

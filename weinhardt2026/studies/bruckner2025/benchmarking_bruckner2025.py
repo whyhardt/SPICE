@@ -85,7 +85,9 @@ class RationalResourceModel(nn.Module):
     trial (subjective prediction errors), while uncertainty dynamics carry forward.
 
     Per-participant learnable parameters: hazard rate (h), surprise sensitivity (s),
-    uncertainty underestimation (u), and reward bias (q).
+    uncertainty underestimation (u), reward bias (q), and bucket bias (d) -- the anchoring
+    on the pushed bucket in the shifting-bucket condition (al_task_agent_int_rbm.py:
+    hat{a}_t += d * y_t with push y_t = z_{t+1} - b_t, zero on the first trial of a block).
     """
 
     # Fixed initial conditions (matching AgentVars defaults)
@@ -105,6 +107,7 @@ class RationalResourceModel(nn.Module):
         self.s_raw = nn.Parameter(torch.zeros(n_participants))         # → sigmoid → surprise sensitivity [0, 1]
         self.u_raw = nn.Parameter(torch.zeros(n_participants))         # raw u; used as exp(u) for uncertainty scaling
         self.q_raw = nn.Parameter(torch.zeros(n_participants))         # → unconstrained → reward bias
+        self.d_raw = nn.Parameter(torch.zeros(n_participants))         # → unconstrained → bucket bias (anchoring)
 
     def forward(self, xs: torch.Tensor, state: torch.Tensor = None):
         """Forward pass: trial-by-trial Bayesian belief updating.
@@ -115,6 +118,7 @@ class RationalResourceModel(nn.Module):
         - u parameter: raw u is exponentiated → divides uncertainty (Eq. 9)
         - On catch trials (v_t=1), belief is updated with helicopter position (Eqs. 11-14)
         - Reward bias q * high_val is added to learning rate
+        - Bucket bias d * (z_{t+1} - b_t) is added to the prediction (0 without push)
 
         Args:
             xs: (B, T, 1, F) input tensor.
@@ -130,6 +134,10 @@ class RationalResourceModel(nn.Module):
         n_actions = 1
         n_rewards = 1
         ai = n_actions + n_rewards  # start of additional inputs block
+
+        # push between prediction t and t+1; NaN z_{t+1} (end of block, padding) → no push
+        push = (xs[:, :, 0, ai + _AI_Z_NEXT] - xs[:, :, 0, 0]).nan_to_num(0.)
+        push[:, 0] = 0.  # first trial of a block: no bucket bias (as in the original)
 
         xs = xs.nan_to_num(0.)
         b_t = xs[:, :, 0, 0]     # bucket position (normalized)
@@ -148,6 +156,7 @@ class RationalResourceModel(nn.Module):
         s = torch.sigmoid(self.s_raw[participant_ids])               # (B,) surprise sensitivity [0, 1]
         u_exp = torch.exp(torch.clamp_max(self.u_raw[participant_ids], 10))  # (B,) exp(u) for uncertainty scaling
         q = self.q_raw[participant_ids]                              # (B,) reward bias
+        d = self.d_raw[participant_ids]                              # (B,) bucket bias
 
         # Initialize uncertainty state (fixed, matching original AgentVars)
         sigma_est_sq = torch.full((B,), self.SIGMA_0 / POSITION_SCALE ** 2, device=device)
@@ -200,8 +209,8 @@ class RationalResourceModel(nn.Module):
             mu_t = torch.where(is_catch > 0.5, mu_t_catch, mu_t)
             tau = torch.where(is_catch > 0.5, tau_catch, tau)
 
-            # Predicted next position (Eq. 4)
-            logits[:, t, 0, 0] = mu_t.clamp(0, 1)
+            # Predicted next position (Eq. 4) with bucket bias on the update
+            logits[:, t, 0, 0] = (mu_t + d * push[:, t]).clamp(0, 1)
 
             # Update uncertainty for next trial (Eq. 9)
             # sigma_{t+1}^2 = (omega*sigma^2 + (1-omega)*tau*sigma^2
