@@ -55,6 +55,7 @@ if __name__=='__main__':
     # Data setup parameters
     parser.add_argument('--data_kwargs', type=json.loads, default='{}', help='additional kwargs for csv_to_dataset for loading the data correctly.')
     parser.add_argument('--n_items', type=int, default=None, help='Number of items in dataset; Default None: As many items as actions (automatically detected from dataset);')
+    parser.add_argument('--n_participants', type=int, default=None, help='Number of participant parameter sets; Default None: one per participant in the training data. 1 trains a group model (all sessions pooled).')
     parser.add_argument('--train_ratio_time', type=float, default=None, help='Ratio of data used for training. Split along time dimension. Not combinable with test_blocks')
     parser.add_argument('--test_blocks', type=str, default=None, help='Comma-separated list of integeres which indicate test sessions. Not combinable with train_ratio_time')
 
@@ -184,7 +185,7 @@ if __name__=='__main__':
     dataset_tuple = dataset_train.xs, dataset_train.ys, dataset_test.xs, dataset_test.ys
     
     n_actions = dataset_train.ys.shape[-1]
-    n_participants = len(dataset_train.xs[..., -1].unique())
+    n_participants = args.n_participants if args.n_participants else len(dataset_train.xs[..., -1].unique())
     n_experiments = len(dataset_train.xs[..., -2].unique())
     n_items = args.n_items if args.n_items else n_actions
     n_sessions = dataset.xs.shape[0]

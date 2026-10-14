@@ -190,6 +190,82 @@ def get_candidates(presence: np.ndarray, result: dict) -> List[dict]:
     return candidates
 
 
+def consensus_presence(seed_matrices: List[dict], votes: int) -> dict:
+    """Per module: a participant carries ``term (±)`` when >= *votes* seeds carry it.
+
+    *seed_matrices* holds one ``get_module_matrices`` result per seed; terms are
+    split by sign first, so the vote is on the signed term.
+    """
+    consensus = {}
+    for module in seed_matrices[0]:
+        splits = [split_by_sign(matrices[module]) for matrices in seed_matrices]
+        terms = sorted({term for split in splits for term in split["terms"]})
+        n_participants = splits[0]["presence"].shape[0]
+        counts = np.zeros((n_participants, len(terms)))
+        for split in splits:
+            for index, term in enumerate(split["terms"]):
+                counts[:, terms.index(term)] += split["presence"][:, index] > 0
+        consensus[module] = {"presence": (counts >= votes).astype(float), "terms": terms}
+    return consensus
+
+
+def get_mechanism_candidates(consensus: dict, mechanisms: List[Tuple[str, frozenset]],
+                             linkage_method: str = "average") -> List[dict]:
+    """Recurring mechanisms (one step of break-up each) plus every other signed term.
+
+    A mechanism is the root of its own group; its two children are the top split
+    of its members (1 - phi on consensus presence, as in the presence dendrogram;
+    a two-term mechanism splits into its terms). Children have no children, so a
+    non-significant mechanism is broken up by exactly one step. Every signed term
+    outside all mechanisms of its module is a group of its own.
+    """
+    from scipy.cluster.hierarchy import linkage
+    from scipy.spatial.distance import squareform
+    from weinhardt2026.analysis.analysis_coefficient_dendrogram import presence_distance
+
+    candidates = []
+
+    def node(module, group, node_id, parent, depth, children, names, present):
+        columns = present[:, [consensus[module]["terms"].index(t) for t in names]] > 0
+        return {"module": module, "group": group, "node": node_id, "parent": parent,
+                "depth": depth, "children": children, "members": names,
+                "label": names[0] if len(names) == 1 else "{" + ", ".join(names) + "}",
+                "presence": columns.all(axis=1).astype(float),
+                "presence_any": columns.any(axis=1).astype(float)}
+
+    for module, data in consensus.items():
+        present, group = data["presence"], 0
+        module_mechanisms = [sorted(terms) for m, terms in mechanisms if m == module]
+        for members in module_mechanisms:
+            group += 1
+            missing = [t for t in members if t not in data["terms"]]
+            if missing:
+                raise ValueError(f"{module}: mechanism terms {missing} absent from consensus presence")
+            if len(members) == 2:
+                halves = [[members[0]], [members[1]]]
+            else:
+                columns = present[:, [data["terms"].index(t) for t in members]]
+                distance, _, _ = presence_distance(columns)
+                top = linkage(squareform(distance, checks=False), method=linkage_method)
+                label = np.zeros(len(members), dtype=int)
+                # the last merge joins two clusters; assign leaves by membership of its left child
+                clusters = {i: [i] for i in range(len(members))}
+                for row, (left, right, _, _) in enumerate(top):
+                    clusters[len(members) + row] = clusters[int(left)] + clusters[int(right)]
+                left_leaves = clusters[int(top[-1, 0])]
+                label[left_leaves] = 1
+                halves = [[members[i] for i in range(len(members)) if label[i] == side] for side in (1, 0)]
+            candidates.append(node(module, group, 0, -1, 0, (1, 2), members, present))
+            for child_id, half in zip((1, 2), halves):
+                candidates.append(node(module, group, child_id, 0, 1, (), half, present))
+        in_mechanism = {t for members in module_mechanisms for t in members}
+        for term in data["terms"]:
+            if term not in in_mechanism:
+                group += 1
+                candidates.append(node(module, group, 0, -1, 0, (), [term], present))
+    return candidates
+
+
 def select_reported(table: pd.DataFrame) -> Tuple[pd.Series, pd.Series]:
     """Per group, the largest significant node; otherwise break it up.
 
@@ -376,13 +452,20 @@ def report_contrast(table: pd.DataFrame, contrast_name: str, alpha: float = 0.05
 
 def plot_forest(table: pd.DataFrame, output_path: str, title: str,
                 label_col: str = "leaf",
-                xlabel: str = "log-odds of presence per SD of metric (95% CI)"):
-    """Beta with 95% CI per leaf, grouped by module, significant ones filled."""
+                xlabel: str = "log-odds of presence per SD of metric (95% CI)",
+                module_order: Optional[List[str]] = None):
+    """Beta with 95% CI per leaf, grouped by module, significant ones filled.
+
+    Modules run top to bottom in *module_order* (e.g. the SPICE config's), else
+    alphabetically.
+    """
     table = table.dropna(subset=["beta"]).copy()
     if table.empty:
         return
 
-    table = table.sort_values(["module", "beta"]).reset_index(drop=True)
+    order = module_order or sorted(table["module"].unique())
+    table["module_rank"] = table["module"].map({m: i for i, m in enumerate(order)})
+    table = table.sort_values(["module_rank", "beta"]).reset_index(drop=True)
     labels = [textwrap.fill(f"{row['module'].replace('value_', '')} | {row[label_col]}", 46)
               for _, row in table.iterrows()]
     # Wrapped labels need vertical room, so rows grow with the tallest label.
@@ -391,7 +474,8 @@ def plot_forest(table: pd.DataFrame, output_path: str, title: str,
 
     palette = plt.get_cmap("tab10")
     modules = list(dict.fromkeys(table["module"]))
-    color_of = {module: palette(i % 10) for i, module in enumerate(modules)}
+    # colour follows the module's position in *order*, so it is the same in every plot
+    color_of = {module: palette(order.index(module) % 10) for module in modules}
 
     for position, row in table.iterrows():
         color = color_of[row["module"]]
@@ -410,8 +494,9 @@ def plot_forest(table: pd.DataFrame, output_path: str, title: str,
 
     handles = [plt.Line2D([], [], marker="o", linestyle="", color=color_of[m], label=m)
                for m in modules]
-    handles.append(plt.Line2D([], [], marker="o", linestyle="", color="0.3",
-                              markerfacecolor="white", label="not significant (FDR)"))
+    if not table["significant"].all():
+        handles.append(plt.Line2D([], [], marker="o", linestyle="", color="0.3",
+                                  markerfacecolor="white", label="not significant (FDR)"))
     axis.legend(handles=handles, fontsize=7, frameon=False,
                 loc="upper left", bbox_to_anchor=(1.02, 1.0))
 
@@ -507,6 +592,20 @@ def analysis_coefficient_betas(
             node["module"] = module
             candidates.append(node)
 
+    return run_contrasts(candidates, criterion, criterion_col, criterion_type, reference,
+                         comparisons, output_dir, prefix, invariant_bounds, alpha)
+
+
+def run_contrasts(candidates: List[dict], criterion: np.ndarray, criterion_col: str,
+                  criterion_type: str, reference: Optional[str],
+                  comparisons: Optional[List[Tuple[str, str]]], output_dir: str, prefix: str,
+                  invariant_bounds: Tuple[float, float] = (0.05, 0.95),
+                  alpha: float = 0.05, plot_significant_only: bool = False) -> pd.DataFrame:
+    """Test the candidates for every contrast; print, plot and save each one.
+
+    The forest plot shows the reported, tested leaves — only the significant ones
+    with *plot_significant_only*; the CSV always holds every node.
+    """
     tables = []
     for contrast in get_contrasts(criterion, criterion_col, criterion_type, reference,
                                   comparisons):
@@ -516,7 +615,13 @@ def analysis_coefficient_betas(
         suffix = (criterion_col if criterion_type == "continuous"
                   else f"{criterion_col}_{contrast['name']}")
         plot_path = os.path.join(output_dir, f"betas_structural_{prefix}_{suffix}.png")
-        plot_forest(table[table["reported"] & (table["status"] == "tested")], plot_path,
+        shown = table["reported"] & (table["status"] == "tested")
+        if plot_significant_only:
+            shown &= table["significant"]
+        if os.path.exists(plot_path):
+            os.remove(plot_path)  # nothing to show leaves no stale plot behind
+        plot_forest(table[shown], plot_path,
+                    module_order=list(dict.fromkeys(node["module"] for node in candidates)),
                     title=f"{prefix} — presence, {contrast['name']}",
                     xlabel=contrast["xlabel"])
 
@@ -530,6 +635,45 @@ def analysis_coefficient_betas(
 
     table = pd.concat(tables, ignore_index=True)
     return table
+
+
+def analysis_mechanism_betas(
+    seed_matrices: List[dict],
+    mechanisms: List[Tuple[str, frozenset]],
+    data_path: str,
+    output_dir: str,
+    votes: int,
+    criterion_col: str = "reward",
+    criterion_type: str = "continuous",
+    reference: Optional[str] = None,
+    comparisons: Optional[List[Tuple[str, str]]] = None,
+    participant_col: str = "participant",
+    criterion_aggregate: str = "mean",
+    invariant_bounds: Tuple[float, float] = (0.05, 0.95),
+    alpha: float = 0.05,
+    prefix: str = "mechanisms",
+    plot_significant_only: bool = False,
+) -> pd.DataFrame:
+    """Structural beta effects of mechanisms recurring across seeds, plus all other terms.
+
+    Instead of one model's dendrogram groups, the leaves are *mechanisms* found
+    across seeds (e.g. ``analysis_grid_mechanisms.core_mechanisms``) and every
+    signed term outside them. Presence is the seed vote of ``consensus_presence``
+    (>= *votes* seeds). A non-significant mechanism is broken up by one step only
+    (``get_mechanism_candidates``); as in ``analysis_coefficient_betas``, every
+    node is tested up front and forms one FDR family per contrast.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    aggregate = "first" if criterion_type == "discrete" else criterion_aggregate
+    criterion_frame = get_criterion(data_path, criterion_col, participant_col, aggregate)
+    criterion = criterion_frame[criterion_col].to_numpy()
+    check_trial_count(criterion, criterion_frame["log_n_trials"].to_numpy(), criterion_col,
+                      criterion_type=criterion_type, alpha=alpha)
+
+    candidates = get_mechanism_candidates(consensus_presence(seed_matrices, votes), mechanisms)
+    return run_contrasts(candidates, criterion, criterion_col, criterion_type, reference,
+                         comparisons, output_dir, prefix, invariant_bounds, alpha,
+                         plot_significant_only=plot_significant_only)
 
 
 def main():

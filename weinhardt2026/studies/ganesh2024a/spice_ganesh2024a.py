@@ -7,8 +7,8 @@ from spice import SpiceConfig, BaseModel, SpiceDataset
 CONFIG = SpiceConfig(
     library_setup={
         'perception_certainty': ['contr_diff[t]'],
-        'value_wm_reward_chosen': ['reward[t]', 'certainty[t]'],
-        'value_wm_reward_not_chosen': ['certainty[t]'],
+        # 'value_wm_reward_chosen': ['reward[t]', 'certainty[t]'],
+        # 'value_wm_reward_not_chosen': ['certainty[t]'],
         'value_reward_chosen': ['reward[t]', 'certainty[t]'],
         'value_reward_not_chosen': ['certainty[t]'],
         'value_choice': ['choice[t]', 'certainty[t]', 'certainty_next[t+1]'],
@@ -16,12 +16,12 @@ CONFIG = SpiceConfig(
         # 'value_choice_not_chosen': ['certainty[t]', 'certainty_next[t+1]'],
     },
     memory_state={
-        'value_wm_reward': 0,
+        # 'value_wm_reward': 0,
         'value_reward': 0,
         'value_choice': 0,
     },
     states_in_logit=[
-        'value_wm_reward',
+        # 'value_wm_reward',
         'value_reward',
         'value_choice',
     ],
@@ -65,7 +65,7 @@ class SpiceModel(BaseModel):
         
         # perception: signed contr_diff → sigmoid
         self.setup_module(key_module='perception_certainty', include_state=False)
-        self.setup_module(key_module='value_wm_reward_chosen', include_state=False)
+        # self.setup_module(key_module='value_wm_reward_chosen', include_state=False)
 
         self.preprocess_coefficients()
         
@@ -121,26 +121,26 @@ class SpiceModel(BaseModel):
             # input so updates can be attenuated when that assignment is unreliable.
 
             # --- WORKING MEMORY UPDATES ---
-            self.call_module(
-                key_module='value_wm_reward_chosen',
-                key_state='value_wm_reward',
-                action_mask=action_contrast[trial],
-                inputs=(
-                    reward_scalar[trial],
-                    certainty_current,
-                ),
-                participant_index=spice_signals.participant_ids,
-                participant_embedding=participant_embeddings,
-            )
+            # self.call_module(
+            #     key_module='value_wm_reward_chosen',
+            #     key_state='value_wm_reward',
+            #     action_mask=action_contrast[trial],
+            #     inputs=(
+            #         reward_scalar[trial],
+            #         certainty_current,
+            #     ),
+            #     participant_index=spice_signals.participant_ids,
+            #     participant_embedding=participant_embeddings,
+            # )
 
-            self.call_module(
-                key_module='value_wm_reward_not_chosen',
-                key_state='value_wm_reward',
-                action_mask=1 - action_contrast[trial],
-                inputs=(certainty_current,),
-                participant_index=spice_signals.participant_ids,
-                participant_embedding=participant_embeddings,
-            )
+            # self.call_module(
+            #     key_module='value_wm_reward_not_chosen',
+            #     key_state='value_wm_reward',
+            #     action_mask=1 - action_contrast[trial],
+            #     inputs=(certainty_current,),
+            #     participant_index=spice_signals.participant_ids,
+            #     participant_embedding=participant_embeddings,
+            # )
 
             # --- REWARD VALUE UPDATES ---
             self.call_module(
@@ -212,7 +212,7 @@ class SpiceModel(BaseModel):
             # --- LOGITS ---
             logits_item_space = (
                 self.state['value_reward']
-                + self.state['value_wm_reward']
+                # + self.state['value_wm_reward']
                 + self.state['value_choice']
             )
 

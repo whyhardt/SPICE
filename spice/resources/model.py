@@ -394,8 +394,8 @@ class BaseModel(nn.Module):
         spice_signals.time_trial = inputs[0, :, :, :, -5].int()       # [within_ts, ensemble, batch]
         spice_signals.trials = inputs[:, 0, :, :, -4].int()           # [outer_ts, ensemble, batch]
         spice_signals.blocks = inputs[0, 0, :, :, -3].int()           # [outer_ts, ensemble, batch]
-        spice_signals.experiment_ids = inputs[0, 0, :, :, -2].int()   # [ensemble, batch]
-        spice_signals.participant_ids = inputs[0, 0, :, :, -1].int()  # [ensemble, batch]
+        spice_signals.experiment_ids = self.map_experiment_ids(inputs[0, 0, :, :, -2].int())   # [ensemble, batch]
+        spice_signals.participant_ids = self.map_participant_ids(inputs[0, 0, :, :, -1].int())  # [ensemble, batch]
 
         # use previous state or initialize state if not given
         if prev_state is not None:
@@ -418,6 +418,26 @@ class BaseModel(nn.Module):
         spice_signals.logits = torch.zeros((inputs.shape[0], 1, self.ensemble_size, inputs.shape[3], self.n_actions), device=self.device)
 
         return spice_signals
+
+    def map_participant_ids(self, participant_ids: torch.Tensor) -> torch.Tensor:
+        """Map dataset participant ids onto the model's participant parameters.
+
+        A model with n_participants == 1 is a pooled model: every session is mapped to participant 0,
+        regardless of how many participants the dataset contains.
+        """
+        if self.n_participants == 1:
+            return torch.zeros_like(participant_ids)
+        return participant_ids
+
+    def map_experiment_ids(self, experiment_ids: torch.Tensor) -> torch.Tensor:
+        """Map dataset experiment ids onto the model's experiment parameters.
+
+        A model with n_experiments == 1 pools all experiments: every session is mapped to experiment 0,
+        regardless of how many experiments the dataset contains.
+        """
+        if self.n_experiments == 1:
+            return torch.zeros_like(experiment_ids)
+        return experiment_ids
 
     def post_forward_pass(self, spice_signals: SpiceSignals) -> SpiceSignals:
 

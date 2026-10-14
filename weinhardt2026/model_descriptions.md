@@ -469,35 +469,34 @@ $$\text{logits} = \beta \cdot [V_{a=0}, V_{a=1}]$$
 - **Grooming_Solicitation**: visual or tactile requests to be groomed (`present_*`, `raise *`, `extend *`, `kiss`, `hold`).
 - **Directed_Scratch**: a scratch directed at a body part, as a request.
 
-Every interaction is modeled from the perspective of each of its two apes in turn (the *focal* ape and its *partner*), so each ape is a participant and each (interaction, perspective) pair is a block. Each ape's dominance rank is normalized within its community. `rank_diff` is the rank difference to the partner, and `rank_diff_centered` is that difference minus the ape's mean over its partners, which makes it orthogonal to the ape's own rank. The question is how the focal ape's next behavior depends on what both apes just did and on their dominance relation.
+Every interaction is modeled from the perspective of each of its two apes in turn (the *focal* ape and its *partner*), so each ape is a participant and each (interaction, perspective) pair is a block; both perspectives of an interaction share its id and land on the same side of a split. The question is which acts of both apes build up the focal ape's readiness to groom.
 
-#### SPICE Model: TOBETO Drives (`studies/kolff2025/spice_kolff2025_tobeto.py`)
+#### SPICE Model: Received and Given Acts (`studies/kolff2025/spice_kolff2025.py`)
 
-The model predicts the focal ape's own next act, grouped by the grooming role it signals: "to be groomed" (TOBE) or "to groom" (TO). Only bouts with at least 2 events are kept.
+The model predicts whether the focal ape's next act is grooming. A target exists only at events where the focal ape acts next; all other events are input steps only (target mask packed into `ys` by `prepare_dataset`, masked cross-entropy `masked_cross_entropy`).
 
-**Data** (`data/kolff2025_tobeto.csv`): 41 apes, 299 interactions, 11786 perspective-events (2–716 per ape). Held-out test set: the 64 interactions of 31 held-out dyads (20% of dyads, seed 42).
+**Data** (`data/kolff2025.csv`, built by `benchmarking_kolff2025.build_dataframe`): 41 apes, 311 interactions, 11810 perspective-events, 5599 targets (median 129 per ape, range 1–312). P(groom) over targets is 0.41 (0.25 for the approached ape, 0.49 for the approacher). Held-out test set: whole dyads, fold 0 of 5 folds balanced by targets (`dyad_folds`, seed 0): 62 interactions, 1011 targets (18%), i.e. pairings the model was never fit on.
 
-**Readout** ($A = 4$, one softmax): `none` (the focal ape does not act next; reference class), `tobegroomed` (Grooming_Solicitation, Self_Reposition, Directed_Scratch), `togroom` (Reposition_Body, Grooming_Process), `groom`.
+**Readout** ($A = 2$): `not groom` (reference, logit 0) and `groom`.
 
-| Submodule | Control signals | State item written | Description |
-|-----------|----------------|--------------------|-------------|
-| `drive_tobegroomed` | 7 signals (below) | `drive[tobegroomed]` | Drive to be groomed |
-| `drive_togroom_signal` | 7 signals | `drive[togroom]` | Drive to groom, expressed as to-groom signals |
-| `drive_togroom_groom` | 7 signals | `drive[groom]` | Drive to groom, expressed as grooming itself |
+| Submodule | Control signals | State written | Description |
+|-----------|----------------|---------------|-------------|
+| `negotiation_received` | partner's Grooming_Solicitation, Self_Reposition, Directed_Scratch | `value_negotiation_received` | Negotiation by the partner |
+| `negotiation_given` | own Grooming_Solicitation, Self_Reposition, Directed_Scratch | `value_negotiation_given` | Negotiation by the focal ape |
+| `grooming_received` | partner's Reposition_Body, Grooming_Process, Groom | `value_grooming_received` | Preparation and grooming by the partner |
+| `grooming_given` | own Reposition_Body, Grooming_Process, Groom | `value_grooming_given` | Preparation and grooming by the focal ape |
 
-Control signals: one-hot indicators of the focal ape's and the partner's last act (`own_tobegroomed`, `own_togroom`, `own_groom`, `partner_tobegroomed`, `partner_togroom`, `partner_groom`; "no act" is the all-zero reference) and `rank_diff` (= `rank_diff_centered`, constant within an interaction, so it acts as a dyad-specific shift of the resting drive). The drive to groom is split into two modules because grooming persists over consecutive events while signals do not; a shared equation would fix their ratio.
+Control signals are one-hot indicators of the category each ape performs at the current event (all zero if it does not act). An ape performs at most one category per event, so products of two categories of the same module are structurally zero and pruned, as are squared indicators. Each module updates its own state, which it uses in its update; all four write only the `groom` item. Rank and role are not inputs: on held-out dyads they added no predictive information beyond the act sequence.
 
-**Memory states:** `drive` (4 items, learnable per-ape initial value). The `none` item is never written and serves as the softmax reference.
+**Logit computation:** $\text{logit}^{\text{groom}}_t = \sum_{m} \text{value}_{m,t}$, $\text{logit}^{\text{not groom}}_t = 0$.
 
-**Logit computation:** $\text{logits}_t = \text{drive}_t$.
+**SINDy library degree:** 1 (linear: per module $\{1, \text{value}_m, 3 \text{ act indicators}\}$, 20 candidate terms in total).
 
-**SINDy library degree:** 1 (linear: per module $\{1, \text{drive}, 6 \text{ act indicators}, \text{rank\_diff}\}$).
+**Group model.** One model is fitted for all apes (`n_participants=1`). With about 110 targets per ape, individual models (participant embeddings, and per-ape benchmarks alike) overfit and fail on held-out dyads. Gate and feature penalties are off: in a group model the gates are global constants and duplicate SINDy's sparsity.
 
-**Evaluation** is reported on all events and, with `filter_own_acts`, restricted to events where the focal ape itself acts next.
+#### Benchmark Model: Lag-1 Logistic Regression (`LogisticRegressionModel`)
 
-#### Benchmark Model: Lag-1 Conditional Frequency (`ConditionalTobetoModel`)
-
-A memoryless lag-1 lookup table per ape, $P(\text{own act}_{t+1} \mid \text{own act}_t, \text{partner act}_t)$, estimated by counting with add-one smoothing. Because exactly one ape acts per event, 2 × 3 (own, partner) cells carry data, each with 3 free probabilities: 18 parameters per ape. Whatever SPICE gains over this table is attributable to latent dynamics.
+A memoryless group model: $\text{logit}\, P(\text{groom}_{t+1}) = w^\top a_t + b$, where $a_t$ are the 12 act indicators of the current event (the partner's and the focal ape's category), i.e. the same inputs as SPICE without memory beyond the current event. Fitted on the scored targets (near-unpenalized, $C = 10^4$): 13 parameters shared by all apes. Whatever SPICE gains over it is attributable to latent dynamics. No generative benchmarking: the models predict only whether the next act is grooming, not which act follows, so they cannot generate interaction sequences.
 
 ### 3.8. Bruckner 2025: Helicopter Task (Predictive Inference)
 
@@ -701,7 +700,7 @@ Bayesian inference on a discretized circular state space ($[0°, 360°)$ in 2° 
 | Eckstein 2026 | Drifting 4-armed bandit | 4 | `spice_eckstein2026` | 6 | 4 | 2 | Best RL (Eckstein 2026) | 6 |
 | Dezfouli 2019 | Two-armed bandit (clinical) | 2 | `spice_dezfouli2019` | 5 | 3 | 2 | Generalized Q-Learning | 12 |
 | Ganesh 2024a | Perceptual contrast bandit | 2 | `spice_ganesh2024a` | 6 | 3 | 2 | Bayesian Belief-Update | 2 |
-| Kolff 2025 | Chimpanzee grooming negotiation (TOBETO) | 4 | `spice_kolff2025_tobeto` | 3 | 1 | 1 | Lag-1 conditional frequency | 18 |
+| Kolff 2025 | Chimpanzee grooming negotiation (group model) | 2 | `spice_kolff2025` | 4 | 4 | 1 | Lag-1 logistic regression | 13 (shared) |
 | Bruckner 2025 | Helicopter task (predictive inference) | 1 (continuous) | `spice_bruckner2025` | 7 | 4 | 2 | Reduced Bayesian Model | 4 |
 | Weber 2024 | Laser tracking (shield movement) | 2 (continuous, sin/cos) | `spice_weber2024` | 4 | 2 | 2 | Bayesian Changepoint Model | 2 |
 

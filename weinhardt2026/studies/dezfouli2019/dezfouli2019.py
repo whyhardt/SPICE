@@ -138,10 +138,8 @@ else:
 
 gru = GRUModel(
     n_actions=info_dataset['n_actions'],
-    n_participants=info_dataset['n_participants'],
     additional_inputs=2,
     dropout=0.25,
-    embedding_size=8,
     hidden_size=8,
 )
 

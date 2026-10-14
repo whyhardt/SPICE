@@ -104,37 +104,6 @@ def setup(study):
         benchmark.load_state_dict(torch.load(ROOT / 'weinhardt2026/studies/eckstein2026/params/benchmark_eckstein2026.pkl', map_location='cpu'))
         gru = GRUModel(n_actions=tr.n_actions, additional_inputs=2, dropout=0.1, hidden_size=32)
         gru.load_state_dict(torch.load(ROOT / 'weinhardt2026/studies/eckstein2026/params/gru_eckstein2026.pkl', map_location='cpu'))
-    elif study == 'kolff2025':
-        from weinhardt2026.studies.kolff2025.spice_kolff2025 import CONFIG, SpiceModel, cross_entropy_loss_mask_waiting, filter_non_waiting
-        from weinhardt2026.studies.kolff2025.benchmarking_kolff2025 import ConditionalFrequencyModel, get_dataset
-        tr, te, info = get_dataset(path_data=str(ROOT / 'weinhardt2026/studies/kolff2025/data/kolff2025_original.csv'), test_blocks=(1,))
-        est = SpiceEstimator(spice_config=CONFIG, spice_class=SpiceModel, n_actions=tr.n_actions,
-                             n_participants=tr.n_participants, n_reward_features=tr.n_reward_features,
-                             embedding_size=4, loss_fn=cross_entropy_loss_mask_waiting, ensemble_size=10,
-                             sindy_weight=0., device=device)
-        est.load_spice(str(ROOT / 'weinhardt2026/studies/kolff2025/params/spice_kolff2025.pkl'))
-        spice = [est]
-        gru = GRUModel(n_actions=tr.n_actions, additional_inputs=tr.n_additional_inputs, n_reward_features=0)
-        gru.load_state_dict(torch.load(ROOT / 'weinhardt2026/studies/kolff2025/params/gru_kolff2025.pkl', map_location='cpu'))
-        benchmark = ConditionalFrequencyModel(n_actions=tr.n_actions, n_participants=info['n_participants'])
-        benchmark.load_state_dict(torch.load(ROOT / 'weinhardt2026/studies/kolff2025/params/benchmark_kolff2025.pkl', map_location='cpu'))
-        trial_filter, baseline = filter_non_waiting, tr.n_actions - 1
-    elif study == 'kolff2025_groom':
-        from weinhardt2026.studies.kolff2025.spice_kolff2025_groom import CONFIG, SpiceModel
-        from weinhardt2026.studies.kolff2025.benchmarking_kolff2025_groom import get_dataset, ConditionalGroomingModel
-        tr, te, info = get_dataset(path_data=str(ROOT / 'weinhardt2026/studies/kolff2025/data/kolff2025_original.csv'), test_fraction=0.2)
-        est = SpiceEstimator(spice_config=CONFIG, spice_class=SpiceModel, n_actions=tr.n_actions,
-                             n_participants=tr.n_participants, n_reward_features=tr.n_reward_features,
-                             embedding_size=4, ensemble_size=10, sindy_weight=1e-1, sindy_alpha=1e-3,
-                             sindy_threshold_pruning=5e-2, device=device)
-        est.load_spice(str(ROOT / 'weinhardt2026/studies/kolff2025/params/spice_kolff2025_groom.pkl'))
-        spice = [est]
-        benchmark = ConditionalGroomingModel(n_participants=tr.n_participants)
-        benchmark.fit(tr)
-        gru = GRUModel(n_actions=tr.n_actions, n_participants=tr.n_participants,
-                       additional_inputs=tr.n_additional_inputs, n_reward_features=0,
-                       embedding_size=4, hidden_size=8)
-        gru.load_state_dict(torch.load(ROOT / 'weinhardt2026/studies/kolff2025/params/gru_kolff2025_groom.pkl', map_location='cpu'))
     else:
         raise ValueError(study)
     benchmark.eval()

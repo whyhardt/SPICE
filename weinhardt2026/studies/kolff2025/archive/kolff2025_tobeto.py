@@ -97,10 +97,8 @@ if train_benchmark:
 
 gru = GRUModel(
     n_actions=dataset_train.n_actions,
-    n_participants=dataset_train.n_participants,
     additional_inputs=dataset_train.n_additional_inputs,
     n_reward_features=0,
-    embedding_size=4,
     hidden_size=8,
 )
 

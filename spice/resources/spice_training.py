@@ -321,7 +321,7 @@ def _vectorize_state(
 
     # Apply learnable per-participant initial values
     if hasattr(model, 'learnable_initial_values') and model.learnable_initial_values:
-        participant_ids = xs_train[:, :, 0, 0, -1].long().to(model.device)  # (E, B)
+        participant_ids = model.map_participant_ids(xs_train[:, :, 0, 0, -1].long().to(model.device))  # (E, B)
         E_idx = torch.arange(E, device=model.device).unsqueeze(1)
         for key, param in model.learnable_initial_values.items():
             init_val = param[E_idx, participant_ids]  # [E, B]
@@ -600,7 +600,7 @@ def _vectorize_state_sequential(
 
     # Apply learnable per-participant initial values
     if hasattr(model, 'learnable_initial_values') and model.learnable_initial_values:
-        participant_ids = xs_train[:, :, 0, 0, -1].long().to(model.device)  # (E, B)
+        participant_ids = model.map_participant_ids(xs_train[:, :, 0, 0, -1].long().to(model.device))  # (E, B)
         E_idx = torch.arange(E, device=model.device).unsqueeze(1)
         for key, param in model.learnable_initial_values.items():
             init_val = param[E_idx, participant_ids]  # [E, B]

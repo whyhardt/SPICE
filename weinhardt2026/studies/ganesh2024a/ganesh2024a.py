@@ -92,10 +92,8 @@ path_gru = 'weinhardt2026/studies/ganesh2024a/params/gru_ganesh2024a.pkl'
 
 gru = GRUModel(
     n_actions=info_dataset['n_actions'],
-    n_participants=info_dataset['n_participants'],
     additional_inputs=2,
     dropout=0.25,
-    embedding_size=8,
     hidden_size=8,
 )
 

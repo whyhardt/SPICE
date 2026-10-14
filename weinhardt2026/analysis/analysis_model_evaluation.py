@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 import torch
 import matplotlib.pyplot as plt
+from scipy.stats import binomtest
 
 # standard methods and classes used for every model evaluation
 from spice import SpiceEstimator, csv_to_dataset, SpiceDataset
@@ -147,6 +148,81 @@ def grouped_information_criteria(
     }
 
 
+def pooled_information_criteria(nll_total: float, n_trials: float, n_parameters: float, n_actions_baseline: int) -> dict:
+    """AIC/BIC/ΔBIC-per-trial of a group model: one NLL over all trials, its shared parameters counted once.
+
+    Returns the same keys as ``grouped_information_criteria`` (standard deviations are 0: one group).
+    """
+    aic = 2 * nll_total + 2 * n_parameters
+    bic = 2 * nll_total + n_parameters * math.log(n_trials)
+    delta_bic_per_trial = (2 * n_trials * math.log(n_actions_baseline) - bic) / n_trials
+    return {
+        'nll_total': nll_total,
+        'bic_mean': bic, 'bic_std': 0.0,
+        'aic_mean': aic, 'aic_std': 0.0,
+        'delta_bic_per_trial_mean': delta_bic_per_trial, 'delta_bic_per_trial_std': 0.0,
+    }
+
+
+def get_participant_index(dataset: SpiceDataset) -> tuple[torch.Tensor, torch.Tensor]:
+    """Map each session to its participant (all sessions and experiments of a participant are pooled)."""
+    participant_ids = dataset.xs[:, 0, 0, -1].long().cpu()
+    return torch.unique(participant_ids, return_inverse=True)
+
+
+def participant_win_counts(
+    score_per_participant: dict[str, np.ndarray],
+    reference: str = 'SPICE-EQ',
+    compared: tuple[str, ...] = ('Benchmark',),
+    higher_is_better: bool = True,
+) -> dict[str, dict]:
+    """Per-participant comparison of ``reference`` against the ``compared`` models.
+
+    By default only the interpretable benchmark is compared: against black-box models (GRU, SPICE-RNN)
+    the count says little about the recovered mechanism.
+
+    Counts the participants for whom ``reference`` scores better, tests the count with a two-sided sign test
+    (ties dropped) and reports the median per-participant difference, signed so that positive favours
+    ``reference``. Participants without a score (NaN) are skipped.
+
+    Args:
+        score_per_participant: model name -> (P,) score per participant (e.g. trial likelihood or MSE).
+        reference: model the others are compared against.
+        higher_is_better: True for likelihoods, False for errors.
+
+    Returns:
+        model name -> {'wins', 'losses', 'n', 'p', 'median_delta'} for every compared model that was evaluated.
+    """
+    if reference not in score_per_participant:
+        return {}
+    results = {}
+    for name, score in score_per_participant.items():
+        if name == reference or name not in compared:
+            continue
+        delta = score_per_participant[reference] - score
+        if not higher_is_better:
+            delta = -delta
+        delta = delta[~np.isnan(delta)]
+        wins, losses = int((delta > 0).sum()), int((delta < 0).sum())
+        results[name] = {
+            'wins': wins,
+            'losses': losses,
+            'n': len(delta),
+            'p': binomtest(wins, wins + losses, 0.5).pvalue if wins + losses > 0 else float('nan'),
+            'median_delta': float(np.median(delta)) if len(delta) > 0 else float('nan'),
+        }
+    return results
+
+
+def win_count_columns(comparison: Optional[dict], reference: str, delta_label: str) -> dict:
+    """Table columns for one model's row from ``participant_win_counts`` (NaN for models not compared)."""
+    if comparison is None:
+        return {f'{reference} better': float('nan'), 'Participants': float('nan'),
+                'Sign test p': float('nan'), f'Median Δ {delta_label}': float('nan')}
+    return {f'{reference} better': comparison['wins'], 'Participants': comparison['n'],
+            'Sign test p': comparison['p'], f'Median Δ {delta_label}': comparison['median_delta']}
+
+
 @torch.no_grad()
 def analysis_model_evaluation(
     dataset: SpiceDataset,
@@ -158,9 +234,14 @@ def analysis_model_evaluation(
     trial_filter: Optional[Callable[[torch.Tensor], torch.Tensor]] = None,
     n_actions_random_baseline: Optional[int] = None,
     held_out: bool = False,
+    pooled: bool = False,
     ):
     """
     Args:
+        pooled: Set True when every model is a group model (all parameters shared by all
+            participants, e.g. SPICE with n_participants=1). AIC/BIC are then computed once on the
+            NLL summed over all considered trials, with each model's parameters counted once
+            (see ``pooled_information_criteria``), instead of per (participant, experiment) group.
         trial_filter: Optional function ``(ys: Tensor) -> BoolTensor (B, T)``
             that returns True for trials to **include** in the evaluation.
             When None (default), all non-NaN trials are included.
@@ -183,6 +264,12 @@ def analysis_model_evaluation(
     inverted a ranking: a 5.6-parameter model beat a 10.7-parameter one on
     held-out ΔBIC while losing to it on both the in-sample criterion and raw
     held-out likelihood. Select on training BIC; report held-out NLL.
+
+    When SPICE and the benchmark are evaluated, the benchmark's row also reports for how many participants SPICE-EQ
+    reaches the higher trial likelihood (``SPICE-EQ better`` out of ``Participants``), a two-sided sign
+    test on that count, and the median per-participant likelihood difference (SPICE-EQ minus the benchmark);
+    see ``participant_win_counts``. To compare across seeds, average each participant's likelihood over
+    seeds before counting, so that seed noise does not enter the count.
     """
 
     unique_pairs, group_index = get_participant_experiment_groups(dataset)
@@ -248,28 +335,47 @@ def analysis_model_evaluation(
         models['SPICE-RNN'] = (spice_rnn_choice_probs, torch.full((n_groups,), float(spice_rnn_parameters)))
         # Per-participant/experiment active coefficient counts -- these are
         # genuinely independent per-group parameters, unlike SPICE-RNN's shared weights.
-        models['SPICE-EQ'] = (spice_choice_probs, spice_parameters[unique_pairs[:, 0], unique_pairs[:, 1]].float())
+        # Dataset ids are mapped onto the model's parameters (a group model maps every participant to 0).
+        spice_participants = spice_model.model.map_participant_ids(unique_pairs[:, 0])
+        spice_experiments = spice_model.model.map_experiment_ids(unique_pairs[:, 1])
+        models['SPICE-EQ'] = (spice_choice_probs, spice_parameters[spice_participants, spice_experiments].float())
 
     # ------------------------------------------------------------
     # Evaluate each model
     # ------------------------------------------------------------
+    participants, participant_index = get_participant_index(dataset)
+    n_trials_per_participant = torch.zeros(len(participants)).scatter_add_(0, participant_index, considered_trials_participant.cpu())
+    trial_lik_per_participant = {}
+
     rows = {}
     for name, (probs, n_parameters_per_group) in models.items():
         nll = -log_likelihood(data=targets_eval, probs=probs)
         nll_per_session = nll.sum(dim=-1).nansum(dim=1)[..., 0]
 
+        nll_per_participant = torch.zeros(len(participants), dtype=nll_per_session.dtype).scatter_add_(0, participant_index, nll_per_session)
+        trial_lik_per_participant[name] = torch.where(
+            n_trials_per_participant > 0, torch.exp(-nll_per_participant / n_trials_per_participant.clamp(min=1)), float('nan')).numpy()
+
         trial_lik = torch.exp(-nll_per_session.sum() / considered_trials).item()
         trial_lik_participant = np.exp(-nll_per_session.numpy() / considered_trials_participant.numpy())
-        trial_lik_std = trial_lik_participant.std()
+        trial_lik_std = np.nanstd(trial_lik_participant)   # sessions without considered trials are NaN
 
-        info = grouped_information_criteria(
-            nll_per_session=nll_per_session,
-            n_trials_per_session=considered_trials_participant,
-            group_index=group_index,
-            n_groups=n_groups,
-            n_parameters_per_group=n_parameters_per_group,
-            n_actions_baseline=n_actions_baseline,
-        )
+        if pooled:
+            info = pooled_information_criteria(
+                nll_total=nll_per_session.sum().item(),
+                n_trials=considered_trials.item(),
+                n_parameters=n_parameters_per_group[0].item(),
+                n_actions_baseline=n_actions_baseline,
+            )
+        else:
+            info = grouped_information_criteria(
+                nll_per_session=nll_per_session,
+                n_trials_per_session=considered_trials_participant,
+                group_index=group_index,
+                n_groups=n_groups,
+                n_parameters_per_group=n_parameters_per_group,
+                n_actions_baseline=n_actions_baseline,
+            )
 
         rows[name] = {
             'Trial Lik.': trial_lik,
@@ -287,6 +393,14 @@ def analysis_model_evaluation(
                 'ΔBIC/trial': info['delta_bic_per_trial_mean'],
                 'ΔBIC/trial (std)': info['delta_bic_per_trial_std'],
             })
+
+    # ------------------------------------------------------------
+    # Per-participant comparison against SPICE-EQ
+    # ------------------------------------------------------------
+    comparisons = participant_win_counts(trial_lik_per_participant, reference='SPICE-EQ', higher_is_better=True)
+    if comparisons:
+        for name in rows:
+            rows[name].update(win_count_columns(comparisons.get(name), reference='SPICE-EQ', delta_label='lik'))
 
     # ------------------------------------------------------------
     # Printing model performance table
@@ -427,6 +541,11 @@ def analysis_model_evaluation_mse(
     ``analysis_model_evaluation``: an information criterion on a test split
     charges for parsimony twice. On held-out data read MSE/R² instead.
 
+    When SPICE and the benchmark are evaluated, the benchmark's row also reports for how many participants SPICE-EQ
+    reaches the lower MSE (trial-weighted over the participant's sessions), a two-sided sign test on that
+    count, and the median per-participant MSE difference (the benchmark minus SPICE-EQ, so positive favours
+    SPICE-EQ); see ``participant_win_counts``.
+
     Args:
         dataset: Test dataset (SpiceDataset with continuous targets).
         spice_model: Fitted SpiceEstimator (optional).
@@ -524,6 +643,17 @@ def analysis_model_evaluation_mse(
     mse_random = tgt_valid_all.var(dim=0).mean().item()
     bic_random = n_valid * (1 + math.log(2 * math.pi) + math.log(max(mse_random, 1e-30)))
 
+    # Per-participant comparison against SPICE-EQ: trial-weighted mean of the per-session MSE (lower is better)
+    participants, participant_index = get_participant_index(dataset)
+    n_trials_per_session = valid_mask.sum(dim=1).float().cpu()
+    n_trials_per_participant = torch.zeros(len(participants)).scatter_add_(0, participant_index, n_trials_per_session)
+    mse_per_participant = {}
+    for name, (metrics, _) in models.items():
+        weighted = torch.nan_to_num(metrics['mse_per_session'] * n_trials_per_session)
+        sse = torch.zeros(len(participants)).scatter_add_(0, participant_index, weighted)
+        mse_per_participant[name] = torch.where(n_trials_per_participant > 0, sse / n_trials_per_participant.clamp(min=1), float('nan')).numpy()
+    comparisons = participant_win_counts(mse_per_participant, reference='SPICE-EQ', higher_is_better=False)
+
     rows = []
     for name, (metrics, n_params) in models.items():
         mse_std = metrics['mse_per_session'][~metrics['mse_per_session'].isnan()].std().item()
@@ -542,6 +672,8 @@ def analysis_model_evaluation_mse(
         if not held_out:
             row['BIC'] = bic
             row['ΔBIC/trial'] = delta_bic_per_trial
+        if comparisons:
+            row.update(win_count_columns(comparisons.get(name), reference='SPICE-EQ', delta_label='MSE'))
         rows.append(row)
 
     df = pd.DataFrame(rows).set_index('Model')

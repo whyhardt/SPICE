@@ -8,7 +8,7 @@ Conventions and infrastructure shared across studies are described in [training.
 
 ## Active Studies
 
-The task battery of the paper. Full architectures, benchmark equations and dataset details: [weinhardt2026/model_descriptions.md](../weinhardt2026/model_descriptions.md). The study-to-model mapping used for the paper runs is in `slurm_jobs/spice_stability_studies.sh`.
+The task battery of the paper. Full architectures, benchmark equations and dataset details: [weinhardt2026/model_descriptions.md](../weinhardt2026/model_descriptions.md). The study-to-model mapping used for the paper runs is in `slurm_jobs/grid_search.sh`.
 
 **Shared RL architecture.** The bandit-style studies (`synthetic`, `dezfouli2019`, `eckstein2026`, `ganesh2024a`, `bustamante2023`) share one architecture of up to three value states, summed into the logits:
 - a working-memory reward value (stateless chosen update, decaying unchosen update);
@@ -52,9 +52,9 @@ Perceptual decision-making combined with reward learning. Participants choose be
 Benchmarked against a normative `BayesianModel` (Ganesh et al., 2024).
 
 ### `kolff2025` — Chimpanzee grooming negotiation
-Video-coded dyadic grooming interactions of wild chimpanzees. Each interaction is modeled from each ape's perspective, so apes are participants and interactions are blocks. The raw behaviors are recoded into Groom + five Negotiation categories (see `kolff2025/data/PREPROCESSING.md`).
+Video-coded dyadic grooming interactions of wild chimpanzees (41 apes, two communities). The raw behaviors are recoded into Groom + five Negotiation categories (see `kolff2025/data/PREPROCESSING.md`). Every interaction is read twice, from the approached ape's and from the approacher's perspective (`benchmarking_kolff2025.build_dataframe`), so apes are participants and interactions are blocks. The target is whether the focal ape's next act is grooming, scored only on events where it acts next (target mask packed into `ys` by `spice_kolff2025.prepare_dataset`, masked loss `LOSS_FN`).
 
-The paper model is the **TOBETO** model (`spice_kolff2025_tobeto.py`). It predicts the focal ape's next act as `none` / to-be-groomed signal / to-groom signal / groom. Three latent drives are updated from both apes' last act and the centered dominance-rank difference. The SINDy library is linear (degree 1). Benchmarked against a lag-1 conditional frequency table (`ConditionalTobetoModel`). The grooming-expectation variant (`*_groom.py`) and the original 5-action model (`spice_kolff2025.py`) are not part of the paper.
+The paper model (`spice_kolff2025.py`) has four modules with their own states, split by who acts and what is done: negotiation received / given and grooming received / given. Inputs are the act categories only (no rank or role), the SINDy library is linear (degree 1), and it is fitted as one **group model** (`n_participants=1`): with about 110 targets per ape, individual models overfit. The test set holds out whole dyads (fold 0 of `dyad_folds`, 5 folds balanced by targets). Benchmarked against a lag-1 logistic regression on the current event's acts (`LogisticRegressionModel`, group model) and a GRU with the same inputs (`ModelInputGRU`). No generative benchmarking: the models predict only grooming vs. not, not which act follows. Earlier variants (TOBETO, ID2-only, mirrored with context inputs) are in `kolff2025/archive/`.
 
 ### `weber2024` — Belief updating under volatility (angular state space)
 A laser-shield tracking task on a circle. Laser beams scatter around a hidden mean that jumps at change points, under crossed volatility × stochasticity conditions. The model has belief-update and certainty modules split by catch/miss (externalized gating), plus a gated output $(1-c)\,s_t + c\,\hat\mu_t$ in sin/cos space. It is the same predictive-inference family as `bruckner2025` (Nassar-style changepoint belief updating), but with an angular state space, and is evaluated with a movement-clamped angular MSE loss (`clamped_angular_mse`). Benchmarked against a Bayesian `ChangePointModel` (Weber et al., 2024).
