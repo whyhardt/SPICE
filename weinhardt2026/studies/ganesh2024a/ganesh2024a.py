@@ -9,10 +9,9 @@ import torch
 from spice import SpiceEstimator
 from weinhardt2026.studies.ganesh2024a.spice_ganesh2024a import SpiceModel, CONFIG
 from weinhardt2026.utils.benchmarking_gru import GRUModel, training
-from weinhardt2026.studies.ganesh2024a.benchmarking_ganesh2024a import BayesianModel, get_dataset, generate_behavior
-from weinhardt2026.studies.ganesh2024a.analysis_generative import analysis_generative_behavior
+from weinhardt2026.studies.ganesh2024a.benchmarking_ganesh2024a import BayesianModel, get_dataset
+from weinhardt2026.analysis.analysis_generative_comparison import run_generative_analysis
 from weinhardt2026.analysis.analysis_model_evaluation import analysis_model_evaluation
-from weinhardt2026.utils.generation import generate_repeated
 
 
 train_spice = False
@@ -20,7 +19,6 @@ train_bay = False
 train_gru = False
 
 generate_data = False
-N_REPEATS = 100
 
 # -------------------------------------------------------------------------------------------
 # DATALOADER
@@ -50,10 +48,7 @@ estimator = SpiceEstimator(
 
     epochs=1000,
     warmup_steps=500,
-    
-    sindy_threshold_pruning=0.05,
-    sindy_alpha=0.0005,
-    
+
     device=device,
     verbose=True,
     save_path_spice=path_spice,
@@ -146,46 +141,7 @@ data_dir = 'weinhardt2026/studies/ganesh2024a/data'
 output_dir = 'weinhardt2026/studies/ganesh2024a/results'
 
 if generate_data:
-    estimator.eval()
-    estimator.use_sindy(False)
-    ds_spice_rnn = generate_repeated(
-        generate_behavior,
-        n_repeats=N_REPEATS,
-        dataset=dataset_train,
-        model=estimator,
-    )
-
-    estimator.use_sindy(True)
-    ds_spice = generate_repeated(
-        generate_behavior,
-        n_repeats=N_REPEATS,
-        dataset=dataset_train,
-        model=estimator,
-    )
-
-    ds_benchmark = generate_repeated(
-        generate_behavior,
-        n_repeats=N_REPEATS,
-        dataset=dataset_train,
-        model=bay,
-    )
-
-    ds_gru = generate_repeated(
-        generate_behavior,
-        n_repeats=N_REPEATS,
-        dataset=dataset_train,
-        model=gru,
-    )
-
-    # -------------------------------------------------------------------------------------------
-    # ANALYSIS: GENERATIVE BEHAVIOR
-    # -------------------------------------------------------------------------------------------
-
-    analysis_generative_behavior(
-        path_data_real=path_data,
-        path_data_benchmark=ds_benchmark,
-        path_data_gru=ds_gru,
-        path_data_spice_rnn=ds_spice_rnn,
-        path_data_spice=ds_spice,
-        output_dir=output_dir,
-    )
+    # simulate every model in the task and compare with the real behavior; outputs in results/.
+    # SPICE: the ensemble member with the lowest training AIC across the grid-search seeds
+    # (also runnable on its own: python weinhardt2026/analysis/analysis_generative_comparison.py ganesh2024a)
+    run_generative_analysis('ganesh2024a')   # runs per model: N_REPEATS in analysis_generative.py

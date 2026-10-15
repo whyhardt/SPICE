@@ -49,8 +49,8 @@ class SpiceEstimator(BaseEstimator):
         device: Optional[torch.device] = torch.device('cpu'),
         ensemble_size: Optional[int] = 10,
         l2_rnn: Optional[float] = 0,
-        feature_penalty: Optional[float] = 0,  # L2 weight decay on the RNN modules' group-level weights
-        gate_penalty: Optional[float] = 0,  # L1 on the RNN modules' individual-level gates
+        feature_penalty: Optional[float] = 1e-4,  # L2 weight decay on the RNN modules' group-level weights
+        gate_penalty: Optional[float] = 1e-2,  # L1 on the RNN modules' individual-level gates
         dropout: Optional[float] = 0.1,
         loss_fn: Optional[callable] = cross_entropy_loss,
         loss_fn_kwargs: Optional[dict] = {'label_smoothing': 0.01},
@@ -58,11 +58,11 @@ class SpiceEstimator(BaseEstimator):
 
         # SPICE training parameters
         use_sindy: Optional[bool] = False,
-        sindy_weight: Optional[float] = 0.01,  # Weight for SINDy regularization loss
-        sindy_alpha: Optional[float] = 1e-4,  # Degree-weighted coefficient penalty strength (ridge alpha)
+        sindy_weight: Optional[float] = 0,  # Weight for SINDy regularization loss
+        sindy_alpha: Optional[float] = 5e-4,  # Degree-weighted coefficient penalty strength (ridge alpha)
         sindy_library_polynomial_degree: Optional[int] = 2,
         sindy_pruning_frequency: Optional[int] = 100,  # Epochs between pruning events
-        sindy_threshold_pruning: Optional[float] = 0.01,  # Optional per-member threshold pruning (None to disable)
+        sindy_threshold_pruning: Optional[float] = 0.05,  # Optional per-member threshold pruning (None to disable)
         sindy_ensemble_pruning: Optional[float] = 0.5,  # Minimum ensemble ratio for a term to survive (primary pruning mechanism)
         sindy_pruning_terms: Optional[int] = None, # Number of pruned terms per pruning event (Defaults to None: Computed automatically such that n_coefficients can reach 0 within 'epochs-epochs_warmup' epochs)
         sindy_reconditioning_epochs: Optional[int] = 3,  # Pure SINDy SGD epochs after ridge recalibration

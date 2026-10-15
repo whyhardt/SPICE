@@ -9,12 +9,11 @@ import torch
 from spice import SpiceEstimator
 from weinhardt2026.studies.eckstein2026.spice_eckstein2026 import SpiceModel, CONFIG
 from weinhardt2026.utils.benchmarking_gru import GRUModel, training
-from weinhardt2026.studies.eckstein2026.benchmarking_eckstein2026 import Castro2025Model, BestRLModel, get_dataset, generate_behavior
-from weinhardt2026.studies.eckstein2026.analysis_generative import analysis_generative_behavior
+from weinhardt2026.studies.eckstein2026.benchmarking_eckstein2026 import Castro2025Model, BestRLModel, get_dataset
+from weinhardt2026.analysis.analysis_generative_comparison import run_generative_analysis
 from weinhardt2026.analysis.analysis_model_evaluation import analysis_model_evaluation
 from weinhardt2026.analysis.analysis_coefficients_distributions import analysis_coefficients_distributions
 from weinhardt2026.analysis.analysis_coefficients_individuals import analysis_coefficients_individuals
-from weinhardt2026.utils.generation import generate_repeated
 
 
 train_spice = False
@@ -22,7 +21,6 @@ train_benchmark = True
 train_gru = False
 
 generate_data = False
-N_REPEATS = 1
 
 path_data = 'weinhardt2026/studies/eckstein2026/data/eckstein2026.csv'
 # path_data = 'weinhardt2026/studies/eckstein2026/data/public_train.csv'
@@ -154,53 +152,10 @@ print(analysis_model_evaluation(
 ))
 
 if generate_data:
-    # -------------------------------------------------------------------------------------------
-    # GENERATIVE BENCHMARKING
-    # -------------------------------------------------------------------------------------------
-
-    estimator.use_sindy(True)
-    ds_spice = generate_repeated(
-        generate_behavior,
-        n_repeats=N_REPEATS,
-        model=estimator,
-        dataset=dataset_train,
-    )
-
-    estimator.use_sindy(False)
-    ds_spice_rnn = generate_repeated(
-        generate_behavior,
-        n_repeats=N_REPEATS,
-        model=estimator,
-        dataset=dataset_train,
-    )
-
-    gru.eval()
-    ds_gru = generate_repeated(
-        generate_behavior,
-        n_repeats=N_REPEATS,
-        model=gru,
-        dataset=dataset_train,
-    )
-
-    ds_benchmark = generate_repeated(
-        generate_behavior,
-        n_repeats=N_REPEATS,
-        model=benchmark,
-        dataset=dataset_train,
-    )
-
-    # -------------------------------------------------------------------------------------------
-    # ANALYSIS: GENERATIVE BEHAVIOR
-    # -------------------------------------------------------------------------------------------
-
-    analysis_generative_behavior(
-        path_data_real=path_data,
-        path_data_gru=ds_gru,
-        path_data_benchmark=ds_benchmark,
-        path_data_spice=ds_spice,
-        path_data_spice_rnn=ds_spice_rnn,
-        output_dir=output_dir,
-    )
+    # simulate every model in the task and compare with the real behavior; outputs in results/.
+    # SPICE: the ensemble member with the lowest training AIC across the grid-search seeds
+    # (also runnable on its own: python weinhardt2026/analysis/analysis_generative_comparison.py eckstein2026)
+    run_generative_analysis('eckstein2026')   # runs per model: N_REPEATS in analysis_generative.py
 
 # -------------------------------------------------------------------------------------------
 # ANALYSIS: INDIVIDUAL DIFFERENCES

@@ -10,12 +10,11 @@ from spice import SpiceEstimator, SpiceDataset, split_data_along_blockdim
 
 from spice_weber2024 import SpiceModel, CONFIG
 from spice_weber2024 import clamped_angular_mse
-from benchmarking_weber2024 import get_dataset, generate_behavior, ChangePointModel
-from analysis_generative import analysis_generative_behavior
+from benchmarking_weber2024 import get_dataset, ChangePointModel
+from weinhardt2026.analysis.analysis_generative_comparison import run_generative_analysis
 
 from weinhardt2026.utils.benchmarking_gru import GRUModel, training
 from weinhardt2026.analysis.analysis_model_evaluation import analysis_model_evaluation_mse
-from weinhardt2026.utils.generation import generate_repeated
 
 
 train_spice = False
@@ -23,7 +22,6 @@ train_gru = False
 train_benchmark = False
 
 generate_data = False
-N_REPEATS = 100
 
 truncate_dataset = False   # full blocks; the first-100-trial GRU did not generalize beyond trial 100
 
@@ -60,15 +58,18 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 estimator = SpiceEstimator(
     spice_config=CONFIG,
     spice_class=SpiceModel,
-    n_actions=2,                                    # belief_sin, belief_cos
-    n_items=2,
+    n_actions=2,                                    # next shield position: sin, cos
+    n_items=1,                                      # belief as one angle
     n_participants=dataset_train.n_participants,
-    n_experiments=dataset_train.n_experiments,
+    n_experiments=1,                                # conditions are module inputs: one coefficient set per participant
     n_reward_features=dataset_train.n_reward_features,
 
     loss_fn=clamped_angular_mse,
 
-    sindy_weight=0,                                 # RNN-only for prototyping
+    # the penalty defaults are tuned for cross-entropy; against this MSE they switch modules off
+    gate_penalty=0.,
+    feature_penalty=0.,
+    
     epochs=1000,
     warmup_steps=500,
     ensemble_size=1,
@@ -97,7 +98,8 @@ path_gru = 'weinhardt2026/studies/weber2024/params/gru_weber2024_continuous.pkl'
 
 gru = GRUModel(
     n_actions=2,                                    # output: belief_sin, belief_cos
-    additional_inputs=1,                            # laser_caught, volatility, stochasticity, trial_duration_frames
+    additional_inputs=4,                            # laser_caught, volatility, stochasticity, trial_duration_frames (excl. trueMean)
+    additional_inputs_scale=(1., 1., 1., 90.),      # trial_duration_frames (1-90 frames) -> (0, 1]
     n_reward_features=dataset_train.n_reward_features,
     # n_participants=dataset_train.n_participants,
     # n_experiments=dataset_train.n_experiments,
@@ -122,7 +124,7 @@ else:
 
 
 # -------------------------------------------------------------------------------------------
-# BENCHMARK: BAYESIAN CHANGEPOINT MODEL
+# BENCHMARK: BAYESIAN CHANGEPOINT MODEL (Foucault et al., 2026)
 # -------------------------------------------------------------------------------------------
 
 path_benchmark = 'weinhardt2026/studies/weber2024/params/benchmark_weber2024.pkl'
@@ -130,7 +132,7 @@ path_benchmark = 'weinhardt2026/studies/weber2024/params/benchmark_weber2024.pkl
 benchmark = ChangePointModel(
     n_participants=dataset_train.n_participants,
     h_step=2,               # 2° discretisation (180 grid points)
-    allowed_changes=(20, 30, 40),
+    variance_inference=True,    # infer which of two fitted noise levels a block has, instead of one fitted s.d.
 )
 
 if train_benchmark:
@@ -212,61 +214,17 @@ with torch.no_grad():
     estimator.use_sindy(True)
     predictions_spice_eq = torch.tensor(estimator.predict(dataset.xs))
 
-# --- Extract per-trial SPICE internal states (belief, certainty) ---
+# --- Extract per-trial SPICE internal states (belief, learning rate, movement gain) ---
 def extract_spice_states(model, xs_session):
-    """Run model trial-by-trial to capture per-trial belief and certainty.
-
-    Handles different model architectures:
-    - Single LR: 'certainty_raw' state
-    - Dual LR (changepoint): 'changepoint_lr_value', 'uncertainty_lr_value', 'changepoint_value'
-    - No LR: only 'belief_value'
-    """
-    beliefs_sin, beliefs_cos, lrs, cp_probs, changepoint_lrs, uncertainty_lrs = [], [], [], [], [], []
+    """Run the model trial-by-trial to capture the per-trial belief (degrees), alpha and movement gain."""
+    beliefs, learning_rates, movement_gains = [], [], []
     prev_state = None
-
-    # Detect model architecture
-    has_single_lr = 'certainty_raw' in model.state
-    has_dual_lr = 'changepoint_lr_value' in model.state and 'uncertainty_lr_value' in model.state
-    has_cp = 'changepoint_value' in model.state
-
     for t in range(xs_session.shape[1]):
-        xs_trial = xs_session[:, t:t+1]
-        _, prev_state = model(xs_trial, prev_state)
-        belief = model.state['belief_value']   # (W, E, B, I=2)
-        beliefs_sin.append(belief[0, 0, 0, 0].item())
-        beliefs_cos.append(belief[0, 0, 0, 1].item())
-
-        # Extract LR based on architecture
-        if has_dual_lr:
-            changepoint_lr = torch.sigmoid(model.state['changepoint_lr_value'])
-            uncertainty_lr = torch.sigmoid(model.state['uncertainty_lr_value'])
-            cp_prob = torch.sigmoid(model.state['changepoint_value']) if has_cp else None
-
-            # Composite alpha (same as forward pass)
-            if cp_prob is not None:
-                alpha = cp_prob * changepoint_lr + (1 - cp_prob) * uncertainty_lr
-            else:
-                alpha = (changepoint_lr + uncertainty_lr) / 2  # fallback
-
-            lrs.append(alpha[0, 0, 0, :].mean().item())
-            changepoint_lrs.append(changepoint_lr[0, 0, 0, :].mean().item())
-            uncertainty_lrs.append(uncertainty_lr[0, 0, 0, :].mean().item())
-            cp_probs.append(cp_prob[0, 0, 0, :].mean().item() if cp_prob is not None else 0.5)
-        elif has_single_lr:
-            lr = torch.sigmoid(model.state['certainty_raw'])
-            lrs.append(lr[0, 0, 0, :].mean().item())
-        else:
-            # No LR module
-            lrs.append(None)
-
-    return {
-        'belief_sin': beliefs_sin,
-        'belief_cos': beliefs_cos,
-        'lr': lrs,
-        'cp_prob': cp_probs if has_dual_lr else None,
-        'changepoint_lr': changepoint_lrs if has_dual_lr else None,
-        'uncertainty_lr': uncertainty_lrs if has_dual_lr else None,
-    }
+        _, prev_state = model(xs_session[:, t:t+1], prev_state)
+        beliefs.append(model.state['belief_value'][0, 0, 0, 0].item())
+        learning_rates.append(torch.sigmoid(model.state['learning_rate_value'])[0, 0, 0, 0].item())
+        movement_gains.append(torch.sigmoid(model.state['movement_value'])[0, 0, 0, 0].item())
+    return {'belief': beliefs, 'lr': learning_rates, 'movement_gain': movement_gains}
 
 with torch.no_grad():
     model = estimator.model
@@ -290,14 +248,8 @@ true_mean = dataset.xs[session, t_start:t_end, 0, -6].numpy()
 actual_shield_deg = sincos_to_degrees(shield_sin, shield_cos)
 actual_laser_deg = sincos_to_degrees(laser_sin, laser_cos)
 
-belief_rnn_deg = sincos_to_degrees(
-    torch.tensor(states_rnn['belief_sin'][t_start:t_end]),
-    torch.tensor(states_rnn['belief_cos'][t_start:t_end]),
-)
-belief_sym_deg = sincos_to_degrees(
-    torch.tensor(states_sym['belief_sin'][t_start:t_end]),
-    torch.tensor(states_sym['belief_cos'][t_start:t_end]),
-)
+belief_rnn_deg = torch.tensor(states_rnn['belief'][t_start:t_end])
+belief_sym_deg = torch.tensor(states_sym['belief'][t_start:t_end])
 
 pred_benchmark_deg = sincos_to_degrees(
     predictions_benchmark[session, t_start:t_end, 0, 0],
@@ -327,10 +279,7 @@ laser_sin_full = dataset.xs[session, :, 0, 2]
 laser_cos_full = dataset.xs[session, :, 0, 3]
 laser_deg_full = sincos_to_degrees(laser_sin_full, laser_cos_full)
 
-belief_sym_deg_full = sincos_to_degrees(
-    torch.tensor(states_sym['belief_sin']),
-    torch.tensor(states_sym['belief_cos']),
-)
+belief_sym_deg_full = torch.tensor(states_sym['belief'])
 # belief entering trial t's update is the post-update belief from t-1
 # (trial 0's belief is initialized to laser[0], per the model's forward pass)
 belief_prev_deg_full = torch.cat([laser_deg_full[:1], belief_sym_deg_full[:-1]])
@@ -384,66 +333,22 @@ axs[2].set_title('SPICE Internal Belief & Predicted Shield vs Laser')
 axs[2].legend(fontsize=8)
 axs[2].grid(alpha=0.3)
 
-# (4) Dynamic certainty + changepoint probability + catch ticks
-# Detect what dynamics are available
-has_lr = states_rnn['lr'][0] is not None
-has_dual_lr = states_rnn['changepoint_lr'] is not None
-has_cp = states_rnn['cp_prob'] is not None
+# (4) Learning rate + movement gain vs. prediction error, catch ticks
+axs[3].plot(list(trials), states_rnn['lr'][t_start:t_end], 'r--', label='α (RNN)')
+axs[3].plot(list(trials), states_sym['lr'][t_start:t_end], 'r-', label='α (EQ)')
+axs[3].plot(list(trials), states_rnn['movement_gain'][t_start:t_end], color='orange', linestyle='--', label='g (RNN)')
+axs[3].plot(list(trials), states_sym['movement_gain'][t_start:t_end], color='orange', linestyle='-', label='g (EQ)')
+axs[3].set_ylabel('Learning rate (α) / movement gain (g)')
+axs[3].set_ylim([0, 1])
+axs[3].set_title('Learning Rate & Movement Gain vs. Prediction Error')
 
-if has_dual_lr and has_cp:
-    # Full changepoint model: plot changepoint_lr, uncertainty_lr, cp_prob, and composite alpha
-    ax4_twin = axs[3].twinx()  # Secondary y-axis for CP probability
-
-    # Learning rates on primary axis
-    axs[3].plot(list(trials), [states_rnn['changepoint_lr'][t] for t in range(t_start, t_end)],
-                'orange', linestyle='--', alpha=0.7, label='α_changepoint (RNN)')
-    axs[3].plot(list(trials), [states_sym['changepoint_lr'][t] for t in range(t_start, t_end)],
-                'orange', linestyle='-', linewidth=2, label='α_changepoint (EQ)')
-    axs[3].plot(list(trials), [states_rnn['uncertainty_lr'][t] for t in range(t_start, t_end)],
-                'purple', linestyle='--', alpha=0.7, label='α_uncertainty (RNN)')
-    axs[3].plot(list(trials), [states_sym['uncertainty_lr'][t] for t in range(t_start, t_end)],
-                'purple', linestyle='-', linewidth=2, label='α_uncertainty (EQ)')
-    axs[3].plot(list(trials), [states_rnn['lr'][t] for t in range(t_start, t_end)],
-                'r--', alpha=0.5, label='α_composite (RNN)')
-    axs[3].plot(list(trials), [states_sym['lr'][t] for t in range(t_start, t_end)],
-                'r-', linewidth=2, label='α_composite (EQ)')
-
-    # Changepoint probability on secondary axis
-    ax4_twin.plot(list(trials), [states_rnn['cp_prob'][t] for t in range(t_start, t_end)],
-                  'cyan', linestyle='--', alpha=0.5, label='P(CP) (RNN)')
-    ax4_twin.plot(list(trials), [states_sym['cp_prob'][t] for t in range(t_start, t_end)],
-                  'cyan', linestyle='-', linewidth=1.5, label='P(CP) (EQ)')
-    ax4_twin.set_ylabel('Changepoint Probability', color='cyan')
-    ax4_twin.tick_params(axis='y', labelcolor='cyan')
-    ax4_twin.set_ylim([0, 1])
-
-    axs[3].set_ylabel('Learning Rate (α)')
-    axs[3].set_ylim([0, 1])
-    axs[3].set_title('Dynamic Learning Rates & Changepoint Detection')
-
-elif has_lr:
-    # Simple single certainty model
-    axs[3].plot(list(trials), [states_rnn['lr'][t] for t in range(t_start, t_end)],
-                'r--', label='α (RNN)')
-    axs[3].plot(list(trials), [states_sym['lr'][t] for t in range(t_start, t_end)],
-                'r-', label='α (EQ)')
-    axs[3].set_ylabel('Learning Rate (α)')
-    axs[3].set_ylim([0, 1])
-    axs[3].set_title('Dynamic Learning Rate vs. Prediction Error')
-
-    ax4_twin = axs[3].twinx()
-    ax4_twin.plot(list(trials), pe_deg, color='0.5', linewidth=1, alpha=0.5, zorder=1)
-    ax4_twin.scatter(list(trials), pe_deg, c=['green' if c > 0.5 else 'gray' for c in caught_vals],
-                      s=18, alpha=0.8, zorder=2, label='PE (deg)')
-    ax4_twin.axhline(0, color='0.7', linewidth=0.8, zorder=0)
-    ax4_twin.set_ylabel('Prediction Error (degrees)', color='0.4')
-    ax4_twin.tick_params(axis='y', labelcolor='0.4')
-else:
-    # No certainty module
-    axs[3].text(0.5, 0.5, 'No certainty dynamics in this model',
-                ha='center', va='center', transform=axs[3].transAxes)
-    axs[3].set_ylabel('(Not applicable)')
-    axs[3].set_title('Learning Rate Dynamics')
+ax4_twin = axs[3].twinx()
+ax4_twin.plot(list(trials), pe_deg, color='0.5', linewidth=1, alpha=0.5, zorder=1)
+ax4_twin.scatter(list(trials), pe_deg, c=['green' if c > 0.5 else 'gray' for c in caught_vals],
+                  s=18, alpha=0.8, zorder=2, label='PE (deg)')
+ax4_twin.axhline(0, color='0.7', linewidth=0.8, zorder=0)
+ax4_twin.set_ylabel('Prediction Error (degrees)', color='0.4')
+ax4_twin.tick_params(axis='y', labelcolor='0.4')
 
 axs[3].set_xlabel('Trial')
 axs[3].grid(alpha=0.3)
@@ -452,21 +357,12 @@ axs[3].grid(alpha=0.3)
 for ct in caught_trials:
     axs[3].axvline(ct, ymin=0, ymax=0.06, color='green', linewidth=1.5, alpha=0.7)
 
-# Combine legends from both axes if dual LR
-if has_dual_lr and has_cp:
-    handles1, labels1 = axs[3].get_legend_handles_labels()
-    handles2, labels2 = ax4_twin.get_legend_handles_labels()
-    handles1.append(Line2D([0], [0], color='green', lw=1.5))
-    labels1.append('Caught')
-    axs[3].legend(handles=handles1 + handles2, labels=labels1 + labels2,
-                  fontsize=7, loc='upper left', ncol=2)
-elif has_lr:
-    handles, labels = axs[3].get_legend_handles_labels()
-    handles.append(Line2D([0], [0], marker='o', color='0.5', markerfacecolor='green', linestyle='None', label='PE, caught'))
-    labels.append('PE, caught')
-    handles.append(Line2D([0], [0], marker='o', color='0.5', markerfacecolor='gray', linestyle='None', label='PE, missed'))
-    labels.append('PE, missed')
-    axs[3].legend(handles=handles, labels=labels, fontsize=8, loc='upper left')
+handles, labels = axs[3].get_legend_handles_labels()
+handles.append(Line2D([0], [0], marker='o', color='0.5', markerfacecolor='green', linestyle='None'))
+labels.append('PE, caught')
+handles.append(Line2D([0], [0], marker='o', color='0.5', markerfacecolor='gray', linestyle='None'))
+labels.append('PE, missed')
+axs[3].legend(handles=handles, labels=labels, fontsize=8, loc='upper left')
 
 # (5) Fitted SPICE equations for this participant/experiment
 axs[4].axis('off')
@@ -490,49 +386,7 @@ plt.show()
 # -------------------------------------------------------------------------------------------
 
 if generate_data:
-    # Generate behavior for benchmark model
-    dataset_gen_benchmark = generate_repeated(
-        generate_behavior,
-        n_repeats=N_REPEATS,
-        model=benchmark,
-        dataset=dataset,
-    )
-
-    # Generate behavior for GRU
-    gru.eval().to(torch.device('cpu'))
-    dataset_gen_gru = generate_repeated(
-        generate_behavior,
-        n_repeats=N_REPEATS,
-        model=gru,
-        dataset=dataset,
-    )
-
-    # Generate behavior for SPICE-RNN
-    estimator.set_device(torch.device('cpu'))
-    estimator.eval()
-    estimator.use_sindy(False)
-    dataset_gen_spice_rnn = generate_repeated(
-        generate_behavior,
-        n_repeats=N_REPEATS,
-        model=estimator,
-        dataset=dataset,
-    )
-
-    estimator.use_sindy(True)
-    dataset_gen_spice_eq = generate_repeated(
-        generate_behavior,
-        n_repeats=N_REPEATS,
-        model=estimator,
-        dataset=dataset,
-    )
-
-
-    # Generative analysis: compare real vs generated behavior
-    analysis_generative_behavior(
-        dataset_real=dataset,
-        dataset_benchmark=dataset_gen_benchmark,
-        dataset_gru=dataset_gen_gru,
-        dataset_spice_rnn=dataset_gen_spice_rnn,
-        dataset_spice=dataset_gen_spice_eq,
-        output_dir=output_dir,
-    )
+    # simulate every model in the task and compare with the real behavior; outputs in results/.
+    # SPICE: the ensemble member with the lowest training AIC across the grid-search seeds
+    # (also runnable on its own: python weinhardt2026/analysis/analysis_generative_comparison.py weber2024)
+    run_generative_analysis('weber2024')   # runs per model: N_REPEATS in analysis_generative.py

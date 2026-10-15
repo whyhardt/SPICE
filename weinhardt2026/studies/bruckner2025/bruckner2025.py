@@ -8,12 +8,11 @@ import torch
 
 from spice import SpiceEstimator, SpiceDataset, split_data_along_blockdim
 from spice_bruckner2025 import SpiceModel, CONFIG, mse_loss, POSITION_SCALE
-from weinhardt2026.utils.generation import generate_repeated
 from weinhardt2026.utils.benchmarking_gru import GRUModel, training
 from weinhardt2026.studies.bruckner2025.benchmarking_bruckner2025 import (
-    get_dataset, generate_behavior, RationalResourceModel,
+    get_dataset, RationalResourceModel,
 )
-from weinhardt2026.studies.bruckner2025.analysis_generative import analysis_generative_behavior
+from weinhardt2026.analysis.analysis_generative_comparison import run_generative_analysis
 from weinhardt2026.analysis.analysis_model_evaluation import analysis_model_evaluation_mse
 from weinhardt2026.analysis.analysis_coefficients_individuals import analysis_coefficients_individuals
 
@@ -23,7 +22,6 @@ train_gru = False
 train_benchmark = False
 
 generate_data = False
-N_REPEATS = 100
 
 
 output_dir='weinhardt2026/studies/bruckner2025/results'
@@ -65,7 +63,10 @@ estimator = SpiceEstimator(
 
     loss_fn=mse_loss,
 
-    sindy_weight=0,                              # RNN-only for prototyping
+    # the penalty defaults are tuned for cross-entropy; against this MSE they switch modules off
+    gate_penalty=0.,
+    feature_penalty=0.,
+
     epochs=1000,
     warmup_steps=500,
     ensemble_size=1,
@@ -356,56 +357,10 @@ df_mse = analysis_model_evaluation_mse(
 # -------------------------------------------------------------------------------------------
 
 if generate_data:
-    data_dir = 'weinhardt2026/studies/bruckner2025/data'
-
-    # Generate behavior for GRU
-    gru.eval().to(torch.device('cpu'))
-    dataset_gen_gru = generate_repeated(
-        generate_behavior,
-        n_repeats=N_REPEATS,
-        model=gru,
-        dataset=dataset,
-    )
-
-    # Generate behavior for Benchmark
-    benchmark.eval().to(torch.device('cpu'))
-    dataset_gen_bm = generate_repeated(
-        generate_behavior,
-        n_repeats=N_REPEATS,
-        model=benchmark,
-        dataset=dataset,
-    )
-
-    # Generate behavior for SPICE-RNN
-    estimator.model.to(torch.device('cpu'))
-    estimator.use_sindy(False)
-    estimator.eval()
-    dataset_gen_spice_rnn = generate_repeated(
-        generate_behavior,
-        n_repeats=N_REPEATS,
-        model=estimator,
-        dataset=dataset,
-    )
-
-    # Generate behavior for SPICE (SINDy mode)
-    estimator.use_sindy(True)
-    estimator.eval()
-    dataset_gen_spice = generate_repeated(
-        generate_behavior,
-        n_repeats=N_REPEATS,
-        model=estimator,
-        dataset=dataset,
-    )
-
-    # Generative analysis: compare real vs generated behavior
-    analysis_generative_behavior(
-        dataset_real=dataset,
-        dataset_benchmark=dataset_gen_bm,
-        dataset_gru=dataset_gen_gru,
-        dataset_spice_rnn=dataset_gen_spice_rnn,
-        dataset_spice=dataset_gen_spice,
-        output_dir=output_dir,
-    )
+    # simulate every model in the task and compare with the real behavior; outputs in results/.
+    # SPICE: the ensemble member with the lowest training AIC across the grid-search seeds
+    # (also runnable on its own: python weinhardt2026/analysis/analysis_generative_comparison.py bruckner2025)
+    run_generative_analysis('bruckner2025')   # runs per model: N_REPEATS in analysis_generative.py
     
 # -------------------------------------------------------------------------------------------
 # ANALYSIS: STRUCTURAL GROUP DIFFERENCES

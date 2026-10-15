@@ -8,7 +8,7 @@ from sklearn.linear_model import LogisticRegression
 from spice import SpiceDataset, csv_to_dataset, split_data_along_blockdim
 
 from weinhardt2026.utils.benchmarking_gru import GRUModel
-from weinhardt2026.studies.kolff2025.spice_kolff2025 import CONFIG, N_ACTIONS, prepare_dataset, target_mask
+from weinhardt2026.studies.kolff2025.spice_kolff2025 import CONFIG, N_ACTIONS, COL_TARGET_MASK, prepare_dataset, target_mask
 
 
 # written by preprocessing_kolff2025.py (behavioural categories, see data/PREPROCESSING.md)
@@ -227,3 +227,73 @@ class ModelInputGRU(GRUModel):
         inputs = inputs.clone()
         inputs[..., :self.n_actions] = 0.
         return super().forward(inputs, state)
+
+
+# -------------------------------------------------------------------------------------------
+# GENERATIVE BENCHMARKING: CLOSED LOOP ON THE PARTICIPANT'S OWN GROOMING
+# -------------------------------------------------------------------------------------------
+
+COLUMNS_SELF = [N_ACTIONS + CONFIG.additional_inputs.index(c) for c in SELF_COLUMNS]
+INDEX_SELF_GROOM = SELF_COLUMNS.index('self_groom')
+
+
+@torch.no_grad()
+def generate_behavior(model, dataset: SpiceDataset) -> SpiceDataset:
+    """Simulate the participant's grooming in replayed interactions.
+
+    The models predict only whether the participant's next act is grooming, so only that decision is
+    closed-loop: the partner's acts and the timing of the participant's acts (whether it acts at an
+    event, `self_acts_next`) are replayed from the real interaction. Wherever the participant acts at
+    event t+1, its act is drawn from the model's P(groom) after event t: grooming, or else its real
+    act if that was not grooming, or a non-grooming category drawn from the participants' observed
+    non-grooming acts if it was. The participant's act at the first event is replayed. Sampled acts
+    feed back into the model's inputs (self_*) and the choice columns.
+
+    Args:
+        model: Fitted model (SpiceEstimator or torch.nn.Module) returning grooming logits.
+        dataset: Original dataset (prepare_dataset layout).
+
+    Returns:
+        SpiceDataset with the simulated self_* acts in xs and the simulated targets in ys.
+    """
+    tensors = [] if hasattr(model, 'device') else list(model.parameters()) + list(model.buffers())
+    device = model.device if hasattr(model, 'device') else (tensors[0].device if tensors else torch.device('cpu'))
+    n_sessions, n_trials = dataset.xs.shape[:2]
+    valid = ~torch.isnan(dataset.xs[:, :, 0, 0])
+    acts_real = dataset.xs[:, :, 0, COLUMNS_SELF].nan_to_num(0.)          # (S, T, 6) one-hot, 0 = no act
+    acts_next = dataset.xs[:, :, 0, COL_TARGET_MASK].nan_to_num(0.) == 1    # participant acts at t+1
+
+    # distribution of the observed non-grooming acts
+    counts = acts_real[valid].sum(dim=0)
+    counts[INDEX_SELF_GROOM] = 0.
+    p_other = counts / counts.sum()
+
+    xs_sim = dataset.xs.clone()
+    ys_sim = dataset.ys.clone()
+    acts = acts_real[:, 0].clone()
+    state = None
+    for t in range(n_trials):
+        xs_t = xs_sim[:, t].clone()
+        xs_t[:, 0, COLUMNS_SELF] = acts
+        groom = acts[:, INDEX_SELF_GROOM]
+        xs_t[:, 0, :N_ACTIONS] = torch.stack((1 - groom, groom), dim=-1)
+        xs_t[~valid[:, t]] = 0.
+        xs_sim[:, t] = xs_t
+
+        logits, state = model(xs_t[:, None].to(device), state)
+        if logits.dim() == 5:                                    # BaseModel: (E, B, T, W, A)
+            logits = logits.mean(dim=0)
+        p_groom = torch.softmax(logits[:, -1, 0, :N_ACTIONS].float().cpu(), dim=-1)[:, 1].nan_to_num(0.5)
+        groom_next = torch.bernoulli(p_groom)
+
+        if t + 1 < n_trials:
+            real_next = acts_real[:, t + 1]
+            other = torch.nn.functional.one_hot(torch.multinomial(p_other, n_sessions, replacement=True), len(SELF_COLUMNS)).float()
+            not_groom = torch.where(real_next[:, INDEX_SELF_GROOM:INDEX_SELF_GROOM + 1] == 1, other, real_next)
+            acts = torch.where(groom_next[:, None] == 1, torch.nn.functional.one_hot(torch.tensor(INDEX_SELF_GROOM), len(SELF_COLUMNS)).float(), not_groom)
+            acts = acts * acts_next[:, t, None]
+            ys_sim[:, t, 0, :N_ACTIONS] = torch.stack((1 - acts[:, INDEX_SELF_GROOM], acts[:, INDEX_SELF_GROOM]), dim=-1)
+
+    xs_sim[~valid] = float('nan')
+    ys_sim[~valid] = float('nan')
+    return SpiceDataset(xs_sim, ys_sim, n_reward_features=0)

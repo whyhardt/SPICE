@@ -16,13 +16,17 @@ class GRUModel(torch.nn.Module):
         n_participants: int = 1, 
         n_experiments: int = 1, 
         embedding_size: int = 16, 
+        additional_inputs_scale: tuple[float, ...] = None,
         **kwargs,
         ):
+        """additional_inputs_scale: optional divisor per additional input, to bring raw-scaled
+        inputs (e.g. durations in frames) into the range of the others; None leaves them as is."""
         super().__init__()
         
         self.gru_features = hidden_size
         self.n_actions = n_actions
         self.additional_inputs = additional_inputs
+        self.additional_inputs_scale = additional_inputs_scale
         self.n_reward_features = n_actions if n_reward_features is None else n_reward_features
         self.n_participants = n_participants
         self.n_experiments = n_experiments
@@ -43,6 +47,8 @@ class GRUModel(torch.nn.Module):
         actions = inputs[..., :self.n_actions]
         rewards = inputs[..., self.n_actions:self.n_actions+self.n_reward_features]
         additional_inputs = inputs[..., self.n_actions+self.n_reward_features:self.n_actions+self.n_reward_features+self.additional_inputs]
+        if self.additional_inputs_scale is not None:
+            additional_inputs = additional_inputs / torch.tensor(self.additional_inputs_scale, dtype=inputs.dtype, device=inputs.device)
         xs = torch.concat((actions, rewards, additional_inputs), dim=-1)
 
         if self.n_experiments > 1:

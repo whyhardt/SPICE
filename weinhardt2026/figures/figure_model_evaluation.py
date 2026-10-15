@@ -169,30 +169,35 @@ STUDIES = {
         checkpoints=lambda: _grid_checkpoints('weber2024', GRID_CONTINUOUS),
         benchmark=_benchmark('weinhardt2026.studies.weber2024.benchmarking_weber2024', 'ChangePointModel',
                              _study_path('weber2024', 'params', 'benchmark_weber2024.pkl'),
-                             h_step=2, allowed_changes=(20, 30, 40)),
+                             h_step=2),
         gru=_gru(_study_path('weber2024', 'params', 'gru_weber2024_continuous.pkl'),
-                 n_actions=2, additional_inputs=1, n_reward_features=2),
+                 n_actions=2, additional_inputs=4, n_reward_features=2,
+                 additional_inputs_scale=(1., 1., 1., 90.)),
     ),
 }
 
 
 # ── Data + model loading ────────────────────────────────────────────
 
-def load_study(study):
-    """Rebuild train/test data as run.py does, and the study's SPICE module."""
-    config = STUDIES[study]
+def load_dataset(study):
+    """Rebuild the full (unsplit) data as run.py does, and the study's SPICE module."""
     spice_module = importlib.import_module(f'studies.{study}.spice_{study}')
 
     data = _study_path(study, 'data', f'{study}.csv')
     if hasattr(spice_module, 'prepare_dataframe'):
         data = spice_module.prepare_dataframe(pd.read_csv(data))
-    dataset = csv_to_dataset(file=data, **config['data_kwargs'])
+    dataset = csv_to_dataset(file=data, **STUDIES[study]['data_kwargs'])
     if getattr(spice_module, 'NORMALIZE_REWARDS', True):
         dataset.normalize_rewards()
     if hasattr(spice_module, 'prepare_dataset'):
         dataset = spice_module.prepare_dataset(dataset)
+    return spice_module, dataset
 
-    dataset_train, dataset_test = split_data_along_blockdim(dataset, list(config['test_blocks']))
+
+def load_study(study):
+    """Rebuild train/test data as run.py does, and the study's SPICE module."""
+    spice_module, dataset = load_dataset(study)
+    dataset_train, dataset_test = split_data_along_blockdim(dataset, list(STUDIES[study]['test_blocks']))
     return spice_module, dataset_train, dataset_test
 
 
@@ -201,6 +206,7 @@ def load_spice(path, spice_module, dataset_train):
     estimator_kwargs = dict(
         n_actions=n_actions,
         n_items=n_actions,
+        n_experiments=len(dataset_train.xs[..., -2].unique()),
         n_reward_features=dataset_train.n_reward_features,
         loss_fn=getattr(spice_module, 'LOSS_FN', cross_entropy_loss),
     )
@@ -209,7 +215,6 @@ def load_spice(path, spice_module, dataset_train):
         spice_class=spice_module.SpiceModel,
         spice_config=spice_module.CONFIG,
         n_participants=len(dataset_train.xs[..., -1].unique()),
-        n_experiments=len(dataset_train.xs[..., -2].unique()),
         embedding_size=8,
         compiled_forward=False,
         device=DEVICE,

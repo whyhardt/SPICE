@@ -318,10 +318,9 @@ def generate_behavior(
 
     # Unwrap SpiceEstimator if needed
     if isinstance(model, SpiceEstimator):
-        inner_model = model.model
+        inner_model = model.model   # eval mode and use_sindy are set by the caller (BaseModel.eval() would reset use_sindy)
     else:
-        inner_model = model
-    inner_model.eval()
+        inner_model = model.eval()
 
     if hasattr(inner_model, 'device'):
         device = inner_model.device

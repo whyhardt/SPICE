@@ -591,98 +591,84 @@ class BestRLModel(torch.nn.Module):
         return 6
 
 
+PAYOUT_COLUMNS = ('payout_1', 'payout_2', 'payout_3', 'payout_4')
+
+
 class EnvironmentEckstein2024(Env):
-    """Drifting multi-armed bandit (Castro et al., 2025; Eckstein et al., 2026).
+    """Drifting four-armed bandit (Castro et al., 2025; Eckstein et al., 2026).
 
-    Arm means follow independent Gaussian random walks:
-        mu[t,i] ~ N(lambda * mu[t-1,i] + (1 - lambda) * center, sigma_drift)
-        r[t,i]  ~ N(mu[t,i], sigma_obs)
+    The arms' payouts follow Gaussian random walks; the data store every arm's payout on every
+    trial (payout_1..4), so the environment replays them (see get_reward_schedule) and the model
+    receives the payout of the arm it chose.
 
-    Default parameters from Ecsktein et al. (2026):
-        lambda = 0.9836, sigma_drift = 2.8, sigma_obs = 4, center = 50 (0-100 scale)
-
-    Rewards are returned normalized to [0, 1].
+    Sessions are processed in parallel: one session per (participant, block) pair.
     """
 
-    def __init__(
-        self,
-        n_participants: int,
-        n_blocks: int = 5,
-        n_actions: int = 4,
-        lam: float = 0.9836,
-        sigma_drift: float = 2.8,
-        sigma_obs: float = 4.0,
-        center: float = 50.0,
-        scale: float = 100.0,
-    ):
-        super().__init__(n_actions=n_actions, n_participants=n_participants, n_blocks=n_blocks)
-        self.lam = lam
-        self.sigma_drift = sigma_drift
-        self.sigma_obs = sigma_obs
-        self.center = center
-        self.scale = scale
-        self.means = None
-        self._rng = np.random.default_rng()
-
-    def reset(self, seed: int = None, **kwargs):
-        """Reset arm means to center. Optionally set RNG seed for reproducibility."""
-        if seed is not None:
-            self._rng = np.random.default_rng(seed)
-        self.means = np.full(self.n_actions, self.center)
-        return {}
-
-    def step(self, action: int):
-        """Choose an arm, receive reward, and drift all arm means.
-
-        Returns:
-            reward: float in [0, 1] (clipped)
-            terminated: always False (session length managed externally)
+    def __init__(self, n_participants: int, rewards: torch.Tensor, n_blocks: int = 5, n_actions: int = 4):
         """
-        n_sessions = action.shape[0]
-        reward_raw = self._rng.normal(self.means[action], self.sigma_obs)
-        reward = np.clip(reward_raw / self.scale, 0.0, 1.0).astype(float)
-        reward_cols = np.full((n_sessions, self.n_actions), float('nan'))
-        reward_cols[np.arange(n_sessions), action] = reward
-        
-        self.means = self._rng.normal(
-            self.lam * self.means + (1.0 - self.lam) * self.center,
-            self.sigma_drift,
-        )
+        Args:
+            n_participants: Number of participants.
+            rewards: (n_sessions, n_trials, n_actions) payout of each arm on each trial.
+            n_blocks: Number of blocks per participant.
+            n_actions: Number of arms.
+        """
+        super().__init__(n_actions=n_actions, n_participants=n_participants, n_blocks=n_blocks)
+        self.rewards = rewards
+        self.trial_counter = 0
 
-        return torch.Tensor(reward_cols), False
-    
+    def reset(self, block_ids: torch.Tensor = None, participant_ids: torch.Tensor = None) -> None:
+        self.trial_counter = 0
+
+    def step(self, action: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Replay the chosen arm's payout on the current trial (partial feedback)."""
+        n_sessions = action.shape[0]
+        sessions = torch.arange(n_sessions)
+        reward_cols = torch.full((n_sessions, self.n_actions), float('nan'))
+        reward_cols[sessions, action] = self.rewards[sessions, self.trial_counter, action]
+        self.trial_counter += 1
+        return reward_cols, torch.zeros(n_sessions, dtype=torch.bool)
+
+
+def get_reward_schedule(path_data: str) -> torch.Tensor:
+    """Every arm's payout on every trial, (n_sessions, n_trials, 4), aligned with get_dataset.
+
+    Scaled like the rewards in get_dataset (normalize_rewards: min-max over the received rewards).
+    Missing trials get no reward.
+    """
+    dataset = csv_to_dataset(file=path_data, additional_inputs=list(PAYOUT_COLUMNS))
+    n_actions = dataset.n_actions
+    received = dataset.xs[..., n_actions:2 * n_actions]
+    received = received[~torch.isnan(received)]
+    payouts = dataset.xs[:, :, 0, 2 * n_actions:2 * n_actions + len(PAYOUT_COLUMNS)]
+    return ((payouts - received.min()) / (received.max() - received.min())).nan_to_num(0.)
+
 
 def generate_behavior(
     model: Union[SpiceEstimator, torch.nn.Module],
-    path_data: str = None,
-    dataset: SpiceDataset = None,
+    dataset: SpiceDataset,
+    rewards: torch.Tensor,
     save_dataset: str = None,
     ) -> SpiceDataset:
-    """Generate synthetic behavior for the Dezfouli 2019 two-armed bandit task.
+    """Generate synthetic behavior for the Eckstein 2026 four-armed bandit task.
 
     Args:
         model: Fitted model (SpiceEstimator or torch.nn.Module).
-        path_data: Path to the original CSV data file.
-        dataset: Pre-loaded SpiceDataset (used if provided, otherwise loaded from path_data).
+        dataset: Original dataset (structure and metadata).
+        rewards: (n_sessions, n_trials, 4) payouts aligned with `dataset` (get_reward_schedule).
         save_dataset: Optional path to save the generated dataset as CSV.
 
     Returns:
         SpiceDataset with model-generated behavior.
     """
-    if dataset is None:
-        dataset, _, _ = get_dataset(path_data=path_data)
-
     environment = EnvironmentEckstein2024(
-        n_actions=dataset.n_actions,
         n_participants=dataset.n_participants,
-        n_blocks=5,
+        rewards=rewards,
+        n_actions=dataset.n_actions,
     )
-    
-    dataset_gen = _generate_behavior(
+
+    return _generate_behavior(
         dataset=dataset,
         model=model,
         environment=environment,
         save_dataset=save_dataset,
     )
-
-    return dataset_gen

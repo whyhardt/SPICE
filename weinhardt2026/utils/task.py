@@ -94,8 +94,8 @@ def generate_behavior(
     # Valid trial mask from original dataset (NaN = padded / inactive)
     valid_mask = ~torch.isnan(dataset.xs[:, :, 0, 0])  # (n_sessions, n_trials)
 
-    # Initial action: default to action 0
-    action_idx = torch.zeros(n_sessions, dtype=torch.long, device=device)
+    # Initial action: uniformly random (the model has seen no trial yet)
+    action_idx = torch.randint(n_actions, (n_sessions,), device=device)
     state = None
 
     for t in tqdm(range(n_trials)):

@@ -40,109 +40,124 @@ INITIAL_SHIELD = 360.0      # degrees (shield starting position each block)
 
 
 # =============================================================================
-# Bayesian changepoint model (without variance inference)
+# Bayesian changepoint model (Foucault et al., 2026, eLife 15:RP110137)
 # =============================================================================
 
 class ChangePointModel(torch.nn.Module):
-    """Bayesian changepoint model for circular tracking (Weber et al., 2024).
+    """Bayesian changepoint observer with expected-reward response (Foucault et al., 2026).
 
-    Performs Bayesian inference on a discretized circular state space [0, 360)
-    assuming changepoint dynamics and a fixed observation noise level.
-    This corresponds to the "change-point model without variance inference"
-    from the paper.
+    Every beam runs the paper's three computations on a discretized circular grid:
+      1. Inference:  posterior over the latent state given the beam (Bayesian filtering).
+      2. Prediction: propagate the posterior through the changepoint transition and
+                     convolve it with the observation noise -> predictive distribution
+                     of the next beam.
+      3. Response:   select the shield location that maximizes the expected catch
+                     probability, P(|next beam - location| <= CATCH_THRESHOLD), and move
+                     there with response probability HalfNormalCDF(distance; response_sd),
+                     the distance between the current and the selected location.
 
-    The model maintains a posterior distribution over the hidden generative
-    mean on a discretized grid. At each trial it:
-      1. Observes the laser position.
-      2. Updates the posterior via Bayes' rule (circular normal likelihood).
-      3. Propagates the posterior through the changepoint transition matrix.
-      4. Outputs the circular posterior mean as the belief (sin, cos).
+    Adaptations to the continuous weber2024 task:
+      - One update per beam: the response is the shield position at the next beam, the
+        selected location clamped to the reachable arc (MOVEMENT_SPEED * trial duration).
+      - The output is the expected next shield position in (sin, cos), mixing staying and
+        moving by the response probability (MSE fit). With ``sample_response`` the move is
+        drawn instead (generative simulation).
+      - No knowledge of the task's generative process: as in the paper, a changepoint
+        draws the new mean uniformly from the circle (the task's actual jump sizes are
+        unknown to participants), and the hazard rate and noise levels are fitted.
+      - With variance inference the latent state is (mean, observation-noise level) over
+        two fitted noise levels; the level is constant within a block, so it does not
+        switch. Without, a single observation-noise s.d. is fitted.
+      - The paper's fixed hazard rate and response s.d. are fitted per participant.
+      - The argmax over locations is a soft argmax (``choice_sharpness``) to keep the
+        selected location differentiable w.r.t. the parameters.
 
     Learnable per-participant parameters:
-        p_cp:              Probability of a changepoint at each trial.
-        stochasticity_sd:  Standard deviation (degrees) of the circular normal
-                           observation distribution.
-
-    Fixed hyperparameters:
-        h_step:            Discretisation step for the state space (degrees).
-        allowed_changes:   Tuple of allowed absolute changepoint magnitudes
-                           (degrees).  Sign-symmetric: ±20 means both +20 and -20.
+        p_cp:         Assumed changepoint probability per beam.
+        response_sd:  S.d. (degrees) of the response-probability CDF (paper: fixed 8°).
+        noise_sd:     Observation-noise s.d. (degrees) per noise level: two levels with
+                      variance inference, one without.
     """
 
     def __init__(
         self,
         n_participants: int = 1,
         h_step: int = 2,
-        allowed_changes: tuple[float, ...] = (20, 30, 40),
+        variance_inference: bool = True,
+        choice_sharpness: float = 50.,
         batch_first: bool = True,
     ):
         super().__init__()
         self.n_participants = n_participants
         self.h_step = h_step
-        self.allowed_changes = allowed_changes
+        self.variance_inference = variance_inference
+        self.choice_sharpness = choice_sharpness
         self.batch_first = batch_first
         self.n_actions = 2  # output: (sin, cos)
+        self.sample_response = False
 
         # --- Learnable per-participant parameters (raw; transformed via properties) ---
-        # Initialise at cognitively plausible values:
-        #   p_cp ≈ 0.06  →  sigmoid(x) = 0.06  →  x = log(0.06/0.94) ≈ -2.75
-        #   sd   ≈ 15°   →  softplus(x) = 15   →  x ≈ 15  (softplus ≈ identity for large x)
-        self.p_cp_raw = torch.nn.Parameter(torch.full((n_participants,), -2.75))
-        self.stochasticity_sd_raw = torch.nn.Parameter(torch.full((n_participants,), 15.0))
+        # s.d.s in log space: the fitted response s.d. lies an order of magnitude above the paper's 8°
+        #   p_cp = 1/16 (paper)          ->  logit(1/16) ≈ -2.7
+        #   response_sd = 8° (paper)     ->  log(8)
+        #   noise_sd: generic starting values, two distinct levels with variance inference
+        noise_sd_init = (10., 30.) if variance_inference else (15.,)
+        self.p_cp_raw = torch.nn.Parameter(torch.full((n_participants,), math.log(1 / 15)))
+        self.response_sd_raw = torch.nn.Parameter(torch.full((n_participants,), math.log(8.)))
+        self.noise_sd_raw = torch.nn.Parameter(torch.log(torch.tensor(noise_sd_init)).repeat(n_participants, 1))
 
-        # Pre-compute fixed structures as registered buffers
         self._build_fixed_matrices()
 
     # --- Parameter transforms ------------------------------------------------
 
     @property
     def p_cp(self):
-        """Changepoint probability — in (0, 0.5)."""
-        return torch.sigmoid(self.p_cp_raw).clamp(1e-3, 0.5)
+        """Changepoint probability — in (0, 1)."""
+        return torch.sigmoid(self.p_cp_raw)
 
     @property
-    def stochasticity_sd(self):
-        """Observation noise s.d. in degrees — positive."""
-        return F.softplus(self.stochasticity_sd_raw).clamp(1.0, 60.0)
+    def response_sd(self):
+        """Response-probability s.d. in degrees — positive."""
+        return torch.exp(self.response_sd_raw)
+
+    @property
+    def noise_sd(self):
+        """Observation-noise s.d. per level in degrees, (n_participants, n_levels) — positive."""
+        return torch.exp(self.noise_sd_raw)
 
     # --------------------------------------------------------------------- #
     #  Fixed inference structures
     # --------------------------------------------------------------------- #
 
     def _build_fixed_matrices(self):
-        """Pre-compute the changepoint redistribution matrix and state grid.
-
-        The transition matrix is decomposed as:
-            T(p) = (1 - p) * I  +  p * cp_mat
-        where ``cp_mat`` is fixed (depends only on allowed_changes and h_step)
-        and ``p`` (p_cp) is a learnable parameter.  This decomposition lets us
-        avoid materialising the full per-participant transition matrix.
-        """
+        """State grid and the wrapped offsets of the catch kernel."""
         state_values = np.arange(0, 360, self.h_step, dtype=np.float64)
         n_states = len(state_values)
 
-        # Changepoint redistribution matrix: cp_mat[i, j] = probability of
-        # jumping to state i from state j, conditional on a changepoint.
-        cp_mat = np.zeros((n_states, n_states))
-        for j in range(n_states):
-            targets = []
-            for i in range(n_states):
-                diff = ((state_values[i] - state_values[j]) + 180) % 360 - 180
-                if any(abs(abs(diff) - c) < self.h_step / 2 for c in self.allowed_changes):
-                    targets.append(i)
-            if targets:
-                for i in targets:
-                    cp_mat[i, j] = 1.0 / len(targets)
-            else:
-                cp_mat[:, j] = 1.0 / n_states
-
-        # Register as buffers so they auto-move with .to(device)
-        self.register_buffer('_cp_mat', torch.tensor(cp_mat, dtype=torch.float32))
         self.register_buffer('_state_values_deg', torch.tensor(state_values, dtype=torch.float32))
         state_rad = torch.deg2rad(torch.tensor(state_values, dtype=torch.float32))
         self.register_buffer('_state_sin', torch.sin(state_rad))
         self.register_buffer('_state_cos', torch.cos(state_rad))
+        # signed grid offsets wrapped to [-180, 180): the circular distances the catch kernel is defined on
+        self.register_buffer('_state_offsets_deg', (self._state_values_deg + 180) % 360 - 180)
         self._n_states = n_states
+
+    def _catch_kernel(self, sd: torch.Tensor) -> torch.Tensor:
+        """P(|beam - location| <= CATCH_THRESHOLD | latent mean) for observation noise s.d. ``sd``.
+
+        Depends only on the circular distance between location and latent mean, so the
+        expected catch probability is a circular convolution of the latent distribution
+        with this kernel (computed via FFT, instead of a (location, state) matrix product).
+
+        Args:
+            sd: (..., ) noise s.d. in degrees.
+        Returns:
+            (..., offset) catch probabilities per grid offset.
+        """
+        normal = torch.distributions.Normal(0., 1.)
+        sd = sd.unsqueeze(-1)
+        offset = self._state_offsets_deg
+        return normal.cdf((offset + CATCH_THRESHOLD) / sd) - normal.cdf((offset - CATCH_THRESHOLD) / sd)
 
     # --------------------------------------------------------------------- #
     #  Forward pass (differentiable)
@@ -153,17 +168,16 @@ class ChangePointModel(torch.nn.Module):
         inputs: torch.Tensor,
         prev_state: dict = None,
     ) -> tuple[torch.Tensor, dict]:
-        """Run Bayesian changepoint inference on laser observations.
-
-        Fully differentiable w.r.t. ``p_cp`` and ``stochasticity_sd``.
+        """Run inference, prediction and response generation on the beam sequence.
 
         Args:
             inputs: (B, T, W, F) if batch_first else (T, W, B, F).
-            prev_state: Dict with key ``'priors'`` — tensor (B, n_states).
-                        If None, starts from uniform prior.
+            prev_state: Dict with key ``'priors'`` — tensor (B, n_levels, n_states).
+                        If None, starts from a uniform prior.
 
         Returns:
-            predictions: (B, T, W, 2) predicted belief position (sin, cos).
+            predictions: (B, T, W, 2) next shield position (sin, cos); the expectation over
+                         staying and moving, or a sampled response if ``sample_response``.
             state: Dict with updated ``'priors'`` (detached).
         """
         if self.batch_first:
@@ -176,72 +190,70 @@ class ChangePointModel(torch.nn.Module):
         n_states = self._n_states
 
         # Per-session participant parameters
-        participant_ids = inputs[:, 0, 0, -1].long()            # (B,)
-        p_cp = self.p_cp[participant_ids]                        # (B,)
-        sd = self.stochasticity_sd[participant_ids]              # (B,)
+        participant_ids = inputs[:, 0, 0, -1].long()                            # (B,)
+        p_cp = self.p_cp[participant_ids][:, None, None]                         # (B, 1, 1)
+        response_sd = self.response_sd[participant_ids]                          # (B,)
 
-        # Initialise prior distribution
+        sd = self.noise_sd[participant_ids]                                      # (B, L)
+        n_levels = sd.shape[1]
+        catch_kernel_fft = torch.fft.rfft(self._catch_kernel(sd), dim=-1)       # (B, L, S/2+1)
+
         if prev_state is not None and 'priors' in prev_state:
-            prior = prev_state['priors'].to(device)              # (B, S)
+            prior = prev_state['priors'].to(device)                              # (B, L, S)
         else:
-            prior = torch.full((B, n_states), 1.0 / n_states,
-                               device=device)
+            prior = torch.full((B, n_levels, n_states), 1.0 / (n_levels * n_states), device=device)
 
-        # Validity mask (NaN-padded trials)
-        valid = ~torch.isnan(inputs[:, :, 0, 0])                # (B, T)
-
-        # Laser observations → degrees
-        laser_sin = inputs[:, :, 0, 2]                           # (B, T)
-        laser_cos = inputs[:, :, 0, 3]                           # (B, T)
-        laser_deg = torch.atan2(laser_sin, laser_cos).rad2deg() % 360  # (B, T)
+        valid = ~torch.isnan(inputs[:, :, 0, 0])                                 # (B, T)
+        # zero-fill padded trials: NaNs in the masked-out branch of torch.where would still produce NaN gradients
+        trial_inputs = torch.nan_to_num(inputs[:, :, 0], nan=0.)                 # (B, T, F)
+        laser_deg = torch.atan2(trial_inputs[..., 2], trial_inputs[..., 3]).rad2deg() % 360
+        shield_deg = torch.atan2(trial_inputs[..., 0], trial_inputs[..., 1]).rad2deg() % 360
+        max_move = MOVEMENT_SPEED * trial_inputs[..., _AI_START + _AI_DT]        # (B, T)
 
         predictions = torch.full((B, T, 2), float('nan'), device=device)
 
         for t in range(T):
-            mask = valid[:, t]                                   # (B,)
+            mask = valid[:, t]
             if not mask.any():
                 continue
 
-            # --- Circular normal log-likelihood (B, S) ---
-            # angle_diff in [-180, 180)
-            obs = laser_deg[:, t].unsqueeze(1)                   # (B, 1)
-            angle_diff = (obs - self._state_values_deg.unsqueeze(0) + 180) % 360 - 180
-            log_lik = -0.5 * (angle_diff / sd.unsqueeze(1)) ** 2  # drop constant
-
-            # --- Posterior (log-space for stability) ---
-            log_prior = torch.log(prior.clamp(min=1e-30))
-            log_post = log_lik + log_prior
-            log_post = log_post - log_post.max(dim=1, keepdim=True).values
+            # --- 1. Inference: circular normal likelihood per noise level (B, L, S) ---
+            angle_diff = (laser_deg[:, t, None, None] - self._state_values_deg + 180) % 360 - 180
+            log_lik = -0.5 * (angle_diff / sd.unsqueeze(-1)) ** 2 - torch.log(sd).unsqueeze(-1)
+            log_post = log_lik + torch.log(prior.clamp(min=1e-30))
+            log_post = log_post - log_post.amax(dim=(1, 2), keepdim=True)
             posterior = torch.exp(log_post)
-            posterior = posterior / posterior.sum(dim=1, keepdim=True)
+            posterior = posterior / posterior.sum(dim=(1, 2), keepdim=True)
 
-            # --- Circular mean of posterior ---
-            mean_sin = (self._state_sin.unsqueeze(0) * posterior).sum(dim=1)
-            mean_cos = (self._state_cos.unsqueeze(0) * posterior).sum(dim=1)
-            belief_rad = torch.atan2(mean_sin, mean_cos)
-            belief = torch.stack([torch.sin(belief_rad), torch.cos(belief_rad)], dim=-1)
+            # --- 2. Prediction: a changepoint redraws the mean uniformly and keeps the noise level ---
+            new_prior = (1 - p_cp) * posterior + p_cp * posterior.sum(dim=2, keepdim=True) / n_states
+            prior = torch.where(mask[:, None, None], new_prior, prior)
 
-            # Apply physical movement clamping: the shield can only move
-            # speed * dt degrees per trial, so clamp the belief to the
-            # reachable region around the current shield position.
-            shield_t = inputs[:, t, 0, :2]                        # current shield (sin, cos)
-            dt = inputs[:, t, 0, _AI_START + _AI_DT]              # trial_duration_frames
-            delta = belief - shield_t
-            delta_mag = delta.norm(dim=-1, keepdim=True)
-            max_move = MOVEMENT_SPEED * dt.unsqueeze(1) * (math.pi / 180.0)
-            fraction = torch.clamp_max(max_move / (delta_mag + 1e-8), 1.0)
-            pred = shield_t + fraction * delta
+            # --- 3. Response: expected catch probability per location (B, loc) ---
+            expected_catch = torch.fft.irfft(
+                (torch.fft.rfft(new_prior, dim=-1) * catch_kernel_fft).sum(dim=1), n=n_states, dim=-1,
+            )
+            weights = torch.softmax(self.choice_sharpness * torch.log(expected_catch.clamp(min=1e-12)), dim=-1)
+            selected_deg = torch.atan2(
+                (weights * self._state_sin).sum(-1), (weights * self._state_cos).sum(-1),
+            ).rad2deg()
+
+            # move toward the selected location along the shortest arc, as far as reachable
+            distance = (selected_deg - shield_deg[:, t] + 180) % 360 - 180
+            reached_deg = shield_deg[:, t] + torch.sign(distance) * torch.minimum(distance.abs(), max_move[:, t])
+            response_probability = torch.erf(distance.abs() / (response_sd * math.sqrt(2)))
+
+            shield = torch.stack([torch.sin(torch.deg2rad(shield_deg[:, t])), torch.cos(torch.deg2rad(shield_deg[:, t]))], dim=-1)
+            reached = torch.stack([torch.sin(torch.deg2rad(reached_deg)), torch.cos(torch.deg2rad(reached_deg))], dim=-1)
+            if self.sample_response:
+                move = torch.bernoulli(response_probability).unsqueeze(-1)
+            else:
+                move = response_probability.unsqueeze(-1)
+            pred = (1 - move) * shield + move * reached
 
             predictions[:, t] = torch.where(mask.unsqueeze(1), pred, predictions[:, t])
 
-            # --- Dynamics propagation ---
-            # T @ posterior = (1-p)*posterior + p*(cp_mat @ posterior)
-            cp_posterior = torch.matmul(posterior, self._cp_mat.T)  # (B, S)
-            new_prior = ((1 - p_cp.unsqueeze(1)) * posterior
-                         + p_cp.unsqueeze(1) * cp_posterior)
-            prior = torch.where(mask.unsqueeze(1), new_prior, prior)
-
-        predictions = predictions.unsqueeze(2)                   # (B, T, 1, 2)
+        predictions = predictions.unsqueeze(2)                                   # (B, T, 1, 2)
 
         if not self.batch_first:
             predictions = predictions.permute(1, 2, 0, 3)
@@ -249,8 +261,8 @@ class ChangePointModel(torch.nn.Module):
         return predictions, {'priors': prior.detach()}
 
     def count_parameters(self) -> int:
-        """Free parameters per participant: p_cp + stochasticity_sd."""
-        return 2
+        """Free parameters per participant: p_cp + response_sd + one noise s.d. per level."""
+        return 2 + self.noise_sd_raw.shape[1]
 
 
 # --- Data Loading ---
@@ -344,10 +356,13 @@ def generate_behavior(
 
     # Unwrap model
     if isinstance(model, SpiceEstimator):
-        inner_model = model.model
+        inner_model = model.model   # eval mode and use_sindy are set by the caller (BaseModel.eval() would reset use_sindy)
     else:
-        inner_model = model
-    inner_model.eval()
+        inner_model = model.eval()
+
+    # stochastic-response models (ChangePointModel) draw whether the shield moves instead of its expectation
+    if hasattr(inner_model, 'sample_response'):
+        inner_model.sample_response = True
 
     if hasattr(inner_model, 'device'):
         device = inner_model.device
@@ -418,6 +433,9 @@ def generate_behavior(
         ys_gen[both, t, 0, 2] = xs_gen[both, t, 0, 0]                         # sin_t
         ys_gen[both, t, 0, 3] = xs_gen[both, t, 0, 1]                         # cos_t
         ys_gen[both, t, 0, 4] = xs_gen[both, t, 0, _AI_START + _AI_DT]        # dt
+
+    if hasattr(inner_model, 'sample_response'):
+        inner_model.sample_response = False
 
     xs_gen = xs_gen.cpu()
     ys_gen = ys_gen.cpu()

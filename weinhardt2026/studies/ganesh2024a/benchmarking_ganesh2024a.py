@@ -240,18 +240,13 @@ class EnvironmentGanesh2024a(Env):
     """Two-armed bandit with perceptual contrast stimuli (Ganesh et al., 2024).
 
     On each trial the participant sees two Gabor patches with different contrasts
-    and chooses one. A latent state determined by the sign of the contrast
-    difference dictates which action is correct:
+    and chooses one; exactly one side is rewarded. Which side, follows the block's
+    contingency between contrast and reward, which is not stored in the data.
 
-        state = 1  if contrast_diff > 0  (left patch has higher contrast)
-        state = 0  otherwise
-
-    Rewards are binary Bernoulli samples:
-        P(r=1 | action matches state) = mu
-        P(r=1 | action mismatches)    = 1 - mu
-
-    Contrast differences are replayed from the original dataset (they are task
-    stimuli, not model-dependent).
+    The environment therefore replays the original trials: the contrast differences
+    and both sides' outcomes (reward_left, reward_right; see get_reward_schedule)
+    are task stimuli, not model-dependent, and the model receives the outcome of the
+    side it chose.
 
     Sessions are processed in parallel: one session per (participant, block) pair.
     """
@@ -263,7 +258,7 @@ class EnvironmentGanesh2024a(Env):
         n_blocks: int,
         contrast_current: torch.Tensor,
         contrast_next: torch.Tensor,
-        mu: float = 0.75,
+        rewards: torch.Tensor,
     ):
         """
         Args:
@@ -272,22 +267,22 @@ class EnvironmentGanesh2024a(Env):
             n_blocks: Number of blocks per participant.
             contrast_current: (n_sessions, n_trials) contrast difference on current trial.
             contrast_next: (n_sessions, n_trials) contrast difference on next trial.
-            mu: True contingency parameter (reward probability for correct action).
+            rewards: (n_sessions, n_trials, n_actions) outcome of each side on each trial.
         """
         super().__init__(n_actions, n_participants, n_blocks)
-        self.mu = mu
         self.contrast_current = contrast_current
         self.contrast_next = contrast_next
+        self.rewards = rewards
         self.trial_counter = 0
 
     def reset(self, block_ids: torch.Tensor = None, participant_ids: torch.Tensor = None) -> None:
         self.trial_counter = 0
 
     def step(self, action: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """Sample reward for the chosen arm based on contrast-state contingency.
+        """Replay the chosen side's outcome on the current trial.
 
         Args:
-            action: (n_sessions,) integer action index (0 or 1) per session.
+            action: (n_sessions,) integer action index (0 = left, 1 = right) per session.
 
         Returns:
             observation: (n_sessions, 4) — [reward_0, reward_1, cd_current, cd_next].
@@ -295,26 +290,16 @@ class EnvironmentGanesh2024a(Env):
         """
         n_sessions = action.shape[0]
         t = self.trial_counter
-
-        cd_current = self.contrast_current[:n_sessions, t]
-        cd_next = self.contrast_next[:n_sessions, t]
-
-        # True state: which side has higher contrast
-        state = (cd_current > 0).long()
-
-        # Reward probability depends on whether action matches state
-        matches = (action == state).float()
-        probs = matches * self.mu + (1.0 - matches) * (1.0 - self.mu)
-        reward = torch.bernoulli(probs)
+        sessions = torch.arange(n_sessions)
 
         # Partial feedback: only reveal reward for chosen action
         reward_cols = torch.full((n_sessions, self.n_actions), float('nan'))
-        reward_cols[torch.arange(n_sessions), action] = reward
+        reward_cols[sessions, action] = self.rewards[sessions, t, action]
 
         observation = torch.cat([
             reward_cols,
-            cd_current.unsqueeze(-1),
-            cd_next.unsqueeze(-1),
+            self.contrast_current[:n_sessions, t].unsqueeze(-1),
+            self.contrast_next[:n_sessions, t].unsqueeze(-1),
         ], dim=-1)
 
         terminated = torch.zeros(n_sessions, dtype=torch.bool)
@@ -322,28 +307,42 @@ class EnvironmentGanesh2024a(Env):
 
         return observation, terminated
 
+
+def get_reward_schedule(path_data: str) -> torch.Tensor:
+    """Both sides' outcome on every trial, (n_sessions, n_trials, 2) = (reward_left, reward_right).
+
+    Sessions and trials are aligned with get_dataset (same CSV grouping; the last trial of each
+    session is dropped as in prepare_dataset). Missing trials get no reward.
+    """
+    dataset = csv_to_dataset(
+        file=path_data,
+        df_participant_id='subjID',
+        df_choice='choice',
+        df_feedback='reward',
+        df_block='blocks',
+        additional_inputs=['reward_left', 'reward_right'],
+    )
+    n_actions = dataset.ys.shape[-1]
+    return dataset.xs[:, :-1, 0, 2 * n_actions:2 * n_actions + 2].nan_to_num(0.)
+
+
 def generate_behavior(
     model: Union[SpiceEstimator, torch.nn.Module],
-    path_data: str = None,
-    dataset: SpiceDataset = None,
+    dataset: SpiceDataset,
+    rewards: torch.Tensor,
     save_dataset: str = None,
-    mu: float = 0.75,
 ) -> SpiceDataset:
     """Generate synthetic behavior for the Ganesh 2024a contrast-bandit task.
 
     Args:
         model: Fitted model (SpiceEstimator or torch.nn.Module).
-        path_data: Path to the original CSV data file.
-        dataset: Pre-loaded SpiceDataset (used if provided, otherwise loaded from path_data).
+        dataset: Original dataset (structure and contrast sequences).
+        rewards: (n_sessions, n_trials, 2) outcome of each side, aligned with `dataset` (get_reward_schedule).
         save_dataset: Optional path to save the generated dataset as CSV.
-        mu: True contingency parameter for the environment.
 
     Returns:
         SpiceDataset with model-generated behavior.
     """
-    if dataset is None:
-        dataset, _, _ = get_dataset(path_data=path_data, test_blocks=())
-
     n_actions = dataset.n_actions
     n_blocks = len(dataset.xs[:, 0, 0, -3].unique())
 
@@ -357,7 +356,7 @@ def generate_behavior(
         n_blocks=n_blocks,
         contrast_current=contrast_current,
         contrast_next=contrast_next,
-        mu=mu,
+        rewards=rewards,
     )
 
     return _generate_behavior(

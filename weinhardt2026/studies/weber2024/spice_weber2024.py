@@ -1,3 +1,16 @@
+"""Angular delta-rule model for weber2024 (Bruckner-style): a learned learning rate on a latent
+belief, and a learned movement gain that carries the shield toward it.
+
+    PE_t       = wrap(laser_t - belief_t)                                  (degrees)
+    belief_t+1 = belief_t + alpha_t * PE_t,     alpha_t = sigmoid(learning_rate_value_t)
+    shield_t+1 = shield_t + g_t * wrap(belief_t+1 - shield_t),  g_t = sigmoid(movement_value_t)
+
+The learning rate is the only gain on the belief update (recurrent: surprise, catch and the block's
+volatility/stochasticity drive it); the movement gain is stateless and depends on how far the belief
+is from the shield. Beliefs are angles, so the update is rotation-invariant and stays on the circle.
+The output is a point estimate of the next shield position (sin, cos), scored by clamped_angular_mse.
+"""
+
 import math
 
 import pandas as pd
@@ -9,35 +22,59 @@ from spice import SpiceConfig, BaseModel, SpiceDataset
 
 MOVEMENT_SPEED = 1.0        # degrees per frame
 
+# |PE| has median ~16°, p99 ~79°: dividing by this scale (and clipping at 1) spreads it over [0, 1]
+PE_SCALE = 90.0
+
+# |belief - shield| scaled the same way
+DISTANCE_SCALE = 90.0
+
+# Binary indicator control signals (x^2 = x)
+BINARY_SIGNALS = {'caught', 'volatility', 'stochasticity'}
+
 
 CONFIG = SpiceConfig(
     library_setup={
-        # Belief update: split by catch outcome (externalized gating)
-        'belief_update_caught': ('pe',),   # update when shield catches laser
-        'belief_update_missed': ('pe',),   # update when shield misses laser
-        # Dynamic learning rate: modulates gated output
-        'certainty_update_caught': (),    # LR adapts when catching (tracking well)
-        'certainty_update_missed':  (),    # LR decays when missing (tracking poorly)
+        # Learning rate: updated every beam from surprise (|PE|, scaled), catch and the block's conditions
+        'learning_rate_update': ('|prediction_error|', 'caught', 'volatility', 'stochasticity'),
+        # Movement gain: how far the shield moves toward the belief, given their distance
+        'movement_update': ('|belief_shield_distance|',),
     },
 
     memory_state={
-        'belief_value': 0,    # internal belief about laser position (sin/cos as items 0, 1)
-        'certainty_raw': 0,        # dynamic learning rate state; sigmoid(3) = 1.0
+        'belief_value': 0,          # belief about the laser position (degrees); set to the first beam
+        'learning_rate_value': 0,   # alpha = sigmoid(value), initially 0.5
+        'movement_value': 0,        # per-beam movement gain (reset each beam), g = sigmoid(value)
     },
 
     states_in_logit=[
-        'belief_value', 
-        'certainty_raw',
-        ],
+        'learning_rate_value',
+        'movement_value',
+    ],
 
     additional_inputs=(
-        'laser_caught',
+        'laser_caught',             # scored on the beam's onset frame (data_raw/data_processing.py)
         'volatility',
         'stochasticity',
         'trial_duration_frames',
-        'trueMean',
+        'trueMean',                 # plotting only (weinhardt2026/studies/weber2024/weber2024.py); never a model input
     ),
 )
+
+
+def wrap_degrees(angle: torch.Tensor) -> torch.Tensor:
+    """Wrap an angle difference to [-180, 180)."""
+    return (angle + 180.) % 360. - 180.
+
+
+def sincos_to_degrees(sincos: torch.Tensor) -> torch.Tensor:
+    """(..., 2) [sin, cos] -> (..., 1) angle in degrees."""
+    return torch.rad2deg(torch.atan2(sincos[..., :1], sincos[..., 1:2]))
+
+
+def degrees_to_sincos(angle: torch.Tensor) -> torch.Tensor:
+    """(..., 1) angle in degrees -> (..., 2) [sin, cos]."""
+    radians = torch.deg2rad(angle)
+    return torch.cat((torch.sin(radians), torch.cos(radians)), dim=-1)
 
 
 def clamped_angular_mse(prediction: torch.Tensor, target: torch.Tensor, speed: float = MOVEMENT_SPEED, **kwargs) -> torch.Tensor:
@@ -109,8 +146,9 @@ def prepare_dataset(dataset: SpiceDataset) -> SpiceDataset:
 NORMALIZE_REWARDS = False       # laser positions are sin/cos, already in [-1, 1]
 LOSS_FN = clamped_angular_mse
 LOSS_FN_KWARGS = {}
-# ys carries 3 extra metadata columns, so the action count cannot be inferred from it
-ESTIMATOR_KWARGS = {'n_actions': 2, 'n_items': 2}
+# ys carries 3 extra metadata columns, so the action count cannot be inferred from it;
+# the 2x2 conditions enter as module inputs, so all experiments share one coefficient set
+ESTIMATOR_KWARGS = {'n_actions': 2, 'n_items': 1, 'n_experiments': 1}
 
 
 class SpiceModel(BaseModel):
@@ -118,106 +156,83 @@ class SpiceModel(BaseModel):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
 
-        # self.experiment_embedding = self.setup_embedding(
-        #     num_embeddings=self.n_experiments,
-        #     embedding_size=2,
-        # )
-
         self.participant_embedding = self.setup_embedding(
             num_embeddings=self.n_participants,
             embedding_size=self.embedding_size,
             dropout=self.dropout,
         )
-        
-        self.alpha_raw = self.setup_constant()
-    
+
+        # movement_update: stateless (reset each beam), a function of the belief-shield distance only
+        self.setup_module(key_module='movement_update', include_state=False)
+
+        self.preprocess_coefficients()
+
+    def preprocess_coefficients(self):
+        """Zero out SINDy terms that are structurally redundant for binary indicators.
+
+        Binary indicators satisfy x^2 = x, so the squared term duplicates the linear one.
+        """
+        candidate_terms = self.get_candidate_terms()
+        for module in self.get_modules():
+            binary_signals = [s for s in self.spice_config.library_setup[module] if s in BINARY_SIGNALS]
+            for index_term, term in enumerate(candidate_terms[module]):
+                factors = term.split('*')
+                if any(signal + '^2' in factors for signal in binary_signals):
+                    self.sindy_coefficients_presence[module][..., index_term] = 0
+                    self.sindy_coefficients_prior_mask[module][..., index_term] = 0
+
     def forward(self, inputs, prev_state=None):
 
         spice_signals = self.init_forward_pass(inputs, prev_state)
 
-        # Extract signals — shapes after init: (T, W, E, B, 2)
-        # actions:  shield position (sin, cos) at trial t
-        # rewards:  laser position (sin, cos) at trial t
-        shield = spice_signals.actions
-        laser = spice_signals.feedback
+        # Positions as angles (degrees) — shapes after init: (T, W, E, B, 1)
+        shield = sincos_to_degrees(spice_signals.actions)
+        laser = sincos_to_degrees(spice_signals.feedback)
 
         # Embeddings
-        experiment_embedding = self.experiment_embedding(spice_signals.experiment_ids) if hasattr(self, 'experiment_embedding') else None
         participant_embedding = self.participant_embedding(spice_signals.participant_ids)
 
-        # Initialize belief to first laser observation
+        # Initialize belief to the first beam
         if prev_state is None:
-            self.state['belief_value'] = self.state['belief_value'] + laser[0]
+            self.state['belief_value'] = laser[0].clone()
 
         for trial in spice_signals.trials:
 
-            # --- Prediction error: laser minus belief (per sin/cos component) ---
-            prediction_error = laser[trial] - self.state['belief_value']
+            # --- Prediction error: shortest arc from belief to beam ---
+            prediction_error = wrap_degrees(laser[trial] - self.state['belief_value'])
 
-            # --- Catch mask: externalized binary gating ---
-            caught = spice_signals.additional_inputs['laser_caught'][trial]
-            caught_mask = caught.expand_as(self.state['belief_value'])
-
-            # --- Dynamic learning rate ---
+            # --- Learning rate: updated every beam from surprise |PE| (scaled to [0, 1]) ---
             self.call_module(
-                key_module='certainty_update_caught',
-                key_state='certainty_raw',
-                action_mask=caught_mask,
-                # inputs=(prediction_error.detach(),),
-                participant_index=spice_signals.participant_ids,
-                participant_embedding=participant_embedding,
-                experiment_index=spice_signals.experiment_ids if experiment_embedding is not None else None,
-                experiment_embedding=experiment_embedding,
-            )
-
-            self.call_module(
-                key_module='certainty_update_missed',
-                key_state='certainty_raw',
-                action_mask=1 - caught_mask,
-                # inputs=(prediction_error.detach(),),
-                participant_index=spice_signals.participant_ids,
-                participant_embedding=participant_embedding,
-                experiment_index=spice_signals.experiment_ids if experiment_embedding is not None else None,
-                experiment_embedding=experiment_embedding,
-            )
-
-            # --- Gated output: shield_t + alpha * (belief - shield_t) ---
-            # alpha ∈ [0, 1] via sigmoid; interpolates between current position and belief
-            certainty_value = torch.sigmoid(self.state['certainty_raw'])
-            
-            # --- Belief update: split by catch outcome ---
-            self.call_module(
-                key_module='belief_update_caught',
-                key_state='belief_value',
-                action_mask=caught_mask,
+                key_module='learning_rate_update',
+                key_state='learning_rate_value',
                 inputs=(
-                    prediction_error,
-                    ),
+                    (prediction_error.abs() / PE_SCALE).clamp(max=1.),
+                    spice_signals.additional_inputs['laser_caught'][trial],
+                    spice_signals.additional_inputs['volatility'][trial],
+                    spice_signals.additional_inputs['stochasticity'][trial],
+                ),
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
-                experiment_index=spice_signals.experiment_ids if experiment_embedding is not None else None,
-                experiment_embedding=experiment_embedding,
             )
+            alpha = torch.sigmoid(self.state['learning_rate_value'])
 
+            # --- Belief update: angular delta rule ---
+            self.state['belief_value'] = (self.state['belief_value'] + alpha * prediction_error) % 360.
+
+            # --- Movement gain: reset each beam, learns g(|belief - shield|) ---
+            distance = wrap_degrees(self.state['belief_value'] - shield[trial])
+            self.state['movement_value'] = torch.zeros_like(self.state['movement_value'])
             self.call_module(
-                key_module='belief_update_missed',
-                key_state='belief_value',
-                action_mask=1 - caught_mask,
-                inputs=(
-                    prediction_error,
-                    ),
+                key_module='movement_update',
+                key_state='movement_value',
+                inputs=((distance.abs() / DISTANCE_SCALE).clamp(max=1.),),
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
-                experiment_index=spice_signals.experiment_ids if experiment_embedding is not None else None,
-                experiment_embedding=experiment_embedding,
             )
-            
-            # E_idx = torch.arange(self.ensemble_size, device=self.device).unsqueeze(1)
-            # alpha = torch.sigmoid(
-            #     self.alpha_raw[E_idx, spice_signals.participant_ids, spice_signals.experiment_ids]
-            # ).expand(-1, -1, self.n_items)
-            spice_signals.logits[trial] = (1-certainty_value) * shield[trial] + certainty_value * self.state['belief_value']
-            # spice_signals.logits[trial] = self.state['belief_value']
-            
+            movement_gain = torch.sigmoid(self.state['movement_value'])
+
+            # --- Next shield position: move part of the way toward the belief (speed clamp in the loss) ---
+            spice_signals.logits[trial] = degrees_to_sincos(shield[trial] + movement_gain * distance)
+
         spice_signals = self.post_forward_pass(spice_signals)
         return spice_signals.logits, self.get_state()

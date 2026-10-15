@@ -203,7 +203,7 @@ def analysis_behavioral_clustering(
     Args:
         spice_model: Fitted SpiceEstimator.
         path_behavioral_metrics: Path to CSV with per-participant metrics
-            (from analysis_generative_behavior).
+            (from analysis_generative_comparison.run_generative_analysis).
         n_clusters: Number of behavioral clusters.
         output_dir: Output directory.
 

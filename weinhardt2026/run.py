@@ -35,8 +35,8 @@ if __name__=='__main__':
     parser.add_argument('--epochs_warmup', type=int, default=500, help='Number of training epochs for warmup (exp increase of sindy-weight; no pruning)')
     parser.add_argument('--lr', type=float, default=0.01, help='Learning rate')
     parser.add_argument('--rnn_l2_lambda', type=float, default=0., help='L2 Reg of the RNN parameters')
-    parser.add_argument('--feature_penalty', type=float, default=0., help='L2 weight decay on the group-level RNN weights (features, readout incl. bias)')
-    parser.add_argument('--gate_penalty', type=float, default=0., help='L1 penalty on the individual-level gates of the RNN modules')
+    parser.add_argument('--feature_penalty', type=float, default=1e-4, help='L2 weight decay on the group-level RNN weights (features, readout incl. bias)')
+    parser.add_argument('--gate_penalty', type=float, default=1e-2, help='L1 penalty on the individual-level gates of the RNN modules')
     parser.add_argument('--loss_kwargs', type=json.loads, default='{"label_smoothing": 0.01}', help='Learning rate')
     parser.add_argument('--ensemble', type=int, default=10, help='Number of independent members in the ensemble setup')
     parser.add_argument('--embedding', type=int, default=8, help='Embedding size of participants')
@@ -44,11 +44,11 @@ if __name__=='__main__':
     # SINDy training parameters
     parser.add_argument('--sindy_skip_refit', action='store_false', help='Refits the SINDy coefficients in Stage 2 training (default: True)')
     parser.add_argument('--shooting_steps', type=int, default=100, help='Multi-step shooting horizon for Stage 2 SINDy refit (1=one-step-ahead, default: 100)')
-    parser.add_argument('--sindy_weight', type=float, default=0.01, help='Weight for SINDy regularization during RNN training')
-    parser.add_argument('--sindy_alpha', type=float, default=0.0001, help='Degree-weighted coefficient penalty strength (ridge alpha)')
+    parser.add_argument('--sindy_weight', type=float, default=0., help='Weight for SINDy regularization during RNN training')
+    parser.add_argument('--sindy_alpha', type=float, default=5e-4, help='Degree-weighted coefficient penalty strength (ridge alpha)')
     parser.add_argument('--polynomial_degree', type=int, default=2, help='Polynomial degree of the SINDy candidate library')
     parser.add_argument('--pruning_test', type=float, default=0.5, help='Minimum fraction of ensemble members that must exceed pruning_threshold for a term to survive (ensemble ratio test)')
-    parser.add_argument('--pruning_threshold', type=float, default=0.01, help='Significance threshold value for SINDy coefficients')
+    parser.add_argument('--pruning_threshold', type=float, default=0.05, help='Significance threshold value for SINDy coefficients')
     parser.add_argument('--pruning_frequency', type=int, default=100, help='Epochs between pruning events')
     parser.add_argument('--pruning_terms', type=int, default=None, help='Max terms pruned per event. None=auto-compute so coefficients can reach 0 within training.')
     
@@ -195,6 +195,7 @@ if __name__=='__main__':
     estimator_kwargs = dict(
         n_actions=n_actions,
         n_items=n_items,
+        n_experiments=n_experiments,
         n_reward_features=dataset_train.n_reward_features,
         loss_fn=getattr(spice_module, 'LOSS_FN', cross_entropy_loss),
         loss_fn_kwargs=getattr(spice_module, 'LOSS_FN_KWARGS', args.loss_kwargs),
@@ -210,7 +211,6 @@ if __name__=='__main__':
         spice_class=spice_model,
         spice_config=spice_config,
         n_participants=n_participants,
-        n_experiments=n_experiments,
         kwargs_spice_class=args.model_kwargs,
         **estimator_kwargs,
         

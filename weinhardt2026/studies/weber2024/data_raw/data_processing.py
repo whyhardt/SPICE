@@ -100,7 +100,9 @@ for d in tqdm(dirs):
                 'reaction_time_frames': reaction_time,
                 
                 # PI Metric: reward assessment metrics
-                'laser_caught': group['is_covering_laser'].any(),
+                # scored on the beam's onset frame (reward changes there); .any() over the window would
+                # also count catches from moving onto the beam after it appeared, i.e. leak the response
+                'laser_caught': group['is_covering_laser'].iloc[0],
                 'hit_occurred': group['currentHit'].any(),
                 'reward_change': group['totalReward'].iloc[0] - prev_total_reward,
                 'total_reward': group['totalReward'].iloc[0],

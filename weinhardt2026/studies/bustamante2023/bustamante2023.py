@@ -5,13 +5,12 @@ from spice import SpiceEstimator
 import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parents[3]))
-from weinhardt2026.utils.generation import generate_repeated
 from weinhardt2026.studies.bustamante2023.spice_bustamante2023 import SpiceModel, CONFIG
 from weinhardt2026.utils.benchmarking_gru import GRUModel, training
 from weinhardt2026.studies.bustamante2023.benchmarking_bustamante2023 import (
-    MarginalValueTheoremModel, get_dataset, generate_behavior,
+    MarginalValueTheoremModel, get_dataset,
 )
-from weinhardt2026.studies.bustamante2023.analysis_generative import analysis_generative_behavior
+from weinhardt2026.analysis.analysis_generative_comparison import run_generative_analysis
 from weinhardt2026.analysis.analysis_model_evaluation import analysis_model_evaluation
 from weinhardt2026.analysis.analysis_coefficients_distributions import analysis_coefficients_distributions
 
@@ -21,7 +20,6 @@ train_mvt = False
 train_gru = False
 
 generate_data = False
-N_REPEATS = 100
 
 # -------------------------------------------------------------------------------------------
 # DATALOADER
@@ -51,7 +49,6 @@ estimator = SpiceEstimator(
 
     epochs=1000,
     warmup_steps=500,
-    sindy_weight=0,
     ensemble_size=1,
 
     device=device,
@@ -170,48 +167,10 @@ data_dir = 'weinhardt2026/studies/bustamante2023/data'
 output_dir = 'weinhardt2026/studies/bustamante2023/results'
 
 if generate_data:
-    estimator.use_sindy(False)
-    ds_spice_rnn = generate_repeated(
-        generate_behavior,
-        n_repeats=N_REPEATS,
-        dataset=dataset_train,
-        model=estimator,
-    )
-
-    estimator.use_sindy(True)
-    ds_spice = generate_repeated(
-        generate_behavior,
-        n_repeats=N_REPEATS,
-        dataset=dataset_train,
-        model=estimator,
-    )
-
-    ds_benchmark = generate_repeated(
-        generate_behavior,
-        n_repeats=N_REPEATS,
-        dataset=dataset_train,
-        model=mvt,
-    )
-
-    ds_gru = generate_repeated(
-        generate_behavior,
-        n_repeats=N_REPEATS,
-        dataset=dataset_train,
-        model=gru,
-    )
-
-    # -------------------------------------------------------------------------------------------
-    # ANALYSIS: GENERATIVE BEHAVIOR
-    # -------------------------------------------------------------------------------------------
-
-    analysis_generative_behavior(
-        path_data_real=f'{data_dir}/bustamante2023.csv',
-        path_data_benchmark=ds_benchmark,
-        path_data_gru=ds_gru,
-        path_data_spice_rnn=ds_spice_rnn,
-        path_data_spice=ds_spice,
-        output_dir=output_dir,
-    )
+    # simulate every model in the task and compare with the real behavior; outputs in results/.
+    # SPICE: the ensemble member with the lowest training AIC across the grid-search seeds
+    # (also runnable on its own: python weinhardt2026/analysis/analysis_generative_comparison.py bustamante2023)
+    run_generative_analysis('bustamante2023')   # runs per model: N_REPEATS in analysis_generative.py
 
 
 # -------------------------------------------------------------------------------------------

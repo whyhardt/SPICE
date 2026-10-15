@@ -7,7 +7,7 @@ import torch
 import torch.nn as nn
 from tqdm import tqdm
 from torch.utils.data import DataLoader, RandomSampler
-from typing import Tuple, Union, Optional
+from typing import Dict, Tuple, Union, Optional
 import shutil
 from torch.nn.functional import mse_loss  # using standard mse loss for spice should be fine most of the time
 
@@ -279,6 +279,27 @@ def _run_batch_training(
     return model, optimizer, loss_batch/iterations
 
 
+def _initial_session_states(model: BaseModel, xs_train: torch.Tensor) -> Dict[str, torch.Tensor]:
+    """Initial state of every session, with keys and shapes from model.init_state().
+
+    States are (W, E, B, ...): memory states end in n_items, but a model may add states of
+    other shapes in its init_state() (e.g. a density over a grid), which are carried along too.
+    Learnable per-participant initial values override the configured ones.
+    """
+    _E, B, _T, W, _F = xs_train.shape
+    E = model.ensemble_size
+    session_states = {s: v.clone().detach() for s, v in model.init_state(batch_size=B, within_ts=W).items()}
+    if hasattr(model, 'learnable_initial_values') and model.learnable_initial_values:
+        participant_ids = model.map_participant_ids(xs_train[:, :, 0, 0, -1].long().to(model.device))  # (E, B)
+        E_idx = torch.arange(E, device=model.device).unsqueeze(1)
+        for key, param in model.learnable_initial_values.items():
+            init_val = param[E_idx, participant_ids]  # [E, B]
+            session_states[key] = init_val.unsqueeze(0).unsqueeze(-1).expand(
+                W, -1, -1, model.n_items,
+            ).clone().detach()
+    return session_states
+
+
 def _vectorize_state(
     model: BaseModel,
     xs_train: torch.Tensor,
@@ -309,25 +330,14 @@ def _vectorize_state(
         xs_train = xs_train.unsqueeze(0).repeat(E, 1, 1, 1, 1)
         ys_train = ys_train.unsqueeze(0).repeat(E, 1, 1, 1, 1)
 
-    # State buffers: (within_ts, E, n_trials*B, n_items) — always full size
-    state_keys = list(model.init_state(batch_size=1, within_ts=W).keys())
-    state_buffer_current = {s: torch.zeros((W, E, T*B, model.n_items), dtype=torch.float32, device=model.device) for s in state_keys}
-    state_buffer_next = {s: torch.zeros((W, E, T*B, model.n_items), dtype=torch.float32, device=model.device) for s in state_keys}
+    # Per-session hidden state carried across timesteps: (W, E, B, ...)
+    session_states = _initial_session_states(model, xs_train)
+    state_keys = list(session_states.keys())
+    state_shapes = {s: session_states[s].shape[3:] for s in state_keys}   # (n_items,) for memory states
 
-    # Per-session hidden state carried across timesteps: (W, E, B, n_items)
-    session_states = {s: torch.full((W, E, B, model.n_items),
-                                    fill_value=model.spice_config.memory_state[s] if model.spice_config.memory_state[s] is not None else 0.,
-                                    dtype=torch.float32, device=model.device) for s in state_keys}
-
-    # Apply learnable per-participant initial values
-    if hasattr(model, 'learnable_initial_values') and model.learnable_initial_values:
-        participant_ids = model.map_participant_ids(xs_train[:, :, 0, 0, -1].long().to(model.device))  # (E, B)
-        E_idx = torch.arange(E, device=model.device).unsqueeze(1)
-        for key, param in model.learnable_initial_values.items():
-            init_val = param[E_idx, participant_ids]  # [E, B]
-            session_states[key] = init_val.unsqueeze(0).unsqueeze(-1).expand(
-                W, -1, -1, model.n_items,
-            ).clone().detach()
+    # State buffers: (within_ts, E, n_trials*B, ...) — always full size
+    state_buffer_current = {s: torch.zeros((W, E, T*B, *state_shapes[s]), dtype=torch.float32, device=model.device) for s in state_keys}
+    state_buffer_next = {s: torch.zeros((W, E, T*B, *state_shapes[s]), dtype=torch.float32, device=model.device) for s in state_keys}
 
     batch_size_fwd = B
     with torch.no_grad():
@@ -363,10 +373,10 @@ def _vectorize_state(
     xs_flat = xs_train.permute(0, 2, 1, 3, 4).reshape(E, flat_total, 1, 1, F)
     ys_flat = ys_train.permute(0, 2, 1, 3, 4).reshape(E, flat_total, 1, 1, n_features_y)
 
-    # Reshape state buffers: (W, E, T*B, items) -> (1, E, flat_total, items)
+    # Reshape state buffers: (W, E, T*B, ...) -> (1, E, flat_total, ...)
     for s in state_keys:
-        state_buffer_current[s] = state_buffer_current[s].permute(1, 2, 0, 3).reshape(1, E, flat_total, model.n_items)
-        state_buffer_next[s] = state_buffer_next[s].permute(1, 2, 0, 3).reshape(1, E, flat_total, model.n_items)
+        state_buffer_current[s] = state_buffer_current[s].transpose(0, 1).transpose(1, 2).reshape(1, E, flat_total, *state_shapes[s])
+        state_buffer_next[s] = state_buffer_next[s].transpose(0, 1).transpose(1, 2).reshape(1, E, flat_total, *state_shapes[s])
 
     # Per-member validity (bootstrapped members pad different samples): (E, flat_total).
     # Drop samples padded in every member; the rest keep valid_mask so padded
@@ -583,30 +593,12 @@ def _vectorize_state_sequential(
         xs_train = xs_train.unsqueeze(0).repeat(E, 1, 1, 1, 1)
         ys_train = ys_train.unsqueeze(0).repeat(E, 1, 1, 1, 1)
 
-    state_keys = list(model.init_state(batch_size=1, within_ts=W).keys())
+    session_states = _initial_session_states(model, xs_train)
+    state_keys = list(session_states.keys())
     state_trajectories = {
-        s: torch.zeros((W, E, B, T + 1, model.n_items), dtype=torch.float32, device=model.device)
+        s: torch.zeros((W, E, B, T + 1, *session_states[s].shape[3:]), dtype=torch.float32, device=model.device)
         for s in state_keys
     }
-
-    session_states = {
-        s: torch.full(
-            (W, E, B, model.n_items),
-            fill_value=model.spice_config.memory_state[s] if model.spice_config.memory_state[s] is not None else 0.,
-            dtype=torch.float32, device=model.device,
-        )
-        for s in state_keys
-    }
-
-    # Apply learnable per-participant initial values
-    if hasattr(model, 'learnable_initial_values') and model.learnable_initial_values:
-        participant_ids = model.map_participant_ids(xs_train[:, :, 0, 0, -1].long().to(model.device))  # (E, B)
-        E_idx = torch.arange(E, device=model.device).unsqueeze(1)
-        for key, param in model.learnable_initial_values.items():
-            init_val = param[E_idx, participant_ids]  # [E, B]
-            session_states[key] = init_val.unsqueeze(0).unsqueeze(-1).expand(
-                W, -1, -1, model.n_items,
-            ).clone().detach()
 
     # Record initial state at t=0
     for s in state_keys:

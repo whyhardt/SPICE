@@ -17,10 +17,13 @@ from weinhardt2026.studies.kolff2025.benchmarking_kolff2025 import (
 )
 from weinhardt2026.utils.benchmarking_gru import training
 from weinhardt2026.analysis.analysis_model_evaluation import analysis_model_evaluation
+from weinhardt2026.analysis.analysis_generative_comparison import run_generative_analysis
 
 
 train_spice = False
 train_gru = False
+
+generate_data = False
 
 path_spice = 'weinhardt2026/studies/kolff2025/params/spice_kolff2025.pkl'
 path_gru = 'weinhardt2026/studies/kolff2025/params/gru_kolff2025.pkl'
@@ -55,15 +58,11 @@ estimator = SpiceEstimator(
     ensemble_size=10,
     embedding_size=8,
     dropout=0.1,
+    # group model: gates are global constants, so their penalties are off; linear library
     gate_penalty=0.,
     feature_penalty=0.,
-
     sindy_weight=0.01,
-    sindy_alpha=5e-4,
     sindy_library_polynomial_degree=1,
-    sindy_threshold_pruning=0.05,
-    sindy_ensemble_pruning=0.5,
-    sindy_ridge=True,
 
     device=device,
     verbose=True,
@@ -130,5 +129,10 @@ for split, dataset in (('train', dataset_train), ('test', dataset_test)):
 # -------------------------------------------------------------------------------------------
 # GENERATIVE BENCHMARKING
 # -------------------------------------------------------------------------------------------
-# Not applicable: the models predict only whether the participant's next act is grooming, not
-# which act it is, so they cannot generate interaction sequences.
+# The models predict only whether the participant's next act is grooming, so the simulation is
+# closed-loop on that decision; the partner's acts and the timing of the participant's acts are
+# replayed (benchmarking_kolff2025.generate_behavior). Outputs in results/; also runnable on its own:
+# python weinhardt2026/analysis/analysis_generative_comparison.py kolff2025
+
+if generate_data:
+    run_generative_analysis('kolff2025')   # runs per model: N_REPEATS in analysis_generative.py
