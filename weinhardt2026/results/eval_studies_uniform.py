@@ -82,14 +82,14 @@ def setup(study):
         gru.load_state_dict(torch.load(ROOT / 'weinhardt2026/studies/braun2018/params/gru_braun2018.pkl', map_location='cpu'))
     elif study == 'bustamante2023':
         from weinhardt2026.studies.bustamante2023.spice_bustamante2023 import SpiceModel, CONFIG
-        from weinhardt2026.studies.bustamante2023.benchmarking_bustamante2023 import MarginalValueTheoremModel, get_dataset
+        from weinhardt2026.studies.bustamante2023.benchmarking_bustamante2023 import EffortCostMVTModel, get_dataset
         tr, te, info = get_dataset(path_data=str(ROOT / 'weinhardt2026/studies/bustamante2023/data/bustamante2023.csv'), test_blocks=(3, 6))
         est = SpiceEstimator(spice_class=SpiceModel, spice_config=CONFIG, n_actions=tr.n_actions,
                              n_participants=tr.n_participants, sindy_weight=0, ensemble_size=1, device=device)
         est.load_spice(str(ROOT / 'weinhardt2026/studies/bustamante2023/params/spice_bustamante2023.pkl'))
         spice = [est]
-        benchmark = MarginalValueTheoremModel(n_participants=tr.n_participants, depletion=None, baseline_gain=None, batch_first=True)
-        benchmark.load_state_dict(torch.load(ROOT / 'weinhardt2026/studies/bustamante2023/params/mvt_bustamante2023.pkl', map_location='cpu'))
+        benchmark = EffortCostMVTModel(n_participants=tr.n_participants, path_data=str(ROOT / 'weinhardt2026/studies/bustamante2023/data/bustamante2023.csv'), batch_first=True)
+        benchmark.load_state_dict(torch.load(ROOT / 'weinhardt2026/studies/bustamante2023/params/effort_mvt_bustamante2023.pkl', map_location='cpu'))
         gru = GRUModel(tr.n_actions)
         gru.load_state_dict(torch.load(ROOT / 'weinhardt2026/studies/bustamante2023/params/gru_bustamante2023.pkl', map_location='cpu'))
     elif study == 'eckstein2026':

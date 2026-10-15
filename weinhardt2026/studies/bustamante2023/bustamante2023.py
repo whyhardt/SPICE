@@ -8,7 +8,7 @@ sys.path.append(str(Path(__file__).resolve().parents[3]))
 from weinhardt2026.studies.bustamante2023.spice_bustamante2023 import SpiceModel, CONFIG
 from weinhardt2026.utils.benchmarking_gru import GRUModel, training
 from weinhardt2026.studies.bustamante2023.benchmarking_bustamante2023 import (
-    MarginalValueTheoremModel, get_dataset,
+    EffortCostMVTModel, get_dataset,
 )
 from weinhardt2026.analysis.analysis_generative_comparison import run_generative_analysis
 from weinhardt2026.analysis.analysis_model_evaluation import analysis_model_evaluation
@@ -68,15 +68,14 @@ else:
     estimator.load_spice(path_spice)
 
 # -------------------------------------------------------------------------------------------
-# MVT BENCHMARK MODEL (Constantino et al. 2015)
+# MVT BENCHMARK MODEL WITH EFFORT COSTS (Bustamante et al. 2023, Eqs. 2-5)
 # -------------------------------------------------------------------------------------------
 
-path_mvt = 'weinhardt2026/studies/bustamante2023/params/mvt_bustamante2023.pkl'
+path_mvt = 'weinhardt2026/studies/bustamante2023/params/effort_mvt_bustamante2023.pkl'
 
-mvt = MarginalValueTheoremModel(
+mvt = EffortCostMVTModel(
     n_participants=dataset_train.n_participants,
-    depletion=None,
-    baseline_gain=None,
+    path_data=path_data,
     batch_first=True,
 )
 

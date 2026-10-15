@@ -205,7 +205,7 @@ class ExpectedValueControl(torch.nn.Module):
         # Participant IDs are constant within a sequence; read from first timestep
         participant_ids = inputs[0, :, -1].long()   # (B,)
 
-        logits    = torch.zeros(T, B, self.n_actions)
+        logits    = torch.zeros(T, B, self.n_actions, device=inputs.device)
         timesteps = torch.arange(T)
 
         return (prev_actions, task_values, t_norms), participant_ids, logits, timesteps

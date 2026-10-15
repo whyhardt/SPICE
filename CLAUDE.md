@@ -45,7 +45,7 @@ SPICE/
 │
 ├── weinhardt2026/                      # Paper-specific code (fitting, benchmarking, analyses)
 │   ├── run.py                          # Main entry point for training
-│   ├── studies/                        # Self-contained study directories (see docs/studies.md)
+│   ├── studies/                        # Self-contained study directories (see docs/studies.md); analysis_generative.py per study
 │   ├── analysis/                       # Cross-study analysis pipelines (see docs/analyses.md)
 │   └── utils/                          # Shared utilities (generative benchmarking, bandits, etc.)
 │
@@ -87,7 +87,7 @@ Full details, current constructor signatures, and internals: **[docs/training.md
 
 **Precoded models** (`spice/precoded/`): Rescorla-Wagner, Choice Perseveration, Forgetting, Learning Rate, Interaction, Embedding, DDM, Working Memory (+ variants) — ready-made `BaseModel` subclasses for common cognitive mechanisms.
 
-**Downstream analysis** (`weinhardt2026/analysis/`, see **[docs/analyses.md](docs/analyses.md)**): model evaluation (BIC/AIC/likelihood), model morphing (continuous structural trajectories along a behavioral axis), individual-differences regression on equation coefficients, coefficient clustering (per-module dendrograms of co-occurring terms, permutation-tested) with structural beta effects of those groups on a behavioral metric or between diagnostic groups, generative behavior comparison, behavioral clustering, and more — plus generative benchmarking (`weinhardt2026/utils/task.py`) for simulating new behavior from a fitted model.
+**Downstream analysis** (`weinhardt2026/analysis/`, see **[docs/analyses.md](docs/analyses.md)**): model evaluation (BIC/AIC/likelihood), model morphing (continuous structural trajectories along a behavioral axis), individual-differences regression on equation coefficients, coefficient clustering (per-module dendrograms of co-occurring terms, permutation-tested) with structural beta effects of those groups on a behavioral metric or between diagnostic groups, generative behavior comparison (`python weinhardt2026/analysis/analysis_generative_comparison.py <study>|all`; study-specific metrics in `studies/<study>/analysis_generative.py`; distribution distance and individual-differences recovery per model), behavioral clustering, and more — plus generative benchmarking (`weinhardt2026/utils/task.py`) for simulating new behavior from a fitted model.
 
 ---
 

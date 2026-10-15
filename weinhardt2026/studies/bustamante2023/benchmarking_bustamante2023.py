@@ -1,3 +1,4 @@
+import math
 import sys
 
 import torch
@@ -7,7 +8,7 @@ from spice import SpiceEstimator, SpiceDataset, csv_to_dataset, split_data_along
 
 sys.path.append('../../..')
 from weinhardt2026.utils.task import Env, generate_behavior as _generate_behavior
-from weinhardt2026.studies.bustamante2023.spice_bustamante2023 import CONFIG
+from weinhardt2026.studies.bustamante2023.spice_bustamante2023 import CONFIG, prepare_dataframe
 
 
 def get_dataset(path_data: str = None, test_blocks: tuple[int] = None, verbose: bool = False) -> tuple[SpiceDataset, SpiceDataset, dict]:
@@ -16,8 +17,9 @@ def get_dataset(path_data: str = None, test_blocks: tuple[int] = None, verbose: 
     if path_data is None:
         path_data = 'data/bustamante2023.csv'
     
+    import pandas as pd
     dataset = csv_to_dataset(
-        file = path_data,
+        file=prepare_dataframe(pd.read_csv(path_data, low_memory=False)),     # adds the effort-condition inputs
         df_participant_id='subject_id',
         df_choice='decision',
         df_feedback='reward',
@@ -59,243 +61,117 @@ def get_dataset(path_data: str = None, test_blocks: tuple[int] = None, verbose: 
     return dataset_train, dataset_test, info_dataset
     
 
-class MarginalValueTheoremModel(torch.nn.Module):
+EFFORT_CONDITIONS = ('button-pressing/low', 'button-pressing/high', 'MSIT/low', 'MSIT/high')
+
+
+def effort_condition_table(path_data: str) -> torch.Tensor:
+    """(n_participants, max_block + 1) effort condition per session, -1 where a session does not exist.
+
+    Condition index = 2 * (travel task is MSIT) + (effort level is high), see EFFORT_CONDITIONS. Participant
+    indices follow csv_to_dataset (order of first appearance of subject_id), blocks are the raw overall_round.
     """
-    Marginal Value Theorem (MVT) model for foraging task (Bustamante et al. 2023).
+    import pandas as pd
+    df = pd.read_csv(path_data, low_memory=False)
+    participant = df['subject_id'].map({value: index for index, value in enumerate(df['subject_id'].unique())})
+    condition = 2 * (df['travelTask'] == 'MSIT').astype(int) + (df['effort_level'] == 'high').astype(int)
+    table = torch.full((int(participant.max()) + 1, int(df['overall_round'].max()) + 1), -1, dtype=torch.long)
+    sessions = pd.DataFrame({'participant': participant, 'block': df['overall_round'], 'condition': condition}).drop_duplicates()
+    if sessions.duplicated(['participant', 'block']).any():
+        raise ValueError('A session has more than one effort condition.')
+    table[torch.tensor(sessions.participant.values), torch.tensor(sessions.block.values)] = torch.tensor(sessions.condition.values)
+    return table
 
-    The MVT predicts that a forager should leave a patch when the instantaneous
-    gain rate in the current patch drops to the average gain rate in the environment.
- 
-    Key components:
-    - Within-patch gain rate tracking (with depletion)
-    - Environmental average gain rate estimation
-    - Travel time and harvest time from data
-    - Individual differences in parameters
 
-    Model parameters (per individual):
-    - alpha_env: Learning rate for environmental gain rate
-    - beta: Inverse temperature for decision softmax
-    - c: Intercept/bias term for decision rule
-    - depletion (optional): Rate of within-patch depletion
-    - baseline_gain (optional): Initial expected gain in a patch
+class EffortCostMVTModel(torch.nn.Module):
+    """
+    Marginal Value Theorem model with effort costs of travel (Bustamante et al. 2023, PNAS, Eqs. 2-5).
+
+    The harvest decision compares the expected reward of the next harvest with a fixed threshold per
+    effort condition (travel task: button pressing or MSIT x effort level: low or high):
+
+        P(harvest) = sigmoid(beta * (R_e - rho_condition))
+        rho_condition = (sum(r) - n_travel * c_condition) / T
+
+    with R_e = 0.88 * mean(last two rewards), or 0.88 * the last reward if the one before was a travel
+    (the rule behind the expectedReward column of the authors' data; 0.88 = mean depletion). On arrival at a
+    fresh tree (the decision right after a travel), R_e is the expected yield of a fresh tree (15 apples, a task
+    constant). The authors' column averages the travel's 0 into R_e there, which makes the model predict leaving
+    on arrival, where participants harvest 95% of the time; fitted that way, the thresholds collapse toward 0 and
+    leave decisions are barely discriminated (held-out trial likelihood 0.733 vs. 0.784, leave AUC 0.78 vs. 0.91).
+
+    Fitted by maximum likelihood, the effort costs c enter only through rho, whose remaining terms are
+    fixed per participant and condition: the model is fitted with one free threshold per condition,
+    from which the costs follow as c = (sum(r) - rho * T) / n_travel. This also avoids the block totals
+    in rho, which would be future information for trial-by-trial prediction. The original model was fitted
+    hierarchically (Stan); here every participant is fitted individually, like the other benchmarks.
+
+    The decision for trial t+1 is computed after processing trial t, i.e. it uses the reward just received.
+
+    Model parameters (per individual): beta (inverse temperature) and rho for the four effort conditions.
     """
 
-    init_values = {
-        'cumulative_reward': 0.0,  # Cumulative reward in current patch
-        'n_harvests': 0,  # Number of harvests in current patch
-        'time_in_patch': 0.0,  # Time spent in current patch
-        'env_reward_rate': 0.0,  # Estimated environmental gain rate
-        'current_tree_state': 0.0,  # Current expected reward from tree (si)
-    }
+    DEPLETION = 0.88
+    FRESH_TREE_MEAN = 15.                                            # apples: mean yield of a fresh tree (N(15, 1))
 
     def __init__(
         self,
         n_actions: int = 2,
         n_participants: int = 1,
-        depletion: Optional[float] = None,
-        baseline_gain: Optional[float] = None,
-        batch_first: Optional[bool] = False,
+        path_data: str = 'weinhardt2026/studies/bustamante2023/data/bustamante2023.csv',
+        batch_first: bool = True,
     ):
         super().__init__()
-        
         self.n_actions = n_actions
         self.n_participants = n_participants
         self.batch_first = batch_first
 
-        # Initialize parameters (raw, will be transformed)
-        # Learning rate for environmental gain rate (0-1)
-        self.alpha_env_raw = torch.nn.Parameter(torch.zeros(n_participants))
+        # rewards are normalized to [0, 1], so R_e varies by a few tenths: beta in log space, starting at 10
+        # (the paper's prior beta ~ N(0, 0.5) is per apple, rewards 0-20), thresholds near typical R_e
+        self.log_beta = torch.nn.Parameter(torch.full((n_participants,), math.log(10.)))
+        self.threshold = torch.nn.Parameter(torch.full((n_participants, len(EFFORT_CONDITIONS)), 0.4))
+        self.register_buffer('conditions', effort_condition_table(path_data), persistent=False)
+        # rewards are min-max normalized over the received rewards (travel = 0 is the minimum)
+        import pandas as pd
+        rewards = pd.read_csv(path_data, usecols=['reward']).reward
+        self.fresh_tree_value = self.FRESH_TREE_MEAN / rewards[rewards > 0].max()
 
-        # Inverse temperature for softmax decision (positive)
-        self.beta_raw = torch.nn.Parameter(torch.zeros(n_participants))
+    @property
+    def beta(self):
+        return torch.exp(self.log_beta)
 
-        # Intercept/bias term for decision rule (unconstrained)
-        self.c_raw = torch.nn.Parameter(torch.zeros(n_participants))
+    def count_parameters(self) -> int:
+        return 1 + len(EFFORT_CONDITIONS)
 
-        # Within-patch depletion rate (positive)
-        if depletion is None:
-            self.depletion_raw = torch.nn.Parameter(torch.zeros(n_participants))
-            self.learn_depletion = True
-        else:
-            self.register_buffer('depletion_fixed', torch.full((n_participants), depletion))
-            self.learn_depletion = False
-            
-        # Baseline gain rate expectation (positive)
-        if baseline_gain is None:
-            self.baseline_gain_raw = torch.nn.Parameter(torch.zeros(n_participants))
-            self.learn_baseline_gain = True
-        else:
-            self.register_buffer('baseline_gain_fixed', torch.full((n_participants), baseline_gain))
-            self.learn_baseline_gain = False
-
-        self.device = torch.device('cpu')
-        
     def forward(self, inputs, prev_state=None):
-        """Forward pass through the model.
+        if self.batch_first:
+            inputs = inputs.permute(1, 2, 0, 3)                      # (B, T, W, F) -> (T, W, B, F)
+        inputs = inputs[:, 0].nan_to_num(0.)
+        actions = inputs[:, :, :self.n_actions]
+        rewards = inputs[:, :, self.n_actions:2 * self.n_actions].sum(-1)   # reward of the chosen action (0 for travel)
+        participant_ids = inputs[0, :, -1].long()
+        block_ids = inputs[0, :, -3].long()
 
-        Implements the MVT learning model from Constantino et al. (2015), Table 2:
-        - P(harvest) = 1/{1 + exp[-c - β(kappa * si - ro * h)]}
-        - delta_i = r_i/tau_i - ro_i
-        - ro_{i+1} = ro_i + [1-(1-alpha)^tau_i] · delta_i
-        """
-        input_variables, participant_ids, logits, trials = self.init_forward_pass(inputs, prev_state, self.batch_first)
-        actions, rewards, harvest_duration, travel_duration = input_variables
+        # -1: no such session -- only rows zeroed for inactive sessions (generate_behavior); their outputs are unused
+        condition = self.conditions[participant_ids, block_ids].clamp(min=0)
+        threshold = self.threshold[participant_ids, condition]       # (B,)
+        beta = self.beta[participant_ids]
 
-        # Process each timestep
-        for t in trials:
-            # Get current timestep data (shape: [batch_size, ...])
-            action_t = actions[t]  # (B, n_actions)
-            reward_t = rewards[t]  # (B, n_actions)
-            harvest_duration_t = harvest_duration[t].squeeze(-1)  # (B,)
-            travel_duration_t = travel_duration[t].squeeze(-1)  # (B,)
-
-            # Compute expected next reward (si) using MVT formulation
-            # si is the expected reward if we harvest now
-            expected_next_reward = self.state['current_tree_state'] * self.depletion[participant_ids]
-
-            # Compute stay value using MVT: c + β(si - ρh)
-            # Stay is better when expected reward exceeds opportunity cost
-            value_stay = expected_next_reward - self.state['env_reward_rate'] * harvest_duration_t
-
-            # Compute stay logit for this timestep (for action 0 = harvest); exit value is always 0
-            # Include intercept c (bias term) and inverse temperature β
-            logits[t, :, 0] = self.c[participant_ids] + self.beta[participant_ids] * value_stay
-
-            # Determine which action was taken
-            # action_t[:, 0] = 1 means harvest, action_t[:, 1] = 1 means leave
-            did_harvest = action_t[:, 0]  # (B,)
-            did_leave = 1.0 - did_harvest
-
-            # Get actual reward received
-            actual_reward = reward_t.nansum(dim=-1)
-
-            # Determine time spent on this action
-            time_spent = harvest_duration_t * did_harvest + travel_duration_t * did_leave
-
-            # Update environmental reward rate using MVT learning rule (Table 2)
-            # delta_i = r_i/tau_i - ro_i
-            reward_rate = actual_reward / (time_spent + 1e-8)  # Avoid division by zero
-            prediction_error = reward_rate - self.state['env_reward_rate']
-
-            # Effective learning rate: [1 - (1-alpha)^taui]
-            # This accounts for the time duration of the action
-            effective_lr = 1.0 - torch.pow(1.0 - self.alpha_env[participant_ids], time_spent)
-            self.state['env_reward_rate'] = self.state['env_reward_rate'] + effective_lr * prediction_error
-
-            # Update patch state based on action taken
-            # If harvested: update cumulative stats for current patch
-            # If left: reset patch state for new patch
-            self.state['cumulative_reward'] = torch.where(
-                did_harvest > 0.5,
-                self.state['cumulative_reward'] + actual_reward,
-                0
-            )
-            self.state['n_harvests'] = torch.where(
-                did_harvest > 0.5,
-                self.state['n_harvests'] + 1,
-                0
-            )
-            self.state['time_in_patch'] = torch.where(
-                did_harvest > 0.5,
-                self.state['time_in_patch'] + time_spent,
-                0
-            )
-            self.state['current_tree_state'] = torch.where(
-                did_harvest > 0.5,
-                actual_reward,  # Update state to observed reward
-                self.baseline_gain[participant_ids].detach(),
-            )
+        last_reward = prev_state['last_reward'] if prev_state is not None else torch.zeros_like(threshold)
+        logits = torch.zeros_like(actions)
+        for t in range(actions.shape[0]):
+            reward = rewards[t]
+            expected = self.DEPLETION * torch.where(last_reward > 0, (reward + last_reward) / 2, reward)
+            travelled = actions[t][:, 1] > 0.5                       # the next decision is at a fresh tree
+            expected = torch.where(travelled, torch.full_like(expected, self.fresh_tree_value), expected)
+            logits[t, :, 0] = beta * (expected - threshold)          # action 0 = harvest; the exit value is 0
+            last_reward = reward
+        self.state = {'last_reward': last_reward}
 
         logits = logits.unsqueeze(1)
         if self.batch_first:
             logits = logits.permute(2, 0, 1, 3)
-            
-        return logits, self.get_state()
+        return logits, self.state
 
-    @property
-    def alpha_env(self):
-        return torch.clamp(torch.sigmoid(self.alpha_env_raw), 0.01, 0.99)
-
-    @property
-    def beta(self):
-        return torch.clamp(torch.nn.functional.softplus(self.beta_raw), 0.1, 10.0)
-
-    @property
-    def c(self):
-        """Intercept/bias term for decision rule (unconstrained, but clamped for stability)"""
-        return torch.clamp(self.c_raw, -10.0, 10.0)
-
-    @property
-    def depletion(self):
-        if self.learn_depletion:
-            depletion = torch.clamp(torch.nn.functional.softplus(self.depletion_raw), 0.001, 1.0)
-        else:
-            depletion = self.depletion_fixed
-        return depletion
-
-    @property
-    def baseline_gain(self):
-        if self.learn_baseline_gain:
-            baseline_gain = torch.clamp(torch.nn.functional.softplus(self.baseline_gain_raw), 0.1, 20.0)
-        else:
-            baseline_gain = self.baseline_gain_fixed
-        return baseline_gain
-
-    def init_forward_pass(self, inputs, prev_state, batch_first):
-        """Initialize forward pass."""
-        if batch_first:
-            inputs = inputs.permute(1, 2, 0, 3)
-        inputs = inputs[:, 0]
-        
-        inputs = inputs.nan_to_num(0.)
-        
-        # Extract actions and rewards
-        actions = inputs[:, :, :self.n_actions].float()  # (T, B, n_actions)
-        rewards = inputs[:, :, self.n_actions:2*self.n_actions].float()  # (T, B, n_actions)
-
-        # Extract harvest_duration and travel_duration from additional inputs
-        # additional_inputs: [harvest_duration, travel_duration]
-        harvest_duration = inputs[:, :, 2*self.n_actions:2*self.n_actions+1].float()  # (T, B, 1)
-        travel_duration = inputs[:, :, 2*self.n_actions+1:2*self.n_actions+2].float()  # (T, B, 1)
-
-        participant_ids = inputs[0, :, -1].long()
-        
-        if prev_state is not None:
-            self.set_state(prev_state)
-        else:
-            self.set_initial_state(batch_size=inputs.shape[1])
-            self.state['env_reward_rate'] = self.baseline_gain[participant_ids]
-            self.state['current_tree_state'] = self.baseline_gain[participant_ids]
-
-        timesteps = torch.arange(actions.shape[0])
-        logits = torch.zeros_like(actions)
-
-        return (actions, rewards, harvest_duration, travel_duration), participant_ids, logits, timesteps
-
-    def set_initial_state(self, batch_size=1):
-        """Initialize the hidden state for each session."""
-
-        state = {
-            'cumulative_reward': torch.zeros(batch_size, dtype=torch.float32),
-            'n_harvests': torch.zeros(batch_size, dtype=torch.float32),  # Changed to float for torch.where compatibility
-            'time_in_patch': torch.zeros(batch_size, dtype=torch.float32),
-            'env_reward_rate': torch.zeros(batch_size, dtype=torch.float32),
-            'current_tree_state': torch.zeros(batch_size, dtype=torch.float32),
-        }
-        self.set_state(state)
-        return self.get_state()
-
-    def set_state(self, state_dict):
-        """Set the latent variables."""
-        self.state = state_dict
-
-    def get_state(self, detach=False):
-        """Return the memory state."""
-        state = self.state
-        if detach:
-            state = {key: state[key].detach() for key in state}
-        return state
-    
 
 class EnvironmentBustamante2023(Env):
     """Patch foraging environment with depleting rewards (Bustamante et al., 2023).

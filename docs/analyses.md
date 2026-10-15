@@ -2,7 +2,7 @@
 
 Two layers of downstream analysis sit on top of a fitted `SpiceEstimator`:
 
-1. **Generative benchmarking** (`weinhardt2026/utils/task.py`) — simulate new behavior by running the fitted model through the task environment, for comparison against real data.
+1. **Generative benchmarking** (`weinhardt2026/utils/task.py`) — simulate new behavior by running the fitted model through the task environment, for comparison against real data (`analysis_generative_comparison.py`, one command per study).
 2. **Cross-study analysis pipelines** (`weinhardt2026/analysis/`) — model evaluation, morphing, coefficient-level statistics, clustering. These operate on a fitted `SpiceEstimator` (and optionally its generated behavior) and are shared across all studies in `weinhardt2026/studies/`.
 
 See [training.md](training.md) for the model/training internals these analyses consume, and [studies.md](studies.md) for how individual studies wire them together.
@@ -56,14 +56,19 @@ class Env:
 
 1. Extract `block_ids` and `participant_ids` from dataset metadata (`xs[:, 0, 0, -3]` and `xs[:, 0, 0, -1]`)
 2. Call `environment.reset(block_ids, participant_ids)`
-3. Resolve model: `SpiceEstimator` → unwrap `.model`; raw `nn.Module` → use directly
-4. For each trial `t` in `range(n_trials)`:
+3. Resolve the model's device (`model.device` for a `SpiceEstimator`, else its parameters); the model is called as `model(obs, state)`
+4. Draw the first action uniformly at random (the model has seen no trial yet)
+5. For each trial `t` in `range(n_trials)`:
    - `reward, _ = environment.step(action_idx)` — environment gives reward for current action
    - Build observation: one-hot action + partial-feedback reward (NaN for unchosen) + metadata from original dataset
    - Forward pass: `rnn(obs, state)` for `BaseModel`, `rnn(obs, state)` otherwise
    - Normalize logits: 5D `(E,B,T,W,A)` → mean over ensemble → 4D → extract `(B, A)`
    - Sample next action: `multinomial(softmax(logits))`
-5. Restore NaN padding for variable-length sessions (matching original dataset structure)
+6. Restore NaN padding for variable-length sessions (matching original dataset structure)
+
+`use_sindy` (SPICE-EQ vs SPICE-RNN) is set by the caller. Wrappers that unwrap a `SpiceEstimator` (bruckner2025, weber2024) must not call `BaseModel.eval()` on it: its default `use_sindy=True` would silently turn every SPICE-RNN run into SPICE-EQ.
+
+**Replay what the data record.** Where the CSV stores the outcome of every option on every trial, the environment replays it instead of simulating a reward process, so a model is tested on the trials the participant actually faced: ganesh2024a (`reward_left`/`reward_right`; the contrast–reward contingency changes per block and is not stored), eckstein2026 (`payout_1..4`, scaled like `normalize_rewards`), bruckner2025 (outcomes, change points) and weber2024 (laser trajectories). dezfouli2019, braun2018 and bustamante2023 simulate the task's reward process. kolff2025 replays the partner's acts and the timing of the focal ape's acts and is closed-loop only on the modelled decision (groom or not; the non-grooming act is the real one or, where the real act was grooming, drawn from the observed non-grooming acts).
 
 **Result**: a synthetic `SpiceDataset` with the same shape/metadata as the input, but actions (and derived rewards) drawn from the fitted model instead of the human participant. Feed this into `analysis_generative_comparison.py` or `analysis_behavioral_clustering.py` below.
 
@@ -175,19 +180,27 @@ It writes `<prefix>_coefficients.npz` and, when an `environment` is given, calls
 
 ### Generative Comparison — `analysis_generative_comparison.py`
 
-Compares distributions of behavioral metrics (from `generate_behavior`) between real data and one or more generative models.
+Simulates every model in the study's task and compares the simulated behavior with the real participants'. Runnable per study, from the master script or from the study's own file:
 
-```python
-compute_generative_comparison(
-    all_metrics: dict[str, dict[str, np.ndarray]],  # {model_name: {metric_name: array}}, must include 'real'
-    participant_ids: dict[str, np.ndarray],
-    output_dir=None,
-) -> (df_similarity, df_spearman)
+```bash
+python weinhardt2026/analysis/analysis_generative_comparison.py dezfouli2019 [kolff2025 ...] [--n_repeats N] [--cached]
+python weinhardt2026/analysis/analysis_generative_comparison.py all
+python weinhardt2026/studies/dezfouli2019/analysis_generative.py
 ```
 
-- `df_similarity` — `1 - normalized Wasserstein distance` per metric per model: how closely a model's *distribution* of a metric (e.g. average reward, switch rate) matches real participants.
-- `df_spearman` — Spearman rank correlation per metric per model: whether a model preserves *individual differences* (which participants score high/low), not just the population distribution.
-- **Result**: a two-table summary distinguishing "gets the population right" from "gets individuals right" — a model can match one without the other.
+`--cached` re-scores and re-plots the saved `generative_metrics.csv` without simulating. In a study pipeline the `generate_data` flag calls `run_generative_analysis(study)`.
+
+**Study-specific part** — `weinhardt2026/studies/<study>/analysis_generative.py` defines `METRIC_LABELS`, `N_REPEATS` (runs per model: 10, or 1 where the models predict deterministically — bruckner2025, weber2024), `load_dataset()` (all blocks, built as the models were trained on it), `load_models(dataset)`, `generate(model, dataset)` and `compute_metrics(dataset)` (per-session arrays). The master provides vectorized metric helpers (`choices_and_rewards`, `session_mean`, `stays`, `choice_entropy`, `quarter_masks`). For the registered studies, data and models come from the `STUDIES` registry of `weinhardt2026/figures/figure_model_evaluation.py` (as `run.py` built them, via `load_registered_dataset` / `load_registered_models`); kolff2025 builds its own (group models of `kolff2025.py`).
+
+**Models.**
+- SPICE: one model per grid-search seed (`params/params/`): the ensemble member whose SPICE-EQ has the highest training likelihood (`select_spice_members`; `EnsembleMember` restricts an estimator's outputs to that member). The same member is simulated as SPICE-EQ and SPICE-RNN. Every (seed, member) likelihood is written to `generative_spice_selection.csv`.
+- GRU and benchmark: single fits, simulated as many times as there are SPICE models, with other random runs, so every model is scored on the same number of models × runs. A list of fits (e.g. seeds of a benchmark grid search) can take the place of the single fit.
+
+**Scores** — per model (instance), then mean and SD over instances; `all` = mean over the metrics:
+- `distance` — Wasserstein distance between the simulated participant values (all runs) and the real ones, divided by the SD of the real values. Lower is better; it asks whether a model gets the population right.
+- `rho` — Spearman correlation across participants between the real value and the model's participant mean over runs: whether individual differences are recovered.
+
+**Outputs** in `studies/<study>/results/`: `generative_behavior.png/.pdf` (one panel per metric; violins in the order GRU, Benchmark, Real, SPICE-EQ, SPICE-RNN over participants × models × runs; for Benchmark, Real and SPICE-EQ every participant is a dot, joined across the three; d and ρ above each violin and averaged over metrics in the title), `generative_metrics.csv` (per model, instance, participant, run), `generative_scores.csv`, `generative_scores_instances.csv`, `generative_spice_selection.csv` and `behavioral_metrics_real.csv` (per-participant real metrics, read by behavioral clustering and the bestbic analyses). With several studies, `weinhardt2026/results/generative_scores_all_studies.csv` holds the across-metric scores per study and one number per model across studies (`study = all`, mean over studies).
 
 ### Coefficient Distributions — `analysis_coefficients_distributions.py`
 
@@ -364,6 +377,6 @@ Evaluates a batch of checkpoints from a pruning-threshold × pruning-test hyperp
 2. Run `analysis_sindy_onestepahead.py` if SINDy test performance lags the RNN, to see whether it's a per-step or accumulation problem.
 3. Inspect population-level equation structure with `analysis_coefficients_distributions.py`.
 4. Relate coefficients to external criteria: `analysis_coefficients_individuals.py` (discrete groups or continuous traits), `analysis_coefficient_betas.py` for structural effects of co-occurring groups and single terms on a behavioral metric, and/or `analysis_morphing.py` for a continuous structural trajectory.
-5. Generate synthetic behavior (`generate_behavior`) and validate it against real data with `analysis_generative_comparison.py` and `compute_reward_history_kernel`.
+5. Write `studies/<study>/analysis_generative.py`, run `python weinhardt2026/analysis/analysis_generative_comparison.py <study>` to validate simulated against real behavior, and check the reward-history kernel with `compute_reward_history_kernel`.
 6. Read the fitted equations as a small number of co-occurring groups with `analysis_coefficient_dendrogram.py` (`mode="presence"`, `n_permutations=10000`), or check behavioral-cluster/equation alignment with `analysis_behavioral_clustering.py`.
 7. For the selected checkpoint, run the four `analysis_bestbic.py` analyses (embedding extremes, fingerprint, group and metric betas) to describe how the equations vary across participants.

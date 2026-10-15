@@ -172,7 +172,7 @@ class GQLModel(torch.nn.Module):
     def set_initial_state(self, batch_size=1):
         state = {}
         for key, val in self.init_values.items():
-            state[key] = torch.full((batch_size, self.n_actions, self.d), val, dtype=torch.float32)
+            state[key] = torch.full((batch_size, self.n_actions, self.d), val, dtype=torch.float32, device=self.phi_raw.device)
         self.set_state(state)
         return self.get_state()
 

@@ -1,3 +1,4 @@
+import pandas as pd
 import torch
 
 from spice import BaseModel
@@ -7,34 +8,48 @@ from spice import SpiceConfig
 # RL architecture shared with the bandit studies (dezfouli2019, eckstein2026, ganesh2024a).
 # Only the harvest item carries a value; the exit item stays at 0 as the reference point (as in the MVT).
 # Harvesting takes the role of "chosen" and exiting the role of "not chosen" for the harvest value.
+# The leave threshold depends on the block's effort condition (travel task x effort level), as the fixed
+# per-condition MVT threshold in Bustamante et al. (2023, Eqs. 2-5): its SINDy terms b0 + b1*is_msit + b2*is_high
+# + b3*is_msit*is_high are the four condition thresholds, with b2 the extra cost of high-effort travel.
 CONFIG = SpiceConfig(
     library_setup={
-        'value_wm_reward_chosen': ['reward[t]'],
-        'value_wm_reward_not_chosen': [],
-        # 'value_reward_chosen': ['reward[t]'],
-        # 'value_reward_not_chosen': [],
+        # 'value_wm_reward_chosen': ['reward[t]'],
+        # 'value_wm_reward_not_chosen': [],
+        'value_reward_chosen': ['reward[t]'],
+        'value_reward_not_chosen': [],
         'value_choice': ['choice[t]'],
+        'leave_threshold': ['is_msit', 'is_high'],
         # 'value_choice_chosen': [],
         # 'value_choice_not_chosen': [],
         # 'value_reward_environment': ['reward[t]'],
     },
     memory_state={
-        'value_wm_reward': 0,
-        # 'value_reward': None,
+        # 'value_wm_reward': 0,
+        'value_reward': 0,
         'value_choice': 0,
+        'leave_threshold': 0,       # per-trial leave threshold (reset each trial)
         # 'value_reward_environment': None,
     },
     states_in_logit=[
-        'value_wm_reward',
-        # 'value_reward',
+        # 'value_wm_reward',
+        'value_reward',
         'value_choice',
+        'leave_threshold',
         # 'value_reward_environment',
     ],
-    additional_inputs=('harvest_duration', 'travel_duration'),
+    additional_inputs=('harvest_duration', 'travel_duration', 'is_msit', 'is_high'),
 )
 
 
-BINARY_SIGNALS = ['choice[t]']
+BINARY_SIGNALS = ['choice[t]', 'is_msit', 'is_high']
+
+
+def prepare_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    """The block's effort condition as binary inputs (participants knew it from the background colour):
+    is_msit = cognitive travel task (MSIT) vs. physical (button pressing), is_high = high vs. low effort level."""
+    df['is_msit'] = (df['travelTask'] == 'MSIT').astype(float)
+    df['is_high'] = (df['effort_level'] == 'high').astype(float)
+    return df
 
 
 class SpiceModel(BaseModel):
@@ -46,7 +61,10 @@ class SpiceModel(BaseModel):
             num_embeddings=self.n_participants, dropout=self.dropout,
         )
 
-        self.setup_module(key_module='value_wm_reward_chosen', include_state=False)
+        # self.setup_module(key_module='value_wm_reward_chosen', include_state=False)
+
+        # leave_threshold: stateless (reset each trial), a function of the block's effort condition only
+        self.setup_module(key_module='leave_threshold', include_state=False)
         
         self.preprocess_coefficients()
         
@@ -86,27 +104,9 @@ class SpiceModel(BaseModel):
             exited = action_exit[trial] * mask_harvest_value
 
             # --- WORKING MEMORY UPDATES ---
-            self.call_module(
-                key_module='value_wm_reward_chosen',
-                key_state='value_wm_reward',
-                action_mask=harvested,
-                inputs=(rewards[trial],),
-                participant_index=spice_signals.participant_ids,
-                participant_embedding=participant_embedding,
-            )
-
-            self.call_module(
-                key_module='value_wm_reward_not_chosen',
-                key_state='value_wm_reward',
-                action_mask=exited,
-                participant_index=spice_signals.participant_ids,
-                participant_embedding=participant_embedding,
-            )
-
-            # --- REWARD VALUE UPDATES (patch value) ---
             # self.call_module(
-            #     key_module='value_reward_chosen',
-            #     key_state='value_reward',
+            #     key_module='value_wm_reward_chosen',
+            #     key_state='value_wm_reward',
             #     action_mask=harvested,
             #     inputs=(rewards[trial],),
             #     participant_index=spice_signals.participant_ids,
@@ -114,12 +114,30 @@ class SpiceModel(BaseModel):
             # )
 
             # self.call_module(
-            #     key_module='value_reward_not_chosen',
-            #     key_state='value_reward',
+            #     key_module='value_wm_reward_not_chosen',
+            #     key_state='value_wm_reward',
             #     action_mask=exited,
             #     participant_index=spice_signals.participant_ids,
             #     participant_embedding=participant_embedding,
             # )
+
+            # --- REWARD VALUE UPDATES (patch value) ---
+            self.call_module(
+                key_module='value_reward_chosen',
+                key_state='value_reward',
+                action_mask=harvested,
+                inputs=(rewards[trial],),
+                participant_index=spice_signals.participant_ids,
+                participant_embedding=participant_embedding,
+            )
+
+            self.call_module(
+                key_module='value_reward_not_chosen',
+                key_state='value_reward',
+                action_mask=exited,
+                participant_index=spice_signals.participant_ids,
+                participant_embedding=participant_embedding,
+            )
 
             # --- ENVIRONMENT REWARD UPDATES (not reset on exit; MVT opportunity cost) ---
             # self.call_module(
@@ -157,11 +175,26 @@ class SpiceModel(BaseModel):
             #     participant_embedding=participant_embedding,
             # )
 
+            # --- LEAVE THRESHOLD (effort condition of the block; harvest item only, reset each trial) ---
+            self.state['leave_threshold'] = torch.zeros_like(self.state['leave_threshold'])
+            self.call_module(
+                key_module='leave_threshold',
+                key_state='leave_threshold',
+                action_mask=mask_harvest_value,
+                inputs=(
+                    spice_signals.additional_inputs['is_msit'][trial],
+                    spice_signals.additional_inputs['is_high'][trial],
+                ),
+                participant_index=spice_signals.participant_ids,
+                participant_embedding=participant_embedding,
+            )
+
             # --- LOGITS ---
             spice_signals.logits[trial] = (
-                self.state['value_wm_reward']
-                # + self.state['value_reward']
+                # self.state['value_wm_reward']
+                + self.state['value_reward']
                 + self.state['value_choice']
+                - self.state['leave_threshold']
                 # + self.state['value_reward_environment']
             )
 
