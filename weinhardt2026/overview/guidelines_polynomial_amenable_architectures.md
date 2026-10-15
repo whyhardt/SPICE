@@ -78,7 +78,7 @@ The number of candidate terms grows combinatorially with the number of control s
 | 8               | 9       | 10             | 55             |
 
 As a suggestion, aim for 1–3 control signals per module. When a module genuinely needs more, keep the library small by other means:
-- **Lower the polynomial degree** (e.g. `--polynomial_degree 1` for kolff2025, where each module receives 7 signals).
+- **Lower the polynomial degree** (e.g. `--polynomial_degree 1` for kolff2025: all its signals are binary act indicators, so a linear library already covers their effects).
 - **Prune structurally redundant terms** before training (`preprocess_coefficients` in the study models, via `sindy_coefficients_prior_mask`). Squares of binary indicators duplicate the linear term (`x^2 = x`). Products of two signals from a mutually exclusive group vanish (`x_i · x_j = 0`, e.g. one-hot act indicators, or `is_adjacent`/`is_opposite` in eckstein2026).
 
 ### 3. Precompute Non-Polynomial Transforms in the Forward Pass
@@ -153,7 +153,7 @@ If a mechanism maps the current input to a value without memory (e.g. the effect
 ### 9. Fix What Is Not Identified
 
 Logits are invariant to a shift common to all options, so some quantities cannot be identified from choices alone. Fix them in the architecture instead of letting the fit drift:
-- **Reference item.** If only some items need a value (e.g. the harvest item in bustamante2023, or the `none` item in kolff2025), leave the other item unwritten at 0 as the softmax reference.
+- **Reference item.** If only some items need a value (e.g. the harvest item in bustamante2023, or the `not groom` item in kolff2025), leave the other item unwritten at 0 as the softmax reference.
 - **Initial values.** Use fixed initial values (`0`) by default. Use learnable per-participant initial values (`None` in `memory_state`) only where an individual resting level is meaningful and not already absorbed by an intercept.
 - **Module cleanup.** After the refit, `module_cleanup` removes terms without influence on the predictions (e.g. constants that shift all options equally). An architecture that produces many such terms is a sign that a reference point is missing.
 

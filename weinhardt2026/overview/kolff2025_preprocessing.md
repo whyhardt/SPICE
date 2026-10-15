@@ -18,7 +18,7 @@ holds the element-level coding: `SigAct_ID1/2` as behaviour names (e.g.
 An empty cell (`NaN`) in `SigAct_IDx` means that ape did nothing coded in that
 event. In every row at least one ape acts.
 
-The older `kolff2025_original.csv` codes the same events into only 5 coarse
+The older `kolff2025_original.csv` (now in `data/archive/`) codes the same events into only 5 coarse
 codes and is not used. In that file, `reposition` and `maintain contact` were
 part of the "action" code.
 
@@ -114,9 +114,8 @@ used. This is why:
   it: they follow the row order apart from a few overlapping events.
 - **Timestamps restart within an interaction.** Many interactions span several
   video files of about 5 minutes each (110 of 311). `start` restarts at 0 in
-  each file, so it is not a usable sort key. The current
-  `benchmarking_kolff2025_groom.build_perspective_dataframe` sorts by `start`
-  and thereby scrambles those interactions. It must use row order instead.
+  each file, so it is not a usable sort key. `benchmarking_kolff2025.build_dataframe`
+  therefore keeps the row order.
 - **A fixed time grid would be dominated by grooming.** Grooming takes 89% of
   observed time but only 41% of events (median 25 s, versus 1–3 s for
   negotiation behaviours). A 2 s grid would turn about 6300 events into about

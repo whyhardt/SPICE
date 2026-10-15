@@ -34,7 +34,7 @@ output_dir = 'weinhardt2026/studies/weber2024/results'
 # -------------------------------------------------------------------------------------------
 
 path_data = 'weinhardt2026/studies/weber2024/data/weber2024.csv'
-test_blocks = (2, 5, 9, 14)
+test_blocks = (3, 5, 9, 12)
 
 dataset, _ = get_dataset(path_data=path_data)
 

@@ -48,7 +48,7 @@ $$\mathcal{L} = \mathcal{L}_{\text{beh}} + \lambda_{\text{sindy}}\,\mathcal{L}_{
 2. **Stage 2, SINDy refit** on the frozen RNN: sparsity discovery with pruning, then coefficient estimation on the fixed sparsity pattern.
 3. **Module cleanup.** After the refit, every active SINDy term whose gradient on the (centered) predicted logits is numerically zero is removed per ensemble member and participant. This removes, for example, decay terms on states that never leave their initial value, and constants that shift all options equally.
 
-**Default hyperparameters of the paper runs** (`weinhardt2026/run.py` defaults, overridden by the stability script where noted):
+**Default hyperparameters of the paper runs** (`slurm_jobs/grid_search.sh` defaults, which override the `weinhardt2026/run.py` defaults where noted). One configuration is used for all studies, with the per-study deviations listed below the table:
 
 | Hyperparameter | Value |
 |---|---|
@@ -56,13 +56,20 @@ $$\mathcal{L} = \mathcal{L}_{\text{beh}} + \lambda_{\text{sindy}}\,\mathcal{L}_{
 | Ensemble size | 10 |
 | Dropout | 0.1 |
 | SINDy polynomial degree | 2 (1 for kolff2025) |
-| `sindy_weight` | 0.01 |
-| `sindy_alpha` | 0.0001 |
-| `gate_penalty` | 0 |
-| `feature_penalty` | 0.0001 (stability script; run.py default 0) |
-| Pruning threshold | 0.01 |
+| `sindy_weight` | 0 (run.py default 0.01) |
+| `sindy_alpha` | 0.0005 (run.py default 0.0001) |
+| `gate_penalty` | 0.01 (run.py default 0) |
+| `feature_penalty` | 0.0001 (run.py default 0) |
+| Pruning threshold | 0.05 (run.py default 0.01) |
+| Ensemble ratio test (`pruning_test`) | 0.5 |
 | Behavioral loss | Cross-entropy with label smoothing 0.01 (study-specific losses noted below) |
-| Seeds | 10 per study (stability runs) |
+| Seeds | 10 per study |
+
+Per-study deviations:
+- **bruckner2025, weber2024:** `gate_penalty` = `feature_penalty` = 0. Their MSE loss is much smaller in absolute terms than cross-entropy, so the penalties would otherwise dominate the loss.
+- **kolff2025:** `gate_penalty` = `feature_penalty` = 0 and `sindy_weight` = 0.01. Only a group model is fitted, so no participant-level feature selection is needed; the SINDy weight instead adds a sparsifying pull on the dynamics.
+
+**Train/test splits.** Each study holds out whole blocks, aiming for 25% of the data in the test set (allowed range 20–30%, depending on the number of blocks). Test blocks come from the middle of the session, so that early learning effects and late fatigue effects stay in the training data: starting from one of the two middle blocks, further test blocks are spread evenly toward the beginning and the end, leaving more room at the end where the two directions cannot be balanced exactly. Only one test set is used per study. The hyperparameters of the benchmark models and the GRU are selected on it (the configuration with the highest median test likelihood across seeds), which overfits them to the test set and gives them an advantage over SPICE. Exceptions are noted in the study sections: bruckner2025 holds out one block per condition (50%), and kolff2025 holds out whole dyads instead of blocks (20% of interactions), because the interactions have no fixed order or timing.
 
 ### 1.4. Shared Reinforcement-Learning Architecture (Bandit Family)
 
@@ -291,7 +298,7 @@ and the observed payout is noisy: $r_{t,i} \sim \mathcal{N}(\mu_{t,i}, \sigma_{\
 **Data.**
 - $A = 4$; payouts normalized to $[0, 1]$ (steps of 0.01); the payouts of all four options (`payout_1..4`) are recorded but only the chosen one is given to the models.
 - 862 participants; blocks of 150 trials; 786 participants completed 5 blocks (750 trials) and 76 completed 3 blocks (450 trials).
-- Held-out test block: 2.
+- Held-out test block: 2 (76 of 862 participants have only blocks 1–3; the task is simple, so little task learning needs to be excluded).
 
 #### SPICE Model (`studies/eckstein2026/spice_eckstein2026.py`)
 
@@ -507,7 +514,7 @@ The experiment has two conditions. In *noPush* the bucket stays where the partic
 **Data.**
 - Continuous scalar output ($A = 1$): the next bucket position $b_{t+1}$, trained with MSE; all positions normalized to $[0, 1]$ by dividing by 300.
 - 90 participants in three age groups (31 children, 25 younger adults, 34 older adults), each completing both conditions: 2 blocks of 100 trials in noPush (blocks 1–2) and 2 in push (blocks 3–4), i.e. 400 trials per participant. Condition is coded as `experiment`.
-- Held-out test blocks: 1, 2.
+- Held-out test blocks: 2, 4 (the second block of each condition: both conditions are tested, the first block of each is left for learning and calibration; 50% of the data, an exception to the 20–30% rule).
 
 #### SPICE Model (`studies/bruckner2025/spice_bruckner2025.py`)
 
@@ -624,7 +631,7 @@ The model works with events rather than frames. Each event is one laser beam, an
 **Data.**
 - 30 participants; 4 conditions (`experiment` 0–3 = volatility × stochasticity: low/low, low/high, high/low, high/high), 4 blocks per condition, i.e. 16 blocks of 516–565 events (8590 events per participant).
 - Additional inputs: `laser_caught`, `volatility`, `stochasticity`, `trial_duration_frames` (inter-beam interval), `trueMean` (diagnostics only).
-- Held-out test blocks: 2, 5, 9, 14.
+- Held-out test blocks: 3, 5, 9, 12 (0-indexed; every volatility x stochasticity cell once per participant).
 
 **Data representation.** All angular positions are encoded as $(\sin\theta, \cos\theta)$ pairs to handle the circular geometry (`prepare_dataframe`). The data is event-based: each trial corresponds to one laser beam event, regardless of the inter-beam time interval. Actions (shield position) and rewards (laser position) both have 2 components ($A = 2$, items $I = 2$).
 

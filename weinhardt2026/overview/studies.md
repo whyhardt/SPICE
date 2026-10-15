@@ -8,7 +8,7 @@ Conventions and infrastructure shared across studies are described in [training.
 
 ## Active Studies
 
-The task battery of the paper. Full architectures, benchmark equations and dataset details: [model_descriptions.md](model_descriptions.md). The study-to-model mapping used for the paper runs is in `slurm_jobs/spice_stability_studies.sh`.
+The task battery of the paper. Full architectures, benchmark equations and dataset details: [model_descriptions.md](model_descriptions.md). The study-to-model mapping used for the paper runs is in `slurm_jobs/grid_search.sh`.
 
 **Shared RL architecture.** The bandit-style studies (`synthetic`, `dezfouli2019`, `eckstein2026`, `ganesh2024a`, `bustamante2023`) share one architecture of up to three value states, summed into the logits:
 - a working-memory reward value (stateless chosen update, decaying unchosen update);
@@ -52,12 +52,37 @@ Perceptual decision-making combined with reward learning. Participants choose be
 Benchmarked against a normative `BayesianModel` (Ganesh et al., 2024).
 
 ### `kolff2025` — Chimpanzee grooming negotiation
-Video-coded dyadic grooming interactions of wild chimpanzees. Each interaction is modeled from each ape's perspective, so apes are participants and interactions are blocks. The raw behaviors are recoded into Groom + five Negotiation categories (see [kolff2025_preprocessing.md](kolff2025_preprocessing.md)).
+Video-coded dyadic grooming interactions of wild chimpanzees (41 apes, two communities). The raw behaviors are recoded into Groom + five Negotiation categories (see [kolff2025_preprocessing.md](kolff2025_preprocessing.md)). Every interaction is read twice, from the approached ape's and from the approacher's perspective (`benchmarking_kolff2025.build_dataframe`), so apes are participants and interactions are blocks. The target is whether the focal ape's next act is grooming, scored only on events where it acts next (target mask packed into `ys` by `spice_kolff2025.prepare_dataset`, masked loss `LOSS_FN`).
 
-The paper model is the **TOBETO** model (`spice_kolff2025_tobeto.py`). It predicts the focal ape's next act as `none` / to-be-groomed signal / to-groom signal / groom. Three latent drives are updated from both apes' last act and the centered dominance-rank difference. The SINDy library is linear (degree 1). Benchmarked against a lag-1 conditional frequency table (`ConditionalTobetoModel`). The grooming-expectation variant (`*_groom.py`) and the original 5-action model (`spice_kolff2025.py`) are not part of the paper.
+The paper model (`spice_kolff2025.py`) has four modules with their own states, split by who acts and what is done: negotiation received / given and grooming received / given. Inputs are the act categories only (no rank or role), the SINDy library is linear (degree 1), and it is fitted as one **group model** (`n_participants=1`): with about 110 targets per ape, individual models overfit. The test set holds out whole dyads (fold 0 of `dyad_folds`, 5 folds balanced by targets). Benchmarked against a lag-1 logistic regression on the current event's acts (`LogisticRegressionModel`, group model) and a GRU with the same inputs (`ModelInputGRU`). No generative benchmarking: the models predict only grooming vs. not, not which act follows. Earlier variants (TOBETO, ID2-only, mirrored with context inputs) are in `kolff2025/archive/`.
 
 ### `weber2024` — Belief updating under volatility (angular state space)
 A laser-shield tracking task on a circle. Laser beams scatter around a hidden mean that jumps at change points, under crossed volatility × stochasticity conditions. The model has belief-update and certainty modules split by catch/miss (externalized gating), plus a gated output $(1-c)\,s_t + c\,\hat\mu_t$ in sin/cos space. It is the same predictive-inference family as `bruckner2025` (Nassar-style changepoint belief updating), but with an angular state space, and is evaluated with a movement-clamped angular MSE loss (`clamped_angular_mse`). Benchmarked against a Bayesian `ChangePointModel` (Weber et al., 2024).
+
+---
+
+## Train/Test Splits and Hyperparameters
+
+**Block split.** Each study holds out whole blocks (`split_data_along_blockdim`), aiming for 25% of the data in the test set (allowed range 20–30%, depending on the number of blocks). Test blocks come from the middle of the session so that early learning effects and late fatigue effects stay in the training data. Taking one of the two middle blocks as the start, further test blocks are spread evenly toward the beginning and the end. Where the two directions cannot be balanced exactly, the split leaves more room at the end, so fewer early blocks are held out (learning is the bigger concern than fatigue in these simple tasks).
+
+**One test set.** Only one test set is used per study. The benchmark and GRU hyperparameters are selected on it: the configuration with the highest median test likelihood across seeds is kept. This overfits their hyperparameters to the test set and gives them an advantage over SPICE, so the comparison is conservative.
+
+| Study | Blocks | Test blocks | Test share | Notes |
+|---|---|---|---|---|
+| `dezfouli2019` | 1–12 | 3, 6, 9 | 26% | |
+| `braun2018` | 1–12 | 3, 6, 9 | 25% | |
+| `ganesh2024a` | 1–12 | 3, 6, 9 | 25% | |
+| `bustamante2023` | 1–8 | 3, 6 | 25% | |
+| `eckstein2026` | 1–5 | 2 | 21% | 76 of 862 participants have only blocks 1–3. Block 2 is used because the simple task leaves little task learning to exclude. |
+| `weber2024` | 0–15 (0-indexed) | 3, 5, 9, 12 | 25% | Stochasticity is fixed per block and volatility is counterbalanced per participant. These blocks hold out every volatility × stochasticity cell once per participant. |
+| `bruckner2025` | 1–4 | 2, 4 | 50% | Exception: blocks 1–2 are no-push and 3–4 push (same order for everyone). One block per condition is held out so both conditions are tested, skipping the first block of each for learning and calibration. With 4 short blocks, fatigue is not a concern. |
+| `kolff2025` | interactions | fold 0 of `dyad_folds` | 20% of interactions (18% of targets) | Exception: interactions have no fixed order or timing, so there are no learning or fatigue effects to avoid. Whole dyads are held out instead, testing whether the mechanism carries over to new pairings. |
+
+The test blocks are set in `slurm_jobs/grid_search.sh` (`TEST_BLOCKS`) and in each study's driver script.
+
+**SPICE hyperparameters.** All studies use one configuration (the defaults in `slurm_jobs/grid_search.sh`), with these deviations:
+- **`bruckner2025`, `weber2024`:** gate and feature penalties are 0. These studies use MSE, which is much smaller than cross-entropy in absolute terms, so the penalties would otherwise dominate the loss.
+- **`kolff2025`:** only a group model is fitted, so participant-level feature selection is redundant and gate and feature penalties are 0. `sindy_weight=0.01` instead adds a sparsifying pull on the dynamics. The model also uses a linear SINDy library (`--polynomial_degree 1`).
 
 ---
 
@@ -79,4 +104,5 @@ Not a real-data study. Contains `benchmarking_qlearning.py` (ground-truth `QLear
 2. Write a data-loading module (`get_dataset()`) using `csv_to_dataset()` (see [training.md](training.md#data-pipeline)).
 3. Define `spice_<study>.py`: a `BaseModel` subclass + `SpiceConfig` following the [precoded model pattern](training.md#precoded-model-pattern), applying the [polynomial-amenable architecture guidelines](training.md#designing-polynomial-amenable-architectures).
 4. Write a hand-coded benchmark model (for `analysis_model_evaluation.py` comparison) and an `Environment<Study>(Env)` + `generate_behavior()` wrapper (for generative benchmarking — see [analyses.md](analyses.md#generative-benchmarking-weinhardt2026utilstaskpy)).
-5. Fit with `SpiceEstimator`, then run the [typical analysis sequence](analyses.md#typical-analysis-sequence-for-a-new-study).
+5. Choose test blocks following the [split strategy](#traintest-splits-and-hyperparameters) and add the study to `slurm_jobs/grid_search.sh`.
+6. Fit with `SpiceEstimator`, then run the [typical analysis sequence](analyses.md#typical-analysis-sequence-for-a-new-study).

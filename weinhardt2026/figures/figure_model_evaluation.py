@@ -160,7 +160,7 @@ STUDIES = {
     ),
     'weber2024': dict(
         label='Circular Predictive\nInference (Weber 2024)',
-        test_blocks=(2, 5, 9, 14),
+        test_blocks=(3, 5, 9, 12),
         data_kwargs={"df_participant_id": "participant", "df_experiment_id": "experiment",
                      "df_choice": ["shield_sin", "shield_cos"], "df_feedback": ["laser_sin", "laser_cos"],
                      "df_block": "block",

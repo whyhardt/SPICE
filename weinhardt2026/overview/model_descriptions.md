@@ -48,7 +48,7 @@ $$\mathcal{L} = \mathcal{L}_{\text{beh}} + \lambda_{\text{sindy}}\,\mathcal{L}_{
 2. **Stage 2, SINDy refit** on the frozen RNN: sparsity discovery with pruning, then coefficient estimation on the fixed sparsity pattern.
 3. **Module cleanup.** After the refit, every active SINDy term whose gradient on the (centered) predicted logits is numerically zero is removed per ensemble member and participant. This removes, for example, decay terms on states that never leave their initial value, and constants that shift all options equally.
 
-**Default hyperparameters of the paper runs** (`weinhardt2026/run.py` defaults, overridden by the stability script where noted):
+**Default hyperparameters of the paper runs** (`slurm_jobs/grid_search.sh` defaults, which override the `weinhardt2026/run.py` defaults where noted). One configuration is used for all studies, with the per-study deviations listed below the table:
 
 | Hyperparameter | Value |
 |---|---|
@@ -56,13 +56,20 @@ $$\mathcal{L} = \mathcal{L}_{\text{beh}} + \lambda_{\text{sindy}}\,\mathcal{L}_{
 | Ensemble size | 10 |
 | Dropout | 0.1 |
 | SINDy polynomial degree | 2 (1 for kolff2025) |
-| `sindy_weight` | 0.01 |
-| `sindy_alpha` | 0.0001 |
-| `gate_penalty` | 0 |
-| `feature_penalty` | 0.0001 (stability script; run.py default 0) |
-| Pruning threshold | 0.01 |
+| `sindy_weight` | 0 (run.py default 0.01) |
+| `sindy_alpha` | 0.0005 (run.py default 0.0001) |
+| `gate_penalty` | 0.01 (run.py default 0) |
+| `feature_penalty` | 0.0001 (run.py default 0) |
+| Pruning threshold | 0.05 (run.py default 0.01) |
+| Ensemble ratio test (`pruning_test`) | 0.5 |
 | Behavioral loss | Cross-entropy with label smoothing 0.01 (study-specific losses noted below) |
-| Seeds | 10 per study (stability runs) |
+| Seeds | 10 per study |
+
+Per-study deviations:
+- **bruckner2025, weber2024:** `gate_penalty` = `feature_penalty` = 0. Their MSE loss is much smaller in absolute terms than cross-entropy, so the penalties would otherwise dominate the loss.
+- **kolff2025:** `gate_penalty` = `feature_penalty` = 0 and `sindy_weight` = 0.01. Only a group model is fitted, so no participant-level feature selection is needed; the SINDy weight instead adds a sparsifying pull on the dynamics.
+
+**Train/test splits.** Each study holds out whole blocks, aiming for 25% of the data in the test set (allowed range 20–30%, depending on the number of blocks). Test blocks come from the middle of the session, so that early learning effects and late fatigue effects stay in the training data: starting from one of the two middle blocks, further test blocks are spread evenly toward the beginning and the end, leaving more room at the end where the two directions cannot be balanced exactly. Only one test set is used per study. The hyperparameters of the benchmark models and the GRU are selected on it (the configuration with the highest median test likelihood across seeds), which overfits them to the test set and gives them an advantage over SPICE. Exceptions are noted in the study sections: bruckner2025 holds out one block per condition (50%), and kolff2025 holds out whole dyads instead of blocks (20% of interactions), because the interactions have no fixed order or timing.
 
 ### 1.4. Shared Reinforcement-Learning Architecture (Bandit Family)
 
@@ -291,7 +298,7 @@ and the observed payout is noisy: $r_{t,i} \sim \mathcal{N}(\mu_{t,i}, \sigma_{\
 **Data.**
 - $A = 4$; payouts normalized to $[0, 1]$ (steps of 0.01); the payouts of all four options (`payout_1..4`) are recorded but only the chosen one is given to the models.
 - 862 participants; blocks of 150 trials; 786 participants completed 5 blocks (750 trials) and 76 completed 3 blocks (450 trials).
-- Held-out test block: 2.
+- Held-out test block: 2 (76 of 862 participants have only blocks 1–3; the task is simple, so little task learning needs to be excluded).
 
 #### SPICE Model (`studies/eckstein2026/spice_eckstein2026.py`)
 
@@ -469,35 +476,34 @@ $$\text{logits} = \beta \cdot [V_{a=0}, V_{a=1}]$$
 - **Grooming_Solicitation**: visual or tactile requests to be groomed (`present_*`, `raise *`, `extend *`, `kiss`, `hold`).
 - **Directed_Scratch**: a scratch directed at a body part, as a request.
 
-Every interaction is modeled from the perspective of each of its two apes in turn (the *focal* ape and its *partner*), so each ape is a participant and each (interaction, perspective) pair is a block. Each ape's dominance rank is normalized within its community. `rank_diff` is the rank difference to the partner, and `rank_diff_centered` is that difference minus the ape's mean over its partners, which makes it orthogonal to the ape's own rank. The question is how the focal ape's next behavior depends on what both apes just did and on their dominance relation.
+Every interaction is modeled from the perspective of each of its two apes in turn (the *focal* ape and its *partner*), so each ape is a participant and each (interaction, perspective) pair is a block; both perspectives of an interaction share its id and land on the same side of a split. The question is which acts of both apes build up the focal ape's readiness to groom.
 
-#### SPICE Model: TOBETO Drives (`studies/kolff2025/spice_kolff2025_tobeto.py`)
+#### SPICE Model: Received and Given Acts (`studies/kolff2025/spice_kolff2025.py`)
 
-The model predicts the focal ape's own next act, grouped by the grooming role it signals: "to be groomed" (TOBE) or "to groom" (TO). Only bouts with at least 2 events are kept.
+The model predicts whether the focal ape's next act is grooming. A target exists only at events where the focal ape acts next; all other events are input steps only (target mask packed into `ys` by `prepare_dataset`, masked cross-entropy `masked_cross_entropy`).
 
-**Data** (`data/kolff2025_tobeto.csv`): 41 apes, 299 interactions, 11786 perspective-events (2–716 per ape). Held-out test set: the 64 interactions of 31 held-out dyads (20% of dyads, seed 42).
+**Data** (`data/kolff2025.csv`, built by `benchmarking_kolff2025.build_dataframe`): 41 apes, 311 interactions, 11810 perspective-events, 5599 targets (median 129 per ape, range 1–312). P(groom) over targets is 0.41 (0.25 for the approached ape, 0.49 for the approacher). Held-out test set: whole dyads, fold 0 of 5 folds balanced by targets (`dyad_folds`, seed 0): 62 interactions, 1011 targets (18%), i.e. pairings the model was never fit on.
 
-**Readout** ($A = 4$, one softmax): `none` (the focal ape does not act next; reference class), `tobegroomed` (Grooming_Solicitation, Self_Reposition, Directed_Scratch), `togroom` (Reposition_Body, Grooming_Process), `groom`.
+**Readout** ($A = 2$): `not groom` (reference, logit 0) and `groom`.
 
-| Submodule | Control signals | State item written | Description |
-|-----------|----------------|--------------------|-------------|
-| `drive_tobegroomed` | 7 signals (below) | `drive[tobegroomed]` | Drive to be groomed |
-| `drive_togroom_signal` | 7 signals | `drive[togroom]` | Drive to groom, expressed as to-groom signals |
-| `drive_togroom_groom` | 7 signals | `drive[groom]` | Drive to groom, expressed as grooming itself |
+| Submodule | Control signals | State written | Description |
+|-----------|----------------|---------------|-------------|
+| `negotiation_received` | partner's Grooming_Solicitation, Self_Reposition, Directed_Scratch | `value_negotiation_received` | Negotiation by the partner |
+| `negotiation_given` | own Grooming_Solicitation, Self_Reposition, Directed_Scratch | `value_negotiation_given` | Negotiation by the focal ape |
+| `grooming_received` | partner's Reposition_Body, Grooming_Process, Groom | `value_grooming_received` | Preparation and grooming by the partner |
+| `grooming_given` | own Reposition_Body, Grooming_Process, Groom | `value_grooming_given` | Preparation and grooming by the focal ape |
 
-Control signals: one-hot indicators of the focal ape's and the partner's last act (`own_tobegroomed`, `own_togroom`, `own_groom`, `partner_tobegroomed`, `partner_togroom`, `partner_groom`; "no act" is the all-zero reference) and `rank_diff` (= `rank_diff_centered`, constant within an interaction, so it acts as a dyad-specific shift of the resting drive). The drive to groom is split into two modules because grooming persists over consecutive events while signals do not; a shared equation would fix their ratio.
+Control signals are one-hot indicators of the category each ape performs at the current event (all zero if it does not act). An ape performs at most one category per event, so products of two categories of the same module are structurally zero and pruned, as are squared indicators. Each module updates its own state, which it uses in its update; all four write only the `groom` item. Rank and role are not inputs: on held-out dyads they added no predictive information beyond the act sequence.
 
-**Memory states:** `drive` (4 items, learnable per-ape initial value). The `none` item is never written and serves as the softmax reference.
+**Logit computation:** $\text{logit}^{\text{groom}}_t = \sum_{m} \text{value}_{m,t}$, $\text{logit}^{\text{not groom}}_t = 0$.
 
-**Logit computation:** $\text{logits}_t = \text{drive}_t$.
+**SINDy library degree:** 1 (linear: per module $\{1, \text{value}_m, 3 \text{ act indicators}\}$, 20 candidate terms in total).
 
-**SINDy library degree:** 1 (linear: per module $\{1, \text{drive}, 6 \text{ act indicators}, \text{rank\_diff}\}$).
+**Group model.** One model is fitted for all apes (`n_participants=1`). With about 110 targets per ape, individual models (participant embeddings, and per-ape benchmarks alike) overfit and fail on held-out dyads. Gate and feature penalties are off: in a group model the gates are global constants and duplicate SINDy's sparsity.
 
-**Evaluation** is reported on all events and, with `filter_own_acts`, restricted to events where the focal ape itself acts next.
+#### Benchmark Model: Lag-1 Logistic Regression (`LogisticRegressionModel`)
 
-#### Benchmark Model: Lag-1 Conditional Frequency (`ConditionalTobetoModel`)
-
-A memoryless lag-1 lookup table per ape, $P(\text{own act}_{t+1} \mid \text{own act}_t, \text{partner act}_t)$, estimated by counting with add-one smoothing. Because exactly one ape acts per event, 2 × 3 (own, partner) cells carry data, each with 3 free probabilities: 18 parameters per ape. Whatever SPICE gains over this table is attributable to latent dynamics.
+A memoryless group model: $\text{logit}\, P(\text{groom}_{t+1}) = w^\top a_t + b$, where $a_t$ are the 12 act indicators of the current event (the partner's and the focal ape's category), i.e. the same inputs as SPICE without memory beyond the current event. Fitted on the scored targets (near-unpenalized, $C = 10^4$): 13 parameters shared by all apes. Whatever SPICE gains over it is attributable to latent dynamics. No generative benchmarking: the models predict only whether the next act is grooming, not which act follows, so they cannot generate interaction sequences.
 
 ### 3.8. Bruckner 2025: Helicopter Task (Predictive Inference)
 
@@ -508,7 +514,7 @@ The experiment has two conditions. In *noPush* the bucket stays where the partic
 **Data.**
 - Continuous scalar output ($A = 1$): the next bucket position $b_{t+1}$, trained with MSE; all positions normalized to $[0, 1]$ by dividing by 300.
 - 90 participants in three age groups (31 children, 25 younger adults, 34 older adults), each completing both conditions: 2 blocks of 100 trials in noPush (blocks 1–2) and 2 in push (blocks 3–4), i.e. 400 trials per participant. Condition is coded as `experiment`.
-- Held-out test blocks: 1, 2.
+- Held-out test blocks: 2, 4 (the second block of each condition: both conditions are tested, the first block of each is left for learning and calibration; 50% of the data, an exception to the 20–30% rule).
 
 #### SPICE Model (`studies/bruckner2025/spice_bruckner2025.py`)
 
@@ -625,7 +631,7 @@ The model works with events rather than frames. Each event is one laser beam, an
 **Data.**
 - 30 participants; 4 conditions (`experiment` 0–3 = volatility × stochasticity: low/low, low/high, high/low, high/high), 4 blocks per condition, i.e. 16 blocks of 516–565 events (8590 events per participant).
 - Additional inputs: `laser_caught`, `volatility`, `stochasticity`, `trial_duration_frames` (inter-beam interval), `trueMean` (diagnostics only).
-- Held-out test blocks: 2, 5, 9, 14.
+- Held-out test blocks: 3, 5, 9, 12 (0-indexed; every volatility x stochasticity cell once per participant).
 
 **Data representation.** All angular positions are encoded as $(\sin\theta, \cos\theta)$ pairs to handle the circular geometry (`prepare_dataframe`). The data is event-based: each trial corresponds to one laser beam event, regardless of the inter-beam time interval. Actions (shield position) and rewards (laser position) both have 2 components ($A = 2$, items $I = 2$).
 
@@ -701,7 +707,7 @@ Bayesian inference on a discretized circular state space ($[0°, 360°)$ in 2° 
 | Eckstein 2026 | Drifting 4-armed bandit | 4 | `spice_eckstein2026` | 6 | 4 | 2 | Best RL (Eckstein 2026) | 6 |
 | Dezfouli 2019 | Two-armed bandit (clinical) | 2 | `spice_dezfouli2019` | 5 | 3 | 2 | Generalized Q-Learning | 12 |
 | Ganesh 2024a | Perceptual contrast bandit | 2 | `spice_ganesh2024a` | 6 | 3 | 2 | Bayesian Belief-Update | 2 |
-| Kolff 2025 | Chimpanzee grooming negotiation (TOBETO) | 4 | `spice_kolff2025_tobeto` | 3 | 1 | 1 | Lag-1 conditional frequency | 18 |
+| Kolff 2025 | Chimpanzee grooming negotiation (group model) | 2 | `spice_kolff2025` | 4 | 4 | 1 | Lag-1 logistic regression | 13 (shared) |
 | Bruckner 2025 | Helicopter task (predictive inference) | 1 (continuous) | `spice_bruckner2025` | 7 | 4 | 2 | Reduced Bayesian Model | 4 |
 | Weber 2024 | Laser tracking (shield movement) | 2 (continuous, sin/cos) | `spice_weber2024` | 4 | 2 | 2 | Bayesian Changepoint Model | 2 |
 

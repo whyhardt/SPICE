@@ -25,14 +25,14 @@ SPICE (Sparse and Interpretable Cognitive Equations) automates the discovery of 
 
 ## Sources of Truth
 
-The reference files are a snapshot of the SPICE code repository (`whyhardt/SPICE`, commit `a5b8737` of 2026-10-07 plus the documentation updates of 2026-10-09) and are read-only. If the code changes, the whole directory is re-copied, never edited by hand.
+The reference files are a snapshot of the SPICE code repository (`whyhardt/SPICE`, commit `791cda7` plus the documentation updates of 2026-10-15) and are read-only. If the code changes, the whole directory is re-copied, never edited by hand.
 
 | File | Use it for | Paper sections |
 |---|---|---|
-| [model_descriptions.md](model_descriptions.md) | §1: RNN submodules with individual-level gates, SINDy library and structural pruning, training summary and default hyperparameters, shared RL architecture. §2: GRU baseline. §3: per study, the task, data, SPICE model and benchmark model. §4: summary table | Methods (from §1–2), SI (from §3–4) |
+| [model_descriptions.md](model_descriptions.md) | §1: RNN submodules with individual-level gates, SINDy library and structural pruning, training summary, default hyperparameters with per-study deviations, train/test split strategy, shared RL architecture. §2: GRU baseline. §3: per study, the task, data, SPICE model and benchmark model. §4: summary table | Methods (from §1–2), SI (from §3–4) |
 | [training.md](training.md) | Details of the two-stage training pipeline: loss terms, warmup, optimizer, pruning (ensemble ratio test, patience, rate limit), Stage 2.1/2.2 refit (ridge, shooting), module cleanup | Methods, SI |
 | [analyses.md](analyses.md) | Analysis pipelines: model evaluation, generative benchmarking, coefficient distributions and clustering, structural beta effects, behavioral clustering, reward-history kernel, parameter recovery, hyperparameter scans | Methods (analysis subsections), SI |
-| [studies.md](studies.md) | Short overview of the task battery and which benchmark belongs to which study | Results (framing of the applications) |
+| [studies.md](studies.md) | Short overview of the task battery, which benchmark belongs to which study, and the per-study train/test splits and hyperparameter deviations | Results (framing of the applications) |
 | [kolff2025_preprocessing.md](kolff2025_preprocessing.md) | Recoding of the chimpanzee behavioral elements into categories | SI (kolff2025) |
 | [guidelines_polynomial_amenable_architectures.md](guidelines_polynomial_amenable_architectures.md) | Why the architectures look the way they do (externalized gating, few control signals per module, additive logits) | Methods (motivating design choices) |
 
