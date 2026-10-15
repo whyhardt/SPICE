@@ -100,7 +100,7 @@ else:
 
 path_gru = 'weinhardt2026/studies/bustamante2023/params/gru_bustamante2023.pkl'
 
-gru = GRUModel(dataset_train.n_actions)
+gru = GRUModel(dataset_train.n_actions, additional_inputs=4, additional_inputs_scale=(10., 10., 1., 1.))   # harvest_duration, travel_duration (constant, scaled to [0, 1]), is_msit, is_high
 
 if train_gru:
     print("Training GRU model...")

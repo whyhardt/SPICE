@@ -110,7 +110,8 @@ def setup_bustamante2023() -> StudySetup:
         dataset_train=dataset_train,
         dataset_test=dataset_test,
         make_benchmark=lambda: EffortCostMVTModel(n_participants=dataset_train.n_participants, path_data=path_data, batch_first=True),
-        make_gru=lambda hidden_size, dropout: GRUModel(dataset_train.n_actions, hidden_size=hidden_size, dropout=dropout),
+        # harvest_duration, travel_duration (constant, scaled to [0, 1]), is_msit, is_high
+        make_gru=lambda hidden_size, dropout: GRUModel(dataset_train.n_actions, additional_inputs=4, additional_inputs_scale=(10., 10., 1., 1.), hidden_size=hidden_size, dropout=dropout),
     )
 
 

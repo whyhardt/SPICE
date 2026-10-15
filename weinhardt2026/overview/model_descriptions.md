@@ -104,7 +104,7 @@ $$\text{logits}_t = V^{\text{wm}}_t + V^{\text{reward}}_t + V^{\text{choice}}_t$
 | Dezfouli 2019 | ✓ | ✓ | ✓ | None (the full shared architecture) |
 | Eckstein 2026 | ✓ | ✓ | ✓ | 4 arms; additional spatial attention-bias module |
 | Ganesh 2024a | ✓ | ✓ | ✓ | Values in contrast item space; perceptual-certainty module whose output is an extra input to all value modules; certainty-weighted item-to-action mapping |
-| Bustamante 2023 | ✓ | — | ✓ | Only the harvest item carries values; harvest/exit take the roles of chosen/unchosen; exit item is a fixed 0 reference |
+| Bustamante 2023 | — | ✓ | ✓ | Only the harvest item carries values; harvest/exit take the roles of chosen/unchosen; exit item is a fixed 0 reference; stateless leave-threshold module on the effort condition |
 
 ---
 
@@ -231,22 +231,28 @@ where $V_a$ is the observed point value for action $a$, $t_{\text{norm}} = b / B
 **Task.** A foraging task (Bustamante et al., 2023) that implements the classic patch-leaving problem of optimal foraging theory. Participants harvest apples from trees. On each decision they either **harvest** the current tree, which takes 2 s and yields a reward, or **exit** it, which yields no reward and starts a travel period of ≈8.3 s that ends at a fresh tree. A new tree's first reward is drawn from $\mathcal{N}(15, 1)$, clipped to $[0.5, 20]$. Every harvest depletes the tree multiplicatively by a factor drawn from $\text{Beta}(14.91, 2.03)$ (mean 0.88), with a floor of 0.5. Each round lasts a fixed 240 s, so time spent travelling is time not spent harvesting, and the optimal policy leaves a tree once its reward falls below the environment's average reward rate (Marginal Value Theorem).
 
 **Data.**
-- $A = 2$ (harvest=0, exit=1); rewards are given only for harvests (partial feedback) and are normalized by the maximum reward 20.
+- $A = 2$ (harvest=0, exit=1); rewards are given only for harvests (partial feedback) and are min-max normalized over the received rewards (an exit counts as 0; the largest harvest is 18.6 apples).
 - 250 participants (Prolific), 8 rounds each (`overall_round`; 40–112 decisions per round, mean 82), 340–864 decisions per participant.
-- Additional inputs `harvest_duration` (2 s) and `travel_duration` (8.33 s) are constant.
+- Each round has one effort condition: travel task (physical: rapid key pressing; cognitive: MSIT) × effort level (low, high), each tested in two rounds. `prepare_dataframe` codes it as the binary inputs `is_msit` and `is_high`; participants knew the round's condition from the background colour.
+- Additional inputs: `harvest_duration` (2 s) and `travel_duration` (8.33 s), both constant, and `is_msit`, `is_high`.
 - Held-out test blocks (rounds): 3, 6.
 
 #### SPICE Model (`studies/bustamante2023/spice_bustamante2023.py`)
 
 The shared RL architecture (Section 1.4) with these deviations:
-- **No reward-value state.** Only working memory (`value_wm_reward_chosen`, `value_wm_reward_not_chosen`) and choice perseveration (`value_choice`).
+- **No working-memory state.** The incremental reward value (`value_reward_chosen`, `value_reward_not_chosen`) and choice perseveration (`value_choice`), plus a leave threshold (`leave_threshold`).
 - **Only the harvest item carries values.** The exit item stays at 0 as the reference point, which mirrors the structure of the Marginal Value Theorem.
 - **Harvest/exit replace chosen/unchosen.** The `*_chosen` module updates the harvest value after a harvest (input: the harvest reward), and the `*_not_chosen` module updates it after an exit (a new patch).
 - **Choice value** is restricted to the harvest item and receives the harvest indicator $\mathbb{1}[\text{harvested}]$. It acts as a continuation tendency.
+- **Leave threshold.** A stateless module (reset every trial, harvest item only) on the round's effort condition, `leave_threshold` $= f(\texttt{is\_msit}, \texttt{is\_high})$. With two binary inputs, its library reduces to
+  $$\theta = b_0 + b_1\,\texttt{is\_msit} + b_2\,\texttt{is\_high} + b_3\,\texttt{is\_msit}\cdot\texttt{is\_high},$$
+  the four per-condition thresholds of the benchmark's factorial design (Bustamante et al., 2023, Eqs. 2–5): $b_0$ is the threshold for low-effort key pressing, $b_1$ the shift for the cognitive travel task, $b_2$ the extra cost of high-effort travel, and $b_3$ how that extra cost differs between cognitive and physical effort. Through the participant embedding, every participant has their own effort costs; terms without support are pruned like any other.
 
-$$\text{logits}_t = \big[V^{\text{wm}}_t + V^{\text{choice}}_t, \; 0\big]$$
+$$\text{logits}_t = \big[V^{\text{reward}}_t + V^{\text{choice}}_t - \theta_t, \; 0\big]$$
 
-Because the harvest reward depletes within a patch, the working-memory value tracks the expected next harvest reward. The comparison against the fixed exit reference corresponds to the MVT's comparison against the environment's average reward rate, which is absorbed into the learned intercepts. The additional inputs `harvest_duration` and `travel_duration` are loaded but not used.
+Because the harvest reward depletes within a patch, the reward value tracks the expected next harvest reward, and the leave threshold sets the round's exit point, as the MVT's comparison of the expected reward with a per-condition threshold. The constant inputs `harvest_duration` and `travel_duration` are loaded but not used.
+
+**GRU baseline.** Sees all four additional inputs (the constant durations scaled to $[0, 1]$, `is_msit`, `is_high`), the same information as SPICE and the benchmark.
 
 #### Benchmark Model: Marginal Value Theorem with effort costs
 
@@ -278,7 +284,7 @@ $R_e = 0.88 \cdot \tfrac{1}{2}(r_t + r_{t-1})$, or $0.88 \cdot r_t$ if trial $t-
 |-------|------|-----|-------------|---------|--------|--------------|----------------|------------------------------|
 | Synthetic | Q-learning recovery | 2 | `spice.precoded.choice` | 3 | 2 | 2 | — (ground truth) | — |
 | Braun 2018 | Voluntary task switching | 2 | `spice_braun2018` | 6 | 3 | 2 | Expected Value of Control | 5 |
-| Bustamante 2023 | Patch foraging | 2 | `spice_bustamante2023` | 3 | 2 | 2 | MVT with effort costs (Bustamante 2023) | 5 |
+| Bustamante 2023 | Patch foraging | 2 | `spice_bustamante2023` | 4 | 3 | 2 | MVT with effort costs (Bustamante 2023) | 5 |
 | Eckstein 2026 | Drifting 4-armed bandit | 4 | `spice_eckstein2026` | 6 | 4 | 2 | Best RL (Eckstein 2026) | 6 |
 | Dezfouli 2019 | Two-armed bandit (clinical) | 2 | `spice_dezfouli2019` | 5 | 3 | 2 | Generalized Q-Learning | 12 |
 | Ganesh 2024a | Perceptual contrast bandit | 2 | `spice_ganesh2024a` | 6 | 3 | 2 | Bayesian Belief-Update | 2 |

@@ -132,7 +132,8 @@ STUDIES = {
         benchmark=_benchmark('weinhardt2026.studies.bustamante2023.benchmarking_bustamante2023',
                              'EffortCostMVTModel', _study_path('bustamante2023', 'params', 'effort_mvt_bustamante2023.pkl'),
                              batch_first=True),
-        gru=_gru(_study_path('bustamante2023', 'params', 'gru_bustamante2023.pkl'), n_actions=2),
+        gru=_gru(_study_path('bustamante2023', 'params', 'gru_bustamante2023.pkl'), n_actions=2,
+                 additional_inputs=4, additional_inputs_scale=(10., 10., 1., 1.)),   # harvest_duration, travel_duration (constant, scaled to [0, 1]), is_msit, is_high
     ),
     'braun2018': dict(
         label='Task Switching\n(Braun 2018)',

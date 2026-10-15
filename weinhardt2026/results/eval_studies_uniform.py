@@ -90,7 +90,7 @@ def setup(study):
         spice = [est]
         benchmark = EffortCostMVTModel(n_participants=tr.n_participants, path_data=str(ROOT / 'weinhardt2026/studies/bustamante2023/data/bustamante2023.csv'), batch_first=True)
         benchmark.load_state_dict(torch.load(ROOT / 'weinhardt2026/studies/bustamante2023/params/effort_mvt_bustamante2023.pkl', map_location='cpu'))
-        gru = GRUModel(tr.n_actions)
+        gru = GRUModel(tr.n_actions, additional_inputs=4, additional_inputs_scale=(10., 10., 1., 1.))
         gru.load_state_dict(torch.load(ROOT / 'weinhardt2026/studies/bustamante2023/params/gru_bustamante2023.pkl', map_location='cpu'))
     elif study == 'eckstein2026':
         from weinhardt2026.studies.eckstein2026.spice_eckstein2026 import SpiceModel, CONFIG
