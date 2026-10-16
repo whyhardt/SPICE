@@ -10,6 +10,7 @@ import torch
 from spice import SpiceEstimator
 from weinhardt2026.studies.braun2018.spice_braun2018 import SpiceModel, CONFIG
 from weinhardt2026.utils.benchmarking_gru import GRUModel, training
+from weinhardt2026.utils.final_models import best_checkpoint, load_best
 from weinhardt2026.studies.braun2018.benchmarking_braun2018 import ExpectedValueControl, get_dataset
 from weinhardt2026.analysis.analysis_generative_comparison import run_generative_analysis
 from weinhardt2026.analysis.analysis_model_evaluation import analysis_model_evaluation
@@ -26,9 +27,9 @@ generate_data = False
 path_data = 'weinhardt2026/studies/braun2018/data/braun2018.csv'
 data_dir = 'weinhardt2026/studies/braun2018/data'
 output_dir = 'weinhardt2026/studies/braun2018/results'
-path_spice = 'weinhardt2026/studies/braun2018/params/spice_braun2018.pkl'
-path_benchmark = 'weinhardt2026/studies/braun2018/params/benchmark_braun2018.pkl'
-path_gru = 'weinhardt2026/studies/braun2018/params/gru_braun2018.pkl'
+path_spice = 'weinhardt2026/studies/braun2018/params/spice_braun2018.pkl'   # new fits only; otherwise the best final seed is loaded (utils/final_models.py)
+path_benchmark = 'weinhardt2026/studies/braun2018/params/benchmark_braun2018.pkl'   # new fits only; otherwise the best final seed is loaded (utils/final_models.py)
+path_gru = 'weinhardt2026/studies/braun2018/params/gru_braun2018.pkl'   # new fits only; otherwise the best final seed is loaded (utils/final_models.py)
 
 # -------------------------------------------------------------------------------------------
 # DATALOADER
@@ -80,7 +81,7 @@ if train_spice:
     estimator.fit(dataset_train.xs, dataset_train.ys, dataset_test.xs, dataset_test.ys)
     estimator.save_spice(path_spice)
 else:
-    estimator.load_spice(path_spice)
+    estimator.load_spice(best_checkpoint('braun2018', 'spice'))
     estimator.model.preprocess_coefficients()
 
 # -------------------------------------------------------------------------------------------
@@ -101,7 +102,7 @@ if train_benchmark:
     )
     torch.save(benchmark.state_dict(), path_benchmark)
 else:
-    benchmark.load_state_dict(torch.load(path_benchmark, map_location='cpu'))
+    benchmark = load_best('braun2018', 'benchmark')
 
 # -------------------------------------------------------------------------------------------
 # GRU BENCHMARK MODEL
@@ -120,7 +121,7 @@ if train_gru:
     )
     torch.save(gru.state_dict(), path_gru)
 else:
-    gru.load_state_dict(torch.load(path_gru, map_location='cpu'))
+    gru = load_best('braun2018', 'gru')
 
 # -------------------------------------------------------------------------------------------
 # ANALYSIS
@@ -134,23 +135,17 @@ for pid in range(3):
     print(f"\nExample SPICE model (participant {pid}):")
     estimator.print_spice_model(participant_id=pid)
 
-print("\n--- Model evaluation (train) ---")
-print(analysis_model_evaluation(
-    dataset=dataset_train,
-    spice_model=estimator,
-    benchmark_model=benchmark,
-    gru_model=gru,
-))
-
-print("\n--- Model evaluation (test) ---")
-print(analysis_model_evaluation(
-    dataset=dataset_test,
-    held_out=True,
+print("\n--- Model evaluation (train: likelihood, AIC, BIC; test: likelihood) ---")
+analysis_model_evaluation(
+    dataset_train=dataset_train,
+    dataset_test=dataset_test,
     spice_model=estimator,
     benchmark_model=benchmark,
     gru_model=gru,
     output_dir=output_dir,
-))
+    spice_selection='best-on-train',
+    verbose=True,
+)
 
 
 # -------------------------------------------------------------------------------------------

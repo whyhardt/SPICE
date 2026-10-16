@@ -9,6 +9,7 @@ import torch
 from spice import SpiceEstimator
 from weinhardt2026.studies.eckstein2026.spice_eckstein2026 import SpiceModel, CONFIG
 from weinhardt2026.utils.benchmarking_gru import GRUModel, training
+from weinhardt2026.utils.final_models import best_checkpoint, load_best
 from weinhardt2026.studies.eckstein2026.benchmarking_eckstein2026 import Castro2025Model, BestRLModel, get_dataset
 from weinhardt2026.analysis.analysis_generative_comparison import run_generative_analysis
 from weinhardt2026.analysis.analysis_model_evaluation import analysis_model_evaluation
@@ -24,9 +25,9 @@ generate_data = False
 
 path_data = 'weinhardt2026/studies/eckstein2026/data/eckstein2026.csv'
 # path_data = 'weinhardt2026/studies/eckstein2026/data/public_train.csv'
-path_spice = 'weinhardt2026/studies/eckstein2026/params/spice_eckstein2026.pkl'
-path_benchmark = 'weinhardt2026/studies/eckstein2026/params/benchmark_eckstein2026.pkl'
-path_gru = 'weinhardt2026/studies/eckstein2026/params/gru_eckstein2026.pkl'
+path_spice = 'weinhardt2026/studies/eckstein2026/params/spice_eckstein2026.pkl'   # new fits only; otherwise the best final seed is loaded (utils/final_models.py)
+path_benchmark = 'weinhardt2026/studies/eckstein2026/params/benchmark_eckstein2026.pkl'   # new fits only; otherwise the best final seed is loaded (utils/final_models.py)
+path_gru = 'weinhardt2026/studies/eckstein2026/params/gru_eckstein2026.pkl'   # new fits only; otherwise the best final seed is loaded (utils/final_models.py)
 output_dir='weinhardt2026/studies/eckstein2026/results'
 
 # -------------------------------------------------------------------------------------------
@@ -64,7 +65,7 @@ if train_spice:
         estimator.load_spice(path_spice)
     estimator.fit(dataset_train.xs, dataset_train.ys, dataset_test.xs, dataset_test.ys)
 else:
-    estimator.load_spice(path_spice)
+    estimator.load_spice(best_checkpoint('eckstein2026', 'spice'))
 
 # -------------------------------------------------------------------------------------------
 # CASTRO2025 BENCHMARK MODEL
@@ -94,7 +95,7 @@ if train_benchmark:
     )
     torch.save(benchmark.state_dict(), path_benchmark)
 else:
-    benchmark.load_state_dict(torch.load(path_benchmark, map_location='cpu'))
+    benchmark = load_best('eckstein2026', 'benchmark')   # the final benchmark is BestRLModel (benchmark_grid_search)
 
 # -------------------------------------------------------------------------------------------
 # GRU BENCHMARK MODEL
@@ -119,7 +120,7 @@ if train_gru:
     )
     torch.save(gru.state_dict(), path_gru)
 else:
-    gru.load_state_dict(torch.load(path_gru, map_location='cpu'))
+    gru = load_best('eckstein2026', 'gru')
 
 # -------------------------------------------------------------------------------------------
 # ANALYSIS
@@ -133,23 +134,17 @@ for pid in range(3):
     print(f"\nExample SPICE model (participant {pid}):")
     estimator.print_spice_model(participant_id=pid)
 
-print("\n--- Model evaluation (train) ---")
-print(analysis_model_evaluation(
-    dataset=dataset_train,
-    spice_model=estimator,
-    benchmark_model=benchmark.to(torch.device('cpu')),
-    gru_model=gru.eval().to(torch.device('cpu')),
-))
-
-print("\n--- Model evaluation (test) ---")
-print(analysis_model_evaluation(
-    dataset=dataset_test,
-    held_out=True,
+print("\n--- Model evaluation (train: likelihood, AIC, BIC; test: likelihood) ---")
+analysis_model_evaluation(
+    dataset_train=dataset_train,
+    dataset_test=dataset_test,
     spice_model=estimator,
     benchmark_model=benchmark.to(torch.device('cpu')),
     gru_model=gru.eval().to(torch.device('cpu')),
     output_dir=output_dir,
-))
+    spice_selection='best-on-train',
+    verbose=True,
+)
 
 if generate_data:
     # simulate every model in the task and compare with the real behavior; outputs in results/.

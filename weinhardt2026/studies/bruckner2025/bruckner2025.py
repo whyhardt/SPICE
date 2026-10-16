@@ -9,6 +9,7 @@ import torch
 from spice import SpiceEstimator, SpiceDataset, split_data_along_blockdim
 from spice_bruckner2025 import SpiceModel, CONFIG, mse_loss, POSITION_SCALE
 from weinhardt2026.utils.benchmarking_gru import GRUModel, training
+from weinhardt2026.utils.final_models import best_checkpoint, load_best
 from weinhardt2026.studies.bruckner2025.benchmarking_bruckner2025 import (
     get_dataset, RationalResourceModel,
 )
@@ -49,7 +50,7 @@ print(f"n_actions (continuous): {dataset_train.n_actions}")
 # SPICE ESTIMATOR
 # -------------------------------------------------------------------------------------------
 
-path_spice = 'weinhardt2026/studies/bruckner2025/params/spice_bruckner2025.pkl'
+path_spice = 'weinhardt2026/studies/bruckner2025/params/spice_bruckner2025.pkl'   # new fits only; otherwise the best final seed is loaded (utils/final_models.py)
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 estimator = SpiceEstimator(
@@ -85,14 +86,14 @@ if train_spice:
     )
     estimator.save_spice(path_spice)
 else:
-    estimator.load_spice(path_spice)
+    estimator.load_spice(best_checkpoint('bruckner2025', 'spice'))
 
 
 # -------------------------------------------------------------------------------------------
 # GRU FOR BENCHMARKING
 # -------------------------------------------------------------------------------------------
 
-path_gru = 'weinhardt2026/studies/bruckner2025/params/gru_bruckner2025.pkl'
+path_gru = 'weinhardt2026/studies/bruckner2025/params/gru_bruckner2025.pkl'   # new fits only; otherwise the best final seed is loaded (utils/final_models.py)
 
 gru = GRUModel(
     n_actions=1,
@@ -115,14 +116,14 @@ if train_gru:
     torch.save(gru.state_dict(), path_gru)
     print("Trained GRU parameters saved to " + path_gru)
 else:
-    gru.load_state_dict(torch.load(path_gru, map_location='cpu'))
+    gru = load_best('bruckner2025', 'gru')
 
 
 # -------------------------------------------------------------------------------------------
 # BENCHMARK MODEL (Reduced Bayesian)
 # -------------------------------------------------------------------------------------------
 
-path_benchmark = 'weinhardt2026/studies/bruckner2025/params/benchmark_bruckner2025.pkl'
+path_benchmark = 'weinhardt2026/studies/bruckner2025/params/benchmark_bruckner2025.pkl'   # new fits only; otherwise the best final seed is loaded (utils/final_models.py)
 
 benchmark = RationalResourceModel(n_participants=dataset_train.n_participants)
 
@@ -141,7 +142,7 @@ if train_benchmark:
     torch.save(benchmark.state_dict(), path_benchmark)
     print("Trained benchmark parameters saved to " + path_benchmark)
 else:
-    benchmark.load_state_dict(torch.load(path_benchmark, map_location='cpu'))
+    benchmark = load_best('bruckner2025', 'benchmark')
 
 
 # -------------------------------------------------------------------------------------------
@@ -342,13 +343,14 @@ plt.show()
 # -------------------------------------------------------------------------------------------
 
 df_mse = analysis_model_evaluation_mse(
-    dataset=dataset_test if dataset_test is not None else dataset,
+    dataset_train=dataset_train,
+    dataset_test=dataset_test,
     spice_model=estimator,
     benchmark_model=benchmark,
     gru_model=gru,
+    spice_selection='best-on-train',
     output_dir='weinhardt2026/studies/bruckner2025/results',
     verbose=True,
-    held_out=dataset_test is not None,
 )
 
 

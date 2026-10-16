@@ -261,16 +261,14 @@ if __name__=='__main__':
     
     if args.results:
         
-        # print("\nEvaluation on train data:")
-        # print(analysis_model_evaluation(
-        #     dataset=dataset_train,
+        # print("\nEvaluation (train: likelihood, AIC, BIC; test: likelihood):")
+        # analysis_model_evaluation(
+        #     dataset_train=dataset_train,
+        #     dataset_test=dataset_test,
         #     spice_model=estimator,
-        # ))
-        # print("\nEvaluation on test data:")
-        # print(analysis_model_evaluation(
-        #     dataset=dataset_test,
-        #     spice_model=estimator,
-        # ))
+        #     spice_selection='best-on-train',
+        #     verbose=True,
+        # )
 
         print("\nSINDy one-step-ahead diagnostic (train):")
         summary_train, trial_train = analysis_sindy_onestepahead(

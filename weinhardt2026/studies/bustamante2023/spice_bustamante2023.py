@@ -13,8 +13,8 @@ from spice import SpiceConfig
 # + b3*is_msit*is_high are the four condition thresholds, with b2 the extra cost of high-effort travel.
 CONFIG = SpiceConfig(
     library_setup={
-        # 'value_wm_reward_chosen': ['reward[t]'],
-        # 'value_wm_reward_not_chosen': [],
+        'value_wm_reward_chosen': ['reward[t]'],
+        'value_wm_reward_not_chosen': [],
         'value_reward_chosen': ['reward[t]'],
         'value_reward_not_chosen': [],
         'value_choice': ['choice[t]'],
@@ -24,14 +24,14 @@ CONFIG = SpiceConfig(
         # 'value_reward_environment': ['reward[t]'],
     },
     memory_state={
-        # 'value_wm_reward': 0,
+        'value_wm_reward': 0,
         'value_reward': 0,
         'value_choice': 0,
         'leave_threshold': 0,       # per-trial leave threshold (reset each trial)
         # 'value_reward_environment': None,
     },
     states_in_logit=[
-        # 'value_wm_reward',
+        'value_wm_reward',
         'value_reward',
         'value_choice',
         'leave_threshold',
@@ -104,22 +104,22 @@ class SpiceModel(BaseModel):
             exited = action_exit[trial] * mask_harvest_value
 
             # --- WORKING MEMORY UPDATES ---
-            # self.call_module(
-            #     key_module='value_wm_reward_chosen',
-            #     key_state='value_wm_reward',
-            #     action_mask=harvested,
-            #     inputs=(rewards[trial],),
-            #     participant_index=spice_signals.participant_ids,
-            #     participant_embedding=participant_embedding,
-            # )
+            self.call_module(
+                key_module='value_wm_reward_chosen',
+                key_state='value_wm_reward',
+                action_mask=harvested,
+                inputs=(rewards[trial],),
+                participant_index=spice_signals.participant_ids,
+                participant_embedding=participant_embedding,
+            )
 
-            # self.call_module(
-            #     key_module='value_wm_reward_not_chosen',
-            #     key_state='value_wm_reward',
-            #     action_mask=exited,
-            #     participant_index=spice_signals.participant_ids,
-            #     participant_embedding=participant_embedding,
-            # )
+            self.call_module(
+                key_module='value_wm_reward_not_chosen',
+                key_state='value_wm_reward',
+                action_mask=exited,
+                participant_index=spice_signals.participant_ids,
+                participant_embedding=participant_embedding,
+            )
 
             # --- REWARD VALUE UPDATES (patch value) ---
             self.call_module(
@@ -191,7 +191,7 @@ class SpiceModel(BaseModel):
 
             # --- LOGITS ---
             spice_signals.logits[trial] = (
-                # self.state['value_wm_reward']
+                self.state['value_wm_reward']
                 + self.state['value_reward']
                 + self.state['value_choice']
                 - self.state['leave_threshold']

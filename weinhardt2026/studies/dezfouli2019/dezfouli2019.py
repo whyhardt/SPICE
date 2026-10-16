@@ -15,6 +15,7 @@ from spice import SpiceEstimator
 from spice_dezfouli2019 import SpiceModel, CONFIG
 
 from weinhardt2026.utils.benchmarking_gru import GRUModel, training
+from weinhardt2026.utils.final_models import best_checkpoint, load_best
 from weinhardt2026.studies.dezfouli2019.benchmarking_dezfouli2019 import (
     GQLModel, EnvironmentDezfouli2019, get_dataset,
 )
@@ -52,9 +53,9 @@ generate_data = False
 path_data = 'weinhardt2026/studies/dezfouli2019/data/dezfouli2019.csv'
 data_dir = 'weinhardt2026/studies/dezfouli2019/data'
 output_dir = 'weinhardt2026/studies/dezfouli2019/results'
-path_spice = 'weinhardt2026/studies/dezfouli2019/params/spice_dezfouli2019_original_sw_0.001.pkl'
-path_benchmark = 'weinhardt2026/studies/dezfouli2019/params/benchmark_dezfouli2019.pkl'
-path_gru = 'weinhardt2026/studies/dezfouli2019/params/gru_dezfouli2019.pkl'
+path_spice = 'weinhardt2026/studies/dezfouli2019/params/spice_dezfouli2019_original_sw_0.001.pkl'   # new fits only; otherwise the best final seed is loaded (utils/final_models.py)
+path_benchmark = 'weinhardt2026/studies/dezfouli2019/params/benchmark_dezfouli2019.pkl'   # new fits only; otherwise the best final seed is loaded (utils/final_models.py)
+path_gru = 'weinhardt2026/studies/dezfouli2019/params/gru_dezfouli2019.pkl'   # new fits only; otherwise the best final seed is loaded (utils/final_models.py)
 params_array_dir = 'weinhardt2026/studies/dezfouli2019/params_array'
 figures_dir = 'weinhardt2026/studies/dezfouli2019/figures'
 path_metrics = 'weinhardt2026/studies/dezfouli2019/results/behavioral_metrics_real.csv'
@@ -104,7 +105,7 @@ if train_spice:
     estimator.fit(dataset_train.xs, dataset_train.ys)#, dataset_test.xs, dataset_test.ys)
     estimator.save_spice(path_spice)
 else:
-    estimator.load_spice(path_spice)
+    estimator.load_spice(best_checkpoint('dezfouli2019', 'spice'))
 
 # -------------------------------------------------------------------------------------------
 # GQL BENCHMARK MODEL (Dezfouli 2019)
@@ -124,7 +125,7 @@ if train_benchmark:
     )
     torch.save(benchmark.state_dict(), path_benchmark)
 else:
-    benchmark.load_state_dict(torch.load(path_benchmark, map_location='cpu'))
+    benchmark = load_best('dezfouli2019', 'benchmark')
 
 # -------------------------------------------------------------------------------------------
 # GRU BENCHMARK MODEL
@@ -147,7 +148,7 @@ if train_gru:
     )
     torch.save(gru.state_dict(), path_gru)
 else:
-    gru.load_state_dict(torch.load(path_gru, map_location='cpu'))
+    gru = load_best('dezfouli2019', 'gru')
 
 # -------------------------------------------------------------------------------------------
 # ANALYSIS
@@ -161,23 +162,17 @@ for pid in range(3):
     print(f"\nExample SPICE model (participant {pid}):")
     estimator.print_spice_model(participant_id=pid)
 
-print("\n--- Model evaluation (train) ---")
-print(analysis_model_evaluation(
-    dataset=dataset_train,
-    spice_model=estimator,
-    benchmark_model=benchmark.to(torch.device('cpu')),
-    gru_model=gru.to(torch.device('cpu')),
-))
-
-print("\n--- Model evaluation (test) ---")
-print(analysis_model_evaluation(
-    dataset=dataset_test,
-    held_out=True,
+print("\n--- Model evaluation (train: likelihood, AIC, BIC; test: likelihood) ---")
+analysis_model_evaluation(
+    dataset_train=dataset_train,
+    dataset_test=dataset_test,
     spice_model=estimator,
     benchmark_model=benchmark.to(torch.device('cpu')),
     gru_model=gru.to(torch.device('cpu')),
     output_dir=output_dir,
-))
+    spice_selection='best-on-train',
+    verbose=True,
+)
 
 # -------------------------------------------------------------------------------------------
 # GENERATIVE BENCHMARKING

@@ -9,7 +9,6 @@ Panels (saved individually):
 Each panel saved as detailed + clean versions in figures/figure3/.
 """
 
-import os
 
 import numpy as np
 import pandas as pd
@@ -22,48 +21,42 @@ from weinhardt2026.figures.create_figure2a import (
     _load_study_data, _plot_bars_cell,
 )
 from weinhardt2026.figures.panel_utils import save_panel
+from weinhardt2026.utils.final_models import best_checkpoint
 
 
 # ── Study model configurations for structural variance ──────────────
+# The checkpoint is the study's best final SPICE seed (weinhardt2026/utils/final_models.py).
 STUDY_MODELS = {
     'dezfouli2019': {
-        'model_module': 'spice.precoded.workingmemory',
-        'pkl': 'weinhardt2026/studies/dezfouli2019/params/spice_dezfouli2019.pkl',
+        'model_module': 'weinhardt2026.studies.dezfouli2019.spice_dezfouli2019',
         'n_actions': 2,
     },
     'ganesh2024a': {
         'model_module': 'weinhardt2026.studies.ganesh2024a.spice_ganesh2024a',
-        'pkl': 'weinhardt2026/studies/ganesh2024a/params/spice_ganesh2024a.pkl',
         'n_actions': 2,
     },
     'eckstein2026': {
         'model_module': 'weinhardt2026.studies.eckstein2026.spice_eckstein2026',
-        'pkl': 'weinhardt2026/studies/eckstein2026/params/spice_eckstein2026.pkl',
         'n_actions': 4,
     },
     'braun2018': {
         'model_module': 'weinhardt2026.studies.braun2018.spice_braun2018',
-        'pkl': 'weinhardt2026/studies/braun2018/params/spice_braun2018.pkl',
         'n_actions': 2,
     },
     'bustamante2023': {
         'model_module': 'weinhardt2026.studies.bustamante2023.spice_bustamante2023',
-        'pkl': 'weinhardt2026/studies/bustamante2023/params/spice_bustamante2023.pkl',
         'n_actions': 2,
     },
     'kolff2025': {
         'model_module': 'weinhardt2026.studies.kolff2025.spice_kolff2025',
-        'pkl': 'weinhardt2026/studies/kolff2025/params/spice_kolff2025.pkl',
         'n_actions': 2,
     },
     'bruckner2025': {
         'model_module': 'weinhardt2026.studies.bruckner2025.spice_bruckner2025',
-        'pkl': 'weinhardt2026/studies/bruckner2025/params/spice_bruckner2025.pkl',
         'n_actions': 1,
     },
     'weber2024': {
         'model_module': 'weinhardt2026.studies.weber2024.spice_weber2024',
-        'pkl': 'weinhardt2026/studies/weber2024/params/spice_weber2024_continuous.pkl',
         'n_actions': 2,
     },
 }
@@ -79,11 +72,10 @@ def _extract_study_key(results_dir):
 
 def _load_presence_rates(study_key):
     """Load SPICE model and compute per-module term presence rates."""
-    info = STUDY_MODELS[study_key]
-    pkl_path = info['pkl']
-
-    if not os.path.isfile(pkl_path):
-        print(f"  Warning: {pkl_path} not found, skipping")
+    try:
+        pkl_path = best_checkpoint(study_key, 'spice')
+    except FileNotFoundError as error:
+        print(f"  Warning: {error}, skipping")
         return None, None, 0
 
     ckpt = torch.load(pkl_path, map_location='cpu')

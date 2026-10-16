@@ -9,6 +9,7 @@ import torch
 from spice import SpiceEstimator
 from weinhardt2026.studies.ganesh2024a.spice_ganesh2024a import SpiceModel, CONFIG
 from weinhardt2026.utils.benchmarking_gru import GRUModel, training
+from weinhardt2026.utils.final_models import best_checkpoint, load_best
 from weinhardt2026.studies.ganesh2024a.benchmarking_ganesh2024a import BayesianModel, get_dataset
 from weinhardt2026.analysis.analysis_generative_comparison import run_generative_analysis
 from weinhardt2026.analysis.analysis_model_evaluation import analysis_model_evaluation
@@ -37,7 +38,7 @@ print(f"Number of actions: {info_dataset['n_actions']}")
 # SPICE ESTIMATOR
 # -------------------------------------------------------------------------------------------
 
-path_spice = 'weinhardt2026/studies/ganesh2024a/params/spice_ganesh2024a.pkl'
+path_spice = 'weinhardt2026/studies/ganesh2024a/params/spice_ganesh2024a.pkl'   # new fits only; otherwise the best final seed is loaded (utils/final_models.py)
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 estimator = SpiceEstimator(
@@ -58,13 +59,13 @@ if train_spice:
     estimator.fit(dataset_train.xs, dataset_train.ys, dataset_test.xs, dataset_test.ys)
     estimator.save_spice(path_spice)
 else:
-    estimator.load_spice(path_spice)
+    estimator.load_spice(best_checkpoint('ganesh2024a', 'spice'))
 
 # -------------------------------------------------------------------------------------------
 # BAYESIAN BENCHMARK MODEL
 # -------------------------------------------------------------------------------------------
 
-path_bay = 'weinhardt2026/studies/ganesh2024a/params/bay_ganesh2024a.pkl'
+path_bay = 'weinhardt2026/studies/ganesh2024a/params/bay_ganesh2024a.pkl'   # new fits only; otherwise the best final seed is loaded (utils/final_models.py)
 
 bay = BayesianModel(n_participants=info_dataset['n_participants'], batch_first=True)
 
@@ -77,13 +78,13 @@ if train_bay:
     )
     torch.save(bay.state_dict(), path_bay)
 else:
-    bay.load_state_dict(torch.load(path_bay, map_location='cpu'))
+    bay = load_best('ganesh2024a', 'benchmark')
 
 # -------------------------------------------------------------------------------------------
 # GRU BENCHMARK MODEL
 # -------------------------------------------------------------------------------------------
 
-path_gru = 'weinhardt2026/studies/ganesh2024a/params/gru_ganesh2024a.pkl'
+path_gru = 'weinhardt2026/studies/ganesh2024a/params/gru_ganesh2024a.pkl'   # new fits only; otherwise the best final seed is loaded (utils/final_models.py)
 
 gru = GRUModel(
     n_actions=info_dataset['n_actions'],
@@ -101,7 +102,7 @@ if train_gru:
     )
     torch.save(gru.state_dict(), path_gru)
 else:
-    gru.load_state_dict(torch.load(path_gru, map_location='cpu'))
+    gru = load_best('ganesh2024a', 'gru')
 
 # -------------------------------------------------------------------------------------------
 # ANALYSIS
@@ -115,23 +116,17 @@ for pid in range(3):
     print(f"\nExample SPICE model (participant {pid}):")
     estimator.print_spice_model(participant_id=pid)
 
-print("\n--- Model evaluation (train) ---")
-print(analysis_model_evaluation(
-    dataset=dataset_train,
-    spice_model=estimator,
-    benchmark_model=bay,
-    gru_model=gru,
-))
-
-print("\n--- Model evaluation (test) ---")
-print(analysis_model_evaluation(
-    dataset=dataset_test,
-    held_out=True,
+print("\n--- Model evaluation (train: likelihood, AIC, BIC; test: likelihood) ---")
+analysis_model_evaluation(
+    dataset_train=dataset_train,
+    dataset_test=dataset_test,
     spice_model=estimator,
     benchmark_model=bay,
     gru_model=gru,
     output_dir='weinhardt2026/studies/ganesh2024a/results',
-))
+    spice_selection='best-on-train',
+    verbose=True,
+)
 
 # -------------------------------------------------------------------------------------------
 # GENERATIVE BENCHMARKING

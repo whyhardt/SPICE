@@ -335,8 +335,8 @@ class SpiceEstimator(BaseEstimator):
         
         return self.model.get_sindy_coefficients(key_module=key_module, aggregate=aggregate)
     
-    def count_sindy_coefficients(self):
-        return self.model.count_sindy_coefficients()
+    def count_sindy_coefficients(self, aggregate: bool = True):
+        return self.model.count_sindy_coefficients(aggregate=aggregate)
 
     def get_modules(self):
         return self.model.get_modules()

@@ -172,14 +172,13 @@ if __name__ == '__main__':
         estimator.print_spice_model(participant_id=pid)
 
     # -- evaluation ---------------------------------------------------------
-    print("\n--- Model evaluation (train) ---")
-    results_train = analysis_model_evaluation(dataset=dataset_train, spice_model=estimator)
-    print(results_train)
-
-    print("\n--- Model evaluation (test) ---")
-    results_test = analysis_model_evaluation(dataset=dataset_test, spice_model=estimator, held_out=True)
-    print(results_test)
-
-    results_train.to_csv(os.path.join(output_dir, 'model_evaluation_train.csv'), index=False)
-    results_test.to_csv(os.path.join(output_dir, 'model_evaluation_test.csv'), index=False)
+    print("\n--- Model evaluation (train: likelihood, AIC, BIC; test: likelihood) ---")
+    results = analysis_model_evaluation(
+        dataset_train=dataset_train,
+        dataset_test=dataset_test,
+        spice_model=estimator,
+        spice_selection='best-on-train',
+        output_dir=output_dir,
+        verbose=True,
+    )
     print(f"\nAll results saved to {output_dir}")

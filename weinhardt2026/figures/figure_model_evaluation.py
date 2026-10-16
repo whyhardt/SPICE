@@ -1,11 +1,11 @@
 """
 Model evaluation figure: one column per study, rows = held-out likelihood, AIC, BIC.
 
-Models per study:
+Models per study, every seed of the final models in ``studies/<study>/params/``
+(see ``weinhardt2026/utils/final_models.py``; bars = mean over seeds, dots = single seeds):
   - Benchmark: the study's hand-crafted cognitive model
-  - GRU:       a GRU without participant embedding
-  - SPICE-RNN / SPICE-EQ: every seed of the study's grid-search checkpoints
-    (bars = mean over seeds, dots = single seeds)
+  - GRU:       a GRU without participant embedding (hidden size read from the checkpoint)
+  - SPICE-RNN / SPICE-EQ: the study's SPICE grid-search checkpoints
 
 Data and SPICE estimators are rebuilt exactly as ``slurm_jobs/grid_search.sh`` →
 ``weinhardt2026/run.py`` built them, so all models are scored on the split the
@@ -32,7 +32,6 @@ import json
 import math
 import os
 import sys
-from glob import glob
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 sys.path.insert(0, ROOT)
@@ -50,34 +49,30 @@ from weinhardt2026.analysis.analysis_model_evaluation import (
     get_participant_experiment_groups,
     grouped_information_criteria,
 )
-from weinhardt2026.utils.benchmarking_gru import GRUModel
+from weinhardt2026.utils.final_models import checkpoint_seed, final_checkpoints, load_gru
 
 
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 EPS = 1e-9
 OUTPUT_DIR = os.path.join(ROOT, 'weinhardt2026', 'figures', 'model_evaluation')
 
-GRID_DEFAULT = 'th0.05_sw0_al0.0005_er0.5_gp0.01_fp0.0001'
-GRID_CONTINUOUS = 'th0.05_sw0_al0.0005_er0.5_gp0_fp0'
-
 
 # ── Study configuration ─────────────────────────────────────────────
-# data_kwargs / test_blocks mirror slurm_jobs/grid_search.sh
+# data_kwargs / test_blocks mirror slurm_jobs/grid_search.sh; the benchmark / GRU kwargs mirror
+# benchmark_grid_search/benchmark_grid_search.py. benchmark / gru: (path, n_participants, n_actions) -> model
 
-def _benchmark(module_name, class_name, params_file, **kwargs):
-    def build(n_participants, n_actions):
+def _benchmark(module_name, class_name, **kwargs):
+    def build(path, n_participants, n_actions):
         module = importlib.import_module(module_name)
         model = getattr(module, class_name)(n_participants=n_participants, **kwargs)
-        model.load_state_dict(torch.load(params_file, map_location='cpu'))
+        model.load_state_dict(torch.load(path, map_location='cpu'))
         return model
     return build
 
 
-def _gru(params_file, **kwargs):
-    def build(n_participants, n_actions):
-        model = GRUModel(**kwargs)
-        model.load_state_dict(torch.load(params_file, map_location='cpu'))
-        return model
+def _gru(**kwargs):
+    def build(path, n_participants, n_actions):
+        return load_gru(path, **kwargs)
     return build
 
 
@@ -85,55 +80,38 @@ def _study_path(study, *parts):
     return os.path.join(ROOT, 'weinhardt2026', 'studies', study, *parts)
 
 
-def _grid_checkpoints(study, grid):
-    return sorted(glob(_study_path(study, 'params', 'params', f'spice_{study}_{grid}_rs[0-9]*.pkl')))
-
-
 STUDIES = {
     'dezfouli2019': dict(
         label='Two-Armed Bandit\n(Dezfouli 2019)',
         test_blocks=(3, 6, 9),
         data_kwargs={},
-        checkpoints=lambda: _grid_checkpoints('dezfouli2019', GRID_DEFAULT),
-        benchmark=_benchmark('weinhardt2026.studies.dezfouli2019.benchmarking_dezfouli2019', 'GQLModel',
-                             _study_path('dezfouli2019', 'params', 'benchmark_dezfouli2019.pkl'), batch_first=True),
-        gru=_gru(_study_path('dezfouli2019', 'params', 'gru_dezfouli2019.pkl'),
-                 n_actions=2, additional_inputs=2, dropout=0.25, hidden_size=8),
+        benchmark=_benchmark('weinhardt2026.studies.dezfouli2019.benchmarking_dezfouli2019', 'GQLModel', batch_first=True),
+        gru=_gru(n_actions=2, additional_inputs=2),
     ),
     'ganesh2024a': dict(
         label='Perceptual Bandit\n(Ganesh 2024)',
         test_blocks=(3, 6, 9),
         data_kwargs={"df_participant_id": "subjID", "df_choice": "choice", "df_feedback": "reward",
                      "df_block": "blocks", "additional_inputs": ["contrast_difference"]},
-        # params/params holds the old architecture -> single checkpoint of the current one
-        checkpoints=lambda: [_study_path('ganesh2024a', 'params', f'spice_ganesh2024a_{GRID_DEFAULT}_emb8_rs0.pkl')],
-        benchmark=_benchmark('weinhardt2026.studies.ganesh2024a.benchmarking_ganesh2024a', 'BayesianModel',
-                             _study_path('ganesh2024a', 'params', 'bay_ganesh2024a.pkl'), batch_first=True),
-        gru=_gru(_study_path('ganesh2024a', 'params', 'gru_ganesh2024a.pkl'),
-                 n_actions=2, additional_inputs=2, dropout=0.25, hidden_size=8),
+        benchmark=_benchmark('weinhardt2026.studies.ganesh2024a.benchmarking_ganesh2024a', 'BayesianModel', batch_first=True),
+        gru=_gru(n_actions=2, additional_inputs=2),
     ),
     'eckstein2026': dict(
         label='Four-Armed Bandit\n(Eckstein 2026)',
         test_blocks=(2,),
         data_kwargs={},
-        checkpoints=lambda: _grid_checkpoints('eckstein2026', GRID_DEFAULT),
         benchmark=_benchmark('weinhardt2026.studies.eckstein2026.benchmarking_eckstein2026', 'BestRLModel',
-                             _study_path('eckstein2026', 'params', 'bestrl_eckstein2026_cont.pkl'),
                              n_actions=4, batch_first=True),
-        gru=_gru(_study_path('eckstein2026', 'params', 'gru_eckstein2026.pkl'),
-                 n_actions=4, additional_inputs=2, dropout=0.1, hidden_size=32),
+        gru=_gru(n_actions=4, additional_inputs=2),
     ),
     'bustamante2023': dict(
         label='Patch Foraging\n(Bustamante 2023)',
         test_blocks=(3, 6),
         data_kwargs={"df_participant_id": "subject_id", "df_choice": "decision", "df_feedback": "reward",
                      "df_block": "overall_round", "additional_inputs": ["harvest_duration", "travel_duration", "is_msit", "is_high"]},
-        checkpoints=lambda: _grid_checkpoints('bustamante2023', GRID_DEFAULT),
         benchmark=_benchmark('weinhardt2026.studies.bustamante2023.benchmarking_bustamante2023',
-                             'EffortCostMVTModel', _study_path('bustamante2023', 'params', 'effort_mvt_bustamante2023.pkl'),
-                             batch_first=True),
-        gru=_gru(_study_path('bustamante2023', 'params', 'gru_bustamante2023.pkl'), n_actions=2,
-                 additional_inputs=4, additional_inputs_scale=(10., 10., 1., 1.)),   # harvest_duration, travel_duration (constant, scaled to [0, 1]), is_msit, is_high
+                             'EffortCostMVTModel', batch_first=True),
+        gru=_gru(n_actions=2, additional_inputs=4, additional_inputs_scale=(10., 10., 1., 1.)),   # harvest_duration, travel_duration (constant, scaled to [0, 1]), is_msit, is_high
     ),
     'braun2018': dict(
         label='Task Switching\n(Braun 2018)',
@@ -141,11 +119,8 @@ STUDIES = {
         data_kwargs={"df_participant_id": "subject", "df_choice": "transcode", "df_feedback": None,
                      "df_block": "block", "additional_inputs": ["difference", "current", "other"],
                      "timeshift_additional_inputs": [-1, -1, -1]},
-        checkpoints=lambda: _grid_checkpoints('braun2018', GRID_DEFAULT),
-        benchmark=_benchmark('weinhardt2026.studies.braun2018.benchmarking_braun2018', 'ExpectedValueControl',
-                             _study_path('braun2018', 'params', 'benchmark_braun2018.pkl')),
-        gru=_gru(_study_path('braun2018', 'params', 'gru_braun2018.pkl'),
-                 n_actions=2, additional_inputs=4, n_reward_features=0),
+        benchmark=_benchmark('weinhardt2026.studies.braun2018.benchmarking_braun2018', 'ExpectedValueControl'),
+        gru=_gru(n_actions=2, additional_inputs=4, n_reward_features=0),
     ),
     'bruckner2025': dict(
         label='Predictive Inference\n(Bruckner 2025)',
@@ -153,11 +128,8 @@ STUDIES = {
         data_kwargs={"df_choice": "b_t", "df_feedback": "x_t",
                      "additional_inputs": ["z_next", "catch", "v_t", "sigma", "r_t", "mu_t", "c_t"],
                      "continuous_action": True, "timeshift_additional_inputs": [0, 0, 0, 0, 0, 0, 0]},
-        checkpoints=lambda: _grid_checkpoints('bruckner2025', GRID_CONTINUOUS),
-        benchmark=_benchmark('weinhardt2026.studies.bruckner2025.benchmarking_bruckner2025', 'RationalResourceModel',
-                             _study_path('bruckner2025', 'params', 'benchmark_bruckner2025.pkl')),
-        gru=_gru(_study_path('bruckner2025', 'params', 'gru_bruckner2025.pkl'),
-                 n_actions=1, additional_inputs=6, n_reward_features=1),
+        benchmark=_benchmark('weinhardt2026.studies.bruckner2025.benchmarking_bruckner2025', 'RationalResourceModel'),
+        gru=_gru(n_actions=1, additional_inputs=6, n_reward_features=1),
     ),
     'weber2024': dict(
         label='Circular Predictive\nInference (Weber 2024)',
@@ -167,12 +139,8 @@ STUDIES = {
                      "df_block": "block",
                      "additional_inputs": ["laser_caught", "volatility", "stochasticity", "trial_duration_frames", "trueMean"],
                      "continuous_action": True},
-        checkpoints=lambda: _grid_checkpoints('weber2024', GRID_CONTINUOUS),
-        benchmark=_benchmark('weinhardt2026.studies.weber2024.benchmarking_weber2024', 'ChangePointModel',
-                             _study_path('weber2024', 'params', 'benchmark_weber2024.pkl'),
-                             h_step=2),
-        gru=_gru(_study_path('weber2024', 'params', 'gru_weber2024_continuous.pkl'),
-                 n_actions=2, additional_inputs=4, n_reward_features=2,
+        benchmark=_benchmark('weinhardt2026.studies.weber2024.benchmarking_weber2024', 'ChangePointModel', h_step=2),
+        gru=_gru(n_actions=2, additional_inputs=4, n_reward_features=2,
                  additional_inputs_scale=(1., 1., 1., 90.)),
     ),
 }
@@ -341,22 +309,21 @@ def evaluate_study(study):
 
     rows = []
 
-    benchmark = config['benchmark'](n_participants, n_actions)
-    k_benchmark = n_benchmark_parameters(benchmark, n_participants)
-    metrics = evaluate(predict(benchmark, dataset_train), predict(benchmark, dataset_test),
-                       lambda pairs: torch.full((pairs.shape[0],), k_benchmark))
-    rows.append(dict(model='Benchmark', seed=-1, n_parameters=k_benchmark, **metrics))
+    for path in final_checkpoints(study, 'benchmark'):
+        benchmark = config['benchmark'](path, n_participants, n_actions)
+        k_benchmark = n_benchmark_parameters(benchmark, n_participants)
+        metrics = evaluate(predict(benchmark, dataset_train), predict(benchmark, dataset_test),
+                           lambda pairs: torch.full((pairs.shape[0],), k_benchmark))
+        rows.append(dict(model='Benchmark', seed=checkpoint_seed(path), n_parameters=k_benchmark, **metrics))
 
-    gru = config['gru'](n_participants, n_actions)
-    assert gru.participant_embedding_size == 0, f'{study}: GRU must not use a participant embedding'
-    metrics = evaluate(predict(gru, dataset_train), predict(gru, dataset_test), None)
-    rows.append(dict(model='GRU', seed=-1, **metrics))
+    for path in final_checkpoints(study, 'gru'):
+        gru = config['gru'](path, n_participants, n_actions)
+        assert gru.participant_embedding_size == 0, f'{study}: GRU must not use a participant embedding'
+        metrics = evaluate(predict(gru, dataset_train), predict(gru, dataset_test), None)
+        rows.append(dict(model='GRU', seed=checkpoint_seed(path), **metrics))
 
-    checkpoints = config['checkpoints']()
-    if not checkpoints:
-        raise FileNotFoundError(f'{study}: no SPICE checkpoints found')
-    for path in checkpoints:
-        seed = int(path.rsplit('_rs', 1)[1].split('.')[0])
+    for path in final_checkpoints(study, 'spice'):
+        seed = checkpoint_seed(path)
         print(f'  {os.path.basename(path)}', flush=True)
         estimator = load_spice(path, spice_module, dataset_train)
         coefficient_counts = estimator.count_sindy_coefficients().cpu()
@@ -398,7 +365,7 @@ HELDOUT_LABEL = {False: 'Held-out trial likelihood ↑', True: 'Held-out log-lik
 
 
 def plot_model_evaluation(results: pd.DataFrame, output_path: str):
-    """Bars = mean over seeds (± SD for multi-seed SPICE); white dots = single seeds.
+    """Bars = mean over seeds (± SD if several seeds); white dots = single seeds.
 
     The y-axes are zoomed onto the model differences, so bars rise from the bottom
     of each axis rather than from 0 (the continuous studies' AIC/BIC are negative).

@@ -123,20 +123,29 @@ inferring `ensemble_size` and `n_participants` from the saved tensors. It also p
 
 ### Model Evaluation — `analysis_model_evaluation.py`
 
-Quantifies how well a fitted SPICE model (RNN and/or SINDy-equation form) predicts held-out behavior, and compares against a hand-coded benchmark model and/or a plain GRU baseline.
+Quantifies how well a fitted SPICE model (RNN and SINDy-equation form) fits the training data and predicts held-out behavior, and compares against a hand-coded benchmark model and/or a plain GRU baseline. Both splits are evaluated in one call and reported in one table.
 
 ```python
 analysis_model_evaluation(
-    dataset, spice_model=None, benchmark_model=None, gru_model=None,
-    output_dir=None, trial_filter=None, n_actions_random_baseline=None,
+    dataset_train, dataset_test, spice_model=None, benchmark_model=None, gru_model=None,
+    spice_selection='best-on-train', verbose=False, output_dir=None, trial_filter=None,
+    benchmark_group_model=False,
 )
 ```
 
-- Computes per-trial **log-likelihood**, **BIC**, **AIC**, and **ΔBIC vs. random-choice baseline**.
-- Information criteria are computed **per (participant, experiment) group** and reported as mean ± std across groups (`grouped_information_criteria`) — a single dataset-pooled BIC is not a fair comparison across models with different parameter-sharing structure (e.g. shared vs. per-participant coefficients).
-- `trial_filter` lets you restrict evaluation to a subset of trials (e.g. excluding "wait" responses in a DDM-style task); pair with `n_actions_random_baseline` to correct the random baseline's action count.
-- `analysis_model_evaluation_mse` — parallel pipeline for continuous-output (regression) models: computes MSE-based metrics instead of choice likelihoods.
-- **Result**: a DataFrame/CSV of per-model (SPICE-RNN, SPICE-SINDy, benchmark, GRU) log-likelihood, BIC, AIC, ΔBIC — the standard model-comparison table used to argue SPICE fits at least as well as hand-crafted models.
+- **Training split**: per-trial likelihood, NLL, **AIC** and **BIC**. **Test split**: per-trial likelihood and NLL only — held-out likelihood already measures generalization, so an information criterion on it would charge for parsimony twice.
+- **Number of parameters** per model: `n_parameters` (mean ± std over the training split's (participant, experiment) groups; SPICE-EQ counts the active coefficients) and `n_parameters (total)`, the parameter count of the joint model.
+- AIC/BIC treat the **whole training split as one model** (`joint_information_criteria`): the NLL is summed over all N trials of all participants, and K = `n_parameters (total)` counts every participant's own parameters — per-participant parameters summed over participants (SPICE-EQ: over its distinct (participant, experiment) coefficient sets; benchmark: `count_parameters()` × participants), shared parameters once (GRU, SPICE-RNN, a SPICE group model with `n_participants=1`, or the benchmark with `benchmark_group_model=True`). AIC = 2 NLL + 2K, BIC = 2 NLL + K log N.
+- AIC/BIC are reported only for the interpretable models (Benchmark, SPICE-EQ); GRU and SPICE-RNN get NaN (printed as `-`).
+- `spice_selection` sets how the SPICE ensemble members enter the scores (SPICE-EQ and SPICE-RNN separately):
+  - `'best-on-train'` (default, used by every study): each member is scored on its own; the member with the highest training likelihood is reported, on train **and** test.
+  - `'averaged-model'`: each member is scored on its own (its own logits and coefficient count); the scores are averaged over members.
+  - `'averaged-logit'`: the members' logits are averaged at every time step and that averaged model is scored (SPICE-EQ counts the terms active in any member).
+- When SPICE and the benchmark are both evaluated, the benchmark's row reports a per-participant sign test against SPICE-EQ for each split (`Train …` / `Test …` columns, `participant_win_counts`).
+- `trial_filter` lets you restrict evaluation to a subset of trials (applied to both splits, e.g. excluding "wait" responses in a DDM-style task).
+- The printed table is transposed (models as columns), numbers rounded to 3 decimals (integers without decimals), NaN as `-`; the returned DataFrame and the CSV keep full precision.
+- `analysis_model_evaluation_mse` — parallel pipeline for continuous-output (regression) models with the same `dataset_train`/`dataset_test`/`spice_selection` interface: MSE, RMSE, MAE, R² on both splits, AIC/BIC on the training split from a joint Gaussian likelihood (one MLE variance over all trials; same parameter counting; Benchmark and SPICE-EQ only); `best-on-train` selects the member with the lowest training MSE. Writes `model_evaluation_mse.csv` and a plot of the test metrics.
+- **Result**: a DataFrame (saved as `model_evaluation.csv` in `output_dir`) with one row per model (Benchmark, GRU, SPICE-RNN, SPICE-EQ) and columns `n_parameters`, `n_parameters (total)`, `Train Trial Lik.`, `Train NLL`, `AIC`, `BIC`, `Test Trial Lik.`, `Test NLL` (plus stds) — the standard model-comparison table used to argue SPICE fits at least as well as hand-crafted models.
 
 ### One-Step-Ahead Diagnosis — `analysis_sindy_onestepahead.py`
 
@@ -373,7 +382,7 @@ Evaluates a batch of checkpoints from a pruning-threshold × pruning-test hyperp
 
 ## Typical Analysis Sequence for a New Study
 
-1. Fit `SpiceEstimator` on training data, evaluate on held-out data with `analysis_model_evaluation.py`.
+1. Fit `SpiceEstimator` on training data, then evaluate on the training and held-out data in one call with `analysis_model_evaluation.py`.
 2. Run `analysis_sindy_onestepahead.py` if SINDy test performance lags the RNN, to see whether it's a per-step or accumulation problem.
 3. Inspect population-level equation structure with `analysis_coefficients_distributions.py`.
 4. Relate coefficients to external criteria: `analysis_coefficients_individuals.py` (discrete groups or continuous traits), `analysis_coefficient_betas.py` for structural effects of co-occurring groups and single terms on a behavioral metric, and/or `analysis_morphing.py` for a continuous structural trajectory.

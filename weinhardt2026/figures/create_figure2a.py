@@ -135,10 +135,10 @@ def _load_study_data(results_dir, study_type, gru_embedding=False):
     # Row 1 + Row 2: model evaluation CSV
     if study_type == 'discrete':
         eval_df = _load_csv(os.path.join(results_dir, 'model_evaluation.csv'))
-        pred_perf = _extract_column(eval_df, 'Trial Lik.')
+        pred_perf = _extract_column(eval_df, 'Test Trial Lik.')
     else:
         eval_df = _load_csv(os.path.join(results_dir, 'model_evaluation_mse.csv'))
-        pred_perf = _extract_column(eval_df, 'R²')
+        pred_perf = _extract_column(eval_df, 'Test R²')
 
     # Skip models with perfect scores (fake entries from missing models)
     pred_perf = {m: v for m, v in pred_perf.items() if not np.isclose(v, 1.0)}

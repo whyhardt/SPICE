@@ -16,6 +16,7 @@ from weinhardt2026.studies.kolff2025.benchmarking_kolff2025 import (
     get_dataset, evaluation_dataset, has_target, LogisticRegressionModel, ModelInputGRU,
 )
 from weinhardt2026.utils.benchmarking_gru import training
+from weinhardt2026.utils.final_models import best_checkpoint, load_best
 from weinhardt2026.analysis.analysis_model_evaluation import analysis_model_evaluation
 from weinhardt2026.analysis.analysis_generative_comparison import run_generative_analysis
 
@@ -25,8 +26,8 @@ train_gru = False
 
 generate_data = False
 
-path_spice = 'weinhardt2026/studies/kolff2025/params/spice_kolff2025.pkl'
-path_gru = 'weinhardt2026/studies/kolff2025/params/gru_kolff2025.pkl'
+path_spice = 'weinhardt2026/studies/kolff2025/params/spice_kolff2025.pkl'   # new fits only; otherwise the best final seed is loaded (utils/final_models.py)
+path_gru = 'weinhardt2026/studies/kolff2025/params/gru_kolff2025.pkl'   # new fits only; otherwise the best final seed is loaded (utils/final_models.py)
 output_dir = 'weinhardt2026/studies/kolff2025/results'
 os.makedirs(output_dir, exist_ok=True)
 
@@ -73,7 +74,7 @@ if train_spice:
     estimator.fit(dataset_train.xs, dataset_train.ys, dataset_test.xs, dataset_test.ys)
     estimator.save_spice(path_spice)
 else:
-    estimator.load_spice(path_spice)
+    estimator.load_spice(best_checkpoint('kolff2025', 'spice'))
 
 print("\nSPICE group model:")
 estimator.print_spice_model(participant_id=0)
@@ -90,7 +91,7 @@ benchmark = LogisticRegressionModel().fit(dataset_train)
 
 gru = ModelInputGRU()
 
-if train_gru or not os.path.exists(path_gru):
+if train_gru:
     torch.manual_seed(0)
     gru = training(
         model=gru,
@@ -102,7 +103,7 @@ if train_gru or not os.path.exists(path_gru):
     )
     torch.save(gru.state_dict(), path_gru)
 else:
-    gru.load_state_dict(torch.load(path_gru, map_location='cpu'))
+    gru = load_best('kolff2025', 'gru')
 
 # -------------------------------------------------------------------------------------------
 # ANALYSIS: MODEL EVALUATION (scored only where the participant acts next)
@@ -112,19 +113,19 @@ estimator.eval()
 gru.eval().to(torch.device('cpu'))
 benchmark.eval()
 
-for split, dataset in (('train', dataset_train), ('test', dataset_test)):
-    print(f"\n--- Model evaluation ({split}{': held-out dyads' if split == 'test' else ''}) ---")
-    df_evaluation = analysis_model_evaluation(
-        dataset=evaluation_dataset(dataset),
-        spice_model=estimator,
-        benchmark_model=benchmark,
-        gru_model=gru,
-        trial_filter=has_target,
-        held_out=split == 'test',
-        pooled=True,
-    )
-    print(df_evaluation)
-    df_evaluation.to_csv(os.path.join(output_dir, f'model_evaluation_{split}.csv'))
+print("\n--- Model evaluation (train: likelihood, AIC, BIC; test on held-out dyads: likelihood) ---")
+df_evaluation = analysis_model_evaluation(
+    dataset_train=evaluation_dataset(dataset_train),
+    dataset_test=evaluation_dataset(dataset_test),
+    spice_model=estimator,
+    benchmark_model=benchmark,
+    gru_model=gru,
+    spice_selection='best-on-train',
+    trial_filter=has_target,
+    benchmark_group_model=True,   # lag-1 logistic regression: one parameter set for all participants
+    output_dir=output_dir,
+    verbose=True,
+)
 
 # -------------------------------------------------------------------------------------------
 # GENERATIVE BENCHMARKING

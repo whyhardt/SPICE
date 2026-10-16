@@ -7,15 +7,16 @@ defines:
     METRIC_LABELS              {metric: axis label}
     N_REPEATS                  simulated runs of the experiment per model
     load_dataset()             full dataset (all blocks), built as the models were trained on it
-    load_models(dataset)       {'GRU': ..., 'Benchmark': ..., 'SPICE': [EnsembleMember, ...]}; SPICE is one
-                               model per seed, the ensemble member with the highest training likelihood
-                               (select_spice_members; table in results/generative_spice_selection.csv)
+    load_models(dataset)       {'GRU': [...], 'Benchmark': [...], 'SPICE': [EnsembleMember, ...]}: one model per
+                               final seed (weinhardt2026/utils/final_models.py); for SPICE the ensemble member
+                               with the highest training likelihood (select_spice_members; table in
+                               results/generative_spice_selection.csv)
     generate(model, dataset)   one simulated run of `dataset` -> SpiceDataset
     compute_metrics(dataset)   {metric: (n_sessions,) array}
 
-Every SPICE model (instance) is simulated N_REPEATS times; GRU and benchmark (single fits) are
-simulated as often as there are SPICE instances, N_REPEATS runs each, so all models are scored on the
-same number of instances x runs. Scores are computed per instance and averaged over instances.
+Every model (instance, i.e. seed) is simulated N_REPEATS times. A single fit (e.g. kolff2025's closed-form
+benchmark) is simulated as often as the model with the most instances, N_REPEATS runs each. Scores are
+computed per instance and averaged over instances.
 
 Per study, written to ``weinhardt2026/studies/<study>/results/``:
     generative_behavior.png/.pdf     one panel per metric; violins in MODEL_ORDER, participants as
@@ -96,16 +97,17 @@ def load_registered_dataset(study: str) -> SpiceDataset:
 
 
 def load_registered_models(study: str, dataset: SpiceDataset) -> dict:
-    """GRU, benchmark and the SPICE models (best member of every seed) as figures/figure_model_evaluation.py registers them."""
+    """Every final seed of GRU, benchmark and SPICE (best member per seed), built as figures/figure_model_evaluation.py registers them."""
     from weinhardt2026.figures.figure_model_evaluation import STUDIES as REGISTRY, load_study, load_spice
+    from weinhardt2026.utils.final_models import final_checkpoints
     config = REGISTRY[study]
     n_participants, n_actions = dataset.n_participants, dataset.n_actions
     spice_module, dataset_train, _ = load_study(study)
     return {
-        'GRU': config['gru'](n_participants, n_actions),
-        'Benchmark': config['benchmark'](n_participants, n_actions),
+        'GRU': [config['gru'](path, n_participants, n_actions) for path in final_checkpoints(study, 'gru')],
+        'Benchmark': [config['benchmark'](path, n_participants, n_actions) for path in final_checkpoints(study, 'benchmark')],
         'SPICE': select_spice_members(
-            study, config['checkpoints'](), lambda path: load_spice(path, spice_module, dataset_train), dataset_train,
+            study, final_checkpoints(study, 'spice'), lambda path: load_spice(path, spice_module, dataset_train), dataset_train,
         ),
     }
 
@@ -136,29 +138,35 @@ class EnsembleMember:
         return outputs[self.member:self.member + 1], state
 
 
-@torch.no_grad()
-def member_train_loglik(study: str, estimator, dataset_train: SpiceDataset) -> np.ndarray:
-    """Training log-likelihood per trial of every ensemble member's SPICE-EQ.
+def trial_loglik(study: str, outputs: torch.Tensor, dataset: SpiceDataset) -> float:
+    """Log-likelihood per trial of one model's outputs (B, T, W, A) on `dataset`.
 
     Discrete: mean log-probability of the chosen actions. Continuous: Gaussian log-likelihood with the
-    member's MLE noise variance (likelihood definitions as in figures/figure_model_evaluation.py).
+    model's MLE noise variance (likelihood definitions as in figures/figure_model_evaluation.py).
     """
     from weinhardt2026.figures.figure_model_evaluation import discrete_session_nll, continuous_session_sse
+    if dataset.continuous_action:
+        sse, n_trials, dim = continuous_session_sse(outputs, dataset, study)
+        variance = sse.sum().item() / (n_trials.sum().item() * dim)
+        return -0.5 * dim * (np.log(2 * np.pi * variance) + 1)
+    nll, n_trials = discrete_session_nll(outputs, dataset)
+    return -nll.sum().item() / n_trials.sum().item()
+
+
+@torch.no_grad()
+def member_train_loglik(study: str, estimator, dataset_train: SpiceDataset) -> np.ndarray:
+    """Training log-likelihood per trial of every ensemble member's SPICE-EQ."""
     estimator.eval(use_sindy=True)
     estimator.model.init_state(batch_size=dataset_train.xs.shape[0])
     outputs, _ = estimator(dataset_train.xs.to(estimator.device))
     outputs = outputs.detach().cpu()   # (E, B, T, W, A)
+    return np.array([trial_loglik(study, outputs_member, dataset_train) for outputs_member in outputs])
 
-    loglik = []
-    for outputs_member in outputs:
-        if dataset_train.continuous_action:
-            sse, n_trials, dim = continuous_session_sse(outputs_member, dataset_train, study)
-            variance = sse.sum().item() / (n_trials.sum().item() * dim)
-            loglik.append(-0.5 * dim * (np.log(2 * np.pi * variance) + 1))
-        else:
-            nll, n_trials = discrete_session_nll(outputs_member, dataset_train)
-            loglik.append(-nll.sum().item() / n_trials.sum().item())
-    return np.array(loglik)
+
+def model_train_loglik(study: str, model: torch.nn.Module, dataset_train: SpiceDataset) -> float:
+    """Training log-likelihood per trial of a benchmark or GRU."""
+    from weinhardt2026.figures.figure_model_evaluation import predict
+    return trial_loglik(study, predict(model, dataset_train), dataset_train)
 
 
 def select_spice_members(study: str, checkpoints: list[str], load, dataset_train: SpiceDataset) -> list[EnsembleMember]:
@@ -277,15 +285,17 @@ def participant_table(metrics: dict, dataset: SpiceDataset, model: str, instance
 def simulate_metrics(study_module, dataset: SpiceDataset, models: dict, n_repeats: int) -> pd.DataFrame:
     """Per (model, instance, participant, run) metrics for the real data and every simulated model.
 
-    SPICE may be a list of models (one per seed); every SPICE model is an instance. GRU and benchmark
-    are single fits, simulated as many times as there are SPICE instances (with other random runs), so
-    every model's scores average over the same number of instances x runs.
+    Every model may be a list (one model per seed); every list entry is an instance. A single fit is
+    simulated as many times as the model with the most instances has instances (with other random runs).
+    SPICE-EQ and SPICE-RNN are both simulated from models['SPICE'].
     """
     n_sessions = dataset.xs.shape[0]
-    spice = models['SPICE'] if isinstance(models['SPICE'], (list, tuple)) else [models['SPICE']]
+    fits = {name: models[name] if isinstance(models[name], (list, tuple)) else None for name in ('GRU', 'Benchmark', 'SPICE')}
+    n_instances = max([len(instances) for instances in fits.values() if instances is not None], default=1)
     frames = [participant_table(study_module.compute_metrics(dataset), dataset, 'Real', 0, np.zeros(n_sessions, dtype=int))]
     for name in SIMULATED_MODELS:
-        instances = spice if name.startswith('SPICE') else [models[name]] * len(spice)
+        key = 'SPICE' if name.startswith('SPICE') else name
+        instances = fits[key] if fits[key] is not None else [models[key]] * n_instances
         print(f'Simulating {name} ({len(instances)} models x {n_repeats} runs of {n_sessions} sessions)...')
         for instance, model in enumerate(instances):
             model.eval(use_sindy=name == 'SPICE-EQ') if name.startswith('SPICE') else model.eval()
@@ -446,7 +456,7 @@ def run_generative_analysis(study: str, models: dict = None, n_repeats: int = No
 
     Args:
         study: Study directory name, e.g. 'dezfouli2019'.
-        models: {'GRU', 'Benchmark', 'SPICE'} fitted models (SPICE: one model or a list, one per seed);
+        models: {'GRU', 'Benchmark', 'SPICE'} fitted models (each one model or a list, one per seed);
             loaded by the study module if None.
         n_repeats: Simulated runs per model; the study's N_REPEATS if None.
         cached: Re-score and re-plot the existing generative_metrics.csv instead of simulating.

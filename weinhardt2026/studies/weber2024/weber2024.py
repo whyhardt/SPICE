@@ -14,6 +14,7 @@ from benchmarking_weber2024 import get_dataset, ChangePointModel
 from weinhardt2026.analysis.analysis_generative_comparison import run_generative_analysis
 
 from weinhardt2026.utils.benchmarking_gru import GRUModel, training
+from weinhardt2026.utils.final_models import best_checkpoint, load_best
 from weinhardt2026.analysis.analysis_model_evaluation import analysis_model_evaluation_mse
 
 
@@ -52,7 +53,7 @@ print(f"n_reward_features: {dataset_train.n_reward_features}")
 # SPICE ESTIMATOR
 # -------------------------------------------------------------------------------------------
 
-path_spice = 'weinhardt2026/studies/weber2024/params/spice_weber2024_continuous.pkl'
+path_spice = 'weinhardt2026/studies/weber2024/params/spice_weber2024_continuous.pkl'   # new fits only; otherwise the best final seed is loaded (utils/final_models.py)
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 estimator = SpiceEstimator(
@@ -88,13 +89,13 @@ if train_spice:
     )
     estimator.save_spice(path_spice)
 else:
-    estimator.load_spice(path_spice)
+    estimator.load_spice(best_checkpoint('weber2024', 'spice'))
 
 # -------------------------------------------------------------------------------------------
 # GRU FOR BENCHMARKING
 # -------------------------------------------------------------------------------------------
 
-path_gru = 'weinhardt2026/studies/weber2024/params/gru_weber2024_continuous.pkl'
+path_gru = 'weinhardt2026/studies/weber2024/params/gru_weber2024_continuous.pkl'   # new fits only; otherwise the best final seed is loaded (utils/final_models.py)
 
 gru = GRUModel(
     n_actions=2,                                    # output: belief_sin, belief_cos
@@ -120,14 +121,14 @@ if train_gru:
     torch.save(gru.state_dict(), path_gru)
     print("Trained GRU parameters saved to " + path_gru)
 else:
-    gru.load_state_dict(torch.load(path_gru, map_location='cpu'))
+    gru = load_best('weber2024', 'gru')
 
 
 # -------------------------------------------------------------------------------------------
 # BENCHMARK: BAYESIAN CHANGEPOINT MODEL (Foucault et al., 2026)
 # -------------------------------------------------------------------------------------------
 
-path_benchmark = 'weinhardt2026/studies/weber2024/params/benchmark_weber2024.pkl'
+path_benchmark = 'weinhardt2026/studies/weber2024/params/benchmark_weber2024.pkl'   # new fits only; otherwise the best final seed is loaded (utils/final_models.py)
 
 benchmark = ChangePointModel(
     n_participants=dataset_train.n_participants,
@@ -150,7 +151,7 @@ if train_benchmark:
     torch.save(benchmark.state_dict(), path_benchmark)
     print("Trained benchmark parameters saved to " + path_benchmark)
 else:
-    benchmark.load_state_dict(torch.load(path_benchmark, map_location='cpu'))
+    benchmark = load_best('weber2024', 'benchmark')
 
 benchmark.to(torch.device('cpu'))
 
@@ -173,17 +174,16 @@ estimator.print_spice_model(participant_id=participant_id+2)
 # ANALYSIS: MODEL EVALUATION (MSE)
 # -------------------------------------------------------------------------------------------
 
-eval_ds = dataset_test if dataset_test is not None else dataset
-
 df_mse = analysis_model_evaluation_mse(
-    dataset=eval_ds,
+    dataset_train=dataset_train,
+    dataset_test=dataset_test,
     spice_model=estimator,
     benchmark_model=benchmark,
     gru_model=gru,
+    spice_selection='best-on-train',
     output_dir='weinhardt2026/studies/weber2024/results',
     verbose=True,
     loss_fn=clamped_angular_mse,
-    n_actions=2,
 )
 
 

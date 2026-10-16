@@ -1,6 +1,7 @@
 import math
 import sys
 
+import pandas as pd
 import torch
 from typing import Optional, Union
 
@@ -9,6 +10,9 @@ from spice import SpiceEstimator, SpiceDataset, csv_to_dataset, split_data_along
 sys.path.append('../../..')
 from weinhardt2026.utils.task import Env, generate_behavior as _generate_behavior
 from weinhardt2026.studies.bustamante2023.spice_bustamante2023 import CONFIG, prepare_dataframe
+
+
+DATA_PATH = 'weinhardt2026/studies/bustamante2023/data/bustamante2023.csv'
 
 
 def get_dataset(path_data: str = None, test_blocks: tuple[int] = None, verbose: bool = False) -> tuple[SpiceDataset, SpiceDataset, dict]:
@@ -189,16 +193,18 @@ class EnvironmentBustamante2023(Env):
         0 = harvest  (stay in patch, receive reward, deplete)
         1 = exit     (leave patch, no reward, new patch drawn)
 
-    Rewards are normalized to [0, 1] by dividing by the maximum possible
-    reward (20).  harvest_duration and travel_duration are fixed task
-    parameters (in seconds).
+    Rewards are scaled like the data (normalize_rewards: divided by the
+    largest reward received in the data, `reward_scale`). The non-reward
+    inputs (harvest_duration, travel_duration and the block's effort
+    condition is_msit, is_high) are task settings and are replayed from the
+    original sessions (`inputs`).
 
     Sessions are processed in parallel: one session per (participant, block).
     """
 
     RHO_M = 15.0            # mean of initial-reward Gaussian
     RHO_SD = 1.0            # std  of initial-reward Gaussian
-    REWARD_MAX = 20.0       # ceiling (also used as normalization scale)
+    REWARD_MAX = 20.0       # ceiling of the reward process (apples)
     REWARD_CUTOFF = 0.5     # floor
     DELTA_A = 14.90873      # Beta α for depletion factor
     DELTA_B = 2.033008      # Beta β for depletion factor
@@ -208,20 +214,21 @@ class EnvironmentBustamante2023(Env):
         n_actions: int,
         n_participants: int,
         n_blocks: int,
-        harvest_duration: float = 2.0,
-        travel_duration: float = 8.333333333333334,
+        inputs: torch.Tensor,
+        reward_scale: float,
     ):
         """
         Args:
             n_actions: Number of actions (2: harvest / exit).
             n_participants: Number of participants.
             n_blocks: Number of blocks per participant.
-            harvest_duration: Time (seconds) for a harvest action.
-            travel_duration: Time (seconds) for travel to a new patch.
+            inputs: (n_sessions, n_trials, n_additional_inputs) replayed task inputs (CONFIG.additional_inputs).
+            reward_scale: Divisor that maps apples to the data's reward scale.
         """
         super().__init__(n_actions, n_participants, n_blocks)
-        self.harvest_duration = harvest_duration
-        self.travel_duration = travel_duration
+        self.inputs = inputs
+        self.reward_scale = reward_scale
+        self.trial_counter = 0
 
     def _draw_initial_reward(self, n: int) -> torch.Tensor:
         """Sample initial patch reward from clipped Gaussian."""
@@ -231,6 +238,7 @@ class EnvironmentBustamante2023(Env):
     def reset(self, block_ids: torch.Tensor = None, participant_ids: torch.Tensor = None) -> None:
         n = block_ids.shape[0] if block_ids is not None else self.n_participants * self.n_blocks
         self.patch_reward = self._draw_initial_reward(n)
+        self.trial_counter = 0
 
     def step(self, action: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Process one foraging trial for all sessions.
@@ -239,8 +247,8 @@ class EnvironmentBustamante2023(Env):
             action: (n_sessions,) — 0 = harvest, 1 = exit.
 
         Returns:
-            observation: (n_sessions, 4) — [reward_harvest, reward_exit,
-                         harvest_duration, travel_duration].
+            observation: (n_sessions, 2 + n_additional_inputs) — [reward_harvest, reward_exit,
+                         replayed inputs (harvest_duration, travel_duration, is_msit, is_high)].
             terminated:  (n_sessions,) always False.
         """
         n = action.shape[0]
@@ -249,7 +257,7 @@ class EnvironmentBustamante2023(Env):
 
         # Reward: harvesters receive current patch reward; exiters get 0
         reward_raw = torch.where(harvest, self.patch_reward, torch.zeros(n))
-        reward = torch.clamp(reward_raw / self.REWARD_MAX, 0.0, 1.0)
+        reward = torch.clamp(reward_raw / self.reward_scale, 0.0, 1.0)
 
         # Deplete patch for harvesters
         depletion = torch.distributions.Beta(self.DELTA_A, self.DELTA_B).sample((n,))
@@ -263,11 +271,8 @@ class EnvironmentBustamante2023(Env):
         reward_cols = torch.full((n, self.n_actions), float('nan'))
         reward_cols[torch.arange(n), action] = reward
 
-        # Fixed task durations (constant across all trials)
-        h_dur = torch.full((n, 1), self.harvest_duration)
-        t_dur = torch.full((n, 1), self.travel_duration)
-
-        observation = torch.cat([reward_cols, h_dur, t_dur], dim=-1)
+        observation = torch.cat([reward_cols, self.inputs[:n, self.trial_counter]], dim=-1)
+        self.trial_counter += 1
 
         terminated = torch.zeros(n, dtype=torch.bool)
         return observation, terminated
@@ -294,11 +299,17 @@ def generate_behavior(
         dataset, _, _ = get_dataset(path_data=path_data, test_blocks=())
 
     n_blocks = len(dataset.xs[:, 0, 0, -3].unique())
+    n_actions = dataset.n_actions
+
+    # rewards as normalize_rewards scaled them in get_dataset: by the largest received reward
+    rewards = pd.read_csv(path_data or DATA_PATH, usecols=['reward']).reward
 
     environment = EnvironmentBustamante2023(
-        n_actions=dataset.n_actions,
+        n_actions=n_actions,
         n_participants=dataset.n_participants,
         n_blocks=n_blocks,
+        inputs=dataset.xs[:, :, 0, 2 * n_actions:-5].nan_to_num(0.),
+        reward_scale=rewards.max(),
     )
 
     return _generate_behavior(

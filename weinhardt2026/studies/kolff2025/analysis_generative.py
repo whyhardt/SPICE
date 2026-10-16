@@ -15,7 +15,6 @@ or
 """
 
 import sys
-from glob import glob
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
@@ -25,6 +24,7 @@ import torch
 
 from spice import SpiceDataset, SpiceEstimator, csv_to_dataset
 from weinhardt2026.analysis.analysis_generative_comparison import run_generative_analysis, select_spice_members
+from weinhardt2026.utils.final_models import final_checkpoints, load_gru
 from weinhardt2026.studies.kolff2025.spice_kolff2025 import (
     SpiceModel, CONFIG, N_ACTIONS, LOSS_FN, ESTIMATOR_KWARGS, prepare_dataset,
 )
@@ -35,10 +35,7 @@ from weinhardt2026.studies.kolff2025.benchmarking_kolff2025 import (
 
 
 STUDY = 'kolff2025'
-N_REPEATS = 10   # runs per model (SPICE: one model per seed)
-# grid-search seeds (slurm_jobs/grid_search.sh: group model, linear library)
-PATTERN_SPICE = 'weinhardt2026/studies/kolff2025/params/params/spice_kolff2025_th0.05_sw0.01_al0.0005_er0.5_gp0_fp0_rs[0-9]*.pkl'
-PATH_GRU = 'weinhardt2026/studies/kolff2025/params/gru_kolff2025.pkl'
+N_REPEATS = 10   # runs per model (GRU, SPICE: one model per seed)
 
 METRIC_LABELS = {
     'p_groom': 'P(Groom)',
@@ -59,7 +56,7 @@ def load_dataset() -> SpiceDataset:
     return prepare_dataset(csv_to_dataset(file=DATA_PATH, **DATA_KWARGS))
 
 
-def _load_spice(path: str) -> SpiceEstimator:
+def load_spice(path: str) -> SpiceEstimator:
     estimator = SpiceEstimator(
         spice_class=SpiceModel,
         spice_config=CONFIG,
@@ -77,14 +74,12 @@ def _load_spice(path: str) -> SpiceEstimator:
 
 
 def load_models(dataset: SpiceDataset) -> dict:
-    """The group models of kolff2025.py; the benchmark is refit on the same training fold. SPICE: per
-    grid-search seed the member with the highest training likelihood, scored where the ape acts next."""
+    """The final group models (GRU, SPICE: every seed); the benchmark is refit on the same training fold.
+    SPICE: per seed the member with the highest training likelihood, scored where the ape acts next."""
     dataset_train, _, _ = get_dataset(test_fold=0)
 
-    gru = ModelInputGRU()
-    gru.load_state_dict(torch.load(PATH_GRU, map_location='cpu'))
-
-    spice = select_spice_members(STUDY, sorted(glob(PATTERN_SPICE)), _load_spice, evaluation_dataset(dataset_train))
+    gru = [load_gru(path, ModelInputGRU) for path in final_checkpoints(STUDY, 'gru')]
+    spice = select_spice_members(STUDY, final_checkpoints(STUDY, 'spice'), load_spice, evaluation_dataset(dataset_train))
     return {'GRU': gru, 'Benchmark': LogisticRegressionModel().fit(dataset_train), 'SPICE': spice}
 
 

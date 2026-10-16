@@ -1238,16 +1238,18 @@ class BaseModel(nn.Module):
             self.sindy_pruning_patience_counters[module] = all_patience[..., start_idx:start_idx + n_terms]
             start_idx += n_terms
             
-    def count_sindy_coefficients(self) -> torch.Tensor:
-        """Returns count of active coefficients per (ensemble, participant, experiment)."""
-        coefficients = torch.zeros(self.n_participants, self.n_experiments, device=self.device)
-        sindy_coefs = self.get_sindy_coefficients(aggregate=True)
+    def count_sindy_coefficients(self, aggregate: bool = True) -> torch.Tensor:
+        """Returns count of active coefficients per (participant, experiment) of the ensemble-aggregated
+        model, or per (ensemble, participant, experiment) when ``aggregate=False``."""
+        sindy_coefs = self.get_sindy_coefficients(aggregate=aggregate)
+        coefficients = torch.zeros(sindy_coefs[next(iter(self.submodules_rnn))].shape[:-1], device=self.device)
         for module in self.submodules_rnn:
             coefficients += (sindy_coefs[module] != 0).sum(dim=-1)
             if self.sindy_specs[module]['include_state']:
+                # a state coefficient of ~-1 cancels the implicit identity: the state drops out of the model
                 index_state = 1 if self.sindy_specs[module]['include_bias'] else 0
-                index_state_not_in_model = torch.where(torch.logical_and(sindy_coefs[module][..., index_state] < -0.95, sindy_coefs[module][..., index_state] > -1.05))[0]
-                coefficients[index_state_not_in_model] -= 1
+                coefficient_state = sindy_coefs[module][..., index_state]
+                coefficients -= torch.logical_and(coefficient_state < -0.95, coefficient_state > -1.05).float()
         return coefficients
 
     def compute_weighted_coefficient_penalty(self, sindy_alpha: float) -> torch.Tensor:

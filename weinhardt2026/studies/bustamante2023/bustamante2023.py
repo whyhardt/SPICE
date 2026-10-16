@@ -7,6 +7,7 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parents[3]))
 from weinhardt2026.studies.bustamante2023.spice_bustamante2023 import SpiceModel, CONFIG
 from weinhardt2026.utils.benchmarking_gru import GRUModel, training
+from weinhardt2026.utils.final_models import best_checkpoint, load_best
 from weinhardt2026.studies.bustamante2023.benchmarking_bustamante2023 import (
     EffortCostMVTModel, get_dataset,
 )
@@ -38,7 +39,7 @@ print(f"Number of actions in dataset: {dataset_train.n_actions}")
 # SPICE ESTIMATOR
 # -------------------------------------------------------------------------------------------
 
-path_spice = 'weinhardt2026/studies/bustamante2023/params/spice_bustamante2023.pkl'
+path_spice = 'weinhardt2026/studies/bustamante2023/params/spice_bustamante2023.pkl'   # new fits only; otherwise the best final seed is loaded (utils/final_models.py)
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 estimator = SpiceEstimator(
@@ -47,9 +48,10 @@ estimator = SpiceEstimator(
     n_actions=dataset_train.n_actions,
     n_participants=dataset_train.n_participants,
 
+    sindy_weight=0.,
+    
     epochs=1000,
     warmup_steps=500,
-    ensemble_size=1,
 
     device=device,
     verbose=True,
@@ -65,13 +67,13 @@ if train_spice:
     )
     estimator.save_spice(path_spice)
 else:
-    estimator.load_spice(path_spice)
+    estimator.load_spice(best_checkpoint('bustamante2023', 'spice'))
 
 # -------------------------------------------------------------------------------------------
 # MVT BENCHMARK MODEL WITH EFFORT COSTS (Bustamante et al. 2023, Eqs. 2-5)
 # -------------------------------------------------------------------------------------------
 
-path_mvt = 'weinhardt2026/studies/bustamante2023/params/effort_mvt_bustamante2023.pkl'
+path_mvt = 'weinhardt2026/studies/bustamante2023/params/effort_mvt_bustamante2023.pkl'   # new fits only; otherwise the best final seed is loaded (utils/final_models.py)
 
 mvt = EffortCostMVTModel(
     n_participants=dataset_train.n_participants,
@@ -92,13 +94,13 @@ if train_mvt:
     )
     torch.save(mvt.state_dict(), path_mvt)
 else:
-    mvt.load_state_dict(torch.load(path_mvt, map_location='cpu'))
+    mvt = load_best('bustamante2023', 'benchmark')
 
 # -------------------------------------------------------------------------------------------
 # GRU BENCHMARK MODEL
 # -------------------------------------------------------------------------------------------
 
-path_gru = 'weinhardt2026/studies/bustamante2023/params/gru_bustamante2023.pkl'
+path_gru = 'weinhardt2026/studies/bustamante2023/params/gru_bustamante2023.pkl'   # new fits only; otherwise the best final seed is loaded (utils/final_models.py)
 
 gru = GRUModel(dataset_train.n_actions, additional_inputs=4, additional_inputs_scale=(10., 10., 1., 1.))   # harvest_duration, travel_duration (constant, scaled to [0, 1]), is_msit, is_high
 
@@ -115,7 +117,7 @@ if train_gru:
     )
     torch.save(gru.state_dict(), path_gru)
 else:
-    gru.load_state_dict(torch.load(path_gru, map_location='cpu'))
+    gru = load_best('bustamante2023', 'gru')
 
 
 # -------------------------------------------------------------------------------------------
@@ -132,30 +134,20 @@ for participant_id in range(3):
 
 
 # -------------------------------------------------------------------------------------------
-# ANALYSIS: MODEL EVALUATION (TRAIN)
+# ANALYSIS: MODEL EVALUATION
 # -------------------------------------------------------------------------------------------
 
-print("\n--- Model evaluation (train) ---")
-print(analysis_model_evaluation(
-    dataset=dataset_train,
-    spice_model=estimator,
-    benchmark_model=mvt.to(torch.device('cpu')),
-    gru_model=gru.to(torch.device('cpu')),
-))
-
-# -------------------------------------------------------------------------------------------
-# ANALYSIS: MODEL EVALUATION (TEST)
-# -------------------------------------------------------------------------------------------
-
-print("\n--- Model evaluation (test) ---")
-print(analysis_model_evaluation(
-    dataset=dataset_test,
-    held_out=True,
+print("\n--- Model evaluation (train: likelihood, AIC, BIC; test: likelihood) ---")
+analysis_model_evaluation(
+    dataset_train=dataset_train,
+    dataset_test=dataset_test,
     spice_model=estimator,
     benchmark_model=mvt.to(torch.device('cpu')),
     gru_model=gru.to(torch.device('cpu')),
     output_dir='weinhardt2026/studies/bustamante2023/results',
-))
+    spice_selection='best-on-train',
+    verbose=True,
+)
 
 
 # -------------------------------------------------------------------------------------------

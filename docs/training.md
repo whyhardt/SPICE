@@ -97,7 +97,7 @@ Broadcasts and concatenates inputs + fused embeddings to `[W,E,B,I,features]`. F
 - `sindy_coefficient_pruning(patience=1, n_terms_pruning=None)` / `sindy_coefficient_patience(threshold)` — Patience-gated hard thresholding fallback (used when ensemble pruning is unavailable)
 - `compute_weighted_coefficient_penalty(sindy_alpha)` — Degree-weighted L1/L2 penalty on coefficients
 - `print(participant_id=0, experiment_id=0)` / `get_spice_model_string(...)` — Human-readable equations per module, e.g. `"value[t+1] = 0.92 value[t] + 0.14 reward[t]"`
-- `get_modules()` / `get_candidate_terms(key_module=None)` / `get_sindy_coefficients(key_module=None, aggregate=False)` / `count_sindy_coefficients()` — Introspection (see [SpiceEstimator](#spiceestimator-spiceresourcesestimatorpy))
+- `get_modules()` / `get_candidate_terms(key_module=None)` / `get_sindy_coefficients(key_module=None, aggregate=False)` / `count_sindy_coefficients(aggregate=True)` (`(P, X)` of the ensemble-aggregated model, or `(E, P, X)` per member with `aggregate=False`) — Introspection (see [SpiceEstimator](#spiceestimator-spiceresourcesestimatorpy))
 - `eval(use_sindy=True)` / `train(mode=True, use_sindy=False)` — Override `nn.Module`'s eval/train to also set `self.use_sindy` (eval defaults to SINDy-mode-on, train defaults to SINDy-mode-off)
 - `to(device)` — Also moves the sindy loss tensors, presence/prior masks, degree weights, and patience counters, since these are plain dict/Tensor attributes rather than registered buffers
 
@@ -203,7 +203,7 @@ PyTorch Dataset with auto-promotion (2D→3D→4D: unsqueezes a session dim, the
 
 Main user-facing class implementing sklearn's estimator interface.
 
-**Methods:** `fit(data, targets, data_test, target_test)`, `predict(conditions)` → single prediction array (ensemble mean in RNN mode, member-0 in SINDy mode — **not** a `(rnn_pred, spice_pred)` tuple), `save_spice(path)`, `load_spice(path)`, `get_sindy_coefficients()`, `get_participant_embeddings()`, `print_spice_model()`, `count_sindy_coefficients()`, `get_modules()`, `get_candidate_terms()`
+**Methods:** `fit(data, targets, data_test, target_test)`, `predict(conditions)` → single prediction array (ensemble mean in RNN mode, member-0 in SINDy mode — **not** a `(rnn_pred, spice_pred)` tuple), `save_spice(path)`, `load_spice(path)`, `get_sindy_coefficients()`, `get_participant_embeddings()`, `print_spice_model()`, `count_sindy_coefficients(aggregate=True)`, `get_modules()`, `get_candidate_terms()`
 
 **Constructor arguments:**
 

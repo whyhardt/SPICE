@@ -1,13 +1,11 @@
 """Uniform evaluation across studies: training BIC/AIC (per participant), held-out
 likelihood, and paired per-participant comparison SPICE-EQ vs Benchmark.
 
-Loads saved checkpoints only (no training), with the same model setup as each
-study script. Usage: python eval_studies.py <study>
+Loads the study's final models only (no training). Usage: python eval_studies_uniform.py <study>
 """
 import json
 import math
 import sys
-from glob import glob
 from pathlib import Path
 
 import numpy as np
@@ -19,96 +17,26 @@ sys.path.insert(0, str(ROOT))
 OUT = ROOT / 'weinhardt2026/results/eval_studies_uniform'
 OUT.mkdir(exist_ok=True)
 
-from spice import SpiceEstimator
 from weinhardt2026.analysis.analysis_model_evaluation import get_participant_experiment_groups
-from weinhardt2026.utils.benchmarking_gru import GRUModel
+from weinhardt2026.figures.figure_model_evaluation import load_study, load_spice
+from weinhardt2026.utils.final_models import final_checkpoints, load_best
 
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 EPS = 1e-9
 
 
 def setup(study):
-    """Return dataset_train, dataset_test, {name: model}, spice estimators list, trial_filter, n_actions_baseline."""
-    trial_filter, baseline = None, None
-    if study == 'dezfouli2019':
-        from spice.precoded.workingmemory import SpiceModel, CONFIG
-        from weinhardt2026.studies.dezfouli2019.benchmarking_dezfouli2019 import GQLModel, get_dataset
-        tr, te, info = get_dataset(path_data=str(ROOT / 'weinhardt2026/studies/dezfouli2019/data/dezfouli2019.csv'), test_blocks=(3, 6, 9))
-        benchmark = GQLModel(n_participants=info['n_participants'], batch_first=True)
-        benchmark.load_state_dict(torch.load(ROOT / 'weinhardt2026/studies/dezfouli2019/params/benchmark_dezfouli2019.pkl', map_location='cpu'))
-        gru = GRUModel(n_actions=info['n_actions'], n_participants=info['n_participants'], additional_inputs=2,
-                       dropout=0.25, embedding_size=8, hidden_size=8)
-        gru.load_state_dict(torch.load(ROOT / 'weinhardt2026/studies/dezfouli2019/params/gru_dezfouli2019.pkl', map_location='cpu'))
-        spice = []
-        for path in sorted(glob(str(ROOT / 'weinhardt2026/studies/dezfouli2019/params/params_0.05/spice_dezfouli2019_stability_[0-9].pkl'))):
-            ckpt = torch.load(path, map_location='cpu')
-            E = ckpt['model'][f'sindy_coefficients.{next(iter(CONFIG.library_setup))}'].shape[0]
-            del ckpt
-            est = SpiceEstimator(spice_class=SpiceModel, spice_config=CONFIG, n_actions=2,
-                                 n_participants=info['n_participants'], ensemble_size=E,
-                                 kwargs_spice_class={'reward_binary': True}, device=device)
-            est.load_spice(path)
-            spice.append(est)
-    elif study == 'ganesh2024a':
-        from weinhardt2026.studies.ganesh2024a.spice_ganesh2024a import SpiceModel, CONFIG
-        from weinhardt2026.studies.ganesh2024a.benchmarking_ganesh2024a import BayesianModel, get_dataset
-        tr, te, info = get_dataset(path_data=str(ROOT / 'weinhardt2026/studies/ganesh2024a/data/ganesh2024a.csv'), test_blocks=(3, 6, 9))
-        est = SpiceEstimator(spice_class=SpiceModel, spice_config=CONFIG, n_actions=tr.n_actions,
-                             n_participants=tr.n_participants, device=device)
-        est.load_spice(str(ROOT / 'weinhardt2026/studies/ganesh2024a/params/spice_ganesh2024a.pkl'))
-        spice = [est]
-        benchmark = BayesianModel(n_participants=info['n_participants'], batch_first=True)
-        benchmark.load_state_dict(torch.load(ROOT / 'weinhardt2026/studies/ganesh2024a/params/bay_ganesh2024a.pkl', map_location='cpu'))
-        gru = GRUModel(n_actions=info['n_actions'], n_participants=info['n_participants'], additional_inputs=2,
-                       dropout=0.25, embedding_size=8, hidden_size=8)
-        gru.load_state_dict(torch.load(ROOT / 'weinhardt2026/studies/ganesh2024a/params/gru_ganesh2024a.pkl', map_location='cpu'))
-    elif study == 'braun2018':
-        from weinhardt2026.studies.braun2018.spice_braun2018 import SpiceModel, CONFIG
-        from weinhardt2026.studies.braun2018.benchmarking_braun2018 import ExpectedValueControl, get_dataset
-        tr, te, info = get_dataset(path_data=str(ROOT / 'weinhardt2026/studies/braun2018/data/braun2018.csv'), test_blocks=(3, 6, 9))
-        n_trials = (~torch.isnan(tr.xs[:, :, 0, 0])).sum(1).float().numpy()
-        cutoff = int(n_trials.mean() + 2 * n_trials.std())
-        tr.xs, tr.ys = tr.xs[:, :cutoff], tr.ys[:, :cutoff]
-        te.xs, te.ys = te.xs[:, :cutoff], te.ys[:, :cutoff]
-        est = SpiceEstimator(spice_class=SpiceModel, spice_config=CONFIG, n_actions=tr.n_actions,
-                             n_participants=tr.n_participants, n_reward_features=0, ensemble_size=10,
-                             sindy_weight=0.01, device=device)
-        est.load_spice(str(ROOT / 'weinhardt2026/studies/braun2018/params/spice_braun2018.pkl'))
-        est.model.preprocess_coefficients()
-        spice = [est]
-        benchmark = ExpectedValueControl(n_participants=tr.n_participants)
-        benchmark.load_state_dict(torch.load(ROOT / 'weinhardt2026/studies/braun2018/params/benchmark_braun2018.pkl', map_location='cpu'))
-        gru = GRUModel(tr.n_actions, additional_inputs=4, n_reward_features=0)
-        gru.load_state_dict(torch.load(ROOT / 'weinhardt2026/studies/braun2018/params/gru_braun2018.pkl', map_location='cpu'))
-    elif study == 'bustamante2023':
-        from weinhardt2026.studies.bustamante2023.spice_bustamante2023 import SpiceModel, CONFIG
-        from weinhardt2026.studies.bustamante2023.benchmarking_bustamante2023 import EffortCostMVTModel, get_dataset
-        tr, te, info = get_dataset(path_data=str(ROOT / 'weinhardt2026/studies/bustamante2023/data/bustamante2023.csv'), test_blocks=(3, 6))
-        est = SpiceEstimator(spice_class=SpiceModel, spice_config=CONFIG, n_actions=tr.n_actions,
-                             n_participants=tr.n_participants, sindy_weight=0, ensemble_size=1, device=device)
-        est.load_spice(str(ROOT / 'weinhardt2026/studies/bustamante2023/params/spice_bustamante2023.pkl'))
-        spice = [est]
-        benchmark = EffortCostMVTModel(n_participants=tr.n_participants, path_data=str(ROOT / 'weinhardt2026/studies/bustamante2023/data/bustamante2023.csv'), batch_first=True)
-        benchmark.load_state_dict(torch.load(ROOT / 'weinhardt2026/studies/bustamante2023/params/effort_mvt_bustamante2023.pkl', map_location='cpu'))
-        gru = GRUModel(tr.n_actions, additional_inputs=4, additional_inputs_scale=(10., 10., 1., 1.))
-        gru.load_state_dict(torch.load(ROOT / 'weinhardt2026/studies/bustamante2023/params/gru_bustamante2023.pkl', map_location='cpu'))
-    elif study == 'eckstein2026':
-        from weinhardt2026.studies.eckstein2026.spice_eckstein2026 import SpiceModel, CONFIG
-        from weinhardt2026.studies.eckstein2026.benchmarking_eckstein2026 import Castro2025Model, get_dataset
-        tr, te, info = get_dataset(path_data=str(ROOT / 'weinhardt2026/studies/eckstein2026/data/eckstein2026.csv'), test_blocks=(2,))
-        est = SpiceEstimator(spice_class=SpiceModel, spice_config=CONFIG, n_actions=tr.n_actions,
-                             n_participants=tr.n_participants, device=device)
-        est.load_spice(str(ROOT / 'weinhardt2026/studies/eckstein2026/params/spice_eckstein2026.pkl'))
-        spice = [est]
-        benchmark = Castro2025Model(n_participants=tr.n_participants, n_actions=tr.n_actions, batch_first=True)
-        benchmark.load_state_dict(torch.load(ROOT / 'weinhardt2026/studies/eckstein2026/params/benchmark_eckstein2026.pkl', map_location='cpu'))
-        gru = GRUModel(n_actions=tr.n_actions, additional_inputs=2, dropout=0.1, hidden_size=32)
-        gru.load_state_dict(torch.load(ROOT / 'weinhardt2026/studies/eckstein2026/params/gru_eckstein2026.pkl', map_location='cpu'))
-    else:
-        raise ValueError(study)
+    """Return dataset_train, dataset_test, benchmark, gru, spice estimators list, trial_filter, n_actions_baseline.
+
+    Data as the models were trained on it (figures/figure_model_evaluation.py); SPICE: every final seed,
+    benchmark / GRU: the best final seed on the training data (weinhardt2026/utils/final_models.py).
+    """
+    spice_module, tr, te = load_study(study)
+    spice = [load_spice(path, spice_module, tr) for path in final_checkpoints(study, 'spice')]
+    benchmark = load_best(study, 'benchmark')
+    gru = load_best(study, 'gru')
     benchmark.eval()
     gru.eval()
-    return tr, te, benchmark, gru, spice, trial_filter, baseline
+    return tr, te, benchmark, gru, spice, None, None
 
 
 @torch.no_grad()

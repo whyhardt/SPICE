@@ -13,13 +13,14 @@ import os
 import torch
 
 from spice import SpiceEstimator, csv_to_dataset
-from spice.precoded import workingmemory
+from weinhardt2026.studies.dezfouli2019 import spice_dezfouli2019
 from weinhardt2026.studies.eckstein2026 import spice_eckstein2026
 from weinhardt2026.studies.braun2018 import spice_braun2018
 from weinhardt2026.studies.bruckner2025 import spice_bruckner2025
 from weinhardt2026.studies.bustamante2023 import spice_bustamante2023
 from weinhardt2026.studies.ganesh2024a import spice_ganesh2024a
 from weinhardt2026.figures.figure2 import plot_figure2
+from weinhardt2026.utils.final_models import best_checkpoint, final_checkpoints
 from weinhardt2026.figures.figure3 import plot_figure3
 from weinhardt2026.figures.figure4 import plot_figure4
 from weinhardt2026.figures.figure5 import plot_figure5
@@ -27,23 +28,22 @@ from weinhardt2026.figures.figure5 import plot_figure5
 
 # ── Study registry ────────────────────────────────────────────────────
 # Each study defines paths and config needed for figure generation.
-# Add new studies by adding an entry here.
+# Add new studies by adding an entry here. The SPICE checkpoints are the study's final models
+# (weinhardt2026/utils/final_models.py): figures 2 and 4 use the best seed, figure 5 all seeds.
 
 STUDY_REGISTRY = {
     'dezfouli2019': {
-        'spice_class': workingmemory.SpiceModel,
-        'spice_config': workingmemory.CONFIG,
+        'spice_class': spice_dezfouli2019.SpiceModel,
+        'spice_config': spice_dezfouli2019.CONFIG,
         'n_actions': 2,
         'polynomial_degree': 2,
         'data': 'weinhardt2026/studies/dezfouli2019/data/dezfouli2019.csv',
-        'params': 'weinhardt2026/studies/dezfouli2019/params/spice_dezfouli2019.pkl',
         'results_dir': 'weinhardt2026/studies/dezfouli2019/results',
         'figures_dir': 'weinhardt2026/studies/dezfouli2019/figures',
         'metrics_csv': 'behavioral_metrics_real.csv',
         'beta_csv': 'discrete_odds_ratio_results.csv',
         'n_clusters': 3,
         'n_trials_show': 100,
-        'stability_pattern': 'weinhardt2026/studies/dezfouli2019/params/params/spice_dezfouli2019_stability_[0-9].pkl',
         'hpscan_csv': 'weinhardt2026/studies/dezfouli2019/results/hpscan_results.csv',
         'model_kwargs': {'reward_binary': True},
     },
@@ -53,45 +53,38 @@ STUDY_REGISTRY = {
         'n_actions': 4,
         'polynomial_degree': 2,
         'data': 'weinhardt2026/studies/eckstein2026/data/eckstein2026.csv',
-        'params': 'weinhardt2026/studies/eckstein2026/params/spice_eckstein2026.pkl',
         'results_dir': 'weinhardt2026/studies/eckstein2026/results',
         'figures_dir': 'weinhardt2026/studies/eckstein2026/figures',
         'metrics_csv': 'behavioral_metrics_real.csv',
         'beta_csv': 'continuous_effect_results_all.csv',
         'n_clusters': 3,
         'n_trials_show': 100,
-        'stability_pattern': 'weinhardt2026/studies/eckstein2026/params/params/spice_eckstein2026_stability_[0-9].pkl',
     },
 
     # ── Stability-only entries (figure 5) ─────────────────────────────
-    # Checkpoints from slurm_jobs/spice_stability_studies.sh, downloaded into params/params/.
     'braun2018': {
         'spice_class': spice_braun2018.SpiceModel,
         'spice_config': spice_braun2018.CONFIG,
         'n_actions': 2,
         'figures_dir': 'weinhardt2026/studies/braun2018/figures',
-        'stability_pattern': 'weinhardt2026/studies/braun2018/params/params/spice_braun2018_stability_[0-9].pkl',
     },
     'bruckner2025': {
         'spice_class': spice_bruckner2025.SpiceModel,
         'spice_config': spice_bruckner2025.CONFIG,
         'n_actions': 1,
         'figures_dir': 'weinhardt2026/studies/bruckner2025/figures',
-        'stability_pattern': 'weinhardt2026/studies/bruckner2025/params/params/spice_bruckner2025_stability_[0-9].pkl',
     },
     'bustamante2023': {
         'spice_class': spice_bustamante2023.SpiceModel,
         'spice_config': spice_bustamante2023.CONFIG,
         'n_actions': 2,
         'figures_dir': 'weinhardt2026/studies/bustamante2023/figures',
-        'stability_pattern': 'weinhardt2026/studies/bustamante2023/params/params/spice_bustamante2023_stability_[0-9].pkl',
     },
     'ganesh2024a': {
         'spice_class': spice_ganesh2024a.SpiceModel,
         'spice_config': spice_ganesh2024a.CONFIG,
         'n_actions': 2,
         'figures_dir': 'weinhardt2026/studies/ganesh2024a/figures',
-        'stability_pattern': 'weinhardt2026/studies/ganesh2024a/params/params/spice_ganesh2024a_stability_[0-9].pkl',
     },
 }
 
@@ -158,16 +151,8 @@ def generate_figure4(study_cfg, estimator):
 
 
 def generate_figure5(study_cfg):
-    """Figure 5: Across-run stability analysis."""
-    from glob import glob
-    pattern = study_cfg.get('stability_pattern')
-    if not pattern:
-        print("  No stability_pattern configured for this study, skipping.")
-        return
-    pkl_paths = sorted(glob(pattern))
-    if not pkl_paths:
-        print(f"  No stability runs found matching {pattern}")
-        return
+    """Figure 5: Across-run stability analysis over the final SPICE seeds."""
+    pkl_paths = final_checkpoints(study_cfg['study'], 'spice')
 
     plot_figure5(
         stability_pkl_paths=pkl_paths,
@@ -199,7 +184,7 @@ def main():
     parser.add_argument('--figures', nargs='+', default=['2', '3', '4', '5'],
                         help='Which figures to generate (default: all). E.g. --figures 2 4')
     parser.add_argument('--params', type=str, default=None,
-                        help='Override params .pkl path (default: use study registry)')
+                        help='Override params .pkl path (default: the best final SPICE seed)')
     parser.add_argument('--list', action='store_true', help='List available studies')
     args = parser.parse_args()
 
@@ -215,11 +200,8 @@ def main():
     if args.study not in STUDY_REGISTRY:
         parser.error(f"Unknown study '{args.study}'. Available: {', '.join(STUDY_REGISTRY)}")
 
-    study_cfg = dict(STUDY_REGISTRY[args.study])  # copy so we can override
-    if args.params is not None:
-        study_cfg['params'] = args.params
+    study_cfg = dict(STUDY_REGISTRY[args.study], study=args.study)  # copy so we can override
     print(f"Generating figures for: {args.study}")
-    print(f"Params: {study_cfg.get('params', '<none>')}")
     print(f"Figures: {', '.join(args.figures)}")
     print(f"Output: {study_cfg['figures_dir']}/\n")
 
@@ -228,6 +210,8 @@ def main():
     needs_estimator = any(f in ('2', '4') for f in args.figures)
     no_estimator_figures = {'3', '5'}
     if needs_estimator:
+        study_cfg['params'] = args.params or best_checkpoint(args.study, 'spice')
+        print(f"Params: {study_cfg['params']}")
         estimator = _load_estimator(study_cfg)
 
     for fig_id in args.figures:
