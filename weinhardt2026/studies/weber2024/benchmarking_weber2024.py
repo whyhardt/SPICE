@@ -335,6 +335,7 @@ def generate_behavior(
     model: Union[SpiceEstimator, torch.nn.Module],
     dataset: SpiceDataset,
     save_dataset: str = None,
+    noise_std: torch.Tensor = None,
 ) -> SpiceDataset:
     """Generate synthetic behavioral data for the continuous weber2024 task.
 
@@ -346,6 +347,10 @@ def generate_behavior(
         model: Fitted SPICE model (SpiceEstimator or nn.Module).
         dataset: Original dataset (structure + laser trajectories + durations).
         save_dataset: Optional path to save generated dataset as CSV.
+        noise_std: Optional (n_sessions,) response noise s.d. in (sin, cos) units, i.e. radians on the
+            circle: the shield lands at the clamped move plus Gaussian angular noise (the Gaussian
+            likelihood the models are scored with). Stochastic-response models then respond with
+            their expectation instead of a drawn move. None: the clamped move itself.
 
     Returns:
         SpiceDataset with generated shield behavior.
@@ -362,7 +367,7 @@ def generate_behavior(
 
     # stochastic-response models (ChangePointModel) draw whether the shield moves instead of its expectation
     if hasattr(inner_model, 'sample_response'):
-        inner_model.sample_response = True
+        inner_model.sample_response = noise_std is None
 
     if hasattr(inner_model, 'device'):
         device = inner_model.device
@@ -371,6 +376,8 @@ def generate_behavior(
     else:
         device = torch.device('cpu')
 
+    if noise_std is not None:
+        noise_deg = noise_std.to(device) * (180.0 / math.pi)
     valid_mask = ~torch.isnan(dataset.xs[:, :, 0, 0])  # (n_sessions, n_trials)
     xs_gen = dataset.xs.clone().to(device)
     ys_gen = torch.full_like(dataset.ys, float('nan'), device=device)
@@ -420,19 +427,20 @@ def generate_behavior(
         dt = dataset.xs[:, t, 0, _AI_START + _AI_DT].to(device)
         max_move = MOVEMENT_SPEED * dt
         new_shield = move_toward(shield_deg, belief_deg, max_move)
+        if noise_std is not None:
+            new_shield = (new_shield + torch.randn_like(new_shield) * noise_deg) % 360
+
+        # ys: [next_shield_sin, next_shield_cos, shield_sin_t, shield_cos_t, dt]; the last trial's too
+        new_rad = new_shield * (math.pi / 180.0)
+        ys_gen[active, t, 0, 0] = torch.sin(new_rad)[active]
+        ys_gen[active, t, 0, 1] = torch.cos(new_rad)[active]
+        ys_gen[active, t, 0, 2] = shield_sin_t[active]
+        ys_gen[active, t, 0, 3] = shield_cos_t[active]
+        ys_gen[active, t, 0, 4] = dt[active]
 
         # NaN-out inactive sessions, advance shield for active ones
         xs_gen[~active, t] = float('nan')
         shield_deg = torch.where(active, new_shield, shield_deg)
-
-    # Build ys: [next_shield_sin, next_shield_cos, shield_sin_t, shield_cos_t, dt]
-    for t in range(n_trials - 1):
-        both = (valid_mask[:, t] & valid_mask[:, t + 1]).to(device)
-        ys_gen[both, t, 0, 0] = xs_gen[both, t + 1, 0, 0]                     # next sin
-        ys_gen[both, t, 0, 1] = xs_gen[both, t + 1, 0, 1]                     # next cos
-        ys_gen[both, t, 0, 2] = xs_gen[both, t, 0, 0]                         # sin_t
-        ys_gen[both, t, 0, 3] = xs_gen[both, t, 0, 1]                         # cos_t
-        ys_gen[both, t, 0, 4] = xs_gen[both, t, 0, _AI_START + _AI_DT]        # dt
 
     if hasattr(inner_model, 'sample_response'):
         inner_model.sample_response = False

@@ -293,6 +293,7 @@ def generate_behavior(
     model: Union[SpiceEstimator, torch.nn.Module],
     dataset: SpiceDataset,
     save_dataset: str = None,
+    noise_std: torch.Tensor = None,
 ) -> SpiceDataset:
     """Generate synthetic behavioral data for the helicopter task.
 
@@ -305,6 +306,9 @@ def generate_behavior(
         model: Fitted model (SpiceEstimator or nn.Module).
         dataset: Original dataset (for structure and environment data).
         save_dataset: Optional path to save generated dataset as CSV.
+        noise_std: Optional (n_sessions,) response noise s.d. (normalized positions): the bucket
+            position is the prediction plus Gaussian noise (the Gaussian likelihood the models are
+            scored with), before rounding and clamping. None: the prediction itself.
 
     Returns:
         SpiceDataset with model-generated behavior.
@@ -376,6 +380,9 @@ def generate_behavior(
             predicted = logits[:, -1, 0, 0]
         else:                                          # (B, T, A)
             predicted = logits[:, -1, 0]
+
+        if noise_std is not None:
+            predicted = predicted + torch.randn_like(predicted) * noise_std.to(device)
 
         # Round to pixel resolution and clamp to valid range
         pixel_step = 1.0 / POSITION_SCALE

@@ -44,8 +44,8 @@ def load_models(dataset: SpiceDataset) -> dict:
     return load_registered_models(STUDY, dataset)
 
 
-def generate(model, dataset: SpiceDataset) -> SpiceDataset:
-    return generate_behavior(model=model, dataset=dataset)
+def generate(model, dataset: SpiceDataset, noise_std=None) -> SpiceDataset:
+    return generate_behavior(model=model, dataset=dataset, noise_std=noise_std)
 
 
 def _degrees(sin_values: np.ndarray, cos_values: np.ndarray) -> np.ndarray:

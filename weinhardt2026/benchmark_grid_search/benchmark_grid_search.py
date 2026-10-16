@@ -64,10 +64,10 @@ class StudySetup:
 # PER-STUDY SETUPS (mirroring weinhardt2026/studies/<study>/<study>.py)
 # -------------------------------------------------------------------------------------------
 
-def setup_braun2018() -> StudySetup:
+def setup_braun2018(path_data: str = 'weinhardt2026/studies/braun2018/data/braun2018.csv') -> StudySetup:
     from weinhardt2026.studies.braun2018.benchmarking_braun2018 import ExpectedValueControl, get_dataset
 
-    dataset_train, dataset_test, _ = get_dataset(path_data='weinhardt2026/studies/braun2018/data/braun2018.csv', test_blocks=(3, 6, 9))
+    dataset_train, dataset_test, _ = get_dataset(path_data=path_data, test_blocks=(3, 6, 9))
 
     # Truncate outlier-length blocks (mean + 2*std)
     n_trials_per_block = (~dataset_train.xs[:, :, 0, 0].isnan()).sum(dim=1).float()
@@ -84,11 +84,11 @@ def setup_braun2018() -> StudySetup:
     )
 
 
-def setup_bruckner2025() -> StudySetup:
+def setup_bruckner2025(path_data: str = 'weinhardt2026/studies/bruckner2025/data/bruckner2025.csv') -> StudySetup:
     from weinhardt2026.studies.bruckner2025.spice_bruckner2025 import mse_loss
     from weinhardt2026.studies.bruckner2025.benchmarking_bruckner2025 import RationalResourceModel, get_dataset
 
-    dataset, _ = get_dataset(path_data='weinhardt2026/studies/bruckner2025/data/bruckner2025.csv')
+    dataset, _ = get_dataset(path_data=path_data)
     dataset_train, dataset_test = split_data_along_blockdim(dataset, (2, 4))
 
     return StudySetup(
@@ -100,10 +100,9 @@ def setup_bruckner2025() -> StudySetup:
     )
 
 
-def setup_bustamante2023() -> StudySetup:
+def setup_bustamante2023(path_data: str = 'weinhardt2026/studies/bustamante2023/data/bustamante2023.csv') -> StudySetup:
     from weinhardt2026.studies.bustamante2023.benchmarking_bustamante2023 import EffortCostMVTModel, get_dataset
 
-    path_data = 'weinhardt2026/studies/bustamante2023/data/bustamante2023.csv'
     dataset_train, dataset_test, _ = get_dataset(path_data=path_data, test_blocks=(3, 6))
 
     return StudySetup(
@@ -115,10 +114,10 @@ def setup_bustamante2023() -> StudySetup:
     )
 
 
-def setup_dezfouli2019() -> StudySetup:
+def setup_dezfouli2019(path_data: str = 'weinhardt2026/studies/dezfouli2019/data/dezfouli2019.csv') -> StudySetup:
     from weinhardt2026.studies.dezfouli2019.benchmarking_dezfouli2019 import GQLModel, get_dataset
 
-    dataset_train, dataset_test, info_dataset = get_dataset(path_data='weinhardt2026/studies/dezfouli2019/data/dezfouli2019.csv', test_blocks=(3, 6, 9))
+    dataset_train, dataset_test, info_dataset = get_dataset(path_data=path_data, test_blocks=(3, 6, 9))
 
     return StudySetup(
         dataset_train=dataset_train,
@@ -128,10 +127,10 @@ def setup_dezfouli2019() -> StudySetup:
     )
 
 
-def setup_eckstein2026() -> StudySetup:
+def setup_eckstein2026(path_data: str = 'weinhardt2026/studies/eckstein2026/data/eckstein2026.csv') -> StudySetup:
     from weinhardt2026.studies.eckstein2026.benchmarking_eckstein2026 import BestRLModel, get_dataset
 
-    dataset_train, dataset_test, _ = get_dataset(path_data='weinhardt2026/studies/eckstein2026/data/eckstein2026.csv', test_blocks=(2,))
+    dataset_train, dataset_test, _ = get_dataset(path_data=path_data, test_blocks=(2,))
 
     return StudySetup(
         dataset_train=dataset_train,
@@ -142,10 +141,10 @@ def setup_eckstein2026() -> StudySetup:
     )
 
 
-def setup_ganesh2024a() -> StudySetup:
+def setup_ganesh2024a(path_data: str = 'weinhardt2026/studies/ganesh2024a/data/ganesh2024a.csv') -> StudySetup:
     from weinhardt2026.studies.ganesh2024a.benchmarking_ganesh2024a import BayesianModel, get_dataset
 
-    dataset_train, dataset_test, info_dataset = get_dataset(path_data='weinhardt2026/studies/ganesh2024a/data/ganesh2024a.csv', test_blocks=(3, 6, 9))
+    dataset_train, dataset_test, info_dataset = get_dataset(path_data=path_data, test_blocks=(3, 6, 9))
 
     return StudySetup(
         dataset_train=dataset_train,
@@ -170,11 +169,11 @@ def setup_kolff2025() -> StudySetup:
     )
 
 
-def setup_weber2024() -> StudySetup:
+def setup_weber2024(path_data: str = 'weinhardt2026/studies/weber2024/data/weber2024.csv') -> StudySetup:
     from weinhardt2026.studies.weber2024.spice_weber2024 import clamped_angular_mse
     from weinhardt2026.studies.weber2024.benchmarking_weber2024 import ChangePointModel, get_dataset
 
-    dataset, _ = get_dataset(path_data='weinhardt2026/studies/weber2024/data/weber2024.csv')
+    dataset, _ = get_dataset(path_data=path_data)
     dataset_train, dataset_test = split_data_along_blockdim(dataset, (3, 5, 9, 12))
 
     return StudySetup(
@@ -193,7 +192,8 @@ def setup_weber2024() -> StudySetup:
     )
 
 
-STUDIES: dict[str, Callable[[], StudySetup]] = {
+# setup(path_data) with the study's own CSV as default (confusion_matrix/ passes simulated ones)
+STUDIES: dict[str, Callable[..., StudySetup]] = {
     'braun2018': setup_braun2018,
     'bruckner2025': setup_bruckner2025,
     'bustamante2023': setup_bustamante2023,
