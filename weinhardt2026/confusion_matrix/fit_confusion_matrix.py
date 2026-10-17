@@ -8,16 +8,8 @@ configuration stored for the dataset in <data_dir>/generators.csv (split, final 
                         stepping on the test loss; kolff2025: the closed-form logistic regression on the
                         training fold (identical for every seed, so one seed suffices)
 
-SPICE is fit on the cluster (slurm_jobs/confusion_matrix.sh); the benchmarks are fast enough to fit locally:
-
-    for study in dezfouli2019 ganesh2024a eckstein2026 bustamante2023 braun2018 bruckner2025 weber2024; do
-      for generator in spice benchmark; do for seed in $(seq 10 19); do
-        python weinhardt2026/confusion_matrix/fit_confusion_matrix.py --study $study --generator $generator --fitter benchmark --seed $seed
-      done; done
-    done
-    for generator in spice benchmark; do
-      python weinhardt2026/confusion_matrix/fit_confusion_matrix.py --study kolff2025 --generator $generator --fitter benchmark --seed 10
-    done
+SPICE is fit on the cluster (slurm_jobs/confusion_matrix.sh); the benchmarks are fast enough to fit
+locally, all of them with fit_benchmarks.py.
 
 Saved to <out_dir>/<study>/<fitter>_<study>_sim<generator>_rs<seed>.{pkl,json} (default out_dir:
 weinhardt2026/confusion_matrix/runs). The json is written once the fit is complete; fits with an
@@ -101,28 +93,34 @@ def fit_benchmark(config: pd.Series, model: Path, seed: int) -> dict:
     return metrics
 
 
-def main() -> None:
-    args = parse_args()
-    config = load_generator_row(args.data_dir, args.study, args.generator)
+def fit_run(study: str, generator: str, fitter: str, seed: int,
+            data_dir: str = DEFAULT_DATA_DIR, out_dir: str = DEFAULT_OUT_DIR) -> None:
+    """Fit `fitter` with `seed` to the dataset simulated by `generator`; skipped if its json exists."""
+    config = load_generator_row(data_dir, study, generator)
 
-    out_dir = Path(args.out_dir) / args.study
+    out_dir = Path(out_dir) / study
     out_dir.mkdir(parents=True, exist_ok=True)
-    name = run_name(args.fitter, args.study, args.generator, args.seed)
+    name = run_name(fitter, study, generator, seed)
     if (out_dir / f'{name}.json').exists():
-        print(f'[{args.study}] {name} exists, nothing to do')
+        print(f'[{study}] {name} exists, nothing to do')
         return
 
-    print(f'[{args.study}] fitting {name}')
-    fit = fit_spice if args.fitter == 'spice' else fit_benchmark
-    metrics = fit(config, out_dir / f'{name}.pkl', args.seed)
+    print(f'[{study}] fitting {name}')
+    fit = fit_spice if fitter == 'spice' else fit_benchmark
+    metrics = fit(config, out_dir / f'{name}.pkl', seed)
 
-    hyperparameters = {key: value for key, value in config.items() if key.startswith(f'{args.fitter}_') and pd.notna(value)}
+    hyperparameters = {key: value for key, value in config.items() if key.startswith(f'{fitter}_') and pd.notna(value)}
     result = dict(
-        study=args.study, generator=args.generator, fitter=args.fitter, seed=args.seed, data=config['data'],
+        study=study, generator=generator, fitter=fitter, seed=seed, data=config['data'],
         generator_checkpoint=config['checkpoint'], test_blocks=config['test_blocks'], **hyperparameters,
     )
     (out_dir / f'{name}.json').write_text(json.dumps(result | metrics, indent=2, default=float))
-    print(f'[{args.study}] {name} done ({metrics["duration_sec"]:.0f}s)')
+    print(f'[{study}] {name} done ({metrics["duration_sec"]:.0f}s)')
+
+
+def main() -> None:
+    args = parse_args()
+    fit_run(args.study, args.generator, args.fitter, args.seed, args.data_dir, args.out_dir)
 
 
 def parse_args() -> argparse.Namespace:

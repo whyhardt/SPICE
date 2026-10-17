@@ -109,7 +109,7 @@ class RationalResourceModel(nn.Module):
         self.q_raw = nn.Parameter(torch.zeros(n_participants))         # → unconstrained → reward bias
         self.d_raw = nn.Parameter(torch.zeros(n_participants))         # → unconstrained → bucket bias (anchoring)
 
-    def forward(self, xs: torch.Tensor, state: torch.Tensor = None):
+    def forward(self, xs: torch.Tensor, state: dict = None):
         """Forward pass: trial-by-trial Bayesian belief updating.
 
         Matches the original code in AlAgentRbm.py:
@@ -122,11 +122,12 @@ class RationalResourceModel(nn.Module):
 
         Args:
             xs: (B, T, 1, F) input tensor.
-            state: unused (stateless between calls for simplicity).
+            state: None (start of a block) or the state returned by the previous call, so that a
+                block can be processed trial by trial (generation) as in one call.
 
         Returns:
             logits: (B, T, 1, 1) predicted next bucket position (normalized).
-            state: None.
+            state: dict with the uncertainty carried to the next trial ('sigma_est_sq', 'tau').
         """
         B, T, _, F = xs.shape
         device = xs.device
@@ -137,7 +138,8 @@ class RationalResourceModel(nn.Module):
 
         # push between prediction t and t+1; NaN z_{t+1} (end of block, padding) → no push
         push = (xs[:, :, 0, ai + _AI_Z_NEXT] - xs[:, :, 0, 0]).nan_to_num(0.)
-        push[:, 0] = 0.  # first trial of a block: no bucket bias (as in the original)
+        if state is None:
+            push[:, 0] = 0.  # first trial of a block: no bucket bias (as in the original)
 
         xs = xs.nan_to_num(0.)
         b_t = xs[:, :, 0, 0]     # bucket position (normalized)
@@ -158,9 +160,12 @@ class RationalResourceModel(nn.Module):
         q = self.q_raw[participant_ids]                              # (B,) reward bias
         d = self.d_raw[participant_ids]                              # (B,) bucket bias
 
-        # Initialize uncertainty state (fixed, matching original AgentVars)
-        sigma_est_sq = torch.full((B,), self.SIGMA_0 / POSITION_SCALE ** 2, device=device)
-        tau = torch.full((B,), self.TAU_0, device=device)
+        # Uncertainty state: initial values at the start of a block (fixed, matching original AgentVars)
+        if state is None:
+            sigma_est_sq = torch.full((B,), self.SIGMA_0 / POSITION_SCALE ** 2, device=device)
+            tau = torch.full((B,), self.TAU_0, device=device)
+        else:
+            sigma_est_sq, tau = state['sigma_est_sq'].to(device), state['tau'].to(device)
 
         logits = torch.zeros(B, T, 1, 1, device=device)
 
@@ -225,7 +230,7 @@ class RationalResourceModel(nn.Module):
             # Update relative uncertainty (Eq. 10)
             tau = sigma_est_sq / (sigma_est_sq + self.sigma ** 2 + 1e-10)
 
-        return logits, state
+        return logits, {'sigma_est_sq': sigma_est_sq.detach(), 'tau': tau.detach()}
 
 
 # --- Environment ---
