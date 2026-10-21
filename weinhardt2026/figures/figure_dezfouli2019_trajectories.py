@@ -4,7 +4,7 @@ Value trajectories + observations of three maximally distinct dezfouli2019 parti
 Participants: two of the triplet whose closest pair is furthest apart in embedding space
 (SPICE indices 11 and 78; see select_max_min_triplet) around the most average participant
 (closest to the embedding centroid; see select_most_average).
-Distances are averaged over every seed and ensemble member of the grid-search runs
+Distances are averaged over every seed and ensemble member of the final SPICE models
 (each member's embedding space has its own orientation, so the embeddings themselves
 cannot be averaged; their distance matrices can).
 
@@ -35,9 +35,11 @@ import matplotlib.pyplot as plt
 from scipy.spatial.distance import pdist, squareform
 
 import figure_model_evaluation as evaluation
+from weinhardt2026.utils.final_models import final_checkpoints
+from weinhardt2026.analysis.analysis_equation_tables import format_equations, select_most_average
 
 STUDY = 'dezfouli2019'
-OUTPUT_DIR = os.path.join(ROOT, 'weinhardt2026', 'figures', 'dezfouli2019_trajectories')
+OUTPUT_DIR = os.path.join(ROOT, 'weinhardt2026', 'studies', STUDY, 'results', 'mechanisms', 'trajectories')
 ITEM = 1  # plotted option
 
 STATE_LABELS = {
@@ -70,20 +72,8 @@ def select_max_min_triplet(checkpoints):
     return list(max(itertools.combinations(range(distance.shape[0]), 3), key=min_pairwise))
 
 
-def select_most_average(checkpoints):
-    """Participant closest to the embedding centroid, averaged over every seed and ensemble member."""
-    distances = []
-    for path in checkpoints:
-        embedding = torch.load(path, map_location='cpu')['model']['participant_embedding.weight'].numpy()  # (E, P, D)
-        for member in embedding:
-            distance = np.linalg.norm(member - member.mean(axis=0), axis=1)
-            distances.append(distance / distance.mean())
-    return int(np.argmin(np.mean(distances, axis=0)))
-
-
 def select_seed_by_train_aic(checkpoints):
-    cache = os.path.join(evaluation.OUTPUT_DIR, f'model_evaluation_{STUDY}.csv')
-    results = pd.read_csv(cache)
+    results = pd.read_csv(evaluation.study_evaluation_path(STUDY))
     spice_eq = results[results['model'] == 'SPICE-EQ'].set_index('seed')['aic']
     best_seed = int(spice_eq.idxmin())
     path = next(p for p in checkpoints if _seed(p) == best_seed)
@@ -136,27 +126,6 @@ def run_trajectories(estimator, xs_session, member, use_sindy):
     reward = observed[torch.arange(n_trials), n_actions + torch.as_tensor(choice)].numpy()
     return dict(probability=np.array(probability), choice=(choice == ITEM).astype(float),
                 reward=reward, **{key: np.array(values) for key, values in states.items()})
-
-
-# ── Equations ───────────────────────────────────────────────────────
-
-def format_equations(estimator, participant, member):
-    model = estimator.model
-    coefficients = model.get_sindy_coefficients()
-    lines = []
-    for module in model.get_modules():
-        values = coefficients[module][member, participant, 0]
-        values = values.detach().cpu().numpy() if torch.is_tensor(values) else np.asarray(values)
-        terms = model.get_candidate_terms(key_module=module)
-        parts = []
-        for term, value in zip(terms, values):
-            value = value + 1 if term == module else value  # state term is stored as deviation from identity
-            if value == 0:
-                continue
-            name = f'{module}[t]' if term == module else term
-            parts.append(f'{value:+.3f}' if term == '1' else f'{value:+.3f}·{name}')
-        lines.append(f'{module}[t+1] = ' + (' '.join(parts) if parts else '0'))
-    return lines
 
 
 # ── Plot ────────────────────────────────────────────────────────────
@@ -216,7 +185,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     spice_module, dataset_train, _ = evaluation.load_study(STUDY)
-    checkpoints = evaluation.STUDIES[STUDY]['checkpoints']()
+    checkpoints = final_checkpoints(STUDY, 'spice')
 
     if args.participants is None:
         # the two most distinct participants of the max-min triplet (11, 78) around the most average one

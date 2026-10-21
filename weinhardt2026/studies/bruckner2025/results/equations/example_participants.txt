@@ -1,0 +1,14 @@
+checkpoint: spice_bruckner2025_th0.05_sw0_al0.0005_er0.5_gp0_fp0_rs2.pkl
+ensemble member: 1
+
+most distinct 1: participant 43 (ID 49)
+  learning_rate_update[t+1] = +0.306 +0.487·learning_rate_update[t] +2.476·|prediction_error| +0.151·catch -0.638·v_t +0.442·learning_rate_update*|prediction_error| +0.965·|prediction_error|^2 -0.457·|prediction_error|*v_t +0.125·catch*v_t
+  anchor_update[t+1] = 0
+
+most average: participant 42 (ID 48)
+  learning_rate_update[t+1] = -0.272 +0.443·learning_rate_update[t] +2.284·|prediction_error| -0.241·catch -0.064·v_t -0.110·learning_rate_update^2 +0.341·learning_rate_update*|prediction_error| +0.080·learning_rate_update*catch +0.087·learning_rate_update*v_t +1.012·|prediction_error|^2 -0.034·catch*v_t
+  anchor_update[t+1] = 0
+
+most distinct 2: participant 56 (ID 60)
+  learning_rate_update[t+1] = -0.229 +0.729·learning_rate_update[t] +0.251·|prediction_error| +0.113·catch +0.356·v_t +0.088·learning_rate_update*|prediction_error| -0.054·learning_rate_update*catch +0.044·learning_rate_update*v_t -0.164·|prediction_error|^2 -0.105·|prediction_error|*v_t -0.250·catch*v_t
+  anchor_update[t+1] = +0.154·anchor_shift

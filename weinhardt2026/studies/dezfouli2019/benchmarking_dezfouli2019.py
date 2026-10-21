@@ -1,4 +1,8 @@
+import os
 import sys
+
+import numpy as np
+import pandas as pd
 import torch
 from typing import Union
 
@@ -189,53 +193,91 @@ class GQLModel(torch.nn.Module):
         return 4 * self.d + 2 * self.d
 
 
+DATA_PATH = 'weinhardt2026/studies/dezfouli2019/data/dezfouli2019.csv'
+RAW_DATA_PATH = 'weinhardt2026/studies/dezfouli2019/data_raw/choices_diagno.csv'   # authors' raw data, see docs/studies.md
+# condition of a block (raw data of Dezfouli et al., 2019) -> reward probability of the better response; the other pays 0.05
+CONDITION_LEVELS = {1: 0.25, 2: 0.25, 3: 0.125, 4: 0.125, 5: 0.08, 6: 0.08}
+REWARD_WORSE = 0.05
+REWARD_COLUMNS = ('p_reward_0', 'p_reward_1')
+
+
+def add_reward_probabilities(path_raw: str = RAW_DATA_PATH, path_data: str = DATA_PATH) -> None:
+    """One-off: write each block's condition and the reward probability of each arm (condition, p_reward_0,
+    p_reward_1) into the data.
+
+    The published data (this study's dezfouli2019.csv) dropped the condition of a block; it is in the authors' raw
+    data (path_raw: data_raw/choices_diagno.csv from github.com/adezfouli/rnn_beh, see docs/studies.md). The
+    participants are matched by their complete trial sequences (block, key, reward, best response), which identify
+    all 101 participants uniquely. The block number is only the presentation order: each participant has every
+    condition twice, in varying positions. Which arm is better is read from best_action (the authors' 'R1' response),
+    the level from the condition (1, 2: 0.25; 3, 4: 0.125; 5, 6: 0.08), the other arm pays 0.05.
+    """
+    raw = pd.read_csv(path_raw)
+    raw['action'] = (raw['key'] == 'R2').astype(int)               # R1 (right) -> 0, as in the published data
+    raw['best'] = (raw['choice'] == 'R1').astype(int)
+    df = pd.read_csv(path_data).drop(columns=['condition', *REWARD_COLUMNS], errors='ignore')
+    trials = df.dropna(subset=['choice'])
+
+    def signatures(table, participant, block, action, best):
+        return {p: tuple(zip(g[block], g[action].astype(int), g['reward'].astype(int), g[best].astype(int)))
+                for p, g in table.groupby(participant, sort=False)}
+
+    raw_ids = {sequence: participant for participant, sequence in signatures(raw, 'ID', 'trial', 'action', 'best').items()}
+    matched = {p: raw_ids[sequence] for p, sequence in signatures(trials, 'participant', 'block', 'choice', 'best_action').items()}
+    condition = raw.groupby(['ID', 'trial'])['condition'].first()
+
+    sessions = trials.groupby(['participant', 'block'], sort=False).agg(best_action=('best_action', 'first'), choice=('choice', 'first')).reset_index()
+    sessions['condition'] = [condition[(matched[p], b)] for p, b in zip(sessions['participant'], sessions['block'])]
+    better = np.where(sessions['best_action'], sessions['choice'], 1 - sessions['choice']).astype(int)
+    level = sessions['condition'].map(CONDITION_LEVELS)
+    for arm, column in enumerate(REWARD_COLUMNS):
+        sessions[column] = np.where(better == arm, level, REWARD_WORSE)
+    df = df.merge(sessions[['participant', 'block', 'condition', *REWARD_COLUMNS]], on=['participant', 'block'], how='left')
+    temporary = path_data + '.tmp'
+    df.to_csv(temporary, index=False)
+    os.replace(temporary, path_data)
+
+
+def session_reward_probabilities(path_data: str = DATA_PATH) -> torch.Tensor:
+    """(n_participants, max_block + 1, 2) reward probability of each arm per session, from the data's columns
+    p_reward_0 / p_reward_1 (written from the authors' raw data by add_reward_probabilities). Indices follow
+    csv_to_dataset (participant index, raw block id)."""
+    dataset = csv_to_dataset(file=path_data, additional_inputs=list(REWARD_COLUMNS))
+    xs = dataset.xs[:, 0, 0]
+    participant, block = xs[:, -1].long(), xs[:, -3].long()
+    table = torch.full((int(participant.max()) + 1, int(block.max()) + 1, 2), float('nan'))
+    table[participant, block] = xs[:, 4:6]
+    return table
+
+
 class EnvironmentDezfouli2019(Env):
-    """Two-armed bandit with block-specific Bernoulli reward probabilities.
+    """Two-armed bandit with session-specific Bernoulli reward probabilities.
 
-    Each participant performs 12 blocks. Each block has fixed reward probabilities
-    for each arm. Rewards are binary (0 or 1), sampled from Bernoulli distributions.
-
-    Block-reward-probability mapping (from the original experiment data):
-        Block 1:  (0.25,  0.05)    Block 7:  (0.05, 0.08)
-        Block 2:  (0.05,  0.25)    Block 8:  (0.08, 0.05)
-        Block 3:  (0.05,  0.125)   Block 9:  (0.125, 0.05)
-        Block 4:  (0.125, 0.05)    Block 10: (0.05, 0.125)
-        Block 5:  (0.08,  0.05)    Block 11: (0.05, 0.25)
-        Block 6:  (0.05,  0.08)    Block 12: (0.25, 0.05)
+    Each participant performs 12 blocks; in each block one arm pays with probability 0.25, 0.125 or 0.08 (4 blocks
+    each) and the other with 0.05. Which arm is better and the order of the conditions vary across participants,
+    so the probabilities are looked up per (participant, block) (session_reward_probabilities).
+    Rewards are binary, sampled from Bernoulli distributions.
 
     Sessions are processed in parallel: one session per (participant, block) pair.
     """
 
-    # Reward probabilities indexed by block ID (1-indexed, matching dataset metadata).
-    # Index 0 is unused padding so that block_id maps directly to tensor index.
-    REWARD_PROBS = torch.tensor([
-        [0.00, 0.00],   # index 0: unused (blocks are 1-indexed)
-        [0.25, 0.05],   # block 1
-        [0.05, 0.25],   # block 2
-        [0.05, 0.125],  # block 3
-        [0.125, 0.05],  # block 4
-        [0.08, 0.05],   # block 5
-        [0.05, 0.08],   # block 6
-        [0.05, 0.08],   # block 7
-        [0.08, 0.05],   # block 8
-        [0.125, 0.05],  # block 9
-        [0.05, 0.125],  # block 10
-        [0.05, 0.25],   # block 11
-        [0.25, 0.05],   # block 12
-    ])
-
-    def __init__(self, n_actions: int, n_participants: int, n_blocks: int = 12):
+    def __init__(self, n_actions: int, n_participants: int, n_blocks: int = 12, path_data: str = DATA_PATH, id_divisor: int = 1):
+        """id_divisor: participant ids are divided by it before the lookup (virtual ids, e.g. id = participant * n_steps + step
+        in analysis_morphing)."""
         super().__init__(n_actions, n_participants, n_blocks)
+        self.reward_probabilities = session_reward_probabilities(path_data)
+        self.id_divisor = id_divisor
         self.session_reward_probs = None
 
     def reset(self, block_ids: torch.Tensor, participant_ids: torch.Tensor = None, **kwargs) -> None:
-        """Set up per-session reward probabilities from block IDs.
+        """Set up per-session reward probabilities.
 
         Args:
-            block_ids: (n_sessions,) block index per session (1-indexed from dataset metadata).
-            participant_ids: (n_sessions,) participant index (unused — reward probs are block-specific).
+            block_ids: (n_sessions,) block id per session (raw, 1-indexed, from dataset metadata).
+            participant_ids: (n_sessions,) participant index per session.
         """
-        self.session_reward_probs = self.REWARD_PROBS[block_ids]  # (n_sessions, n_actions)
+        participants = participant_ids.long() // self.id_divisor
+        self.session_reward_probs = self.reward_probabilities[participants, block_ids.long()]  # (n_sessions, n_actions)
 
     def step(self, action: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Sample Bernoulli reward for the chosen arm in each session.
@@ -244,7 +286,7 @@ class EnvironmentDezfouli2019(Env):
             action: (n_sessions,) integer action index (0 or 1) per session.
 
         Returns:
-            reward: (n_sessions,) binary reward (0.0 or 1.0).
+            reward: (n_sessions, 2) binary reward in the chosen arm's column (NaN elsewhere).
             terminated: (n_sessions,) always False (trial count managed externally).
         """
         n_sessions = action.shape[0]
@@ -252,7 +294,7 @@ class EnvironmentDezfouli2019(Env):
         reward = torch.bernoulli(probs)
         reward_cols = torch.full((n_sessions, 2), float('nan'))
         reward_cols[torch.arange(n_sessions), action] = reward
-        
+
         terminated = torch.zeros(n_sessions, dtype=torch.bool)
         return reward_cols, terminated
 

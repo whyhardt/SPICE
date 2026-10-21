@@ -145,7 +145,7 @@ class SpiceEstimator(BaseEstimator):
         self.compiled_forward = compiled_forward
 
         # Save parameters
-        self.save_path_model = save_path_spice
+        self.save_path_spice = save_path_spice
 
         # SINDy training parameters
         self.sindy_weight = sindy_weight
@@ -197,7 +197,8 @@ class SpiceEstimator(BaseEstimator):
             **kwargs_spice_class,
         ).to(device)
 
-        self.use_sindy(use_sindy)
+        self.feature_penalty = feature_penalty
+        self.set_use_sindy(use_sindy)
         
         # group-level weights of the RNN modules (shared features and readout) get the additional feature_penalty;
         # the individual-level gates (weight_context, embeddings) stay in rnn_params
@@ -269,7 +270,7 @@ class SpiceEstimator(BaseEstimator):
 
             verbose=self.verbose,
             keep_log=self.keep_log,
-            path_save_checkpoints=self.save_path_model,
+            path_save_checkpoints=self.save_path_spice,
         )
 
         self.model = rnn_model
@@ -279,9 +280,9 @@ class SpiceEstimator(BaseEstimator):
             print('\nRNN training finished.')
             print(f'Training took {time.time() - start_time:.2f} seconds.')
 
-        if self.save_path_model is not None:
-            print(f'Saving SPICE model to {self.save_path_model}...')
-            self.save_spice(self.save_path_model)
+        if self.save_path_spice is not None:
+            print(f'Saving SPICE model to {self.save_path_spice}...')
+            self.save_spice(self.save_path_spice)
    
     def predict(self, conditions: np.ndarray) -> np.ndarray:
         """
@@ -404,17 +405,18 @@ class SpiceEstimator(BaseEstimator):
         self.model.to(device)
         self.device = device
     
-    def use_sindy(self, mode: bool = True):
-        self._use_sindy = mode
+    def set_use_sindy(self, mode: bool = True):
+        """Forward passes through the SINDy equations (True) or the RNN (False)."""
+        self.use_sindy = mode
         self.model.use_sindy = mode
     
     def eval(self, use_sindy: bool = True):
         self.model.eval(use_sindy=use_sindy)
-        self.use_sindy(mode=use_sindy)
+        self.set_use_sindy(mode=use_sindy)
         
     def train(self, mode: bool = True, use_sindy: bool = False):
         self.model.train(mode=mode, use_sindy=use_sindy)
-        self.use_sindy(mode=self.use_sindy)
+        self.set_use_sindy(mode=use_sindy)
     
     def __call__(self, conditions: torch.Tensor, state: torch.Tensor = None) -> torch.Tensor:
         return self.model(conditions, state)

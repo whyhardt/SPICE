@@ -1,4 +1,3 @@
-import os
 import sys
 from pathlib import Path
 
@@ -18,18 +17,14 @@ from weinhardt2026.studies.kolff2025.benchmarking_kolff2025 import (
 from weinhardt2026.utils.benchmarking_gru import training
 from weinhardt2026.utils.final_models import best_checkpoint, load_best
 from weinhardt2026.analysis.analysis_model_evaluation import analysis_model_evaluation
-from weinhardt2026.analysis.analysis_generative_comparison import run_generative_analysis
 
 
 train_spice = False
 train_gru = False
 
-generate_data = False
 
 path_spice = 'weinhardt2026/studies/kolff2025/params/spice_kolff2025.pkl'   # new fits only; otherwise the best final seed is loaded (utils/final_models.py)
 path_gru = 'weinhardt2026/studies/kolff2025/params/gru_kolff2025.pkl'   # new fits only; otherwise the best final seed is loaded (utils/final_models.py)
-output_dir = 'weinhardt2026/studies/kolff2025/results'
-os.makedirs(output_dir, exist_ok=True)
 
 # -------------------------------------------------------------------------------------------
 # DATALOADER
@@ -106,7 +101,7 @@ else:
     gru = load_best('kolff2025', 'gru')
 
 # -------------------------------------------------------------------------------------------
-# ANALYSIS: MODEL EVALUATION (scored only where the participant acts next)
+# MODEL EVALUATION
 # -------------------------------------------------------------------------------------------
 
 estimator.eval()
@@ -114,7 +109,7 @@ gru.eval().to(torch.device('cpu'))
 benchmark.eval()
 
 print("\n--- Model evaluation (train: likelihood, AIC, BIC; test on held-out dyads: likelihood) ---")
-df_evaluation = analysis_model_evaluation(
+analysis_model_evaluation(
     dataset_train=evaluation_dataset(dataset_train),
     dataset_test=evaluation_dataset(dataset_test),
     spice_model=estimator,
@@ -123,17 +118,5 @@ df_evaluation = analysis_model_evaluation(
     spice_selection='best-on-train',
     trial_filter=has_target,
     benchmark_group_model=True,   # lag-1 logistic regression: one parameter set for all participants
-    output_dir=output_dir,
     verbose=True,
 )
-
-# -------------------------------------------------------------------------------------------
-# GENERATIVE BENCHMARKING
-# -------------------------------------------------------------------------------------------
-# The models predict only whether the participant's next act is grooming, so the simulation is
-# closed-loop on that decision; the partner's acts and the timing of the participant's acts are
-# replayed (benchmarking_kolff2025.generate_behavior). Outputs in results/; also runnable on its own:
-# python weinhardt2026/analysis/analysis_generative_comparison.py kolff2025
-
-if generate_data:
-    run_generative_analysis('kolff2025')   # runs per model: N_REPEATS in analysis_generative.py

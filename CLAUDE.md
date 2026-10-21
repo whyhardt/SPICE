@@ -45,13 +45,18 @@ SPICE/
 │
 ├── weinhardt2026/                      # Paper-specific code (fitting, benchmarking, analyses)
 │   ├── run.py                          # Main entry point for training
-│   ├── studies/                        # Self-contained study directories (see docs/studies.md); analysis_generative.py per study
-│   ├── analysis/                       # Cross-study analysis pipelines (see docs/analyses.md)
-│   └── utils/                          # Shared utilities (generative benchmarking, bandits, etc.)
+│   ├── studies/                        # Self-contained study directories (see docs/studies.md); per study: <study>.py (fit/load + quick evaluation),
+│   │                                   #   spice_/benchmarking_/simulation_<study>.py, data/, params/ (final models), results/<item>/
+│   ├── analysis/                       # Paper analysis scripts (see docs/analyses.md)
+│   ├── figures/                        # Paper figure scripts (model evaluation, mechanisms + beta effects, equation stability)
+│   ├── confusion_matrix/               # Model identification pipeline (SPICE vs benchmark)
+│   ├── benchmark_grid_search/          # Benchmark/GRU hyperparameter grid search
+│   ├── results/                        # Paper results across studies (README.md = index of all paper results)
+│   └── utils/                          # Shared utilities (final models, study simulation modules, generative benchmarking, ...)
 │
 ├── docs/                                          # Documentation and tutorials
 │   ├── training.md                                # Model/training internals (start here for how SPICE fits)
-│   ├── analyses.md                                # Generative benchmarking + downstream analysis pipelines
+│   ├── analyses.md                                # Results layout + paper analysis pipelines
 │   ├── studies.md                                 # Per-study task/population summaries
 │   └── guidelines_polynomial_amenable_architectures.md  # Architecture design guidelines
 ├── pyproject.toml                      # Package config (autospice v0.2.0, Python >=3.11)
@@ -87,7 +92,7 @@ Full details, current constructor signatures, and internals: **[docs/training.md
 
 **Precoded models** (`spice/precoded/`): Rescorla-Wagner, Choice Perseveration, Forgetting, Learning Rate, Interaction, Embedding, DDM, Working Memory (+ variants) — ready-made `BaseModel` subclasses for common cognitive mechanisms.
 
-**Downstream analysis** (`weinhardt2026/analysis/`, see **[docs/analyses.md](docs/analyses.md)**): model evaluation (BIC/AIC/likelihood), model morphing (continuous structural trajectories along a behavioral axis), individual-differences regression on equation coefficients, coefficient clustering (per-module dendrograms of co-occurring terms, permutation-tested) with structural beta effects of those groups on a behavioral metric or between diagnostic groups, generative behavior comparison (`python weinhardt2026/analysis/analysis_generative_comparison.py <study>|all`; study-specific metrics in `studies/<study>/analysis_generative.py`; distribution distance and individual-differences recovery per model), behavioral clustering, and more — plus generative benchmarking (`weinhardt2026/utils/task.py`) for simulating new behavior from a fitted model.
+**Paper analyses** (`weinhardt2026/analysis/`, `weinhardt2026/figures/`, `weinhardt2026/confusion_matrix/`; see **[docs/analyses.md](docs/analyses.md)**), all on the final models (`studies/<study>/params/`, 10 seeds; `weinhardt2026/utils/final_models.py`): model evaluation (held-out prediction, PPC, AIC/BIC), parameter recovery (precision/recall/F1 per dataset size and ground-truth model), discovered mechanisms (term groups recurring across seeds) and their structural beta effects, equation stability across seeds, model identification (confusion matrix SPICE vs benchmark), posterior predictive checks (simulation via `studies/<study>/simulation_<study>.py`), equation tables, model morphing and the hyperparameter grid search. Outputs: `weinhardt2026/results/<item>/` (across studies) and `weinhardt2026/studies/<study>/results/<item>/` (per study); index in `weinhardt2026/results/README.md`.
 
 ---
 
@@ -124,6 +129,6 @@ A living list of gotchas (tensor device reassignment, action-mask overlap, `Spic
 ## Documentation
 
 - **[docs/training.md](docs/training.md)** — `BaseModel`, `SpiceConfig`, `SpiceDataset`, `SpiceEstimator` internals; the two-stage training pipeline; dimension conventions; the precoded-model pattern; architecture design guidelines; common pitfalls.
-- **[docs/analyses.md](docs/analyses.md)** — generative benchmarking and the full `weinhardt2026/analysis/` pipeline (model evaluation, morphing, coefficient distributions/individuals, coefficient clustering and structural beta effects, behavioral clustering, reward-history kernels, parameter recovery), with a suggested analysis sequence for a new study.
+- **[docs/analyses.md](docs/analyses.md)** — the results layout, generative benchmarking and every paper analysis (model evaluation, parameter recovery, mechanisms, beta effects, equation stability, model identification, posterior predictive checks, equation tables, morphing, grid search), with a suggested analysis sequence for a new study.
 - **[docs/studies.md](docs/studies.md)** — what each study in `weinhardt2026/studies/` models, its population, and its benchmark comparison model.
 - Full hosted documentation: https://whyhardt.github.io/SPICE/

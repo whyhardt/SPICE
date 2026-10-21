@@ -1,17 +1,34 @@
 # SPICE Analyses
 
-Two layers of downstream analysis sit on top of a fitted `SpiceEstimator`:
+Everything the paper reports is produced from the **final models** (`weinhardt2026/studies/<study>/params/`, ten seeds per model kind; `weinhardt2026/utils/final_models.py`) by the scripts below, and written to
 
-1. **Generative benchmarking** (`weinhardt2026/utils/task.py`) — simulate new behavior by running the fitted model through the task environment, for comparison against real data (`analysis_generative_comparison.py`, one command per study).
-2. **Cross-study analysis pipelines** (`weinhardt2026/analysis/`) — model evaluation, morphing, coefficient-level statistics, clustering. These operate on a fitted `SpiceEstimator` (and optionally its generated behavior) and are shared across all studies in `weinhardt2026/studies/`.
+- `weinhardt2026/results/<item>/` — results across studies, and
+- `weinhardt2026/studies/<study>/results/<item>/` — results per study.
 
-See [training.md](training.md) for the model/training internals these analyses consume, and [studies.md](studies.md) for how individual studies wire them together.
+[`weinhardt2026/results/README.md`](../weinhardt2026/results/README.md) is the index of what lives where.
+
+| Paper item | Script | Output |
+|---|---|---|
+| Model evaluation | `figures/figure_model_evaluation.py` | `results/model_evaluation/`; per study `results/model_evaluation/` |
+| Parameter recovery | `analysis/analysis_parameter_recovery.py` | `results/parameter_recovery/` |
+| Discovered mechanisms | `figures/figure_mechanisms.py --study <study>` | per study `results/mechanisms/` |
+| Beta effects | `figures/figure_mechanisms.py --study <study>` | per study `results/beta_effects/` |
+| Equation stability | `figures/figure_equation_stability.py all` | per study `results/equation_stability/` |
+| Model identification | `confusion_matrix/` pipeline | `results/model_identification/` |
+| Posterior predictive checks | `analysis/analysis_posterior_predictive.py all` | per study `results/posterior_predictive/` |
+| Equation tables | `analysis/analysis_equation_tables.py all` | per study `results/equations/` |
+| Morphing | `analysis/analysis_morphing.py <study>` | per study `results/morphing/` |
+| Hyperparameter grid search | `analysis/analysis_grid_search.py`, `analysis/analysis_grid_mechanisms.py` | dezfouli2019 `results/grid_search/` |
+
+Paths are relative to `weinhardt2026/`; scripts run from the repository root. The study run scripts (`studies/<study>/<study>.py`) only fit or load the models and print a quick model evaluation of the best seed; they write no results.
+
+See [training.md](training.md) for the model/training internals these analyses consume, and [studies.md](studies.md) for the studies.
 
 ---
 
 ## Generative Benchmarking (`weinhardt2026/utils/task.py`)
 
-Generative benchmarking simulates new behavioral data by running a fitted model through the original task environment. This produces synthetic datasets that can be compared against the original human data — the basis for the generative-comparison and behavioral-clustering analyses below.
+Generative benchmarking simulates new behavioral data by running a fitted model through the original task environment. This produces synthetic datasets that can be compared against the original human data — the basis for the posterior predictive checks and the model-identification datasets below.
 
 ### Architecture
 
@@ -68,9 +85,9 @@ class Env:
 
 `use_sindy` (SPICE-EQ vs SPICE-RNN) is set by the caller. Wrappers that unwrap a `SpiceEstimator` (bruckner2025, weber2024) must not call `BaseModel.eval()` on it: its default `use_sindy=True` would silently turn every SPICE-RNN run into SPICE-EQ.
 
-**Replay what the data record.** Where the CSV stores the outcome of every option on every trial, the environment replays it instead of simulating a reward process, so a model is tested on the trials the participant actually faced: ganesh2024a (`reward_left`/`reward_right`; the contrast–reward contingency changes per block and is not stored), eckstein2026 (`payout_1..4`, scaled like `normalize_rewards`), bruckner2025 (outcomes, change points) and weber2024 (laser trajectories). dezfouli2019, braun2018 and bustamante2023 simulate the task's reward process. kolff2025 replays the partner's acts and the timing of the focal ape's acts and is closed-loop only on the modelled decision (groom or not; the non-grooming act is the real one or, where the real act was grooming, drawn from the observed non-grooming acts).
+**Replay what the data record.** Where the CSV stores the outcome of every option on every trial, the environment replays it instead of simulating a reward process, so a model is tested on the trials the participant actually faced: ganesh2024a (`reward_left`/`reward_right`; the contrast–reward contingency changes per block and is not stored), eckstein2026 (`payout_1..4`, scaled like `normalize_rewards`), bruckner2025 (outcomes, change points) and weber2024 (laser trajectories). dezfouli2019, braun2018 and bustamante2023 simulate the task's reward process (dezfouli2019: Bernoulli rewards with each session's own probabilities, `p_reward_0`/`p_reward_1` from the block condition of the authors' raw data, see [studies.md](studies.md#dezfouli2019--two-armed-bandit-in-depression--bipolar-disorder); the block number does not determine them). kolff2025 replays the partner's acts and the timing of the focal ape's acts and is closed-loop only on the modelled decision (groom or not; the non-grooming act is the real one or, where the real act was grooming, drawn from the observed non-grooming acts).
 
-**Result**: a synthetic `SpiceDataset` with the same shape/metadata as the input, but actions (and derived rewards) drawn from the fitted model instead of the human participant. Feed this into `analysis_generative_comparison.py` or `analysis_behavioral_clustering.py` below.
+**Result**: a synthetic `SpiceDataset` with the same shape/metadata as the input, but actions (and derived rewards) drawn from the fitted model instead of the human participant. The posterior predictive checks and the confusion matrix reach it through each study's `simulation_<study>.py` (see [Posterior Predictive Checks](#posterior-predictive-checks--analysis_posterior_predictivepy)).
 
 ### Study-Specific Environment Pattern
 
@@ -108,18 +125,9 @@ def generate_behavior(model, path_data=None, dataset=None, save_dataset=None):
 
 ---
 
-## Cross-Study Analysis Pipelines (`weinhardt2026/analysis/`)
+## Paper Analyses (`weinhardt2026/analysis/`, `weinhardt2026/figures/`)
 
-All analyses below are study-agnostic functions that take a fitted `SpiceEstimator` (loaded from a `.pkl` checkpoint or passed in-memory) plus a `SpiceDataset`, and write CSVs/plots to an `output_dir`. Each study wires these into its own data paths from `weinhardt2026/studies/<study>/<study>.py` — there are no per-study analysis runner scripts; anything reusable belongs here instead.
-
-Analyses that only read coefficients do not need the training data. `weinhardt2026/utils/checkpoints.py` loads a checkpoint on its own:
-
-```python
-load_estimator(model_path, spice_class, spice_config, n_actions=2,
-               n_participants=None, polynomial_degree=2, model_kwargs=None)
-```
-
-inferring `ensemble_size` and `n_participants` from the saved tensors. It also provides `select_lowest_bic_checkpoint(hpscan_csv, params_dir)`, `participant_label_map(data_path, label_col)` (SPICE's 0-based participant index → a label column) and `log_trials_per_participant(data_path)` (the data-volume covariate that presence regressions adjust for).
+Shared loading: `utils/final_models.py` — `final_checkpoints(study, kind)`, `best_checkpoint(study, kind)` (highest training likelihood; SPICE: of its best member), `load_best`, `model_setup(study, kind)` (path → model loader and training data, kolff2025 included) and `seed_matrices(study)` (per final SPICE seed and module: coefficients, presence = ensemble majority, terms; cached in `results/mechanisms/matrices.pkl`, kolff2025 in `results/equation_stability/`). `utils/study_models.py` — simulation modules (`load_study_module`), `EnsembleMember`, per-member training likelihoods (`member_train_loglik`, `select_spice_members`). `utils/checkpoints.py` loads a single checkpoint without the training data (`load_estimator(model_path, spice_class, spice_config, n_actions=2, n_participants=None, polynomial_degree=2, model_kwargs=None)`).
 
 ### Model Evaluation — `analysis_model_evaluation.py`
 
@@ -147,101 +155,130 @@ analysis_model_evaluation(
 - `analysis_model_evaluation_mse` — parallel pipeline for continuous-output (regression) models with the same `dataset_train`/`dataset_test`/`spice_selection` interface: MSE, RMSE, MAE, R² on both splits, AIC/BIC on the training split from a joint Gaussian likelihood (one MLE variance over all trials; same parameter counting; Benchmark and SPICE-EQ only); `best-on-train` selects the member with the lowest training MSE. Writes `model_evaluation_mse.csv` and a plot of the test metrics.
 - **Result**: a DataFrame (saved as `model_evaluation.csv` in `output_dir`) with one row per model (Benchmark, GRU, SPICE-RNN, SPICE-EQ) and columns `n_parameters`, `n_parameters (total)`, `Train Trial Lik.`, `Train NLL`, `AIC`, `BIC`, `Test Trial Lik.`, `Test NLL` (plus stds) — the standard model-comparison table used to argue SPICE fits at least as well as hand-crafted models.
 
-### One-Step-Ahead Diagnosis — `analysis_sindy_onestepahead.py`
+### Model Comparison Figure — `weinhardt2026/figures/figure_model_evaluation.py`
 
-Diagnoses *why* the fitted SINDy equations underperform the RNN at test time: per-step approximation error vs. autoregressive error accumulation.
+The paper's model comparison: one column per study (discrete studies first, kolff2025 included, then bruckner2025 and weber2024), one bar per model (GRU, Benchmark, SPICE-EQ, SPICE-RNN; bar = mean over the final seeds of `weinhardt2026/utils/final_models.py`, ± SD, white dots = seeds). Data and SPICE estimators are rebuilt as `run.py` built them (`STUDIES` registry), so every model is scored on the split the SPICE checkpoints were trained on.
 
-```python
-analysis_sindy_onestepahead(dataset, spice_model) -> (summary_df, per_trial_df)
+```bash
+python weinhardt2026/figures/figure_model_evaluation.py              # cached evaluation + plot
+python weinhardt2026/figures/figure_model_evaluation.py --recompute  # re-evaluate (new checkpoints)
 ```
 
-Compares three evaluation modes: **SPICE-RNN** (autoregressive, ensemble mean), **SPICE-SINDy (autoregressive)** (equations feed their own past predictions forward), **SPICE-SINDy (one-step-ahead)** (equations receive the RNN's true state at each trial). If one-step-ahead ≈ RNN but autoregressive ≪ RNN → the equations are locally accurate but their errors compound over trials. If one-step-ahead ≪ RNN → the equations poorly approximate the RNN even locally.
+Rows:
+1. **Held-out prediction** (test blocks): discrete → average trial likelihood exp(−NLL / n_trials); continuous → one-step MSE per trial in the response's units (bruckner2025: bucket position, px²; weber2024: angular shield error, deg², with the movement-speed clamping of `spice_weber2024`).
+2. **Posterior predictive check**: read per (model, seed) from the study's `results/posterior_predictive/ppc_scores_instances.csv` (see [Posterior Predictive Checks](#posterior-predictive-checks--analysis_posterior_predictivepy)); discrete → nRMSE, continuous → rollout MSE. Read at plot time, so re-running the checks only needs a re-plot, not `--recompute`.
+3. **AIC / trial** and 4. **BIC / trial** (training blocks, Benchmark and SPICE-EQ only): per (participant, experiment) group, divided by the group's trials, averaged over groups (`grouped_information_criteria`: `aic_per_trial_mean`, `bic_per_trial_mean`). SPICE-EQ counts each group's active coefficients; a SPICE model with one experiment slot (weber2024, `n_experiments=1`) shares it across experiments. Continuous studies use a Gaussian likelihood with per-group MLE variance.
+
+Within a row, the columns of one kind share the y-axis span (the largest range among them), so equal differences look equal: all discrete studies in every row, the continuous studies only in AIC/BIC (their MSEs differ in unit; `SHARED_SPAN`). Bars rise from the bottom of the zoomed axis, not from 0.
+
+**kolff2025** is not in the `STUDIES` registry (`GROUP_STUDIES`, `evaluate_group_study`): its models are group models (one parameter set for all apes), scored only where the ape acts next on the held-out dyads of fold 0; AIC/BIC per trial on the pooled training data, since the parameters are shared. The benchmark (logistic regression) is fit in closed form, so it is one fit (seed 0).
+
+`spice_estimator(spice_module, dataset_train, **overrides)` builds a study's `SpiceEstimator` as `run.py` does (used by `load_spice`, and by the morphing analysis to build estimators with other participant counts).
+
+**Outputs**: `weinhardt2026/results/model_evaluation/` — `figure_model_evaluation.png/.pdf`, `model_evaluation_summary.csv` (mean and SD over seeds, including `ppc`); per study `studies/<study>/results/model_evaluation/model_evaluation.csv` (per model and seed; the cache, re-used unless `--recompute`).
+
+### Parameter Recovery — `analysis_parameter_recovery.py`
+
+Synthetic-data check: Q-learning ground-truth models (`studies/synthetic/`, `benchmarking_qlearning.QLearning`) with every combination of the mechanisms Reward, Asymmetry, Forgetting and Choice simulate datasets of 32–512 participants (8 datasets per size, `utils/generate_synthetic_datasets.py`); SPICE is fit to each with 10 seeds (`slurm_jobs/parameter_recovery.sh`). A term counts as recovered if it is active in more than half of the seeds; binary signals are collapsed (`signal^1 == signal^2`). Writes to `weinhardt2026/results/parameter_recovery/`: `*_metrics_by_mechanism.csv` (per dataset size × ground-truth model: n_fits, TP/TN/FP/FN rates, accuracy, **precision, recall, F1**, F2), `*_metrics.npz` (also the metrics binned by number of parameters, and true vs. fitted coefficients), figures of the classification metrics (overall and by ground-truth model), confusion rates, per-term recovery and true vs. fitted coefficients per dataset size (each also as `_clean` without annotations).
+
+### Discovered Mechanisms — `figures/figure_mechanisms.py`
+
+```bash
+python weinhardt2026/figures/figure_mechanisms.py --study dezfouli2019
+```
+
+Per final SPICE seed, the presence dendrogram of `analysis_coefficient_dendrogram` (terms split by sign, distance 1 − phi, per-module permutation test, FWER) gives that seed's significant groups; `analysis_grid_mechanisms.core_mechanisms` keeps, per family of overlapping groups, the largest term set that at least `VOTES = 5` of the 10 seeds share. Figure, one panel per module: consensus tree (average linkage on the seed-averaged 1 − phi distance of the terms kept in ≥ `VOTES` seeds; modules with fewer than two such terms have no tree), recurring groups coloured with their merge distance per seed (mean ± SD) and the per-seed critical distance at p = .05. Not for kolff2025 (one group model: no individual differences to cluster).
+
+**Outputs** in `studies/<study>/results/mechanisms/`: `figure_<study>_mechanisms.png/.pdf`, `core_mechanisms_distances_votes5.csv` (group, support in seeds, merge distances), caches `matrices.pkl` and `seed_clusters.pkl`. dezfouli2019 additionally has `trajectories/` (`figures/figure_dezfouli2019_trajectories.py`: value trajectories and equations of three participants chosen in embedding space).
+
+### Beta Effects — `figures/figure_mechanisms.py`
+
+The same run tests the structural beta effects of the recurring mechanisms plus all other signed terms (`analysis_coefficient_betas.analysis_mechanism_betas`, presence = carried in ≥ `VOTES` seeds) for the criteria in `BETA_CRITERIA`, on the study's data with its reward column (`utils/participant_metrics.study_data`, `REWARD_COLUMNS`; reward rate = that column averaged over the participant's trials, or summed per block and averaged over blocks):
+
+| Study | Criterion |
+|---|---|
+| dezfouli2019 | reward rate; diagnosis (Depression vs Control, Bipolar vs Control, Bipolar vs Depression) |
+| ganesh2024a, eckstein2026 | reward rate (`reward`) |
+| bustamante2023 | reward per second: every round is a fixed 240 s window, so round total / 240 s, averaged over rounds (travel time and missed responses lower it) |
+| braun2018 | RT switch cost: mean RT on switch minus repeat trials (RTs 200–3000 ms); a participant who never switches has none and is left out |
+| weber2024 | reward rate = catch rate (`laser_caught`) |
+| bruckner2025 | reward rate (`trial_reward` = coin value `r_t` if caught); age group, every pair of children (code 1, 7–11 y), younger adults (3, 20–28 y) and older adults (4, 61–76 y) |
+
+`--merged` (opt-in) adds the merged-group contrasts of `MERGED_CRITERIA` (`criterion_map` maps several codes onto one group): dezfouli2019 Patients (Depression + Bipolar) vs Control, bruckner2025 adults (younger + older) vs children.
+
+```bash
+python weinhardt2026/figures/figure_mechanisms.py --study dezfouli2019 --merged
+```
+
+A continuous criterion that is undefined (NaN) for a participant leaves that participant out of the contrast. The study-specific criteria are defined in `utils/participant_metrics.py`.
+
+**braun2018 reward rate** (morphing default; switch rate was set aside as a criterion as circular — terms that drive switching are necessarily more common in participants who switch more). The points are not in the CSV, but a block ends when they reach 500 (reconstructed from the task values — both start at 5 per block, `current`/`other` flag the ±1 changes caused by the previous choice, `difference` is the display before the choice — the gap-free blocks total 495–508 points; participants are assumed correct on every trial). So the block's points are the target, and the rate is 500 / the block's summed response times (all trials; excluded trials, ~11% of the rows, at the block's mean RT), averaged over the participant's blocks. Summing RTs instead of using the block duration leaves out the response-stimulus interval (200 or 1100 ms, 6 blocks each).
+
+`get_criterion` takes the data as a CSV path or DataFrame and, with `block_col`, sums the criterion per block before averaging over blocks. **Outputs** in `studies/<study>/results/beta_effects/`: `betas_structural_<study>_mechanisms_votes5_<criterion>[_<group>_vs_<reference>].csv` (every node) and `.png` (significant reported leaves only; no plot when none is significant).
+
+### Equation Stability — `figures/figure_equation_stability.py`
+
+```bash
+python weinhardt2026/figures/figure_equation_stability.py all
+```
+
+How reproducibly the final seeds identify the same equations (all eight studies). Per module and term: **agreement** = mean over participants of max(f, 1 − f), f = share of seeds in which the participant carries the term (1 = all seeds agree, 0.5 = maximal disagreement); next to it, per seed, the mean ± SD across participants of the term's coefficient (0 where absent). Terms no seed ever selects are omitted from the figure. **Outputs** in `studies/<study>/results/equation_stability/`: `equation_stability.png/.pdf`, `equation_stability.csv` (agreement, presence rate, coefficient mean and SD over seeds).
+
+### Posterior Predictive Checks — `analysis_posterior_predictive.py`
+
+One script for the whole check: simulates every final model in the study's task, summarizes the simulated and the real behavior with study-specific statistics, scores each model, and saves figures and numbers per study. The model comparison figure reads its overall scores (second row).
+
+```bash
+python weinhardt2026/analysis/analysis_posterior_predictive.py all
+python weinhardt2026/analysis/analysis_posterior_predictive.py braun2018 dezfouli2019 [--n_runs 100] [--recompute]
+```
+
+Simulation and loading come from the study's `studies/<study>/simulation_<study>.py` (`load_dataset`, `load_models`, `generate`; interface and shared helpers in `weinhardt2026/utils/study_models.py`); all blocks are simulated. Models: every final seed of GRU, Benchmark and SPICE (per seed the ensemble member with the highest training likelihood, simulated as SPICE-EQ and SPICE-RNN); a single fit without seeds (kolff2025's logistic-regression benchmark) is one instance.
+
+**Discrete studies** (dezfouli2019, ganesh2024a, eckstein2026, bustamante2023, braun2018, kolff2025) — every instance runs the experiment `N_RUNS = 100` times, run r with `torch.manual_seed(r)` (the same seeds for every model). Every statistic is a ratio of sums over a participant's sessions (e.g. switches / decisions in a cell); a conditional probability needs `MIN_COUNT = 5` decisions of the participant. Statistics are grouped into panels: a single statistic, or a grid of cells (bins from the real data, capturing `COVERAGE = 95%` of the decisions; integer counts binned one per value up to 4, log-spaced above; saved to `ppc_bins.json`).
+
+| Study | Panels |
+|---|---|
+| braun2018 | P(Switch \| point difference × repeats of the current task); P(Switch \| current constant/decrease × other constant/increase). The inputs of trial t condition the decision at t + 1. |
+| bustamante2023 | P(Exit \| harvests in the patch × last reward, 5 exit-threshold bins); mean exit reward; reward rate (reward / time, harvest and travel durations) |
+| dezfouli2019, ganesh2024a, eckstein2026 | P(Best Arm); P(Switch \| Lose); P(Stay \| Win); reward rate (reward / trial); learning curve (P(Best Arm) in 5 bins of block progress). Best arm: dezfouli2019 the session's higher reward probability, eckstein2026 the highest payout on the trial, ganesh2024a the side the block's contingency favors. Win = reward > 0.5. |
+| eckstein2026 | + cyclic sequences per block (4 consecutive choices visiting all arms in one rotational direction) |
+| ganesh2024a | + P(Best Arm \| \|contrast difference\|, 5 quantile bins) |
+| kolff2025 | P(Groom) overall and after partner solicitation / preparation / grooming and own grooming; own acts before the first groom (group models, see `studies/kolff2025/simulation_kolff2025.py`) |
+
+Score: **nRMSE** per statistic and instance = RMSE across participants between the real value and the instance's value pooled over runs, divided by SD(real) (≥ 10 participants). It is paired, so it penalizes both a shifted population and scrambled individuals; even the true model stays above 0 (real values are finite-trial estimates), and a model without individual differences lands near 1. A grid's score is the mean over its cells, the instance's overall score the mean over panels (`panel = all`); reported as mean and SD over instances.
+
+**Continuous studies** (bruckner2025, weber2024) — the models predict deterministically, so every instance makes one autonomous rollout (its predictions are its responses); score: per-trial MSE to the real responses (bucket position, px²; angular shield error, deg²), the same units as the figure's one-step MSE.
+
+**Outputs** in `studies/<study>/results/posterior_predictive/`:
+- `ppc_scalars.png/.pdf` (single statistics) and `ppc_<panel>.png/.pdf` per grid (one small panel per cell): violins in the order GRU, Benchmark, Real, SPICE-EQ, SPICE-RNN over participants × runs × instances (Real: participants); participants as dots (models: pooled over instances and runs) for Benchmark, Real, SPICE-EQ and SPICE-RNN, joined in that order; each model's nRMSE against Real above its violin — for grids in every cell, with the mean over cells per model in the title. Continuous: `ppc_rollout.png/.pdf`, per-participant rollout MSE.
+- `ppc_scores_instances.csv` (per model, instance, seed, panel, statistic), `ppc_scores.csv` (mean and SD over instances), `ppc_participants.csv` (per model, participant and statistic), `ppc_bins.json`.
+- `cache_runs<N>_bins<hash>/` (simulated counts per model and instance) and `cache_rollout.csv`; re-used unless `--recompute`. The bins are part of the cache key, so changing them re-simulates.
+
+Runtime: about 1 s per simulated run, i.e. ~45 min per discrete study with 100 runs × 10 seeds × 4 models on a laptop GPU.
+
+### Equation Tables — `analysis_equation_tables.py`
+
+```bash
+python weinhardt2026/analysis/analysis_equation_tables.py all
+```
+
+**Outputs** in `studies/<study>/results/equations/`:
+- `term_presence.csv` — per (participant, module, term): `presence` = share of the final seeds in which the participant carries the term (within a seed: ensemble majority), `present` = presence ≥ 0.5, with the participant's ID from the data.
+- `example_participants.csv` / `.txt` — the equations of three participants chosen in the RNN's participant-embedding space: the two furthest apart and the most average one (closest to the centroid); distances averaged over every seed and ensemble member, each distance matrix normalized by its mean. Coefficients of the best final seed's best member; the module's own state is reported as its full coefficient (+1, stored as deviation from identity). kolff2025: the single group equation.
 
 ### Model Morphing — `analysis_morphing.py`
 
-Traces how SINDy equation coefficients change along a continuous behavioral/embedding axis (e.g. from healthy to depressed, or low to high reward rate), rather than treating participant groups as discrete.
-
-```python
-run_morphing(
-    estimator, dataset, metric_values, n_steps=20, morphing_range_sd=1.0,
-    n_pruning_rounds=20, pruning_threshold=0.05, save_dir=None,
-) -> dict  # {'member_results': [...]}
-```
-
-1. `_find_morphing_direction` — finds the direction in each ensemble member's participant-embedding space that best predicts `metric_values` (e.g. via `LinearRegression`).
-2. `_create_morphed_dataset` / `_create_morphed_estimator` — steps `n_steps` points along that direction, refitting SINDy coefficients at each point with a fast **ridge → prune → ridge → prune → ... → ridge** cycle (closed-form solves, no SGD — orders of magnitude faster than full retraining).
-3. Aggregates across ensemble members (each has its own RNN/embedding space, so morphing directions are found independently per member) into mean ± SE coefficient curves.
-4. `get_morphed_coefficients(result)` extracts the coefficient trajectories for plotting.
-
-`analysis_morphing(...)` wraps all of the above and is the entry point a study calls:
-
-```python
-analysis_morphing(
-    estimator, dataset, metric_values, output_dir,
-    environment=None,           # a weinhardt2026.utils.task.Env; enables validation
-    n_steps=20, morphing_range_sd=1.0, save_dir=None,
-    n_validation_runs=5, prefix='morphing',
-)
-```
-
-It writes `<prefix>_coefficients.npz` and, when an `environment` is given, calls `validate_morphing()` — which generates behavior from the morphed model at each step and checks that the metric actually follows the axis (monotonicity count + step/metric correlation), writing `<prefix>_validation.npz`. The environment is the only task-specific piece, so it is passed in rather than imported.
-- **Result**: for each SINDy term, a curve of its coefficient value as a function of position along the morphing axis — showing e.g. a nonlinear exploration term's coefficient collapsing toward zero as depression severity increases. This is how SPICE reveals *structural* (not just parametric) individual differences.
-
-### Generative Comparison — `analysis_generative_comparison.py`
-
-Simulates every model in the study's task and compares the simulated behavior with the real participants'. Runnable per study, from the master script or from the study's own file:
-
 ```bash
-python weinhardt2026/analysis/analysis_generative_comparison.py dezfouli2019 [kolff2025 ...] [--n_repeats N] [--cached]
-python weinhardt2026/analysis/analysis_generative_comparison.py all
-python weinhardt2026/studies/dezfouli2019/analysis_generative.py
+python weinhardt2026/analysis/analysis_morphing.py dezfouli2019                      # reward rate
+python weinhardt2026/analysis/analysis_morphing.py braun2018 --metric rt --participant_col subject
 ```
 
-`--cached` re-scores and re-plots the saved `generative_metrics.csv` without simulating. In a study pipeline the `generate_data` flag calls `run_generative_analysis(study)`.
+Traces how the equations change along a continuous behavioral axis, for any study with participant embeddings (not kolff2025). From the best final seed: per ensemble member (each has its own embedding space), the direction in embedding space that best predicts the metric (linear regression; metric: the participant's reward rate by default, `utils/participant_metrics.reward_rate`, or `--metric` — any data column averaged per participant); every participant's embedding moved to `N_STEPS = 20` positions along it (projection mean ± 1 SD), giving P × 20 virtual participants that keep their real training data — all members in one estimator, the RNN frozen. The equations of the virtual participants are then refit with **Stage 2 of training** (`spice_training._run_sindy_training`: sparsity discovery and coefficient estimation with multi-step shooting, which optimizes the equations for autonomous rollouts) and the module cleanup, with the final models' hyperparameters (pruning threshold, ensemble ratio and alpha from the checkpoint name, `run.py` defaults otherwise). Per step and member the mean coefficient and inclusion probability over participants; aggregated over members (mean ± SE). For discrete studies with rewards, the morphed SPICE-EQ is simulated in the task (`simulation_<study>.generate`; `VirtualParticipants` lets the environment keep the real participant IDs) and the mean reward per step reported. The refit costs about a training run's Stage 2 on P × 20 participants: run it on the cluster (`--n_steps`, `--epochs` shrink it for a test). **Outputs** in `studies/<study>/results/morphing/`: `morphing_<metric>.csv`, `morphing_<metric>.png/.pdf`, `morphing_<metric>_validation.csv` (`<metric>` = `reward_rate` by default).
 
-**Study-specific part** — `weinhardt2026/studies/<study>/analysis_generative.py` defines `METRIC_LABELS`, `N_REPEATS` (runs per model: 10, or 1 where the models predict deterministically — bruckner2025, weber2024), `load_dataset()` (all blocks, built as the models were trained on it), `load_models(dataset)`, `generate(model, dataset)` and `compute_metrics(dataset)` (per-session arrays). The master provides vectorized metric helpers (`choices_and_rewards`, `session_mean`, `stays`, `choice_entropy`, `quarter_masks`). For the registered studies, data and models come from the `STUDIES` registry of `weinhardt2026/figures/figure_model_evaluation.py` (as `run.py` built them, via `load_registered_dataset` / `load_registered_models`); kolff2025 builds its own (group models of `kolff2025.py`).
+On the cluster: `sbatch --export=ALL,STUDY=<study>[,METRIC=<column>,PARTICIPANT_COL=<column>] slurm_jobs/morphing.sh`.
 
-**Models.**
-- SPICE: one model per grid-search seed (`params/params/`): the ensemble member whose SPICE-EQ has the highest training likelihood (`select_spice_members`; `EnsembleMember` restricts an estimator's outputs to that member). The same member is simulated as SPICE-EQ and SPICE-RNN. Every (seed, member) likelihood is written to `generative_spice_selection.csv`.
-- GRU and benchmark: single fits, simulated as many times as there are SPICE models, with other random runs, so every model is scored on the same number of models × runs. A list of fits (e.g. seeds of a benchmark grid search) can take the place of the single fit.
-
-**Scores** — per model (instance), then mean and SD over instances; `all` = mean over the metrics:
-- `distance` — Wasserstein distance between the simulated participant values (all runs) and the real ones, divided by the SD of the real values. Lower is better; it asks whether a model gets the population right.
-- `rho` — Spearman correlation across participants between the real value and the model's participant mean over runs: whether individual differences are recovered.
-
-**Outputs** in `studies/<study>/results/`: `generative_behavior.png/.pdf` (one panel per metric; violins in the order GRU, Benchmark, Real, SPICE-EQ, SPICE-RNN over participants × models × runs; for Benchmark, Real and SPICE-EQ every participant is a dot, joined across the three; d and ρ above each violin and averaged over metrics in the title), `generative_metrics.csv` (per model, instance, participant, run), `generative_scores.csv`, `generative_scores_instances.csv`, `generative_spice_selection.csv` and `behavioral_metrics_real.csv` (per-participant real metrics, read by behavioral clustering and the bestbic analyses). With several studies, `weinhardt2026/results/generative_scores_all_studies.csv` holds the across-metric scores per study and one number per model across studies (`study = all`, mean over studies).
-
-### Coefficient Distributions — `analysis_coefficients_distributions.py`
-
-Population-level view of the fitted SINDy coefficients: which terms are present, how consistent they are across the ensemble, and how they compare across experiments.
-
-```python
-analysis_coefficients_distributions(
-    spice_model=None, model_path=None, model_module=None, model_class=None,
-    model_config=None, dataset=None, output_dir="analysis_coefficient_distributions",
-    max_participants_strip=30, cluster_heatmap=True,
-) -> (coeff_df, presence_df, ensemble_consistency_df)
-```
-
-Produces: ensemble-spread plots and CV heatmaps (`compute_ensemble_consistency`, `plot_ensemble_spread`, `plot_ensemble_cv_heatmap`) showing how stable each coefficient is across ensemble members; violin plots of coefficient distributions across participants (`plot_coefficient_violins`); presence-rate bar charts (`plot_presence_rate_bar`) — what fraction of participants retain each term after pruning; experiment-comparison plots (`plot_experiment_comparison`); and a sparsity heatmap (`plot_sparsity_heatmap`) of which terms are active for which participants.
-
-### Individual-Differences Regression — `analysis_coefficients_individuals.py`
-
-Tests whether individual SINDy coefficients relate to an external criterion (diagnosis, questionnaire score, task performance).
-
-```python
-analysis_coefficients_individuals(
-    path_data, criterion, analysis,      # analysis: "disc" (discrete/odds-ratio) or "cont" (continuous)
-    reference=None, spice_model=None, path_model=None, ...,
-    output_dir=None,
-)
-```
-
-- **Discrete** (`run_discrete`): logistic regression of term *presence* on group membership (e.g. patient vs. control), reported as odds ratios with forest plots (`_plot_forest`, `_plot_odds_ratios`) and per-group presence rates (`_plot_presence_rates`).
-- **Continuous** (`run_continuous`): logistic regression of term *presence* on the standardized criterion, adjusted for log data volume, with profile-likelihood CIs, forest plots and fitted logistic curves; `jonckheere_terpstra` tests for monotonic trend across ordered groups.
-- **Result**: statistical evidence for *which mechanisms* (equation terms) differ between groups or scale with a trait — the individual-level counterpart to the morphing analysis above.
-
-### Coefficient Clustering — `analysis_coefficient_dendrogram.py`
+### Coefficient Clustering (library) — `analysis_coefficient_dendrogram.py`
 
 Groups the candidate terms *within each submodule* and draws one dendrogram per module, so a fitted model can be read as a handful of co-occurring groups rather than as dozens of separate terms.
 
@@ -303,7 +340,7 @@ analysis_coefficient_betas(
 3. **Benjamini-Hochberg** runs once over all tested nodes. The family is fixed up front: counting only the nodes the rule below visits would make the family shrink exactly when a group looks significant, so groups that look good would face a milder correction.
 4. **Break-up rule** (`select_reported`): each branch starts at its largest significant group. If that group's effect is significant it is reported and its subgroups are not; if it is n.s., invariant or not estimable, it is broken into its two children, down to single terms. The reported nodes partition the terms. The rule only decides what is *reported*, never how strict the correction is.
 
-**Continuous vs discrete criteria.** A continuous criterion (e.g. reward rate) is one contrast over all participants, predictor = z(criterion); beta is the log-odds of presence per SD. A discrete criterion (e.g. diagnosis) is compared pair by pair — every group against `reference`, or the pairs in `comparisons` — each contrast over the participants of its two groups only, predictor = 1 for the group and 0 for the reference; beta is the log odds ratio of presence in the group vs the reference. **Each contrast is its own analysis**, with its own FDR family and its own break-up, so a group can hold in one contrast and break up in another; as in `analysis_coefficients_individuals`, there is no correction across contrasts. A discrete criterion is read as each participant's first value, whatever `criterion_aggregate` says.
+**Continuous vs discrete criteria.** A continuous criterion (e.g. reward rate) is one contrast over all participants, predictor = z(criterion); beta is the log-odds of presence per SD. A discrete criterion (e.g. diagnosis) is compared pair by pair — every group against `reference`, or the pairs in `comparisons` — each contrast over the participants of its two groups only, predictor = 1 for the group and 0 for the reference; beta is the log odds ratio of presence in the group vs the reference. **Each contrast is its own analysis**, with its own FDR family and its own break-up, so a group can hold in one contrast and break up in another; there is no correction across contrasts. A discrete criterion is read as each participant's first value, whatever `criterion_aggregate` says.
 
 Larger groups tend to break up for two reasons: members whose relation to the metric differs cancel out once all of them are required, and requiring every term shrinks the group toward its rarest member.
 
@@ -311,63 +348,28 @@ Larger groups tend to break up for two reasons: members whose relation to the me
 
 Every model here is cross-sectional across participants: a term whose presence predicts performance does not establish that adding it would change performance.
 
+**Mechanism betas** (`analysis_mechanism_betas`, used by `figure_mechanisms.py`): the leaves are the mechanisms recurring across the final seeds plus every other signed term; a participant carries a node if at least `votes` seeds give it to them. `criterion_map` relabels the criterion before the contrasts (names groups, or merges them by mapping several codes onto one label).
+
 - **Outputs**: per contrast, `betas_structural_<prefix>_<criterion>.{csv,png}` for a continuous criterion and `betas_structural_<prefix>_<criterion>_<group>_vs_<reference>.{csv,png}` for each discrete contrast, so separate runs never overwrite each other. The CSV lists every node (contrast, group, parent, children, depth, all/any, beta, OR, p, q, status, `reported`, `broken_up`); the forest plot shows the reported, tested leaves (filled markers = significant after FDR).
 
-### Deeper Look at One Checkpoint — `analysis_bestbic.py`
+### Model Identification (Confusion Matrix) — `weinhardt2026/confusion_matrix/`
 
-Four analyses that read a single fitted checkpoint (typically the lowest-BIC one from the sparsity scan, via `select_lowest_bic_checkpoint`) and describe how its discovered equations vary across participants.
+Checks that SPICE and the benchmark each identify data simulated by themselves: both simulate one dataset per study, both are refit to both datasets with new seeds (10–19; the final models use 0–9), and the winner per participant gives a 2×2 confusion matrix per study. Laid out like `benchmark_grid_search/` (scripts, `data/`, `runs/<study>/`); all eight studies, kolff2025 included.
 
-```python
-analysis_embedding_dynamics(estimator, dataset, output_dir, results_dir,
-                            label_map=None, module_symbols=None, n_select=3)
-analysis_metric_fingerprint(estimator, output_dir, results_dir, metrics_csv,
-                            data_path, metric='avg_reward', label_map=None)
-analysis_group_betas(estimator, output_dir, results_dir, data_path,
-                     criterion='diag', reference='Control')
-analysis_metric_betas(estimator, output_dir, results_dir, data_path,
-                      metrics_csv, metric='avg_reward')
-```
+1. **Simulate** — `python weinhardt2026/confusion_matrix/generate_datasets.py [--studies ...]`. Per study and generator, the lower-median seed by training likelihood (SPICE: each seed's best ensemble member; simulated as SPICE-EQ) generates one dataset with the study's `simulation_<study>.generate`. kolff2025's benchmark is its single closed-form fit. Continuous studies (bruckner2025, weber2024) simulate from the Gaussian likelihood the models are scored with: prediction + N(0, σ²), σ the generator's MLE residual s.d. per participant on the training data, passed as `noise_std` to the study's `generate_behavior` and added inside the loop (weber2024: angular noise after the speed clamp; the benchmark responds with its expectation instead of a drawn move). Each dataset is the study's CSV with the simulated columns overwritten in raw units (`SIMULATED_COLUMNS`), so both models are fit exactly as on the real data; a round trip through the study's loading pipeline must reproduce the simulation. Writes `data/<study>_sim<generator>.csv`, `data/generators.csv` (generator and refit configuration per dataset) and `data/selection.csv`.
+2. **Fit SPICE on the cluster** — `sbatch slurm_jobs/confusion_matrix.sh` (one array task per study × generator × seed, `run.py` with the study's final grid-search hyperparameters; `DATA_DIR` / `OUT_DIR` redirect a rerun to other folders).
+3. **Fit the benchmarks locally** — `python weinhardt2026/confusion_matrix/fit_benchmarks.py` (`fit_confusion_matrix.fit_run` for every study × generator × seed through the setups of `benchmark_grid_search.py`, which take the simulated CSV as `path_data`; kolff2025: one closed-form fit). Fits land in `runs/<study>/<fitter>_<study>_sim<generator>_rs<seed>.{pkl,json}`; existing ones are skipped.
+4. **Confusion matrices** — `python weinhardt2026/confusion_matrix/analysis_confusion_matrix.py [--cached]`. Every fit is scored on its dataset (SPICE: per seed the member with the highest SPICE-EQ training likelihood) by held-out log-likelihood per trial on the test blocks (also for SPICE-RNN), and AIC and BIC on the training blocks for the benchmark and SPICE-EQ (parameters per participant; kolff2025's group models on the pooled data). Per participant, the model with the better score averaged over seeds wins; the spread pairs the k-th SPICE with the k-th benchmark seed.
 
-1. **Embedding extremes** — the participants furthest apart in participant-embedding space, with their choice / value-update dynamics and their equations rendered as LaTeX (`format_equations_latex`; `module_symbols` maps a module name to its LaTeX symbol, and modules it omits are printed by name).
-2. **Fingerprint** — structural (presence) and parametric (magnitude) coefficient differences ordered by a behavioral metric, adjusted for log data volume.
-3. **Group betas** — presence regression of every coefficient on a discrete grouping column, wrapping `analysis_coefficients_individuals` and dropping near-constant terms.
-4. **Metric betas** — the same against a continuous participant-level metric, attaching it to the behavioural CSV as a participant-constant column first.
+**Outputs** in `weinhardt2026/results/model_identification/`: `confusion_matrix_{loglik,aic,bic}.csv` (rows study × simulating model, columns fitted model: P(wins) and its SD over seed pairs), `figure_confusion_matrix_{loglik,aic,bic}.png/.pdf` (one 2×2 matrix per study, diagonal = correct identification), `confusion_matrix.csv` (long format, with score differences and the inversion matrix P(generator | winner)) and `confusion_scores.csv` (per fit and participant; `--cached` re-aggregates it).
 
-### Archived — coefficient compression and mechanism-level differences
+Simulating a stateful model trial by trial must give the same predictions as one pass over the session — the bruckner2025 benchmark ignored its state until 2026-10-17, and both its generative comparison and its confusion dataset had to be redone.
 
-`analysis_coefficient_compression.py`, `analysis_mechanism_individuals.py`, `analysis_concepts.py` and `analysis_coefficient_ties.py` have moved to `weinhardt2026/analysis/archive/`, together with the core modules they wrapped (`sindy_compression.py`, `sindy_concepts.py`, `sindy_ties.py`, now under `archive/core/`). They compressed per-participant coefficients into a small number of "mechanisms" via per-module NMF and re-tested group differences at the mechanism level. `analysis_coefficient_dendrogram.py` above covers the same question — which coefficients belong together — without a factorization step, and is used for interpretation only.
+### Hyperparameter Grid Search — `analysis_grid_search.py`, `analysis_grid_mechanisms.py`
 
-### Behavioral Clustering — `analysis_behavioral_clustering.py`
+The SPICE grid search (`slurm_jobs/grid_search.sh`, dezfouli2019): `analysis_grid_search.py` scores every checkpoint (in-sample BIC/AIC and trial likelihood, held-out trial likelihood) and dissects the cell table (variance decomposition per hyperparameter, sparsity mediation); `analysis_grid_mechanisms.py` measures mechanism recovery across seeds in every cell. Outputs in `studies/dezfouli2019/results/grid_search/`. The benchmark and GRU grid searches live in `weinhardt2026/benchmark_grid_search/`.
 
-Tests whether clusters found in raw behavior (e.g. average reward, switch rate, from `generate_behavior`) align with structural differences in the fitted equations.
-
-```python
-analysis_behavioral_clustering(
-    spice_model, path_behavioral_metrics, n_clusters=3, output_dir='results',
-) -> dict  # {'labels', 'linkage', 'centroids', 'nearest', 'equation_tests', 'alignment_ari', 'df_metrics'}
-```
-
-1. Loads per-participant behavioral metrics CSV (produced by a generative-behavior analysis).
-2. Hierarchical clustering (`linkage`, `fcluster`, Ward's method) on standardized behavioral metrics.
-3. Extracts equation features (`_extract_equation_features`: coefficients + presence per participant).
-4. Tests whether equation structure differs across behavioral clusters (`_test_equation_differences`: Kruskal-Wallis / Mann-Whitney) and reports `adjusted_rand_score` alignment between behavioral clusters and any independently-known grouping.
-- **Result**: evidence for (or against) the claim that behaviorally-defined subgroups correspond to structurally distinct equations, not just parameter shifts.
-
-### Reward-History Kernel — `analysis_reward_history_kernel.py`
-
-A classic behavioral-analysis baseline, independent of any fitted SPICE model: logistic regression of "stay with previous action" on reward history.
-
-```python
-compute_reward_history_kernel(dataset, max_lag=6) -> dict  # 'lags', 'coef_own', 'coef_other', 'se_own', 'se_other', + statsmodels result
-```
-
-For each trial, regresses `stay = 1[action[t] == action[t-1]]` jointly on reward history for the previously-chosen action (`reward_own`, lags 1..max_lag) and the other action (`reward_other`, lags 2..max_lag; lag-1 is structurally collinear with the intercept and dropped). Works on both real and model-generated datasets — run once on human data and once on `generate_behavior` output to check whether a fitted model reproduces the reward-history kernel shape.
-
-### Parameter Recovery — `analysis_parameter_recovery.py`
-
-Synthetic-data sanity check: simulate a known ground-truth model (e.g. `QLearning` from `weinhardt2026/studies/synthetic/`), fit SPICE to the simulated data, and verify the recovered SINDy coefficients match the ground-truth parameters. Handles term collapsing for binary signals (`signal^1 == signal^2`, e.g. binary reward/choice) when comparing fitted vs. true coefficients.
-
-### Sparsity Hyperparameter Scan — `analysis_sparsity_hpscan.py`
+### Checkpoint Scoring (library) — `analysis_sparsity_hpscan.py`
 
 ```python
 analysis_sparsity_hpscan(
@@ -376,16 +378,31 @@ analysis_sparsity_hpscan(
 ) -> pd.DataFrame
 ```
 
-Evaluates a batch of checkpoints from a pruning-threshold × pruning-test hyperparameter sweep (glob-matched `.pkl` files, e.g. `params_array/spice_dezfouli2019_*_*.pkl`) on held-out `test_blocks`, returning a summary table of predictive performance vs. sparsity level — used to pick `sindy_threshold_pruning` / `sindy_ensemble_pruning` for a study.
+Evaluates a batch of checkpoints from a pruning-threshold × pruning-test hyperparameter sweep (glob-matched `.pkl` files, e.g. `params_array/spice_dezfouli2019_*_*.pkl`) on held-out `test_blocks`, returning a summary table of predictive performance vs. sparsity level — its `evaluate_checkpoint` / `prepare_split` score every checkpoint of the grid search below.
+
+---
+
+### One-Step-Ahead Diagnosis — `analysis_sindy_onestepahead.py`
+
+Called by `weinhardt2026/run.py` after every fit. Diagnoses *why* the fitted SINDy equations underperform the RNN at test time: per-step approximation error vs. autoregressive error accumulation.
+
+```python
+analysis_sindy_onestepahead(dataset, spice_model) -> (summary_df, per_trial_df)
+```
+
+Compares three evaluation modes: **SPICE-RNN** (autoregressive, ensemble mean), **SPICE-SINDy (autoregressive)** (equations feed their own past predictions forward), **SPICE-SINDy (one-step-ahead)** (equations receive the RNN's true state at each trial). If one-step-ahead ≈ RNN but autoregressive ≪ RNN → the equations are locally accurate but their errors compound over trials. If one-step-ahead ≪ RNN → the equations poorly approximate the RNN even locally.
+
+### Retired analyses
+
+Removed on 2026-10-21 and kept only in the git history: coefficient distributions, individual-differences regression on single checkpoints, behavioral clustering, reward-history kernel, the lowest-BIC deep dive, the stage-2.2 behavioral refit, the earlier generative comparison, coefficient compression/concepts/ties, the prototype figure scripts (figures 2–5) and the rare-event prediction (replaced by the posterior predictive checks).
 
 ---
 
 ## Typical Analysis Sequence for a New Study
 
-1. Fit `SpiceEstimator` on training data, then evaluate on the training and held-out data in one call with `analysis_model_evaluation.py`.
-2. Run `analysis_sindy_onestepahead.py` if SINDy test performance lags the RNN, to see whether it's a per-step or accumulation problem.
-3. Inspect population-level equation structure with `analysis_coefficients_distributions.py`.
-4. Relate coefficients to external criteria: `analysis_coefficients_individuals.py` (discrete groups or continuous traits), `analysis_coefficient_betas.py` for structural effects of co-occurring groups and single terms on a behavioral metric, and/or `analysis_morphing.py` for a continuous structural trajectory.
-5. Write `studies/<study>/analysis_generative.py`, run `python weinhardt2026/analysis/analysis_generative_comparison.py <study>` to validate simulated against real behavior, and check the reward-history kernel with `compute_reward_history_kernel`.
-6. Read the fitted equations as a small number of co-occurring groups with `analysis_coefficient_dendrogram.py` (`mode="presence"`, `n_permutations=10000`), or check behavioral-cluster/equation alignment with `analysis_behavioral_clustering.py`.
-7. For the selected checkpoint, run the four `analysis_bestbic.py` analyses (embedding extremes, fingerprint, group and metric betas) to describe how the equations vary across participants.
+1. Fit the final models (grid search, `slurm_jobs/grid_search.sh`; benchmark and GRU: `benchmark_grid_search/`) into `studies/<study>/params/`; add the study to the `STUDIES` registry of `figures/figure_model_evaluation.py` and write `studies/<study>/simulation_<study>.py`.
+2. Model evaluation: `figures/figure_model_evaluation.py --studies <study>`.
+3. Posterior predictive checks: add the study's statistics to `STUDY_SPECS` in `analysis_posterior_predictive.py`, run it, re-plot the model evaluation figure.
+4. Mechanisms and beta effects: add the criteria to `BETA_CRITERIA` and run `figures/figure_mechanisms.py --study <study>`.
+5. Equation stability and equation tables: `figures/figure_equation_stability.py <study>`, `analysis/analysis_equation_tables.py <study>`; optionally `analysis/analysis_morphing.py <study>`.
+6. Model identification: the confusion-matrix pipeline (`weinhardt2026/confusion_matrix/`).

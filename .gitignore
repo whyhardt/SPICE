@@ -55,6 +55,7 @@ weinhardt2026/data/weber2024_raw
 # Files
 *.pkl
 *.csv
+*.csv.gz
 *.png
 *.jpg
 *.pdf

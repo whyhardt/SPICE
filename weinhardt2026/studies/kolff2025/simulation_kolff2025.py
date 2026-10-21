@@ -1,17 +1,6 @@
 """
-Generative analysis for kolff2025 (bonobo grooming interactions, both perspectives of every interaction).
-
-The models predict only whether the focal ape's next act is grooming, so simulation is closed-loop on
-that decision while the partner's acts and the timing of the ape's own acts are replayed
-(benchmarking_kolff2025.generate_behavior). The metrics describe when the ape grooms:
-overall, after the partner's negotiation / preparation / grooming acts, after its own grooming, and
-how many own acts precede its first grooming in an interaction. They are computed on events from the
-second one on (the first event is replayed), identically for real and simulated interactions.
-
-Study-specific part of weinhardt2026/analysis/analysis_generative_comparison.py. Run either
-    python weinhardt2026/analysis/analysis_generative_comparison.py kolff2025
-or
-    python weinhardt2026/studies/kolff2025/analysis_generative.py
+Simulation of kolff2025 (chimpanzee grooming interactions, both perspectives of every interaction) for the posterior predictive checks (analysis/analysis_posterior_predictive.py) and
+the confusion matrix (confusion_matrix/generate_datasets.py); interface: weinhardt2026/utils/study_models.py.
 """
 
 import sys
@@ -19,11 +8,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-import numpy as np
 import torch
 
 from spice import SpiceDataset, SpiceEstimator, csv_to_dataset
-from weinhardt2026.analysis.analysis_generative_comparison import run_generative_analysis, select_spice_members
+from weinhardt2026.utils.study_models import select_spice_members
 from weinhardt2026.utils.final_models import final_checkpoints, load_gru
 from weinhardt2026.studies.kolff2025.spice_kolff2025 import (
     SpiceModel, CONFIG, N_ACTIONS, LOSS_FN, ESTIMATOR_KWARGS, prepare_dataset,
@@ -35,17 +23,8 @@ from weinhardt2026.studies.kolff2025.benchmarking_kolff2025 import (
 
 
 STUDY = 'kolff2025'
-N_REPEATS = 10   # runs per model (GRU, SPICE: one model per seed)
 
-METRIC_LABELS = {
-    'p_groom': 'P(Groom)',
-    'p_groom_after_partner_solicitation': 'P(Groom | Partner Solicited)',
-    'p_groom_after_partner_preparation': 'P(Groom | Partner Prepared)',
-    'p_groom_after_partner_groom': 'P(Groom | Partner Groomed)',
-    'p_groom_after_own_groom': 'P(Groom | Own Groom)',
-    'first_groom_latency': 'Own Acts Before First Groom',
-}
-
+# input columns of the partner's and the ape's own acts (in xs)
 COLUMNS_PARTNER = [N_ACTIONS + CONFIG.additional_inputs.index(c) for c in PARTNER_COLUMNS]
 COLUMNS_SELF = [N_ACTIONS + CONFIG.additional_inputs.index(c) for c in SELF_COLUMNS]
 
@@ -77,56 +56,12 @@ def load_models(dataset: SpiceDataset) -> dict:
     """The final group models (GRU, SPICE: every seed); the benchmark is refit on the same training fold.
     SPICE: per seed the member with the highest training likelihood, scored where the ape acts next."""
     dataset_train, _, _ = get_dataset(test_fold=0)
-
     gru = [load_gru(path, ModelInputGRU) for path in final_checkpoints(STUDY, 'gru')]
     spice = select_spice_members(STUDY, final_checkpoints(STUDY, 'spice'), load_spice, evaluation_dataset(dataset_train))
     return {'GRU': gru, 'Benchmark': LogisticRegressionModel().fit(dataset_train), 'SPICE': spice}
 
 
 def generate(model, dataset: SpiceDataset) -> SpiceDataset:
+    """Closed-loop on whether the ape's next act is grooming; the partner's acts and the timing of the ape's
+    own acts are replayed (benchmarking_kolff2025.generate_behavior)."""
     return generate_behavior(model=model, dataset=dataset)
-
-
-def _conditional(groom: np.ndarray, condition: np.ndarray) -> np.ndarray:
-    """Per-session P(groom) over decision events (groom not NaN) where `condition` holds."""
-    keep = condition & ~np.isnan(groom)
-    n = keep.sum(axis=1)
-    return np.where(n > 0, np.where(keep, groom, 0.).sum(axis=1) / np.maximum(n, 1), np.nan)
-
-
-def compute_metrics(dataset: SpiceDataset) -> dict[str, np.ndarray]:
-    xs = dataset.xs[:, :, 0].numpy()
-    valid = ~np.isnan(xs[..., 0])
-    own = np.nan_to_num(xs[..., COLUMNS_SELF])
-    partner = np.nan_to_num(xs[..., COLUMNS_PARTNER])
-    category = {name: index for index, name in enumerate(c.split('_', 1)[1] for c in SELF_COLUMNS)}
-
-    # decision events: the ape acts, from the second event on; groom = its act is grooming
-    decision = np.zeros_like(valid)
-    decision[:, 1:] = valid[:, 1:] & (own[:, 1:].sum(axis=-1) > 0)
-    groom = np.where(decision, own[..., category['groom']], np.nan)
-
-    previous_partner = np.zeros_like(partner)
-    previous_partner[:, 1:] = partner[:, :-1]
-    previous_own_groom = np.zeros_like(valid)
-    previous_own_groom[:, 1:] = own[:, :-1, category['groom']] == 1
-
-    # own acts (decision events) before the first grooming; interactions without grooming: NaN
-    groomed = groom == 1
-    first = groomed.argmax(axis=1)
-    acts_before = np.cumsum(decision, axis=1) - decision
-    latency = np.where(groomed.any(axis=1), acts_before[np.arange(len(first)), first], np.nan)
-
-    return {
-        'p_groom': _conditional(groom, decision),
-        'p_groom_after_partner_solicitation': _conditional(groom, previous_partner[..., category['grooming_solicitation']] == 1),
-        'p_groom_after_partner_preparation': _conditional(
-            groom, (previous_partner[..., category['reposition_body']] == 1) | (previous_partner[..., category['grooming_process']] == 1)),
-        'p_groom_after_partner_groom': _conditional(groom, previous_partner[..., category['groom']] == 1),
-        'p_groom_after_own_groom': _conditional(groom, previous_own_groom),
-        'first_groom_latency': latency,
-    }
-
-
-if __name__ == '__main__':
-    run_generative_analysis(STUDY)

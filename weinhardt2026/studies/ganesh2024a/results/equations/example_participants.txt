@@ -1,0 +1,20 @@
+checkpoint: spice_ganesh2024a_th0.05_sw0_al0.0005_er0.5_gp0.01_fp0.0001_rs3.pkl
+ensemble member: 3
+
+most distinct 1: participant 54 (ID 319)
+  perception_certainty[t+1] = -3.195 +155.017·contr_diff[t] -90.358·contr_diff[t]^2
+  value_reward_chosen[t+1] = -0.996 +1.269·value_reward_chosen[t] +3.245·reward[t] -0.622·certainty[t] -0.818·value_reward_chosen*reward[t] +1.455·reward[t]*certainty[t] -0.365·certainty[t]^2
+  value_reward_not_chosen[t+1] = +0.154 +1.000·value_reward_not_chosen[t] -0.266·value_reward_not_chosen*certainty[t]
+  value_choice[t+1] = +1.000·value_choice[t]
+
+most average: participant 69 (ID 353)
+  perception_certainty[t+1] = -3.530 +162.355·contr_diff[t] -107.384·contr_diff[t]^2
+  value_reward_chosen[t+1] = -0.246 +1.000·value_reward_chosen[t] +0.807·reward[t] -0.368·certainty[t] -0.254·value_reward_chosen*reward[t] -0.105·value_reward_chosen*certainty[t] +1.126·reward[t]*certainty[t] -0.072·certainty[t]^2
+  value_reward_not_chosen[t+1] = +0.932·value_reward_not_chosen[t] +0.107·certainty[t] -0.114·value_reward_not_chosen*certainty[t]
+  value_choice[t+1] = +1.027·value_choice[t] -0.201·certainty[t] -0.191·value_choice*choice[t] -0.075·value_choice*certainty[t] +0.383·choice[t]*certainty[t] +0.105·certainty[t]^2
+
+most distinct 2: participant 85 (ID 387)
+  perception_certainty[t+1] = 0
+  value_reward_chosen[t+1] = +0.961·value_reward_chosen[t] +0.013·reward[t]
+  value_reward_not_chosen[t+1] = +0.154 +0.720·value_reward_not_chosen[t]
+  value_choice[t+1] = +1.000·value_choice[t]

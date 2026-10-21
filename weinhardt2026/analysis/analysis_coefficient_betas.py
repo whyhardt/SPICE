@@ -82,21 +82,29 @@ from weinhardt2026.utils.checkpoints import load_estimator
 # ---------------------------------------------------------------------------
 
 def get_criterion(
-    data_path: str,
+    data_path,
     criterion_col: str = "reward",
     participant_col: str = "participant",
     aggregate: str = "mean",
+    block_col: Optional[str] = None,
 ) -> pd.DataFrame:
     """Per-participant criterion plus log trial count for the volume check.
+
+    *data_path* is a CSV path or the data as a DataFrame. With *block_col*, the
+    criterion is first summed per block and then aggregated over the participant's
+    blocks (e.g. the block-averaged total reward).
 
     Participant order follows ``df[participant_col].unique()``, which is the same
     order ``csv_to_dataset`` assigns integer participant indices in, so row *i*
     of the returned frame is participant index *i* of the model.
     """
-    raw = pd.read_csv(data_path)
+    raw = data_path if isinstance(data_path, pd.DataFrame) else pd.read_csv(data_path)
     order = list(raw[participant_col].unique())
 
-    criterion = raw.groupby(participant_col)[criterion_col].agg(aggregate)
+    if block_col is None:
+        criterion = raw.groupby(participant_col)[criterion_col].agg(aggregate)
+    else:
+        criterion = raw.groupby([participant_col, block_col])[criterion_col].sum().groupby(level=0).agg(aggregate)
     n_trials = raw.groupby(participant_col).size().rename("n_trials")
 
     frame = pd.concat([criterion, n_trials], axis=1).loc[order].reset_index()
@@ -119,7 +127,8 @@ def check_trial_count(criterion: np.ndarray, log_n_trials: np.ndarray,
         print(f"Trial-count check: log trials across '{criterion_col}' groups, "
               f"Kruskal-Wallis p = {p:.3g}")
     else:
-        r, p = pearsonr(criterion, log_n_trials)
+        defined = np.isfinite(criterion.astype(float))
+        r, p = pearsonr(criterion[defined], log_n_trials[defined])
         print(f"Trial-count check: {criterion_col} ~ log trials, r = {r:+.2f} (p = {p:.3g})")
     if p < alpha:
         print(f"  WARNING: '{criterion_col}' is related to trial count. Term survival "
@@ -359,9 +368,12 @@ def get_contrasts(criterion: np.ndarray, criterion_col: str,
     contrast is its own analysis with its own FDR family.
     """
     if criterion_type == "continuous":
+        defined = np.isfinite(criterion.astype(float))   # participants without the criterion are left out
+        if not defined.all():
+            print(f"'{criterion_col}' undefined for {(~defined).sum()} participant(s): left out of the contrast")
         return [{"name": criterion_col,
-                 "mask": np.ones(len(criterion), dtype=bool),
-                 "predictor": criterion.astype(float),
+                 "mask": defined,
+                 "predictor": criterion[defined].astype(float),
                  "standardize": True,
                  "xlabel": f"log-odds of presence per SD of {criterion_col} (95% CI)"}]
 
@@ -640,7 +652,7 @@ def run_contrasts(candidates: List[dict], criterion: np.ndarray, criterion_col: 
 def analysis_mechanism_betas(
     seed_matrices: List[dict],
     mechanisms: List[Tuple[str, frozenset]],
-    data_path: str,
+    data_path,
     output_dir: str,
     votes: int,
     criterion_col: str = "reward",
@@ -653,6 +665,8 @@ def analysis_mechanism_betas(
     alpha: float = 0.05,
     prefix: str = "mechanisms",
     plot_significant_only: bool = False,
+    criterion_map: Optional[dict] = None,
+    block_col: Optional[str] = None,
 ) -> pd.DataFrame:
     """Structural beta effects of mechanisms recurring across seeds, plus all other terms.
 
@@ -662,10 +676,16 @@ def analysis_mechanism_betas(
     (>= *votes* seeds). A non-significant mechanism is broken up by one step only
     (``get_mechanism_candidates``); as in ``analysis_coefficient_betas``, every
     node is tested up front and forms one FDR family per contrast.
+
+    *criterion_map* relabels the criterion values (discrete: names groups, or merges
+    them by mapping several values onto one label). *data_path* (CSV or DataFrame)
+    and *block_col* as in ``get_criterion``.
     """
     os.makedirs(output_dir, exist_ok=True)
     aggregate = "first" if criterion_type == "discrete" else criterion_aggregate
-    criterion_frame = get_criterion(data_path, criterion_col, participant_col, aggregate)
+    criterion_frame = get_criterion(data_path, criterion_col, participant_col, aggregate, block_col=block_col)
+    if criterion_map is not None:
+        criterion_frame[criterion_col] = criterion_frame[criterion_col].map(criterion_map)
     criterion = criterion_frame[criterion_col].to_numpy()
     check_trial_count(criterion, criterion_frame["log_n_trials"].to_numpy(), criterion_col,
                       criterion_type=criterion_type, alpha=alpha)

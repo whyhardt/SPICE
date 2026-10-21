@@ -7,7 +7,7 @@ For SPICE, the seeds are scored by their best ensemble member (highest training 
 dataset is simulated from that member's SPICE-EQ.
 
 The simulation replays the real experiment (all blocks and participants) with the study's generator
-(studies/<study>/analysis_generative.py: load_dataset, generate). Continuous studies (bruckner2025,
+(studies/<study>/simulation_<study>.py: load_dataset, generate). Continuous studies (bruckner2025,
 weber2024) simulate from the Gaussian likelihood their models are scored with: the response is the
 model's prediction plus N(0, sigma^2), sigma the generator's MLE residual s.d. on the training data
 per (participant, experiment) group, as in the AIC/BIC of figures/figure_model_evaluation.py.
@@ -99,7 +99,7 @@ def load_csv(study: str, path: Path) -> SpiceDataset:
 
 
 def kolff2025_benchmark():
-    """kolff2025's benchmark fit on the training fold (as studies/kolff2025/analysis_generative.load_models), and that fold."""
+    """kolff2025's benchmark fit on the training fold (as studies/kolff2025/simulation_kolff2025.load_models), and that fold."""
     from weinhardt2026.studies.kolff2025.benchmarking_kolff2025 import LogisticRegressionModel, evaluation_dataset, get_dataset
     dataset_train = get_dataset(test_fold=0)[0]
     return LogisticRegressionModel().fit(dataset_train), evaluation_dataset(dataset_train)
@@ -119,15 +119,15 @@ def upsert(path: Path, table: pd.DataFrame, study: str) -> None:
 
 def score_seeds(study: str, generator: str) -> pd.DataFrame:
     """Training log-likelihood per trial of every final seed (SPICE: of its best member's SPICE-EQ)."""
-    from weinhardt2026.analysis.analysis_generative_comparison import member_train_loglik, model_train_loglik
-    from weinhardt2026.utils.final_models import _setup, checkpoint_seed, final_checkpoints
+    from weinhardt2026.utils.study_models import member_train_loglik, model_train_loglik
+    from weinhardt2026.utils.final_models import model_setup, checkpoint_seed, final_checkpoints
 
     if study == 'kolff2025' and generator == 'benchmark':
         model, dataset_train = kolff2025_benchmark()
         return pd.DataFrame([dict(study=study, generator=generator, checkpoint=CLOSED_FORM, seed=None, member=None,
                                   loglik_train=model_train_loglik(study, model, dataset_train))])
 
-    load, dataset_train = _setup(study, generator)
+    load, dataset_train = model_setup(study, generator)
     rows = []
     for path in final_checkpoints(study, generator):
         model = load(path)
@@ -151,12 +151,12 @@ def median_seed(scores: pd.DataFrame) -> pd.Series:
 
 def load_generator(study: str, generator: str, selected: pd.Series):
     """The selected seed as the generative analysis simulates it (SPICE: its member's SPICE-EQ)."""
-    from weinhardt2026.analysis.analysis_generative_comparison import EnsembleMember
-    from weinhardt2026.utils.final_models import _setup
+    from weinhardt2026.utils.study_models import EnsembleMember
+    from weinhardt2026.utils.final_models import model_setup
 
     if selected['checkpoint'] == CLOSED_FORM:
         return kolff2025_benchmark()[0].eval()
-    load, _ = _setup(study, generator)
+    load, _ = model_setup(study, generator)
     model = load(str(ROOT / selected['checkpoint']))
     if generator == 'spice':
         return EnsembleMember(model, int(selected['member'])).eval(use_sindy=True)
@@ -170,7 +170,7 @@ def load_generator(study: str, generator: str, selected: pd.Series):
 @torch.no_grad()
 def predict(model, dataset: SpiceDataset) -> torch.Tensor:
     """Outputs (B, T, W, A) on CPU of a benchmark or an EnsembleMember."""
-    from weinhardt2026.analysis.analysis_generative_comparison import EnsembleMember
+    from weinhardt2026.utils.study_models import EnsembleMember
     from weinhardt2026.figures.figure_model_evaluation import predict as predict_registered
     if not isinstance(model, EnsembleMember):
         return predict_registered(model, dataset)
@@ -183,9 +183,9 @@ def response_noise_std(study: str, generator: str, model, dataset: SpiceDataset)
     """(n_sessions,) noise s.d. of every session of `dataset`: sqrt(SSE / (n * dim)) of the generator on the
     training data of the session's (participant, experiment) group."""
     from weinhardt2026.figures.figure_model_evaluation import continuous_session_sse
-    from weinhardt2026.utils.final_models import _setup
+    from weinhardt2026.utils.final_models import model_setup
 
-    _, dataset_train = _setup(study, generator)
+    _, dataset_train = model_setup(study, generator)
     sse, n_trials, dim = continuous_session_sse(predict(model, dataset_train), dataset_train, study)
     groups = pd.DataFrame({
         'participant': dataset_train.xs[:, 0, 0, -1].long().numpy(),
@@ -454,7 +454,7 @@ def fit_config(study: str) -> dict:
 # -------------------------------------------------------------------------------------------
 
 def generate_study(study: str, out_dir: str, simulation_seed: int) -> None:
-    from weinhardt2026.analysis.analysis_generative_comparison import load_study_module
+    from weinhardt2026.utils.study_models import load_study_module
 
     study_module = load_study_module(study)
     dataset = study_module.load_dataset()

@@ -1,7 +1,8 @@
-import sys, os
+import sys, os, warnings
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
 import torch
 
@@ -18,18 +19,20 @@ mpl.rcParams['svg.fonttype'] = 'none'  # keep text as editable text in vector ex
 mpl.rcParams['pdf.fonttype'] = 42
 
 path_data = 'weinhardt2026/studies/synthetic/data/synthetic_balanced_PARp_IT_0.csv'
-path_model = 'weinhardt2026/studies/synthetic/params/spice_synthetic_balanced_PARp_IT_0_th0.05_al0.001_er0.5_gp0.01_fp0.0001.pkl'
+path_model = 'weinhardt2026/studies/synthetic/params/spice_synthetic_balanced_PARp_IT_0_th0.05_sw0_al0.0005_er0.5_gp0.01_fp0.0001_rsSEED.pkl'
 
 rl_parameters = ['beta_reward', 'beta_choice', 'alpha_reward', 'alpha_penalty', 'alpha_choice', 'forget_rate']
 participants = [32, 64, 128, 256, 512]
 iterations = 8
 coefficient_threshold = 0.01
 ensemble_size = 10
+# training seeds per dataset (SEED in path_model); a term counts as recovered only if it is active in more than half of them
+# (structure is shared within an ensemble, so each seed contributes one vote)
+seeds = list(range(10))
 
-# figures: all annotations (titles, axis labels, tick labels, numbers inside heatmaps) are stripped unless enabled
-show_annotations = False
-path_results = 'weinhardt2026/studies/synthetic/results'
-figure_prefix = os.path.splitext(os.path.basename(path_model))[0]
+# figures are saved twice: annotated and as '_clean' copy without annotations (titles, axis labels, tick labels, numbers inside heatmaps)
+path_results = 'weinhardt2026/results/parameter_recovery'
+figure_prefix = os.path.splitext(os.path.basename(path_model))[0].replace('_rsSEED', f'_{len(seeds)}seeds')
 
 # term collapsing in fitted model from term tuple[1] -> tuple[0]; used for binary signals where signal^1=signal^2, e.g. binary reward or choice
 term_collapsing = (
@@ -128,17 +131,49 @@ def get_active_mechanisms(mechanism_masks):
 # Get true and fitted SINDy coefficients
 # -------------------------------------------------------------------------------
 
+def get_fitted_coefficients(fitted_model):
+    """Ensemble-aggregated, term-collapsed fitted coefficients (n_participants, n_coefficients) in storage layout."""
+
+    fitted_coef_vals = fitted_model.get_sindy_coefficients(aggregate=True)
+    coefs_modules = []
+    for module in fitted_model.get_modules():
+        candidate_terms_fitted_model = fitted_model.sindy_candidate_terms[module]
+        coefs_module = fitted_coef_vals[module][:, 0].detach().cpu().numpy().copy()
+
+        # term collapsing
+        for term in term_collapsing:
+            index_target_term = candidate_terms_fitted_model.index(term[0]) if term[0] in candidate_terms_fitted_model else None
+            index_source_term = candidate_terms_fitted_model.index(term[1]) if term[1] in candidate_terms_fitted_model else None
+            if index_source_term is not None and index_target_term is not None:
+                coefs_module[..., index_target_term] += coefs_module[..., index_source_term]
+                coefs_module[..., index_source_term] = 0
+
+        coefs_modules.append(coefs_module)
+    return np.concatenate(coefs_modules, axis=-1)
+
+def aggregate_seeds(coefs_seeds):
+    """Majority vote over seeds (n_seeds, ...): a term is active if active in more than half the seeds;
+    its value is the median over the seeds in which it is active (0 otherwise)."""
+
+    active_seeds = np.abs(coefs_seeds) >= coefficient_threshold
+    active_majority = active_seeds.sum(axis=0) > len(coefs_seeds) / 2
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', category=RuntimeWarning)  # all-NaN slices: term inactive in every seed
+        median_active = np.nanmedian(np.where(active_seeds, coefs_seeds, np.nan), axis=0)
+    return np.where(active_majority, np.nan_to_num(median_active), 0.)
+
 for index_par, par in enumerate(participants):
     for it in range(iterations):
-        
+
         path_data_replaced = path_data.replace('PAR', str(par)).replace('IT', str(it))
-        path_model_replaced = path_model.replace('PAR', str(par)).replace('IT', str(it))
-        
-        if not os.path.isfile(path_model_replaced):
-            print("FileNotFoundWarning: No such file or directory:", path_model_replaced)
-            print("Skipping file and continuing with next one.")
+        paths_model_replaced = [path_model.replace('PAR', str(par)).replace('IT', str(it)).replace('SEED', str(seed)) for seed in seeds]
+
+        missing = [path for path in paths_model_replaced if not os.path.isfile(path)]
+        if missing:
+            print("FileNotFoundWarning: No such file(s):", *missing, sep='\n  ')
+            print("Skipping dataset and continuing with next one.")
             continue
-        
+
         # load dataset and collect true rl parameters
         dataset = csv_to_dataset(file=path_data_replaced, additional_inputs=rl_parameters)
         dataset.normalize_rewards()
@@ -153,21 +188,24 @@ for index_par, par in enumerate(participants):
             n_participants=par,
             **rl_parameters_dataset,
         )
-        
-        # load fitted model
-        fitted_model = SpiceEstimator(
-            spice_class=SpiceModel,
-            spice_config=CONFIG,
-            n_actions=n_actions,
-            n_participants=par,
-            sindy_library_polynomial_degree=2,
-            ensemble_size=ensemble_size,
-        )
-        fitted_model.load_spice(path_model=path_model_replaced)
-        fitted_model = fitted_model.model
-        fitted_coef_vals = fitted_model.get_sindy_coefficients(aggregate=True)
 
-        # put all coefs into storage
+        # load fitted models (one per seed)
+        fitted_coefs_seeds = []
+        for path_model_replaced in paths_model_replaced:
+            fitted_model = SpiceEstimator(
+                spice_class=SpiceModel,
+                spice_config=CONFIG,
+                n_actions=n_actions,
+                n_participants=par,
+                sindy_library_polynomial_degree=2,
+                ensemble_size=ensemble_size,
+            )
+            fitted_model.load_spice(path_model=path_model_replaced)
+            fitted_model = fitted_model.model
+            fitted_coefs_seeds.append(get_fitted_coefficients(fitted_model))
+        fitted_coefs[index_par, par*it:par*(it+1)] = aggregate_seeds(np.stack(fitted_coefs_seeds))
+
+        # put true coefs into storage (candidate terms are identical across seeds)
         index_coefs_all = 0
         for module in fitted_model.get_modules():
             n_terms_module = fitted_model.sindy_coefficients[module].shape[-1]
@@ -192,22 +230,6 @@ for index_par, par in enumerate(participants):
                 index_coef = candidate_terms_fitted_model.index(term_fitted)
                 true_coefs[index_par, par*it:par*(it+1), index_coefs_all+index_coef] = true_coef_vals * module_present
 
-            # term collapsing
-            for term in term_collapsing:
-                index_target_term = candidate_terms_fitted_model.index(term[0]) if term[0] in candidate_terms_fitted_model else None
-                index_source_term = candidate_terms_fitted_model.index(term[1]) if term[1] in candidate_terms_fitted_model else None
-                if index_source_term is not None and index_target_term is not None:
-                    fitted_coef_vals[module][..., index_target_term] += fitted_coef_vals[module][..., index_source_term]
-                    fitted_coef_vals[module][..., index_source_term] = 0
-            
-            # place fitted module coefs in storage (apply presence mask)
-            # fitted_coef_vals = (
-            #     fitted_model.sindy_coefficients[module][0, :, 0, :] *
-            #     fitted_model.sindy_coefficients_presence[module][0, :, 0, :]
-            # ).detach().cpu().numpy()
-            # fitted_coef_vals = (fitted_model.sindy_coefficients[module][:, :, 0, :].median(dim=0)[0] * fitted_model.sindy_coefficients_presence[module][:, :, 0, :].float().median(dim=0)[0]).detach().cpu().numpy()
-            fitted_coefs[index_par, par*it:par*(it+1), index_coefs_all:index_coefs_all+n_terms_module] = fitted_coef_vals[module][:, 0]
-            
             index_coefs_all += n_terms_module
 
         # store active mechanisms and number of active params per participant
@@ -296,7 +318,30 @@ group_index_mechanisms = np.vectorize(lambda label: mechanism_label_to_index.get
 counts_mechanisms = compute_confusion_counts(group_index_mechanisms, len(mechanism_labels))
 metrics_mechanisms = compute_classification_metrics(counts_mechanisms)
 
-print(precision)
+os.makedirs(path_results, exist_ok=True)
+np.savez(
+    os.path.join(path_results, f'{figure_prefix}_metrics.npz'),
+    participants=np.array(participants),
+    mechanism_labels=np.array(mechanism_labels),
+    **{f'params_{key}': value for key, value in metrics_params.items()},
+    **{f'mechanisms_{key}': value for key, value in metrics_mechanisms.items()},
+    true_coefs=true_coefs,
+    fitted_coefs=fitted_coefs,
+    active_mechanisms=active_mechanisms.astype(str),
+)
+
+# Classification metrics per dataset size and ground-truth model (one row each), the numbers behind the figures
+mechanism_rows = []
+for index_par, par in enumerate(participants):
+    for index_mechanism, (n_params, label) in enumerate(mechanism_types):
+        mechanism_rows.append({
+            'n_participants': par,
+            'ground_truth_model': label.replace('\n', ' + '),
+            'n_parameters': n_params,
+            'n_fits': int(counts_mechanisms['samples'][index_par, index_mechanism]),
+            **{key: value[index_par, index_mechanism] for key, value in metrics_mechanisms.items()},
+        })
+pd.DataFrame(mechanism_rows).to_csv(os.path.join(path_results, f'{figure_prefix}_metrics_by_mechanism.csv'), index=False)
 
 # -------------------------------------------------------------------------------
 # PLOTTING: 2x2 Confusion Matrix Rates
@@ -323,13 +368,12 @@ def strip_annotations(fig):
             child_axis.tick_params(labelbottom=False, labeltop=False, labelleft=False, labelright=False)
 
 def finalize_figure(fig, name):
-    """Strip annotations if disabled, then save the figure to path_results and show it."""
-    if not show_annotations:
-        strip_annotations(fig)
-        name += '_clean'
+    """Save the annotated figure and a '_clean' copy without annotations to path_results, then show it."""
     fig.tight_layout()
     os.makedirs(path_results, exist_ok=True)
     fig.savefig(os.path.join(path_results, f'{figure_prefix}_{name}.png'), bbox_inches='tight')
+    strip_annotations(fig)
+    fig.savefig(os.path.join(path_results, f'{figure_prefix}_{name}_clean.png'), bbox_inches='tight')
     plt.show()
 
 fig, axs = plt.subplots(nrows=2, ncols=3, figsize=(12, 8),

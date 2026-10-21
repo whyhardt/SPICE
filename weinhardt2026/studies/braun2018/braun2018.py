@@ -12,21 +12,15 @@ from weinhardt2026.studies.braun2018.spice_braun2018 import SpiceModel, CONFIG
 from weinhardt2026.utils.benchmarking_gru import GRUModel, training
 from weinhardt2026.utils.final_models import best_checkpoint, load_best
 from weinhardt2026.studies.braun2018.benchmarking_braun2018 import ExpectedValueControl, get_dataset
-from weinhardt2026.analysis.analysis_generative_comparison import run_generative_analysis
 from weinhardt2026.analysis.analysis_model_evaluation import analysis_model_evaluation
-from weinhardt2026.analysis.analysis_coefficients_distributions import analysis_coefficients_distributions
-from weinhardt2026.analysis.analysis_coefficients_individuals import analysis_coefficients_individuals
 
 
 train_spice = False
 train_benchmark = False
 train_gru = False
 
-generate_data = False
 
 path_data = 'weinhardt2026/studies/braun2018/data/braun2018.csv'
-data_dir = 'weinhardt2026/studies/braun2018/data'
-output_dir = 'weinhardt2026/studies/braun2018/results'
 path_spice = 'weinhardt2026/studies/braun2018/params/spice_braun2018.pkl'   # new fits only; otherwise the best final seed is loaded (utils/final_models.py)
 path_benchmark = 'weinhardt2026/studies/braun2018/params/benchmark_braun2018.pkl'   # new fits only; otherwise the best final seed is loaded (utils/final_models.py)
 path_gru = 'weinhardt2026/studies/braun2018/params/gru_braun2018.pkl'   # new fits only; otherwise the best final seed is loaded (utils/final_models.py)
@@ -124,16 +118,13 @@ else:
     gru = load_best('braun2018', 'gru')
 
 # -------------------------------------------------------------------------------------------
-# ANALYSIS
+# MODEL EVALUATION
 # -------------------------------------------------------------------------------------------
 
 estimator.eval()
 benchmark.eval()
 gru.eval()
 
-for pid in range(3):
-    print(f"\nExample SPICE model (participant {pid}):")
-    estimator.print_spice_model(participant_id=pid)
 
 print("\n--- Model evaluation (train: likelihood, AIC, BIC; test: likelihood) ---")
 analysis_model_evaluation(
@@ -142,46 +133,6 @@ analysis_model_evaluation(
     spice_model=estimator,
     benchmark_model=benchmark,
     gru_model=gru,
-    output_dir=output_dir,
     spice_selection='best-on-train',
     verbose=True,
-)
-
-
-# -------------------------------------------------------------------------------------------
-# GENERATIVE BENCHMARKING
-# -------------------------------------------------------------------------------------------
-if generate_data:
-    # simulate every model in the task and compare with the real behavior; outputs in results/.
-    # SPICE: the ensemble member with the lowest training AIC across the grid-search seeds
-    # (also runnable on its own: python weinhardt2026/analysis/analysis_generative_comparison.py braun2018)
-    run_generative_analysis('braun2018')   # runs per model: N_REPEATS in analysis_generative.py
-
-# -------------------------------------------------------------------------------------------
-# ANALYSIS: INDIVIDUAL DIFFERENCES
-# -------------------------------------------------------------------------------------------
-
-analysis_coefficients_distributions(
-    spice_model=estimator,
-    output_dir=output_dir,
-)
-
-# -------------------------------------------------------------------------------------------
-# ANALYSIS: STRUCTURAL GROUP DIFFERENCES
-# -------------------------------------------------------------------------------------------
-
-analysis_coefficients_individuals(
-    spice_model=estimator,
-    path_data=path_data,
-    analysis='cont',
-    criterion='mean_rt',
-    output_dir=output_dir,
-    dataset_kwargs={
-        'df_participant_id': 'subject',
-        'df_choice': 'transcode',
-        'df_feedback': None,
-        'df_block': 'block',
-        'additional_inputs': CONFIG.additional_inputs,
-        'timeshift_additional_inputs': (-1, -1, -1),
-        },
 )

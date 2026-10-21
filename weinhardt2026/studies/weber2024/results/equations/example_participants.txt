@@ -1,0 +1,14 @@
+checkpoint: spice_weber2024_th0.05_sw0_al0.0005_er0.5_gp0_fp0_rs5.pkl
+ensemble member: 8
+
+most distinct 1: participant 20 (ID 36)
+  learning_rate_update[t+1] = +0.427·learning_rate_update[t] +0.037·|prediction_error| -1.342·caught -0.419·stochasticity -0.161·learning_rate_update^2 -0.063·learning_rate_update*|prediction_error| -0.714·learning_rate_update*caught +0.017·learning_rate_update*stochasticity -0.885·|prediction_error|*caught +0.176·caught*stochasticity
+  movement_update[t+1] = -2.712 +1.239·|belief_shield_distance| -0.761·|belief_shield_distance|^2
+
+most average: participant 26 (ID 43)
+  learning_rate_update[t+1] = +0.180 +0.352·learning_rate_update[t] -0.182·|prediction_error| -1.464·caught +0.087·volatility -0.504·stochasticity -0.175·learning_rate_update^2 -0.724·learning_rate_update*caught -0.058·learning_rate_update*volatility -0.809·|prediction_error|*caught +0.200·caught*stochasticity
+  movement_update[t+1] = -2.497 +4.662·|belief_shield_distance| -3.553·|belief_shield_distance|^2
+
+most distinct 2: participant 29 (ID 48)
+  learning_rate_update[t+1] = +0.180 +0.383·learning_rate_update[t] -0.842·|prediction_error| -1.333·caught +0.156·volatility -0.234·stochasticity -0.205·learning_rate_update^2 -0.691·learning_rate_update*|prediction_error| -0.802·learning_rate_update*caught -0.077·learning_rate_update*volatility -0.846·|prediction_error|*caught
+  movement_update[t+1] = -2.578 +9.496·|belief_shield_distance| -8.431·|belief_shield_distance|^2

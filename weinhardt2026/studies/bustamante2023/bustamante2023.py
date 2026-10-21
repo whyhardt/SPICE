@@ -11,16 +11,13 @@ from weinhardt2026.utils.final_models import best_checkpoint, load_best
 from weinhardt2026.studies.bustamante2023.benchmarking_bustamante2023 import (
     EffortCostMVTModel, get_dataset,
 )
-from weinhardt2026.analysis.analysis_generative_comparison import run_generative_analysis
 from weinhardt2026.analysis.analysis_model_evaluation import analysis_model_evaluation
-from weinhardt2026.analysis.analysis_coefficients_distributions import analysis_coefficients_distributions
 
 
 train_spice = False
 train_mvt = False
 train_gru = False
 
-generate_data = False
 
 # -------------------------------------------------------------------------------------------
 # DATALOADER
@@ -31,9 +28,6 @@ test_blocks = (3, 6)
 
 dataset_train, dataset_test, info_dataset = get_dataset(path_data=path_data, test_blocks=test_blocks, verbose=True)
 
-print(f"Shape of dataset: {dataset_train.xs.shape}")
-print(f"Number of participants: {dataset_train.n_participants}")
-print(f"Number of actions in dataset: {dataset_train.n_actions}")
 
 # -------------------------------------------------------------------------------------------
 # SPICE ESTIMATOR
@@ -121,20 +115,7 @@ else:
 
 
 # -------------------------------------------------------------------------------------------
-# ANALYSIS: EXAMPLE SPICE MODEL
-# -------------------------------------------------------------------------------------------
-
-estimator.eval()
-mvt.eval()
-gru.eval()
-
-for participant_id in range(3):
-    print(f"\nExample SPICE model (participant {participant_id}):")
-    estimator.print_spice_model(participant_id=participant_id)
-
-
-# -------------------------------------------------------------------------------------------
-# ANALYSIS: MODEL EVALUATION
+# MODEL EVALUATION
 # -------------------------------------------------------------------------------------------
 
 print("\n--- Model evaluation (train: likelihood, AIC, BIC; test: likelihood) ---")
@@ -144,31 +125,6 @@ analysis_model_evaluation(
     spice_model=estimator,
     benchmark_model=mvt.to(torch.device('cpu')),
     gru_model=gru.to(torch.device('cpu')),
-    output_dir='weinhardt2026/studies/bustamante2023/results',
     spice_selection='best-on-train',
     verbose=True,
 )
-
-
-# -------------------------------------------------------------------------------------------
-# GENERATIVE BENCHMARKING
-# -------------------------------------------------------------------------------------------
-
-data_dir = 'weinhardt2026/studies/bustamante2023/data'
-output_dir = 'weinhardt2026/studies/bustamante2023/results'
-
-if generate_data:
-    # simulate every model in the task and compare with the real behavior; outputs in results/.
-    # SPICE: the ensemble member with the lowest training AIC across the grid-search seeds
-    # (also runnable on its own: python weinhardt2026/analysis/analysis_generative_comparison.py bustamante2023)
-    run_generative_analysis('bustamante2023')   # runs per model: N_REPEATS in analysis_generative.py
-
-
-# -------------------------------------------------------------------------------------------
-# ANALYSIS: COEFFICIENT DISTRIBUTIONS
-# -------------------------------------------------------------------------------------------
-
-# analysis_coefficients_distributions(
-#     spice_model=estimator,
-#     output_dir=output_dir,
-# )

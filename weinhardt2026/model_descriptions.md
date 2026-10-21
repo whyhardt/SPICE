@@ -278,6 +278,14 @@ $R_e = 0.88 \cdot \tfrac{1}{2}(r_t + r_{t-1})$, or $0.88 \cdot r_t$ if trial $t-
 - Every participant is fitted individually, like the other benchmarks; the original model was fitted hierarchically (Stan).
 - On arrival at a fresh tree, the authors' `expectedReward` averages the travel's 0 into $R_e$, which makes the model predict leaving there while participants harvest 95% of the time; fitted that way, the thresholds collapse and leave decisions are barely discriminated (held-out trial likelihood 0.733 vs. 0.784).
 
+### 3.4. Dezfouli 2019: Two-Armed Bandit (Clinical)
+
+**Task and data.** Dezfouli et al. (2019): 101 participants (healthy controls and patients with depression or bipolar disorder) performed 12 blocks of a two-armed bandit with binary rewards. In each block one response paid with probability 0.25, 0.125 or 0.08 (four blocks each per participant) and the other with 0.05; which response was better and the order of the conditions varied across participants and blocks.
+
+**SPICE model and benchmark.** The full shared RL architecture without deviations (Section 1.4); benchmark: Generalized Q-Learning (Dezfouli et al., 2019).
+
+**Reward probabilities used for simulations (to be reported in the SI).** The published data do not record which reward probabilities a block had, and the block number is only the presentation order (each participant has every condition twice, in varying positions). The authors' raw data (github.com/adezfouli/rnn_beh, `data/BD/choices_diagno.csv.zip`, Apache License 2.0; the unpacked csv is kept unchanged as `studies/dezfouli2019/data_raw/choices_diagno.csv`) contain the condition of every block. Conditions 1–2, 3–4 and 5–6 give the better response a reward probability of 0.25, 0.125 and 0.08; the other response pays 0.05 (empirical reward rates 0.247 / 0.122 / 0.082 and 0.055). The better response is the one marked as best in the data. The published, anonymized data were matched to the raw data by each participant's complete trial sequence (block, key, reward, better response), which identifies all 101 participants uniquely, and the condition was transferred to every block. These probabilities are used only where the task is simulated (generative comparison, rollout evaluation); fitting and one-step evaluation use the observed rewards. Note for the SI: the authors' own simulation code assumed a fixed probability pair per block number, which does not hold in their data. Before the raw data were found, the probabilities had been reconstructed from the published data alone (better response from the best-response indicator, level by an exact binomial posterior over all level assignments consistent with four blocks per level); this reconstruction matched the raw-data conditions in 99.3% of the 1,212 blocks.
+
 ## 4. Summary Table
 
 | Study | Task | $A$ | SPICE model | Modules | States | SINDy Degree | Benchmark Model | Benchmark Params/Participant |

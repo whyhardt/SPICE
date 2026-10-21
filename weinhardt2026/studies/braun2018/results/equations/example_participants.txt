@@ -1,0 +1,26 @@
+checkpoint: spice_braun2018_th0.05_sw0_al0.0005_er0.5_gp0.01_fp0.0001_rs4.pkl
+ensemble member: 5
+
+most distinct 1: participant 24 (ID 28)
+  reward_repeat[t+1] = +2.411·dreward_tasks -9.827·dreward_tasks^2
+  reward_switch[t+1] = 0
+  task_repeat[t+1] = -0.168 +0.508·task_repeat[t] +2.574·repeat -0.719·task_repeat*repeat
+  task_switch[t+1] = +0.711 +0.776·task_switch[t] -0.837·repeat +0.003·task_switch^2 +0.053·task_switch*repeat
+  fatigue_repeat[t+1] = 0
+  fatigue_switch[t+1] = 0
+
+most average: participant 50 (ID 63)
+  reward_repeat[t+1] = +0.121 +4.006·dreward_tasks +4.516·dreward_tasks^2
+  reward_switch[t+1] = 0
+  task_repeat[t+1] = -0.075 +0.928·task_repeat[t] +0.660·repeat -0.330·task_repeat*repeat
+  task_switch[t+1] = +0.460 +0.728·task_switch[t] -0.542·repeat +0.216·task_switch*repeat
+  fatigue_repeat[t+1] = -0.081 +0.138·block +0.389·block^2
+  fatigue_switch[t+1] = 0
+
+most distinct 2: participant 25 (ID 29)
+  reward_repeat[t+1] = +1.475 +20.212·dreward_tasks +30.732·dreward_tasks^2
+  reward_switch[t+1] = -0.802 +22.180·dreward_tasks -35.653·dreward_tasks^2
+  task_repeat[t+1] = +0.049 +0.942·task_repeat[t]
+  task_switch[t+1] = +0.085 +1.000·task_switch[t] -0.055·task_switch^2
+  fatigue_repeat[t+1] = +0.080·block^2
+  fatigue_switch[t+1] = 0

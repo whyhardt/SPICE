@@ -11,7 +11,6 @@ from weinhardt2026.studies.ganesh2024a.spice_ganesh2024a import SpiceModel, CONF
 from weinhardt2026.utils.benchmarking_gru import GRUModel, training
 from weinhardt2026.utils.final_models import best_checkpoint, load_best
 from weinhardt2026.studies.ganesh2024a.benchmarking_ganesh2024a import BayesianModel, get_dataset
-from weinhardt2026.analysis.analysis_generative_comparison import run_generative_analysis
 from weinhardt2026.analysis.analysis_model_evaluation import analysis_model_evaluation
 
 
@@ -19,7 +18,6 @@ train_spice = False
 train_bay = False
 train_gru = False
 
-generate_data = False
 
 # -------------------------------------------------------------------------------------------
 # DATALOADER
@@ -30,9 +28,6 @@ test_blocks = (3, 6, 9)
 
 dataset_train, dataset_test, info_dataset = get_dataset(path_data=path_data, test_blocks=test_blocks, verbose=True)
 
-print(f"Shape of dataset: {dataset_train.xs.shape}")
-print(f"Number of participants: {info_dataset['n_participants']}")
-print(f"Number of actions: {info_dataset['n_actions']}")
 
 # -------------------------------------------------------------------------------------------
 # SPICE ESTIMATOR
@@ -105,16 +100,13 @@ else:
     gru = load_best('ganesh2024a', 'gru')
 
 # -------------------------------------------------------------------------------------------
-# ANALYSIS
+# MODEL EVALUATION
 # -------------------------------------------------------------------------------------------
 
 estimator.eval()
 bay.eval()
 gru.eval()
 
-for pid in range(3):
-    print(f"\nExample SPICE model (participant {pid}):")
-    estimator.print_spice_model(participant_id=pid)
 
 print("\n--- Model evaluation (train: likelihood, AIC, BIC; test: likelihood) ---")
 analysis_model_evaluation(
@@ -123,20 +115,6 @@ analysis_model_evaluation(
     spice_model=estimator,
     benchmark_model=bay,
     gru_model=gru,
-    output_dir='weinhardt2026/studies/ganesh2024a/results',
     spice_selection='best-on-train',
     verbose=True,
 )
-
-# -------------------------------------------------------------------------------------------
-# GENERATIVE BENCHMARKING
-# -------------------------------------------------------------------------------------------
-
-data_dir = 'weinhardt2026/studies/ganesh2024a/data'
-output_dir = 'weinhardt2026/studies/ganesh2024a/results'
-
-if generate_data:
-    # simulate every model in the task and compare with the real behavior; outputs in results/.
-    # SPICE: the ensemble member with the lowest training AIC across the grid-search seeds
-    # (also runnable on its own: python weinhardt2026/analysis/analysis_generative_comparison.py ganesh2024a)
-    run_generative_analysis('ganesh2024a')   # runs per model: N_REPEATS in analysis_generative.py

@@ -237,7 +237,7 @@ Main user-facing class implementing sklearn's estimator interface.
 | `loss_fn_kwargs` | `dict` | `{'label_smoothing': 0.01}` | Extra kwargs forwarded to `loss_fn` |
 | `device` | `torch.device` | `cpu` | Compute device |
 | **SPICE / SINDy** ||||
-| `use_sindy` | `bool` | `False` | Enable SINDy integration (forward predictions use equations instead of the RNN) |
+| `use_sindy` | `bool` | `False` | Enable SINDy integration (forward predictions use equations instead of the RNN). The attribute holds the current mode; switch it with `set_use_sindy(mode)`, `eval(use_sindy=...)` or `train(use_sindy=...)` |
 | `sindy_weight` | `float` | `0.01` | Lambda for SINDy regularization loss (`sindy_loss_reg`) |
 | `sindy_alpha` | `float` | `1e-4` | Degree-weighted L1 penalty strength (also used as ridge alpha in Stage 2) |
 | `sindy_library_polynomial_degree` | `int` | `2` | Max polynomial degree for SINDy candidate library |
@@ -496,6 +496,7 @@ When designing `BaseModel` subclasses for SPICE, the architecture determines how
 
 - **`tensor.to(device)` returns a new tensor** — must reassign (`x = x.to(device)`)
 - **Non-parameter tensors** need `register_buffer()` to auto-move with model
+- **`SpiceEstimator` keeps the scikit-learn contract**: every `__init__` argument is stored under its own name (`get_params()` / `clone()` read them back), so don't name a method after an argument (`use_sindy` is the attribute, `set_use_sindy()` the setter)
 - **Hard masking logits with large negative values** can catastrophically inflate CE loss even when only a few targets are masked
 - **Overlapping action masks** in sequential `call_module` calls: second call overwrites first for shared items
 - **Shape mismatches**: Ensure `xs` has shape `(batch, timesteps, features)` and `ys` has shape `(batch, timesteps, actions)`

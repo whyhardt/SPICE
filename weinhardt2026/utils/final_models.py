@@ -11,6 +11,7 @@ the seed with the highest training likelihood (`best_checkpoint`; for SPICE: of 
 """
 
 import os
+import pickle
 import re
 from functools import lru_cache
 from glob import glob
@@ -54,14 +55,14 @@ def load_gru(path: str, gru_class: type = GRUModel, **kwargs) -> GRUModel:
 
 
 @lru_cache
-def _setup(study: str, kind: str):
+def model_setup(study: str, kind: str):
     """(path -> model, training data) for a study's `kind` models."""
     return _kolff2025_setup(kind) if study == 'kolff2025' else _registry_setup(study, kind)
 
 
 def _kolff2025_setup(kind: str):
     """kolff2025 is not in the figure_model_evaluation registry: its own loaders and evaluation data."""
-    from weinhardt2026.studies.kolff2025.analysis_generative import load_spice
+    from weinhardt2026.studies.kolff2025.simulation_kolff2025 import load_spice
     from weinhardt2026.studies.kolff2025.benchmarking_kolff2025 import ModelInputGRU, get_dataset, evaluation_dataset
     if kind == 'benchmark':
         raise ValueError('kolff2025: the benchmark is fit in closed form, there are no checkpoints')
@@ -84,8 +85,8 @@ def _registry_setup(study: str, kind: str):
 @lru_cache
 def best_checkpoint(study: str, kind: str) -> str:
     """The final seed with the highest training log-likelihood per trial (SPICE: of its best member's SPICE-EQ)."""
-    from weinhardt2026.analysis.analysis_generative_comparison import member_train_loglik, model_train_loglik
-    load, dataset_train = _setup(study, kind)
+    from weinhardt2026.utils.study_models import member_train_loglik, model_train_loglik
+    load, dataset_train = model_setup(study, kind)
 
     scores = {}
     for path in final_checkpoints(study, kind):
@@ -104,5 +105,26 @@ def best_checkpoint(study: str, kind: str) -> str:
 
 def load_best(study: str, kind: str):
     """The model of `best_checkpoint`, built as figures/figure_model_evaluation.py registers it."""
-    load, _ = _setup(study, kind)
+    load, _ = model_setup(study, kind)
     return load(best_checkpoint(study, kind))
+
+
+def seed_matrices(study: str) -> dict:
+    """Per final SPICE seed (checkpoint name): each module's coefficient values, presence (ensemble majority) and
+    term names (analysis_coefficient_dendrogram.get_module_matrices). Cached in studies/<study>/results/mechanisms/
+    matrices.pkl (kolff2025, which has no mechanism analysis: results/equation_stability/matrices.pkl)."""
+    from weinhardt2026.analysis.analysis_coefficient_dendrogram import get_module_matrices
+    item = 'equation_stability' if study == 'kolff2025' else 'mechanisms'
+    cache = os.path.join(ROOT, 'weinhardt2026', 'studies', study, 'results', item, 'matrices.pkl')
+    checkpoints = final_checkpoints(study, 'spice')
+    if os.path.exists(cache):
+        with open(cache, 'rb') as file:
+            matrices = pickle.load(file)
+        if sorted(matrices) == sorted(map(os.path.basename, checkpoints)):
+            return matrices
+    load, _ = model_setup(study, 'spice')
+    matrices = {os.path.basename(path): get_module_matrices(load(path)) for path in checkpoints}
+    os.makedirs(os.path.dirname(cache), exist_ok=True)
+    with open(cache, 'wb') as file:
+        pickle.dump(matrices, file)
+    return matrices

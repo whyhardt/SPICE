@@ -12,7 +12,7 @@ import pandas as pd
 
 
 DATA_DIR = Path(__file__).resolve().parent / 'data'
-PATH_ELEMENTS = DATA_DIR / 'Original_data_with_dominance_rank - with dominance rank_ turntaking_df copy.csv'
+PATH_ELEMENTS = DATA_DIR / 'Original_data_with_dominance_rank - with dominance rank_ turntaking_df.csv'
 PATH_OUT = DATA_DIR / 'kolff2025_categories.csv'
 
 CATEGORY_OF_ELEMENT = {

@@ -10,7 +10,7 @@ on between Kayla Kolff, Hyerim Hwang, Sebastian Musslick and Daniel Weinhardt
 
 ## Source file
 
-`Original_data_with_dominance_rank - with dominance rank_ turntaking_df copy.csv`
+`Original_data_with_dominance_rank - with dominance rank_ turntaking_df.csv`
 holds the element-level coding: `SigAct_ID1/2` as behaviour names (e.g.
 `present_back`, `push`), ape name codes, dominance ranks, `interaction_id` and
 `community_id` (CE/WE). It has 6334 rows, 311 interactions and 41 apes.

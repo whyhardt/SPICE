@@ -1,7 +1,7 @@
 """
 Recurring term groups across seeds with their dendrogram distances (any study of figure_model_evaluation.STUDIES).
 
-Per seed (grid-search checkpoints, see figure_model_evaluation.STUDIES): the
+Per seed (final SPICE models, see weinhardt2026/utils/final_models.py): the
 presence dendrogram of ``analysis_coefficient_dendrogram`` — terms split by sign,
 distance 1 - phi, per-module permutation test (FWER) — gives that seed's
 significant groups. ``analysis_grid_mechanisms.core_mechanisms`` then keeps, per
@@ -22,8 +22,14 @@ Then the structural beta effects of these mechanisms plus every other signed ter
 (analysis_coefficient_betas.analysis_mechanism_betas), on reward rate and on
 diagnosis; presence = carried in >= VOTES seeds.
 
+Written to weinhardt2026/studies/<study>/results/:
+    mechanisms/     figure_<study>_mechanisms.pdf/.png, core_mechanisms_distances_votes<VOTES>.csv,
+                    caches (matrices.pkl: utils/final_models.seed_matrices; seed_clusters.pkl)
+    beta_effects/   betas_structural_<study>_mechanisms_votes<VOTES>_<criterion>.csv/.png
+
 Usage:
     python weinhardt2026/figures/figure_mechanisms.py --study dezfouli2019
+    python weinhardt2026/figures/figure_mechanisms.py --study dezfouli2019 --merged   # + merged-group contrasts
 """
 
 import os
@@ -43,11 +49,12 @@ from scipy.spatial.distance import squareform
 import figure_model_evaluation as evaluation
 from weinhardt2026.analysis.analysis_coefficient_dendrogram import (
     cluster_module,
-    get_module_matrices,
     split_by_sign,
 )
 from weinhardt2026.analysis.analysis_grid_mechanisms import core_mechanisms
 from weinhardt2026.analysis.analysis_coefficient_betas import analysis_mechanism_betas
+from weinhardt2026.utils.final_models import seed_matrices
+from weinhardt2026.utils.participant_metrics import study_data
 
 VOTES = 5
 N_PERMUTATIONS = 10000
@@ -58,18 +65,6 @@ NEUTRAL = '#9a9a9a'
 
 
 # ── Per-seed clustering ─────────────────────────────────────────────
-
-def load_matrices(study, output_dir):
-    """Per checkpoint: each module's (values, presence, terms). Cached."""
-    cache = os.path.join(output_dir, 'matrices.pkl')
-    if os.path.exists(cache):
-        return pickle.load(open(cache, 'rb'))
-    spice_module, dataset_train, _ = evaluation.load_study(study)
-    matrices = {os.path.basename(path): get_module_matrices(evaluation.load_spice(path, spice_module, dataset_train))
-                for path in evaluation.STUDIES[study]['checkpoints']()}
-    pickle.dump(matrices, open(cache, 'wb'))
-    return matrices
-
 
 def cluster_seed(matrices):
     """Per module: presence-mode clustering of the sign-split terms (with permutation test)."""
@@ -108,6 +103,8 @@ def consensus_tree(module, seed_results):
     """Average-linkage tree on the seed-averaged 1 - phi distance of terms kept in >= VOTES seeds."""
     counts = pd.Series([t for r in seed_results for t in r[module]['terms']]).value_counts()
     terms = sorted(counts[counts >= VOTES].index)
+    if len(terms) < 2:   # nothing to cluster
+        return terms, None
     index = {t: i for i, t in enumerate(terms)}
     total, n = np.zeros((len(terms),) * 2), np.zeros((len(terms),) * 2)
     for result in seed_results:
@@ -151,6 +148,7 @@ def node_positions(linkage_matrix, n_leaves, leaf_order):
 
 def plot_mechanisms(modules, seed_results, cores, output_path):
     trees = {m: consensus_tree(m, seed_results) for m in modules}
+    modules = [m for m in modules if trees[m][1] is not None]   # modules with < 2 recurring terms have no tree
     height = [max(1.6, 0.36 * len(trees[m][0]) + 0.6) for m in modules]
     fig, axes = plt.subplots(len(modules), 1, figsize=(7.5, sum(height) + 0.8), squeeze=False,
                              gridspec_kw={'height_ratios': height})
@@ -233,12 +231,40 @@ def plot_mechanisms(modules, seed_results, cores, output_path):
 
 # ── Main ────────────────────────────────────────────────────────────
 
-# Structural beta effects per study: (criterion kwargs, ...) for analysis_mechanism_betas
+# Structural beta effects per study: (criterion kwargs, ...) for analysis_mechanism_betas, on the study's data with
+# its per-trial reward column (utils/participant_metrics.study_data). Continuous criteria are per-trial columns
+# averaged per participant (reward rate; bustamante2023: reward per second, averaged over the fixed-length rounds;
+# braun2018: RT switch cost; definitions in utils/participant_metrics.py).
+# bruckner2025 age_group codes (data_raw/participants.tsv): 1 children (7-11 y), 3 younger adults (20-28 y), 4 older adults (61-76 y)
+BRUCKNER_AGE_GROUPS = {1: 'children', 3: 'younger_adults', 4: 'older_adults'}
 BETA_CRITERIA = {
     'dezfouli2019': (
         dict(criterion_col='reward'),
         dict(criterion_col='diag', criterion_type='discrete',
              comparisons=[('Depression', 'Control'), ('Bipolar', 'Control'), ('Bipolar', 'Depression')]),
+    ),
+    'ganesh2024a': (dict(criterion_col='reward', participant_col='subjID'),),
+    'eckstein2026': (dict(criterion_col='reward'),),
+    'bustamante2023': (dict(criterion_col='reward_per_second', participant_col='subject_id', block_col='overall_round'),),
+    'braun2018': (dict(criterion_col='rt_switch_cost', participant_col='subject'),),
+    'bruckner2025': (
+        dict(criterion_col='trial_reward'),
+        dict(criterion_col='age_group', criterion_type='discrete', criterion_map=BRUCKNER_AGE_GROUPS,
+             comparisons=[('younger_adults', 'children'), ('older_adults', 'children'),
+                          ('older_adults', 'younger_adults')]),
+    ),
+    'weber2024': (dict(criterion_col='laser_caught'),),
+}
+# Opt-in (--merged): contrasts of merged groups
+MERGED_CRITERIA = {
+    'dezfouli2019': (
+        dict(criterion_col='diag', criterion_type='discrete',
+             criterion_map={'Control': 'Control', 'Depression': 'Patients', 'Bipolar': 'Patients'},
+             comparisons=[('Patients', 'Control')]),
+    ),
+    'bruckner2025': (
+        dict(criterion_col='age_group', criterion_type='discrete',
+             criterion_map={1: 'children', 3: 'adults', 4: 'adults'}, comparisons=[('adults', 'children')]),
     ),
 }
 
@@ -247,12 +273,14 @@ if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--study', default='dezfouli2019', choices=list(evaluation.STUDIES))
+    parser.add_argument('--merged', action='store_true', help='also run the merged-group contrasts (MERGED_CRITERIA)')
     args = parser.parse_args()
     study = args.study
-    output_dir = os.path.join(ROOT, 'weinhardt2026', 'studies', study, 'results', 'seed_mechanisms')
+    output_dir = evaluation._study_path(study, 'results', 'mechanisms')
+    betas_dir = evaluation._study_path(study, 'results', 'beta_effects')
     os.makedirs(output_dir, exist_ok=True)
 
-    matrices = load_matrices(study, output_dir)
+    matrices = seed_matrices(study)
     clusters = cluster_seeds(matrices, output_dir)
     names = sorted(clusters)
     seed_results = [clusters[n] for n in names]
@@ -268,8 +296,12 @@ if __name__ == '__main__':
 
     # structural beta effects of the recurring mechanisms + all other signed terms
     mechanisms = [(c['module'], c['core']) for c in cores if c['core']]
-    seed_matrices = [matrices[n] for n in names]
-    data_path = evaluation._study_path(study, 'data', f'{study}.csv')
-    for kwargs in BETA_CRITERIA.get(study, ()):
-        analysis_mechanism_betas(seed_matrices, mechanisms, data_path, output_dir, votes=VOTES,
-                                 prefix=f'{study}_mechanisms_votes{VOTES}', plot_significant_only=True, **kwargs)
+    matrices_per_seed = [matrices[n] for n in names]
+    data = study_data(study)
+
+    def run_betas(kwargs):
+        return analysis_mechanism_betas(matrices_per_seed, mechanisms, data, betas_dir, votes=VOTES,
+                                        prefix=f'{study}_mechanisms_votes{VOTES}', plot_significant_only=True, **kwargs)
+
+    for kwargs in BETA_CRITERIA.get(study, ()) + (MERGED_CRITERIA.get(study, ()) if args.merged else ()):
+        run_betas(kwargs)

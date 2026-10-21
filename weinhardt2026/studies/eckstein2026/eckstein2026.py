@@ -10,25 +10,20 @@ from spice import SpiceEstimator
 from weinhardt2026.studies.eckstein2026.spice_eckstein2026 import SpiceModel, CONFIG
 from weinhardt2026.utils.benchmarking_gru import GRUModel, training
 from weinhardt2026.utils.final_models import best_checkpoint, load_best
-from weinhardt2026.studies.eckstein2026.benchmarking_eckstein2026 import Castro2025Model, BestRLModel, get_dataset
-from weinhardt2026.analysis.analysis_generative_comparison import run_generative_analysis
+from weinhardt2026.studies.eckstein2026.benchmarking_eckstein2026 import BestRLModel, get_dataset
 from weinhardt2026.analysis.analysis_model_evaluation import analysis_model_evaluation
-from weinhardt2026.analysis.analysis_coefficients_distributions import analysis_coefficients_distributions
-from weinhardt2026.analysis.analysis_coefficients_individuals import analysis_coefficients_individuals
 
 
 train_spice = False
-train_benchmark = True
+train_benchmark = False
 train_gru = False
 
-generate_data = False
 
 path_data = 'weinhardt2026/studies/eckstein2026/data/eckstein2026.csv'
 # path_data = 'weinhardt2026/studies/eckstein2026/data/public_train.csv'
 path_spice = 'weinhardt2026/studies/eckstein2026/params/spice_eckstein2026.pkl'   # new fits only; otherwise the best final seed is loaded (utils/final_models.py)
 path_benchmark = 'weinhardt2026/studies/eckstein2026/params/benchmark_eckstein2026.pkl'   # new fits only; otherwise the best final seed is loaded (utils/final_models.py)
 path_gru = 'weinhardt2026/studies/eckstein2026/params/gru_eckstein2026.pkl'   # new fits only; otherwise the best final seed is loaded (utils/final_models.py)
-output_dir='weinhardt2026/studies/eckstein2026/results'
 
 # -------------------------------------------------------------------------------------------
 # DATALOADER
@@ -38,9 +33,6 @@ test_blocks = (2,)
 
 dataset_train, dataset_test, info_dataset = get_dataset(path_data=path_data, test_blocks=test_blocks, verbose=True)
 
-print(f"Shape of dataset: {dataset_train.xs.shape}")
-print(f"Number of participants: {dataset_train.n_participants}")
-print(f"Number of actions in dataset: {dataset_train.n_actions}")
 
 # -------------------------------------------------------------------------------------------
 # SPICE ESTIMATOR
@@ -68,20 +60,14 @@ else:
     estimator.load_spice(best_checkpoint('eckstein2026', 'spice'))
 
 # -------------------------------------------------------------------------------------------
-# CASTRO2025 BENCHMARK MODEL
+# BENCHMARK MODEL (BestRL)
 # -------------------------------------------------------------------------------------------
 
-benchmark = Castro2025Model(
+benchmark = BestRLModel(
     n_participants=dataset_train.n_participants,
     n_actions=dataset_train.n_actions,
     batch_first=True,
 )
-
-# benchmark = BestRLModel(
-#     n_participants=dataset_train.n_participants,
-#     n_actions=dataset_train.n_actions,
-#     batch_first=True,
-# )
 
 if train_benchmark:
     optimizer = torch.optim.Adam(params=benchmark.parameters(), lr=0.01)
@@ -95,7 +81,7 @@ if train_benchmark:
     )
     torch.save(benchmark.state_dict(), path_benchmark)
 else:
-    benchmark = load_best('eckstein2026', 'benchmark')   # the final benchmark is BestRLModel (benchmark_grid_search)
+    benchmark = load_best('eckstein2026', 'benchmark')
 
 # -------------------------------------------------------------------------------------------
 # GRU BENCHMARK MODEL
@@ -123,16 +109,13 @@ else:
     gru = load_best('eckstein2026', 'gru')
 
 # -------------------------------------------------------------------------------------------
-# ANALYSIS
+# MODEL EVALUATION
 # -------------------------------------------------------------------------------------------
 
 estimator.eval()
 benchmark.eval()
 gru.eval()
 
-for pid in range(3):
-    print(f"\nExample SPICE model (participant {pid}):")
-    estimator.print_spice_model(participant_id=pid)
 
 print("\n--- Model evaluation (train: likelihood, AIC, BIC; test: likelihood) ---")
 analysis_model_evaluation(
@@ -141,34 +124,6 @@ analysis_model_evaluation(
     spice_model=estimator,
     benchmark_model=benchmark.to(torch.device('cpu')),
     gru_model=gru.eval().to(torch.device('cpu')),
-    output_dir=output_dir,
     spice_selection='best-on-train',
     verbose=True,
-)
-
-if generate_data:
-    # simulate every model in the task and compare with the real behavior; outputs in results/.
-    # SPICE: the ensemble member with the lowest training AIC across the grid-search seeds
-    # (also runnable on its own: python weinhardt2026/analysis/analysis_generative_comparison.py eckstein2026)
-    run_generative_analysis('eckstein2026')   # runs per model: N_REPEATS in analysis_generative.py
-
-# -------------------------------------------------------------------------------------------
-# ANALYSIS: INDIVIDUAL DIFFERENCES
-# -------------------------------------------------------------------------------------------
-
-analysis_coefficients_distributions(
-    spice_model=estimator,
-    output_dir=output_dir,
-)
-
-# -------------------------------------------------------------------------------------------
-# ANALYSIS: BEHAVIORAL DIFFERENCES
-# -------------------------------------------------------------------------------------------
-
-analysis_coefficients_individuals(
-    spice_model=estimator,
-    path_data=path_data,
-    analysis='cont',
-    criterion='mean_reward',
-    output_dir=output_dir,
 )

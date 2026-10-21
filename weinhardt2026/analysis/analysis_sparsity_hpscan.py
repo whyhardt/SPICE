@@ -38,7 +38,7 @@ from weinhardt2026.analysis.analysis_model_evaluation import (
 def _split_likelihood(estimator, split, use_sindy):
     """Ensemble-mean prediction on one split → per-session NLL and pooled trial likelihood."""
     estimator.model.eval()
-    estimator.use_sindy(use_sindy)
+    estimator.set_use_sindy(use_sindy)
     logits, _ = estimator.model(split['xs'])
     # (E, B, T, W, A) → ensemble mean → softmax
     probs = torch.softmax(logits.mean(dim=0), dim=-1).cpu().clamp(1e-9, 1 - 1e-9)

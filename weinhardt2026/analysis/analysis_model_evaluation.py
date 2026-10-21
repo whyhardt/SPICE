@@ -138,12 +138,16 @@ def grouped_information_criteria(
 
     bic_mean, bic_std = _mean_std(bic_group)
     aic_mean, aic_std = _mean_std(aic_group)
+    bic_per_trial_mean, bic_per_trial_std = _mean_std(bic_group / n_trials_group)
+    aic_per_trial_mean, aic_per_trial_std = _mean_std(aic_group / n_trials_group)
     dbic_mean, dbic_std = _mean_std(delta_bic_per_trial_group)
 
     return {
         'nll_total': nll_group.sum().item(),
         'bic_mean': bic_mean, 'bic_std': bic_std,
         'aic_mean': aic_mean, 'aic_std': aic_std,
+        'bic_per_trial_mean': bic_per_trial_mean, 'bic_per_trial_std': bic_per_trial_std,
+        'aic_per_trial_mean': aic_per_trial_mean, 'aic_per_trial_std': aic_per_trial_std,
         'delta_bic_per_trial_mean': dbic_mean, 'delta_bic_per_trial_std': dbic_std,
     }
 
@@ -342,7 +346,7 @@ def _spice_candidates(spice_model: SpiceEstimator, splits: dict, spice_selection
         for split_name, split in splits.items():
             spice_model.model.init_state(batch_size=split['xs'].shape[0])
             logits[name][split_name] = spice_model(split['xs'].to(spice_model.device))[0].detach().cpu()
-    spice_model.use_sindy(True)
+    spice_model.set_use_sindy(True)
 
     if spice_selection == 'averaged-logit':
         n_parameters = {
@@ -651,7 +655,7 @@ def _spice_candidates_mse(spice_model: SpiceEstimator, datasets: dict, spice_sel
         print(f"Evaluating {name} model...")
         spice_model.eval(use_sindy=use_sindy)
         predictions[name] = {split_name: _get_predictions(spice_model, dataset.xs) for split_name, dataset in datasets.items()}
-    spice_model.use_sindy(True)
+    spice_model.set_use_sindy(True)
 
     if spice_selection == 'averaged-logit':
         n_parameters = {
