@@ -26,7 +26,7 @@ import os
 import sys
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-sys.path.insert(0, os.path.join(ROOT, 'weinhardt2026', 'figures'))
+sys.path.insert(0, ROOT)
 
 import numpy as np
 import pandas as pd
@@ -34,7 +34,7 @@ import torch
 import matplotlib.pyplot as plt
 from scipy.spatial.distance import pdist, squareform
 
-import figure_model_evaluation as evaluation
+from weinhardt2026.figures import figure_model_evaluation as evaluation
 from weinhardt2026.utils.final_models import final_checkpoints
 from weinhardt2026.analysis.analysis_equation_tables import format_equations, select_most_average
 

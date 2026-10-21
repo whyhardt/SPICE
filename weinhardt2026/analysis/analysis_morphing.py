@@ -38,7 +38,6 @@ import sys
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 sys.path.insert(0, ROOT)
-sys.path.insert(0, os.path.join(ROOT, 'weinhardt2026', 'figures'))
 
 import numpy as np
 import pandas as pd
@@ -49,7 +48,7 @@ from sklearn.linear_model import LinearRegression
 from spice import SpiceDataset, SpiceEstimator
 from spice.resources.spice_training import _run_sindy_training, cross_entropy_loss
 
-import figure_model_evaluation as evaluation
+from weinhardt2026.figures import figure_model_evaluation as evaluation
 from weinhardt2026.analysis.analysis_coefficient_betas import get_criterion
 from weinhardt2026.analysis.analysis_grid_search import parse_grid_tags
 from weinhardt2026.utils.final_models import best_checkpoint

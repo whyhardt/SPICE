@@ -27,7 +27,7 @@ import os
 import sys
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-sys.path.insert(0, os.path.join(ROOT, 'weinhardt2026', 'figures'))
+sys.path.insert(0, ROOT)
 
 import numpy as np
 import pandas as pd
@@ -35,7 +35,7 @@ import matplotlib.pyplot as plt
 from matplotlib.colors import Normalize
 from matplotlib.cm import ScalarMappable
 
-import figure_model_evaluation as evaluation
+from weinhardt2026.figures import figure_model_evaluation as evaluation
 from weinhardt2026.utils.final_models import seed_matrices
 
 MODULES_PER_ROW = 3
