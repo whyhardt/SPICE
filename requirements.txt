@@ -6,3 +6,6 @@ matplotlib==3.10.1
 scikit-learn==1.7.0
 torch==2.7.1
 tqdm==4.67.1
+
+# Paper analyses (weinhardt2026/)
+statsmodels==0.14.4
