@@ -19,7 +19,7 @@ Two views are available via ``mode``:
 
 Usage:
 
-    python -m weinhardt2026.analysis.analysis_coefficient_dendrogram \
+    python -m spice.utils.analysis.coefficient_dendrogram \
         --model weinhardt2026/studies/dezfouli2019/params_array/spice_dezfouli2019_0.05_0.5.pkl \
         --module spice.precoded.workingmemory \
         --n-participants 101 \
@@ -29,20 +29,16 @@ Usage:
 import argparse
 import importlib
 import os
-import sys
 from typing import Dict, List, Optional
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import torch
 from scipy.cluster.hierarchy import dendrogram, fcluster, linkage
 from scipy.spatial.distance import squareform
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
-
 from spice import BaseModel, SpiceConfig, SpiceEstimator
-from weinhardt2026.utils.checkpoints import load_estimator
+from spice.utils.analysis.loading import load_estimator
 
 
 # ---------------------------------------------------------------------------
@@ -79,7 +75,7 @@ def split_by_sign(data: dict) -> dict:
     switching), so for structural analyses the direction is part of the
     structure. The two signs of one term exclude each other (phi < 0) and never
     group together. A sign nobody carries is dropped here; rare ones fall to
-    ``min_active_fraction`` later.
+    ``min_carriers`` later.
     """
     values, present, terms = data["values"], data["presence"] > 0, data["terms"]
     columns_values, columns_presence, names = [], [], []
@@ -280,7 +276,7 @@ def cluster_module(
     metric: str = "abs",
     linkage_method: str = "average",
     distance_threshold: float = 0.5,
-    min_active_fraction: float = 0.05,
+    min_carriers: int = 5,
     min_overlap: int = 30,
     pairwise_complete: bool = True,
     n_permutations: int = 0,
@@ -297,8 +293,11 @@ def cluster_module(
     variance = values.std(axis=0)
 
     # Terms that are pruned for (almost) everyone carry no across-participant
-    # structure — they are part of the discovered equation form, not of it.
-    keep = (active_fraction >= min_active_fraction) & (variance > 1e-12)
+    # structure — they are part of the discovered equation form, not of it. A count,
+    # not a share: the same rule for samples of any size, and above the fewest
+    # carriers whose perfect co-occurrence could still survive the per-module
+    # correction (Tarone 1990; at most 4 in the paper's studies).
+    keep = ((presence > 0).sum(axis=0) >= min_carriers) & (variance > 1e-12)
     kept_terms = [t for t, k in zip(terms, keep) if k]
 
     dropped = pd.DataFrame({
@@ -377,7 +376,7 @@ def stacked_clustering(
     data: dict,
     n_permutations: int = 10000,
     grouping_alpha: float = 0.05,
-    min_active_fraction: float = 0.05,
+    min_carriers: int = 5,
     min_overlap: int = 30,
     metric: str = "abs",
     linkage_method: str = "average",
@@ -395,7 +394,7 @@ def stacked_clustering(
     split = split_by_sign(data)
     presence_result = cluster_module(
         values=split["values"], presence=split["presence"], terms=split["terms"],
-        mode="presence", linkage_method=linkage_method, min_active_fraction=min_active_fraction,
+        mode="presence", linkage_method=linkage_method, min_carriers=min_carriers,
         n_permutations=n_permutations, grouping_alpha=grouping_alpha, seed=seed,
     )
 
@@ -407,7 +406,7 @@ def stacked_clustering(
             values=split["values"][:, columns], presence=split["presence"][:, columns], terms=members,
             mode="coefficients", metric=metric, linkage_method=linkage_method,
             # membership was already filtered in stage 1
-            min_active_fraction=0.0, min_overlap=min_overlap, pairwise_complete=True,
+            min_carriers=0, min_overlap=min_overlap, pairwise_complete=True,
             n_permutations=n_permutations, grouping_alpha=grouping_alpha, seed=seed,
         )
         groups.append({"members": members, "ties": multi_term_clusters(tie_result),
@@ -738,7 +737,7 @@ def analysis_coefficient_dendrogram(
     metric: str = "abs",
     linkage_method: str = "average",
     distance_threshold: float = 0.5,
-    min_active_fraction: float = 0.05,
+    min_carriers: int = 5,
     min_overlap: int = 30,
     pairwise_complete: bool = True,
     n_permutations: int = 0,
@@ -792,7 +791,7 @@ def analysis_coefficient_dendrogram(
             metric=metric,
             linkage_method=linkage_method,
             distance_threshold=distance_threshold,
-            min_active_fraction=min_active_fraction,
+            min_carriers=min_carriers,
             min_overlap=min_overlap,
             pairwise_complete=pairwise_complete,
             n_permutations=n_permutations,
@@ -898,7 +897,8 @@ def main():
     parser.add_argument("--linkage", dest="linkage_method",
                         choices=["average", "complete", "single", "weighted"], default="average")
     parser.add_argument("--distance-threshold", type=float, default=0.5)
-    parser.add_argument("--min-active-fraction", type=float, default=0.05)
+    parser.add_argument("--min-carriers", type=int, default=5,
+                        help="Minimum participants carrying a term for it to be clustered")
     parser.add_argument("--min-overlap", type=int, default=30,
                         help="Minimum co-present participants for a pair to be correlated")
     parser.add_argument("--full-columns", action="store_true",
@@ -937,7 +937,7 @@ def main():
         metric=args.metric,
         linkage_method=args.linkage_method,
         distance_threshold=args.distance_threshold,
-        min_active_fraction=args.min_active_fraction,
+        min_carriers=args.min_carriers,
         min_overlap=args.min_overlap,
         pairwise_complete=not args.full_columns,
         n_permutations=args.n_permutations,

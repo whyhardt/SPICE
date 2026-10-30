@@ -8,7 +8,7 @@ See `spice.resources.spice_direct_training` for the method.
 Uses `spice.precoded.workingmemory` -- the same architecture as the
 `params_array/` hyperparameter scan, so the numbers here are directly
 comparable to the RNN-mediated checkpoints evaluated by
-`weinhardt2026/analysis/analysis_sparsity_hpscan.py`. (Note that
+`evaluate_checkpoint` in `weinhardt2026/analysis/grid_search/run_spice_grid_search.py`. (Note that
 `dezfouli2019.py` itself currently imports `spice.precoded.choice`, a
 different and smaller model.)
 
@@ -35,7 +35,7 @@ import torch
 from spice import SpiceEstimator, csv_to_dataset, split_data_along_blockdim
 from spice.precoded.workingmemory import SpiceModel, CONFIG
 from spice.resources.spice_direct_training import fit_spice_direct
-from weinhardt2026.analysis.analysis_model_evaluation import analysis_model_evaluation
+from weinhardt2026.analysis.evaluation.model_evaluation import analysis_model_evaluation
 
 
 # ---------------------------------------------------------------------------

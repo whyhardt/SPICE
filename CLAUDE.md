@@ -41,18 +41,21 @@ SPICE/
 │   │   └── workingmemory_*.py          # Working memory variants
 │   └── utils/
 │       ├── convert_dataset.py          # CSV ↔ SpiceDataset conversion pipeline
-│       └── plotting.py                 # Visualization utilities
+│       ├── plotting.py                 # Visualization utilities
+│       └── analysis/                   # Generic analyses of any directory of SPICE fits (no study names):
+│                                       #   equation_discovery.py (mechanisms, correlations, beta effects),
+│                                       #   coefficient_dendrogram.py, coefficient_betas.py, loading.py
 │
 ├── weinhardt2026/                      # Paper-specific code (fitting, benchmarking, analyses)
 │   ├── run.py                          # Main entry point for training
 │   ├── studies/                        # Self-contained study directories (see docs/studies.md); per study: <study>.py (fit/load + quick evaluation),
 │   │                                   #   spice_/benchmarking_/simulation_<study>.py, data/, params/ (final models), results/<item>/
-│   ├── analysis/                       # Paper analysis scripts (see docs/analyses.md)
-│   ├── figures/                        # Paper figure scripts (model evaluation, mechanisms + beta effects, equation stability)
-│   ├── confusion_matrix/               # Model identification pipeline (SPICE vs benchmark)
-│   ├── benchmark_grid_search/          # Benchmark/GRU hyperparameter grid search
+│   ├── analysis/                       # Paper runners, each writing CSV + figures (see docs/analyses.md):
+│   │                                   #   discovery/ (equation discovery for every study), evaluation/ (model evaluation, PPC),
+│   │                                   #   validation/ (parameter recovery, equation stability, model_identification/),
+│   │                                   #   grid_search/ (SPICE + benchmark/GRU; README.md = checkpoint names), explorative/ (morphing)
 │   ├── results/                        # Paper results across studies (README.md = index of all paper results)
-│   └── utils/                          # Shared utilities (final models, study simulation modules, generative benchmarking, ...)
+│   └── utils/                          # Shared utilities (study registry, final models, study simulation modules, generative benchmarking, ...)
 │
 ├── docs/                                          # Documentation and tutorials
 │   ├── training.md                                # Model/training internals (start here for how SPICE fits)
@@ -92,7 +95,9 @@ Full details, current constructor signatures, and internals: **[docs/training.md
 
 **Precoded models** (`spice/precoded/`): Rescorla-Wagner, Choice Perseveration, Forgetting, Learning Rate, Interaction, Embedding, DDM, Working Memory (+ variants) — ready-made `BaseModel` subclasses for common cognitive mechanisms.
 
-**Paper analyses** (`weinhardt2026/analysis/`, `weinhardt2026/figures/`, `weinhardt2026/confusion_matrix/`; see **[docs/analyses.md](docs/analyses.md)**), all on the final models (`studies/<study>/params/`, 10 seeds; `weinhardt2026/utils/final_models.py`): model evaluation (held-out prediction, PPC, AIC/BIC), parameter recovery (precision/recall/F1 per dataset size and ground-truth model), discovered mechanisms (term groups recurring across seeds) and their structural beta effects, equation stability across seeds, model identification (confusion matrix SPICE vs benchmark), posterior predictive checks (simulation via `studies/<study>/simulation_<study>.py`), equation tables, model morphing and the hyperparameter grid search. Outputs: `weinhardt2026/results/<item>/` (across studies) and `weinhardt2026/studies/<study>/results/<item>/` (per study); index in `weinhardt2026/results/README.md`.
+**Generic analyses** (`spice/utils/analysis/`): equation discovery on any directory of fits of one SPICE model (`python -m spice.utils.analysis.equation_discovery --models-dir ... --module ... --data ...`) — mechanisms recurring across seeds (joint support), the reduced equation matrix, the correlations between mechanisms and their structural beta effects on a criterion.
+
+**Paper analyses** (`weinhardt2026/analysis/`; see **[docs/analyses.md](docs/analyses.md)**), all on the final models (`studies/<study>/params/`, 10 seeds; `weinhardt2026/utils/final_models.py`): equation discovery per study (mechanisms, correlations, beta effects), model evaluation (held-out prediction, PPC, AIC/BIC), posterior predictive checks (simulation via `studies/<study>/simulation_<study>.py`), parameter recovery (precision/recall/F1 per dataset size and ground-truth model), equation stability across seeds, model identification (confusion matrix SPICE vs benchmark), the SPICE and benchmark/GRU grid searches and model morphing (dezfouli2019). Outputs: `weinhardt2026/results/<item>/` (across studies) and `weinhardt2026/studies/<study>/results/<item>/` (per study); index in `weinhardt2026/results/README.md`.
 
 ---
 
@@ -112,10 +117,15 @@ Full details, current constructor signatures, and internals: **[docs/training.md
 - Type hints where present in existing code
 - `@torch.compile` for performance-critical forward loops
 
+### Figures
+- Every analysis (generic in `spice/utils/analysis/` or paper runner in `weinhardt2026/analysis/`) writes a CSV and one **annotated** figure (`<name>.pdf/.png`: cell values, significance marks, titles). A **clean** version (`<name>_clean.pdf/.png`: marks, axes, tick labels and colourbars only) is written when asked for (`clean=True` / `--clean`); the paper runners ask for it. Not needed for brainstorming or scratchpad figures.
+- Figures and CSVs are written only to results folders: `weinhardt2026/results/<analysis>/` (across studies) or `weinhardt2026/studies/<study>/results/<analysis>/` (one study) — never into code folders.
+
 ### File Organization
 - Core framework code → `spice/`
 - Research/paper code → `weinhardt2026/`
 - New utility functions → `spice/utils/`
+- Generic, study-agnostic analyses → `spice/utils/analysis/`; paper runners → `weinhardt2026/analysis/<category>/`
 - New model architectures → `spice/precoded/`
 
 ### Designing Polynomial-Amenable Architectures

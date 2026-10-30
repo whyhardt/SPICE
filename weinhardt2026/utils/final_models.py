@@ -4,7 +4,7 @@
 
     spice_<study>_<grid tags>_rs<seed>.pkl       SPICE (slurm_jobs/grid_search.sh)
     benchmark_<study>_<grid point>_rs<seed>.pkl  benchmark model (state dict)  } winning grid point of
-    gru_<study>_<grid point>_rs<seed>.pkl        GRU baseline (state dict)     } benchmark_grid_search/
+    gru_<study>_<grid point>_rs<seed>.pkl        GRU baseline (state dict)     } analysis/grid_search/
 
 Performance analyses use every seed. Analyses that need a single model (mechanisms, the study scripts) use
 the seed with the highest training likelihood (`best_checkpoint`; for SPICE: of its best ensemble member).
@@ -61,7 +61,7 @@ def model_setup(study: str, kind: str):
 
 
 def _kolff2025_setup(kind: str):
-    """kolff2025 is not in the figure_model_evaluation registry: its own loaders and evaluation data."""
+    """kolff2025 is not in the studies registry (utils/studies.py): its own loaders and evaluation data."""
     from weinhardt2026.studies.kolff2025.simulation_kolff2025 import load_spice
     from weinhardt2026.studies.kolff2025.benchmarking_kolff2025 import ModelInputGRU, get_dataset, evaluation_dataset
     if kind == 'benchmark':
@@ -72,7 +72,7 @@ def _kolff2025_setup(kind: str):
 
 
 def _registry_setup(study: str, kind: str):
-    from weinhardt2026.figures.figure_model_evaluation import STUDIES, load_study, load_spice
+    from weinhardt2026.utils.studies import STUDIES, load_study, load_spice
     spice_module, dataset_train, _ = load_study(study)
     n_participants, n_actions = dataset_train.n_participants, dataset_train.n_actions
     if kind == 'spice':
@@ -104,18 +104,17 @@ def best_checkpoint(study: str, kind: str) -> str:
 
 
 def load_best(study: str, kind: str):
-    """The model of `best_checkpoint`, built as figures/figure_model_evaluation.py registers it."""
+    """The model of `best_checkpoint`, built as analysis/evaluation/run_model_evaluation.py registers it."""
     load, _ = model_setup(study, kind)
     return load(best_checkpoint(study, kind))
 
 
 def seed_matrices(study: str) -> dict:
     """Per final SPICE seed (checkpoint name): each module's coefficient values, presence (ensemble majority) and
-    term names (analysis_coefficient_dendrogram.get_module_matrices). Cached in studies/<study>/results/mechanisms/
-    matrices.pkl (kolff2025, which has no mechanism analysis: results/equation_stability/matrices.pkl)."""
-    from weinhardt2026.analysis.analysis_coefficient_dendrogram import get_module_matrices
-    item = 'equation_stability' if study == 'kolff2025' else 'mechanisms'
-    cache = os.path.join(ROOT, 'weinhardt2026', 'studies', study, 'results', item, 'matrices.pkl')
+    term names (spice.utils.analysis.coefficient_dendrogram.get_module_matrices). Cached in
+    studies/<study>/results/equation_stability/matrices.pkl."""
+    from spice.utils.analysis.coefficient_dendrogram import get_module_matrices
+    cache = os.path.join(ROOT, 'weinhardt2026', 'studies', study, 'results', 'equation_stability', 'matrices.pkl')
     checkpoints = final_checkpoints(study, 'spice')
     if os.path.exists(cache):
         with open(cache, 'rb') as file:

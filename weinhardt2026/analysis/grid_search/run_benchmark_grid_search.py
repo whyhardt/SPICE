@@ -8,20 +8,24 @@ are reported (the checkpoints to use for that study).
 Writes (overwriting):
     <out_dir>/grid_search_configs.csv   one row per grid point
     <out_dir>/grid_search_best.csv      one row per study x model kind
+    <out_dir>/figure_benchmark_grid_search[_clean].pdf/.png
+                                        per study: every grid point's median test loss (± SD over seeds) per
+                                        model kind; the selected grid point in red
 
 Usage (from the repository root):
-    python weinhardt2026/benchmark_grid_search/aggregate_grid_search.py
+    python weinhardt2026/analysis/grid_search/run_benchmark_grid_search.py
 """
 
 import argparse
 import json
 from pathlib import Path
 
+import matplotlib.pyplot as plt
 import pandas as pd
 
 
-DEFAULT_RUNS_DIR = 'weinhardt2026/benchmark_grid_search/runs'
-DEFAULT_OUT_DIR = 'weinhardt2026/benchmark_grid_search/results'
+DEFAULT_RUNS_DIR = 'weinhardt2026/analysis/grid_search/runs'
+DEFAULT_OUT_DIR = 'weinhardt2026/results/benchmark_grid_search'
 CONFIG_COLUMNS = ['study', 'kind', 'lr', 'epochs', 'scheduler', 'hidden_size', 'dropout']
 
 
@@ -62,6 +66,46 @@ def select_best(configs: pd.DataFrame) -> pd.DataFrame:
     return configs.loc[configs.groupby(['study', 'kind'])['test_loss_median'].idxmin()].reset_index(drop=True)
 
 
+KIND_COLORS = {'benchmark': '#2f6f9f', 'gru': '#4d4d4d'}
+
+
+def plot_grid_search(configs: pd.DataFrame, best: pd.DataFrame, output_path: Path, clean: bool = False) -> None:
+    """Per study (one panel): every grid point's median test loss with its SD over seeds, per model kind; the
+    selected grid point is red. With `clean`, also without titles, labels and legend (<output_path>_clean)."""
+    studies = list(dict.fromkeys(configs['study']))
+    for annotated in ((True, False) if clean else (True,)):
+        fig, axes = plt.subplots(1, len(studies), figsize=(1.9 * len(studies) + 0.6, 2.6), squeeze=False)
+        for ax, study in zip(axes[0], studies):
+            for position, kind in enumerate(['benchmark', 'gru']):
+                points = configs[(configs['study'] == study) & (configs['kind'] == kind)]
+                if points.empty:
+                    continue
+                chosen = best[(best['study'] == study) & (best['kind'] == kind)]['best_run'].iloc[0]
+                # grid points spread over the kind's slot, in order of test loss; the selected one on top
+                offsets = (pd.Series(range(len(points))) - (len(points) - 1) / 2) * 0.8 / max(len(points), 1)
+                for offset, (_, point) in zip(offsets, points.iterrows()):
+                    selected = point['best_run'] == chosen
+                    ax.errorbar(position + offset, point['test_loss_median'], yerr=point['test_loss_std'],
+                                fmt='o', markersize=5 if selected else 3.5, color=KIND_COLORS[kind], elinewidth=0.6,
+                                markerfacecolor='#c44e52' if selected else 'white', zorder=3 if selected else 2)
+            ax.set_xticks([0, 1], ['Benchmark', 'GRU'], fontsize=7.5)
+            ax.set_xlim(-0.6, 1.6)
+            ax.tick_params(axis='y', labelsize=7)
+            for side in ('top', 'right'):
+                ax.spines[side].set_visible(False)
+            if annotated:
+                ax.set_title(study, fontsize=8.5)
+        if annotated:
+            axes[0, 0].set_ylabel('test loss (median ± SD over seeds)', fontsize=8)
+            fig.suptitle('Benchmark / GRU grid search: one point per grid point, red = selected', fontsize=9)
+        fig.tight_layout()
+        path = output_path if annotated else output_path.with_name(f'{output_path.name}_clean')
+        for extension in ('pdf', 'png'):
+            fig.savefig(f'{path}.{extension}', bbox_inches='tight', dpi=200)
+        plt.close(fig)
+        print(f'Saved {path}.pdf/.png')
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description='Aggregate the benchmark/GRU grid search over seeds.')
     parser.add_argument('--runs_dir', default=DEFAULT_RUNS_DIR)
@@ -78,6 +122,7 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     configs.to_csv(out_dir / 'grid_search_configs.csv', index=False)
     best.to_csv(out_dir / 'grid_search_best.csv', index=False)
+    plot_grid_search(configs, best, out_dir / 'figure_benchmark_grid_search', clean=True)
 
     incomplete = configs[configs['n_seeds'] < configs['n_seeds'].max()]
     if len(incomplete):

@@ -38,12 +38,12 @@ Per study, written to weinhardt2026/studies/<study>/results/posterior_predictive
     ppc_scores.csv               the same, mean and SD over instances
     cache_runs<N>_bins<hash>/    simulated counts per (model, instance) for these bins; re-used unless --recompute
 
-figures/figure_model_evaluation.py reads the overall scores (ppc_scores_instances.csv, panel 'all').
+analysis/evaluation/run_model_evaluation.py reads the overall scores (ppc_scores_instances.csv, panel 'all').
 
 Usage:
-    python weinhardt2026/analysis/analysis_posterior_predictive.py all
-    python weinhardt2026/analysis/analysis_posterior_predictive.py braun2018 dezfouli2019 --n_runs 10
-    python weinhardt2026/analysis/analysis_posterior_predictive.py all --recompute
+    python weinhardt2026/analysis/evaluation/run_posterior_predictive.py all
+    python weinhardt2026/analysis/evaluation/run_posterior_predictive.py braun2018 dezfouli2019 --n_runs 10
+    python weinhardt2026/analysis/evaluation/run_posterior_predictive.py all --recompute
 """
 
 import os
@@ -60,7 +60,7 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Callable
 
-ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, 'weinhardt2026'))  # study modules import 'studies.<study>...' (as in run.py)
 
@@ -79,7 +79,7 @@ N_RUNS = 100            # runs per model instance, run r with torch seed r
 
 MODEL_ORDER = ['GRU', 'Benchmark', 'Real', 'SPICE-EQ', 'SPICE-RNN']
 SIMULATED_MODELS = [model for model in MODEL_ORDER if model != 'Real']
-# model colors as in figures/figure_model_evaluation.py; Real is neutral ink
+# model colors as in analysis/evaluation/run_model_evaluation.py; Real is neutral ink
 COLORS = {
     'GRU':       '#5b8db8',
     'Benchmark': '#1a3a5c',
@@ -731,8 +731,10 @@ CAPTION = ('Violins: participants × runs × instances (Real: participants). Dot
            '/ SD(Real), mean over instances, lower is better.')
 
 
-def plot_discrete(df: pd.DataFrame, panels: list[Panel], scores: pd.DataFrame, study: str, output_dir: str):
-    """One figure with the single statistics, one per grid."""
+def plot_discrete(df: pd.DataFrame, panels: list[Panel], scores: pd.DataFrame, study: str, output_dir: str,
+                  clean: bool = False):
+    """One figure with the single statistics, one per grid. With *clean*, each also without titles, axis labels,
+    scores and caption (<name>_clean)."""
     models = [model for model in MODEL_ORDER if (df['model'] == model).any()]
     run_values = {}   # model -> per (participant, run, instance) values of every statistic
     for model in models:
@@ -747,57 +749,63 @@ def plot_discrete(df: pd.DataFrame, panels: list[Panel], scores: pd.DataFrame, s
         _draw(ax, {model: values[stat].to_numpy() for model, values in run_values.items()},
               pd.DataFrame({model: values[stat] for model, values in dots.items()}), models, jitter)
 
-    scalars = [panel for panel in panels if not panel.is_grid]
-    if scalars:
-        n_cols = min(4, len(scalars))
-        n_rows = int(np.ceil(len(scalars) / n_cols))
-        fig, axes = plt.subplots(n_rows, n_cols, figsize=(3.3 * n_cols, 3.1 * n_rows + 0.6), squeeze=False)
-        for ax, panel in zip(axes.flat, scalars):
-            draw_stat(ax, panel.name)
-            _add_headroom(ax)
-            _annotate_scores(ax, scores, panel.name, panel.name, models)
-            ax.set_title(panel.title, fontsize=9)
-            _style(ax, models, show_xticks=True)
-        for ax in axes.flat[len(scalars):]:
-            ax.set_visible(False)
-        fig.suptitle(f'{study}: posterior predictive checks', fontsize=10)
-        fig.text(0.5, 0.0, CAPTION, ha='center', va='top', fontsize=6.5, color='#555555', wrap=True)
-        fig.tight_layout()
-        _save(fig, os.path.join(output_dir, 'ppc_scalars'))
+    for annotated in ((True, False) if clean else (True,)):
+        suffix = '' if annotated else '_clean'
+        scalars = [panel for panel in panels if not panel.is_grid]
+        if scalars:
+            n_cols = min(4, len(scalars))
+            n_rows = int(np.ceil(len(scalars) / n_cols))
+            fig, axes = plt.subplots(n_rows, n_cols, figsize=(3.3 * n_cols, 3.1 * n_rows + 0.6), squeeze=False)
+            for ax, panel in zip(axes.flat, scalars):
+                draw_stat(ax, panel.name)
+                _add_headroom(ax)
+                if annotated:
+                    _annotate_scores(ax, scores, panel.name, panel.name, models)
+                    ax.set_title(panel.title, fontsize=9)
+                _style(ax, models, show_xticks=True)
+            for ax in axes.flat[len(scalars):]:
+                ax.set_visible(False)
+            if annotated:
+                fig.suptitle(f'{study}: posterior predictive checks', fontsize=10)
+                fig.text(0.5, 0.0, CAPTION, ha='center', va='top', fontsize=6.5, color='#555555', wrap=True)
+            fig.tight_layout()
+            _save(fig, os.path.join(output_dir, f'ppc_scalars{suffix}'))
 
-    for panel in panels:
-        if not panel.is_grid:
-            continue
-        n_rows, n_cols = len(panel.row_labels), len(panel.col_labels)
-        fig, axes = plt.subplots(n_rows, n_cols, figsize=(1.7 * n_cols + 1.0, 1.5 * n_rows + 1.3),
-                                 sharey=True, squeeze=False)
-        for row in range(n_rows):
-            for col in range(n_cols):
-                ax = axes[row, col]
-                draw_stat(ax, panel.stat(row, col))
-                _style(ax, models, show_xticks=row == n_rows - 1)
-                if row == 0:
-                    ax.set_title(panel.col_labels[col], fontsize=8)
-                if col == 0 and panel.row_labels[row]:
-                    ax.set_ylabel(panel.row_labels[row], fontsize=8)
-        _add_headroom(axes[0, 0], fraction=0.2)   # shared y-axis: once for all cells
-        for row in range(n_rows):
-            for col in range(n_cols):
-                _annotate_scores(axes[row, col], scores, panel.name, panel.stat(row, col), models, fontsize=5.5)
-        if panel.xlabel:
-            fig.supxlabel(panel.xlabel, fontsize=9)
-        if panel.ylabel:
-            fig.supylabel(panel.ylabel, fontsize=9)
-        overall = _score_text(scores, panel.name, 'all', models)
-        fig.suptitle(f'{study}: {panel.title}\nnRMSE per cell above the violins; mean over cells — '
-                     + '   '.join(f'{model} {_format(value)}' for model, value in overall.items()), fontsize=9)
-        fig.text(0.5, 0.0, CAPTION, ha='center', va='top', fontsize=6.5, color='#555555', wrap=True)
-        fig.tight_layout()
-        _save(fig, os.path.join(output_dir, f'ppc_{panel.name}'))
+        for panel in panels:
+            if not panel.is_grid:
+                continue
+            n_rows, n_cols = len(panel.row_labels), len(panel.col_labels)
+            fig, axes = plt.subplots(n_rows, n_cols, figsize=(1.7 * n_cols + 1.0, 1.5 * n_rows + 1.3),
+                                     sharey=True, squeeze=False)
+            for row in range(n_rows):
+                for col in range(n_cols):
+                    ax = axes[row, col]
+                    draw_stat(ax, panel.stat(row, col))
+                    _style(ax, models, show_xticks=row == n_rows - 1)
+                    if annotated and row == 0:
+                        ax.set_title(panel.col_labels[col], fontsize=8)
+                    if annotated and col == 0 and panel.row_labels[row]:
+                        ax.set_ylabel(panel.row_labels[row], fontsize=8)
+            _add_headroom(axes[0, 0], fraction=0.2)   # shared y-axis: once for all cells
+            if annotated:
+                for row in range(n_rows):
+                    for col in range(n_cols):
+                        _annotate_scores(axes[row, col], scores, panel.name, panel.stat(row, col), models, fontsize=5.5)
+                if panel.xlabel:
+                    fig.supxlabel(panel.xlabel, fontsize=9)
+                if panel.ylabel:
+                    fig.supylabel(panel.ylabel, fontsize=9)
+                overall = _score_text(scores, panel.name, 'all', models)
+                fig.suptitle(f'{study}: {panel.title}\nnRMSE per cell above the violins; mean over cells — '
+                             + '   '.join(f'{model} {_format(value)}' for model, value in overall.items()), fontsize=9)
+                fig.text(0.5, 0.0, CAPTION, ha='center', va='top', fontsize=6.5, color='#555555', wrap=True)
+            fig.tight_layout()
+            _save(fig, os.path.join(output_dir, f'ppc_{panel.name}{suffix}'))
 
 
-def plot_rollouts(df: pd.DataFrame, scores: pd.DataFrame, study: str, output_dir: str):
-    """Per-participant rollout MSE (pooled over instances) per model; violins over (participant, instance)."""
+def plot_rollouts(df: pd.DataFrame, scores: pd.DataFrame, study: str, output_dir: str, clean: bool = False):
+    """Per-participant rollout MSE (pooled over instances) per model; violins over (participant, instance). With
+    *clean*, also without title and axis label (ppc_rollout_clean)."""
     unit = ROLLOUT_UNITS[study]
     models = [model for model in SIMULATED_MODELS if (df['model'] == model).any()]
     df = df.assign(mse=df['sse'] / df['n_trials'].where(df['n_trials'] > 0))
@@ -805,15 +813,17 @@ def plot_rollouts(df: pd.DataFrame, scores: pd.DataFrame, study: str, output_dir
     dots = (sums['sse'] / sums['n_trials']).unstack('model')
     jitter = pd.Series(np.random.default_rng(0).uniform(-0.12, 0.12, len(dots)), index=dots.index)
 
-    fig, ax = plt.subplots(figsize=(4.2, 3.4))
-    _draw(ax, {model: df.loc[df['model'] == model, 'mse'].to_numpy() for model in models}, dots, models, jitter)
-    summary = _score_text(scores, 'all', 'all', models)
-    ax.set_title(f'{study}: autonomous rollout\nMSE — ' + '   '.join(f'{model} {value:.1f}' for model, value in summary.items()),
-                 fontsize=8)
-    ax.set_ylabel(f'Per-trial MSE to the real responses ({unit})', fontsize=8)
-    _style(ax, models, show_xticks=True)
-    fig.tight_layout()
-    _save(fig, os.path.join(output_dir, 'ppc_rollout'))
+    for annotated in ((True, False) if clean else (True,)):
+        fig, ax = plt.subplots(figsize=(4.2, 3.4))
+        _draw(ax, {model: df.loc[df['model'] == model, 'mse'].to_numpy() for model in models}, dots, models, jitter)
+        if annotated:
+            summary = _score_text(scores, 'all', 'all', models)
+            ax.set_title(f'{study}: autonomous rollout\nMSE — '
+                         + '   '.join(f'{model} {value:.1f}' for model, value in summary.items()), fontsize=8)
+            ax.set_ylabel(f'Per-trial MSE to the real responses ({unit})', fontsize=8)
+        _style(ax, models, show_xticks=True)
+        fig.tight_layout()
+        _save(fig, os.path.join(output_dir, 'ppc_rollout' if annotated else 'ppc_rollout_clean'))
 
 
 # -------------------------------------------------------------------------------------------
@@ -857,9 +867,9 @@ def run_posterior_predictive(study: str, n_runs: int = N_RUNS, recompute: bool =
     participants[['model', 'participant_id', 'statistic', 'value']].to_csv(os.path.join(output_dir, 'ppc_participants.csv'), index=False)
 
     if study in ROLLOUT_UNITS:
-        plot_rollouts(df, scores, study, output_dir)
+        plot_rollouts(df, scores, study, output_dir, clean=True)
     else:
-        plot_discrete(df, panels, scores, study, output_dir)
+        plot_discrete(df, panels, scores, study, output_dir, clean=True)
 
     overview = scores[scores['statistic'] == 'all'].pivot(index='panel', columns='model', values='mean')
     print(f'\n{study}: {value} (mean over instances, lower is better)')

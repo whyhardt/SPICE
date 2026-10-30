@@ -27,8 +27,8 @@ Written to <out_dir>/ (default weinhardt2026/results/model_identification/):
                            model, diagonal = correct identification); one row of panels per comparison
 
 Usage (from the repository root):
-    python weinhardt2026/confusion_matrix/analysis_confusion_matrix.py
-    python weinhardt2026/confusion_matrix/analysis_confusion_matrix.py --cached   # re-aggregate confusion_scores.csv
+    python weinhardt2026/analysis/validation/model_identification/run_model_identification.py
+    python weinhardt2026/analysis/validation/model_identification/run_model_identification.py --cached   # re-aggregate confusion_scores.csv
 """
 
 import sys
@@ -37,7 +37,7 @@ import re
 from glob import glob
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / 'weinhardt2026'))  # study modules import 'studies.<study>...' (as in run.py)
 
@@ -47,8 +47,8 @@ import pandas as pd
 import torch
 
 from spice import SpiceDataset, split_data_along_blockdim
-from weinhardt2026.confusion_matrix.fit_confusion_matrix import DEFAULT_DATA_DIR, DEFAULT_OUT_DIR as DEFAULT_RUNS_DIR
-from weinhardt2026.confusion_matrix.generate_datasets import GENERATORS, STUDIES, dataset_path, load_csv, predict, study_data
+from weinhardt2026.analysis.validation.model_identification.fit_confusion_matrix import DEFAULT_DATA_DIR, DEFAULT_OUT_DIR as DEFAULT_RUNS_DIR
+from weinhardt2026.analysis.validation.model_identification.generate_datasets import GENERATORS, STUDIES, dataset_path, load_csv, predict, study_data
 
 
 DEFAULT_OUT_DIR = 'weinhardt2026/results/model_identification'
@@ -89,7 +89,7 @@ def load_benchmark(study: str, path: Path, dataset: SpiceDataset):
         model = LogisticRegressionModel()
         model.load_state_dict(torch.load(path, map_location='cpu'))
         return model
-    from weinhardt2026.figures.figure_model_evaluation import STUDIES as REGISTRY
+    from weinhardt2026.utils.studies import STUDIES as REGISTRY
     return REGISTRY[study]['benchmark'](str(path), dataset.n_participants, dataset.n_actions)
 
 
@@ -113,7 +113,7 @@ def load_spice_member(study: str, path: Path, train: SpiceDataset):
 
 
 def n_benchmark_parameters(study: str, model, dataset: SpiceDataset) -> float:
-    """Parameters per participant (kolff2025: of the group model), as figures/figure_model_evaluation.py counts them."""
+    """Parameters per participant (kolff2025: of the group model), as analysis/evaluation/run_model_evaluation.py counts them."""
     if hasattr(model, 'count_parameters'):
         return float(model.count_parameters())
     return sum(p.numel() for p in model.parameters()) / dataset.n_participants
@@ -131,7 +131,7 @@ def per_participant(values: torch.Tensor, dataset: SpiceDataset) -> pd.Series:
 def participant_loglik(study: str, outputs_train: torch.Tensor, outputs_test: torch.Tensor,
                        train: SpiceDataset, test: SpiceDataset) -> pd.DataFrame:
     """Per participant (index): n_trials (test) and the held-out log-likelihood per trial (score)."""
-    from weinhardt2026.figures.figure_model_evaluation import continuous_session_sse, discrete_session_nll
+    from weinhardt2026.utils.studies import continuous_session_sse, discrete_session_nll
     if test.continuous_action:
         sse_train, n_train, dim = continuous_session_sse(outputs_train, train, study)
         sse_test, n_test, _ = continuous_session_sse(outputs_test, test, study)
@@ -154,7 +154,7 @@ def participant_information_criteria(study: str, outputs_train: torch.Tensor, tr
 
     k_per_participant: participant ids -> parameter counts of those participants.
     """
-    from weinhardt2026.figures.figure_model_evaluation import continuous_session_sse
+    from weinhardt2026.utils.studies import continuous_session_sse
     pooled = study in GROUP_MODEL_STUDIES
     participant = train.xs[:, 0, 0, -1].long()
     if pooled:
@@ -168,7 +168,7 @@ def participant_information_criteria(study: str, outputs_train: torch.Tensor, tr
         sse, n = by_participant(sse), by_participant(n)
         two_nll = n * dim * (1 + np.log(2 * np.pi * sse / (n * dim)))   # Gaussian with the participant's MLE variance
     else:
-        from weinhardt2026.figures.figure_model_evaluation import discrete_session_nll
+        from weinhardt2026.utils.studies import discrete_session_nll
         nll, n = discrete_session_nll(outputs_train, train)
         two_nll, n = 2 * by_participant(nll), by_participant(n)
     keep = n > 0
@@ -300,63 +300,69 @@ def print_tables(tables: dict[str, pd.DataFrame]) -> None:
         print(cells.to_string())
 
 
-CMAP = 'viridis'   # as the confusion matrices of analysis_parameter_recovery.py (dark: P = 0, light: P = 1)
+CMAP = 'viridis'   # as the confusion matrices of run_parameter_recovery.py (dark: P = 0, light: P = 1)
 INK, INK_ON_DARK, INK_MUTED = '#222222', '#ffffff', '#6b6b6b'
 
 
 def study_label(study: str) -> str:
-    from weinhardt2026.figures.figure_model_evaluation import STUDIES as REGISTRY
+    from weinhardt2026.utils.studies import STUDIES as REGISTRY
     return REGISTRY[study]['label'] if study in REGISTRY else {'kolff2025': 'Chimpanzee Grooming\n(Kolff 2025)'}.get(study, study)
 
 
-def plot_confusion(table: pd.DataFrame, criterion: str, path: Path) -> None:
-    """One 2x2 matrix per study and comparison: rows simulating model, columns fitted model (same order)."""
+def plot_confusion(table: pd.DataFrame, criterion: str, path: Path, clean: bool = False) -> None:
+    """One 2x2 matrix per study and comparison: rows simulating model, columns fitted model (same order). With
+    `clean`, also without values, titles and labels (<path>_clean)."""
     studies = list(dict.fromkeys(table.index.get_level_values('study')))
     comparisons = list(dict.fromkeys(table.columns.get_level_values('comparison')))
-    fig, axes = plt.subplots(len(comparisons), len(studies), figsize=(1.95 * len(studies) + 1.0, 2.0 * len(comparisons) + 0.9),
-                             squeeze=False)
+    for annotated in ((True, False) if clean else (True,)):
+        fig, axes = plt.subplots(len(comparisons), len(studies), figsize=(1.95 * len(studies) + 1.0, 2.0 * len(comparisons) + 0.9),
+                                 squeeze=False)
 
-    for row, comparison in enumerate(comparisons):
-        spice = comparison.split(' vs. ')[0]
-        for col, study in enumerate(studies):
-            ax = axes[row, col]
-            cells = table.loc[study, comparison]
-            simulated = ['SPICE-EQ', 'Benchmark']
-            fitted = [spice, 'Benchmark']
-            p = np.array([[cells.loc[s, (f, 'p')] for f in fitted] for s in simulated])
-            sd = np.array([[cells.loc[s, (f, 'sd')] for f in fitted] for s in simulated])
-            image = ax.imshow(p, cmap=CMAP, vmin=0, vmax=1)
-            for i in range(2):
-                for j in range(2):
-                    ax.text(j, i, f'{p[i, j]:.2f}\n±{sd[i, j]:.2f}', ha='center', va='center', fontsize=7.5,
-                            color=INK if p[i, j] > 0.6 else INK_ON_DARK, linespacing=1.15)
-            ax.set_xticks([0, 1], [label.replace('Benchmark', 'Bench.') for label in fitted], fontsize=7.5)
-            ax.set_yticks([0, 1], [label.replace('Benchmark', 'Bench.') for label in simulated], fontsize=7.5)
-            ax.tick_params(which='both', length=0)
-            for spine in ax.spines.values():
-                spine.set_visible(False)
-            ax.set_xticks([0.5], minor=True)
-            ax.set_yticks([0.5], minor=True)
-            ax.grid(which='minor', color='white', linewidth=2)
-            if row == 0:
-                ax.set_title(study_label(study), fontsize=8.5)
-            if col == 0:
-                ax.set_ylabel(f'{comparison}\nsimulated by', fontsize=8)
-            else:
-                ax.set_yticklabels([])
-            if row == len(comparisons) - 1:
-                ax.set_xlabel('fitted model', fontsize=8, color=INK_MUTED)
+        for row, comparison in enumerate(comparisons):
+            spice = comparison.split(' vs. ')[0]
+            for col, study in enumerate(studies):
+                ax = axes[row, col]
+                cells = table.loc[study, comparison]
+                simulated = ['SPICE-EQ', 'Benchmark']
+                fitted = [spice, 'Benchmark']
+                p = np.array([[cells.loc[s, (f, 'p')] for f in fitted] for s in simulated])
+                sd = np.array([[cells.loc[s, (f, 'sd')] for f in fitted] for s in simulated])
+                image = ax.imshow(p, cmap=CMAP, vmin=0, vmax=1)
+                for i in range(2 if annotated else 0):
+                    for j in range(2):
+                        ax.text(j, i, f'{p[i, j]:.2f}\n±{sd[i, j]:.2f}', ha='center', va='center', fontsize=7.5,
+                                color=INK if p[i, j] > 0.6 else INK_ON_DARK, linespacing=1.15)
+                ax.set_xticks([0, 1], [label.replace('Benchmark', 'Bench.') for label in fitted], fontsize=7.5)
+                ax.set_yticks([0, 1], [label.replace('Benchmark', 'Bench.') for label in simulated], fontsize=7.5)
+                ax.tick_params(which='both', length=0)
+                for spine in ax.spines.values():
+                    spine.set_visible(False)
+                ax.set_xticks([0.5], minor=True)
+                ax.set_yticks([0.5], minor=True)
+                ax.grid(which='minor', color='white', linewidth=2)
+                if col > 0:
+                    ax.set_yticklabels([])
+                if not annotated:
+                    continue
+                if row == 0:
+                    ax.set_title(study_label(study), fontsize=8.5)
+                if col == 0:
+                    ax.set_ylabel(f'{comparison}\nsimulated by', fontsize=8)
+                if row == len(comparisons) - 1:
+                    ax.set_xlabel('fitted model', fontsize=8, color=INK_MUTED)
 
-    colorbar = fig.colorbar(image, ax=axes, fraction=0.02, pad=0.015)
-    colorbar.set_label('P(fitted model wins)', fontsize=8)
-    colorbar.ax.tick_params(labelsize=7, length=2)
-    colorbar.outline.set_visible(False)
-    fig.suptitle(f'Model recovery by {CRITERION_LABELS[criterion]}: share of participants'
-                 + (' (Chimpanzee Grooming: pooled group model, one decision per seed pair)' if criterion != 'loglik' else '')
-                 + '; ± SD over seed pairs', fontsize=9, y=0.995)
-    for extension in ('png', 'pdf'):
-        fig.savefig(f'{path}.{extension}', bbox_inches='tight', dpi=200)
-    plt.close(fig)
+        colorbar = fig.colorbar(image, ax=axes, fraction=0.02, pad=0.015)
+        colorbar.ax.tick_params(labelsize=7, length=2)
+        colorbar.outline.set_visible(False)
+        if annotated:
+            colorbar.set_label('P(fitted model wins)', fontsize=8)
+            fig.suptitle(f'Model recovery by {CRITERION_LABELS[criterion]}: share of participants'
+                         + (' (Chimpanzee Grooming: pooled group model, one decision per seed pair)' if criterion != 'loglik' else '')
+                         + '; ± SD over seed pairs', fontsize=9, y=0.995)
+        output = path if annotated else path.with_name(f'{path.name}_clean')
+        for extension in ('png', 'pdf'):
+            fig.savefig(f'{output}.{extension}', bbox_inches='tight', dpi=200)
+        plt.close(fig)
 
 
 def parse_args() -> argparse.Namespace:
@@ -387,6 +393,6 @@ if __name__ == '__main__':
     tables = confusion_tables(matrix)
     for criterion, table in tables.items():
         table.to_csv(out_dir / f'confusion_matrix_{criterion}.csv')
-        plot_confusion(table, criterion, out_dir / f'figure_confusion_matrix_{criterion}')
+        plot_confusion(table, criterion, out_dir / f'figure_confusion_matrix_{criterion}', clean=True)
     print_tables(tables)
     print(f'\nSaved to {out_dir}')

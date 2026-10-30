@@ -7,7 +7,7 @@ One call fits one grid point of one study for all requested seeds, either
 Each study is set up like its run script (weinhardt2026/studies/<study>/<study>.py): same data loading,
 test split, loss, benchmark constructor and GRU inputs (no embeddings); everything trains on the GPU
 with the test set passed to training() (the lr scheduler steps on the test loss). Model selection
-happens on the test loss (see aggregate_grid_search.py).
+happens on the test loss (see run_benchmark_grid_search.py).
 
 The benchmark models start from fixed parameter values and train deterministically, so each seed
 draws its own random start instead: every parameter (all are unconstrained raw/log values) is
@@ -17,7 +17,7 @@ Every fitted model is saved to <out_dir>/<study>/<name>.pkl next to <name>.json 
 train/test loss. Seeds with an existing json are skipped, so a timed-out array task can simply be resubmitted.
 
 Usage (from the repository root):
-    python weinhardt2026/benchmark_grid_search/benchmark_grid_search.py --study dezfouli2019 --kind gru \
+    python weinhardt2026/analysis/grid_search/benchmark_grid_search.py --study dezfouli2019 --kind gru \
         --lr 0.01 --scheduler 1 --hidden_size 8 --dropout 0.1 --seeds 0 1 2
 """
 
@@ -31,7 +31,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 
 import numpy as np
@@ -41,7 +41,7 @@ from spice import SpiceDataset, cross_entropy_loss, split_data_along_blockdim
 from weinhardt2026.utils.benchmarking_gru import GRUModel, training
 
 
-DEFAULT_OUT_DIR = 'weinhardt2026/benchmark_grid_search/runs'
+DEFAULT_OUT_DIR = 'weinhardt2026/analysis/grid_search/runs'
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 
@@ -192,7 +192,7 @@ def setup_weber2024(path_data: str = 'weinhardt2026/studies/weber2024/data/weber
     )
 
 
-# setup(path_data) with the study's own CSV as default (confusion_matrix/ passes simulated ones)
+# setup(path_data) with the study's own CSV as default (model identification passes simulated ones)
 STUDIES: dict[str, Callable[..., StudySetup]] = {
     'braun2018': setup_braun2018,
     'bruckner2025': setup_bruckner2025,

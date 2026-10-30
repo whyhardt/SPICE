@@ -1,6 +1,6 @@
 # kolff2025 — preprocessing of the grooming-negotiation data
 
-Implemented in `weinhardt2026/studies/kolff2025/preprocessing_kolff2025.py` (SPICE repo). Run from the repo root:
+Implemented in `../preprocessing_kolff2025.py`. Run from the repo root:
 `python weinhardt2026/studies/kolff2025/preprocessing_kolff2025.py`.
 
 This file records how the raw chimpanzee grooming data are recoded into the

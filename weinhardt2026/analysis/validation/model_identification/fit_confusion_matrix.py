@@ -12,11 +12,11 @@ SPICE is fit on the cluster (slurm_jobs/confusion_matrix.sh); the benchmarks are
 locally, all of them with fit_benchmarks.py.
 
 Saved to <out_dir>/<study>/<fitter>_<study>_sim<generator>_rs<seed>.{pkl,json} (default out_dir:
-weinhardt2026/confusion_matrix/runs). The json is written once the fit is complete; fits with an
+weinhardt2026/analysis/validation/model_identification/runs). The json is written once the fit is complete; fits with an
 existing json are skipped, so a timed-out array task can simply be resubmitted.
 
 Usage (from the repository root):
-    python weinhardt2026/confusion_matrix/fit_confusion_matrix.py --study dezfouli2019 \
+    python weinhardt2026/analysis/validation/model_identification/fit_confusion_matrix.py --study dezfouli2019 \
         --generator benchmark --fitter spice --seed 10
 """
 
@@ -27,16 +27,16 @@ import subprocess
 import time
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(ROOT))
 
 import pandas as pd
 import torch
 
-from weinhardt2026.confusion_matrix.generate_datasets import DEFAULT_OUT_DIR as DEFAULT_DATA_DIR, GENERATORS, STUDIES
+from weinhardt2026.analysis.validation.model_identification.generate_datasets import DEFAULT_OUT_DIR as DEFAULT_DATA_DIR, GENERATORS, STUDIES
 
 
-DEFAULT_OUT_DIR = 'weinhardt2026/confusion_matrix/runs'
+DEFAULT_OUT_DIR = 'weinhardt2026/analysis/validation/model_identification/runs'
 FITTERS = ('spice', 'benchmark')
 SPICE_ARGUMENTS = ('pruning_threshold', 'sindy_weight', 'sindy_alpha', 'pruning_test', 'gate_penalty', 'feature_penalty')
 
@@ -74,7 +74,7 @@ def fit_spice(config: pd.Series, model: Path, seed: int) -> dict:
 
 def fit_benchmark(config: pd.Series, model: Path, seed: int) -> dict:
     """benchmark_grid_search.fit_one on the study's setup, loaded from the simulated CSV (kolff2025: closed form)."""
-    from weinhardt2026.benchmark_grid_search.benchmark_grid_search import STUDIES as SETUPS, fit_one
+    from weinhardt2026.analysis.grid_search.benchmark_grid_search import STUDIES as SETUPS, fit_one
 
     if config['study'] == 'kolff2025':
         from weinhardt2026.studies.kolff2025.benchmarking_kolff2025 import LogisticRegressionModel, get_dataset

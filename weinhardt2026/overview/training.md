@@ -1,6 +1,6 @@
 # SPICE Training Mechanisms
 
-Internals of `BaseModel`, `SpiceConfig`, `SpiceDataset`, `SpiceEstimator`, and the training pipeline, verified against the current code in `spice/resources/`. Paths refer to the SPICE code repository.
+Internals of `BaseModel`, `SpiceConfig`, `SpiceDataset`, `SpiceEstimator`, and the training pipeline, verified against the current code in `spice/resources/`. See [CLAUDE.md](../CLAUDE.md) for the project overview and where this fits in the repo.
 
 ---
 
@@ -97,7 +97,7 @@ Broadcasts and concatenates inputs + fused embeddings to `[W,E,B,I,features]`. F
 - `sindy_coefficient_pruning(patience=1, n_terms_pruning=None)` / `sindy_coefficient_patience(threshold)` — Patience-gated hard thresholding fallback (used when ensemble pruning is unavailable)
 - `compute_weighted_coefficient_penalty(sindy_alpha)` — Degree-weighted L1/L2 penalty on coefficients
 - `print(participant_id=0, experiment_id=0)` / `get_spice_model_string(...)` — Human-readable equations per module, e.g. `"value[t+1] = 0.92 value[t] + 0.14 reward[t]"`
-- `get_modules()` / `get_candidate_terms(key_module=None)` / `get_sindy_coefficients(key_module=None, aggregate=False)` / `count_sindy_coefficients()` — Introspection (see [SpiceEstimator](#spiceestimator-spiceresourcesestimatorpy))
+- `get_modules()` / `get_candidate_terms(key_module=None)` / `get_sindy_coefficients(key_module=None, aggregate=False)` / `count_sindy_coefficients(aggregate=True)` (`(P, X)` of the ensemble-aggregated model, or `(E, P, X)` per member with `aggregate=False`) — Introspection (see [SpiceEstimator](#spiceestimator-spiceresourcesestimatorpy))
 - `eval(use_sindy=True)` / `train(mode=True, use_sindy=False)` — Override `nn.Module`'s eval/train to also set `self.use_sindy` (eval defaults to SINDy-mode-on, train defaults to SINDy-mode-off)
 - `to(device)` — Also moves the sindy loss tensors, presence/prior masks, degree weights, and patience counters, since these are plain dict/Tensor attributes rather than registered buffers
 
@@ -203,7 +203,7 @@ PyTorch Dataset with auto-promotion (2D→3D→4D: unsqueezes a session dim, the
 
 Main user-facing class implementing sklearn's estimator interface.
 
-**Methods:** `fit(data, targets, data_test, target_test)`, `predict(conditions)` → single prediction array (ensemble mean in RNN mode, member-0 in SINDy mode — **not** a `(rnn_pred, spice_pred)` tuple), `save_spice(path)`, `load_spice(path)`, `get_sindy_coefficients()`, `get_participant_embeddings()`, `print_spice_model()`, `count_sindy_coefficients()`, `get_modules()`, `get_candidate_terms()`
+**Methods:** `fit(data, targets, data_test, target_test)`, `predict(conditions)` → single prediction array (ensemble mean in RNN mode, member-0 in SINDy mode — **not** a `(rnn_pred, spice_pred)` tuple), `save_spice(path)`, `load_spice(path)`, `get_sindy_coefficients()`, `get_participant_embeddings()`, `print_spice_model()`, `count_sindy_coefficients(aggregate=True)`, `get_modules()`, `get_candidate_terms()`
 
 **Constructor arguments:**
 
@@ -237,7 +237,7 @@ Main user-facing class implementing sklearn's estimator interface.
 | `loss_fn_kwargs` | `dict` | `{'label_smoothing': 0.01}` | Extra kwargs forwarded to `loss_fn` |
 | `device` | `torch.device` | `cpu` | Compute device |
 | **SPICE / SINDy** ||||
-| `use_sindy` | `bool` | `False` | Enable SINDy integration (forward predictions use equations instead of the RNN) |
+| `use_sindy` | `bool` | `False` | Enable SINDy integration (forward predictions use equations instead of the RNN). The attribute holds the current mode; switch it with `set_use_sindy(mode)`, `eval(use_sindy=...)` or `train(use_sindy=...)` |
 | `sindy_weight` | `float` | `0.01` | Lambda for SINDy regularization loss (`sindy_loss_reg`) |
 | `sindy_alpha` | `float` | `1e-4` | Degree-weighted L1 penalty strength (also used as ridge alpha in Stage 2) |
 | `sindy_library_polynomial_degree` | `int` | `2` | Max polynomial degree for SINDy candidate library |
@@ -496,6 +496,7 @@ When designing `BaseModel` subclasses for SPICE, the architecture determines how
 
 - **`tensor.to(device)` returns a new tensor** — must reassign (`x = x.to(device)`)
 - **Non-parameter tensors** need `register_buffer()` to auto-move with model
+- **`SpiceEstimator` keeps the scikit-learn contract**: every `__init__` argument is stored under its own name (`get_params()` / `clone()` read them back), so don't name a method after an argument (`use_sindy` is the attribute, `set_use_sindy()` the setter)
 - **Hard masking logits with large negative values** can catastrophically inflate CE loss even when only a few targets are masked
 - **Overlapping action masks** in sequential `call_module` calls: second call overwrites first for shared items
 - **Shape mismatches**: Ensure `xs` has shape `(batch, timesteps, features)` and `ys` has shape `(batch, timesteps, actions)`

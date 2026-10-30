@@ -11,7 +11,7 @@ from weinhardt2026.studies.ganesh2024a.spice_ganesh2024a import SpiceModel, CONF
 from weinhardt2026.utils.benchmarking_gru import GRUModel, training
 from weinhardt2026.utils.final_models import best_checkpoint, load_best
 from weinhardt2026.studies.ganesh2024a.benchmarking_ganesh2024a import BayesianModel, get_dataset
-from weinhardt2026.analysis.analysis_model_evaluation import analysis_model_evaluation
+from weinhardt2026.analysis.evaluation.model_evaluation import analysis_model_evaluation
 
 
 train_spice = False

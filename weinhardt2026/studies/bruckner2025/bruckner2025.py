@@ -13,7 +13,7 @@ from weinhardt2026.utils.final_models import best_checkpoint, load_best
 from weinhardt2026.studies.bruckner2025.benchmarking_bruckner2025 import (
     get_dataset, RationalResourceModel,
 )
-from weinhardt2026.analysis.analysis_model_evaluation import analysis_model_evaluation_mse
+from weinhardt2026.analysis.evaluation.model_evaluation import analysis_model_evaluation_mse
 
 
 train_spice = False

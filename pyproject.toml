@@ -44,6 +44,7 @@ analysis = [
     "arviz==0.20.0",
     "adabelief-pytorch==0.2.1",
     "joblib==1.5.1",
+    "statsmodels==0.14.4",
     "loss-landscapes==3.0.6"
 ]
 dev = [
@@ -62,6 +63,7 @@ all = [
     "arviz==0.20.0",
     "adabelief-pytorch==0.2.1",
     "joblib==1.5.1",
+    "statsmodels==0.14.4",
     "loss-landscapes==3.0.6",
     "pytest==8.4.1",
     "pytest-cov>=4.0.0",

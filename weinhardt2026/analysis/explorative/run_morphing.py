@@ -1,8 +1,7 @@
 """
-Model morphing: how the discovered equations change along a behavioral axis.
+Model morphing (dezfouli2019): how the discovered equations change along a behavioral axis.
 
-For any study whose SPICE model has participant embeddings (all but kolff2025's group model), from the best
-final seed (utils/final_models.best_checkpoint):
+From the best final dezfouli2019 seed (utils/final_models.best_checkpoint):
   1. direction, per ensemble member (each has its own embedding space): linear regression of the participants'
      embeddings onto the metric (default: the participant's reward rate, utils/participant_metrics.reward_rate; or
      any column of the study's data averaged over the participant's trials)
@@ -16,27 +15,27 @@ final seed (utils/final_models.best_checkpoint):
   4. per step and member: mean coefficient over participants and inclusion probability (share of participants with
      the term); aggregated over members (mean ± SE)
 
-Validation (discrete studies with rewards): the morphed SPICE-EQ (ensemble mean, as in generate_behavior) runs the
+Validation: the morphed SPICE-EQ (ensemble mean, as in generate_behavior) runs the
 task (studies/<study>/simulation_<study>.py) for every virtual participant (the environment keeps the real
 participant IDs, see VirtualParticipants); the mean reward per step shows whether behavior follows the axis.
 
-Written to weinhardt2026/studies/<study>/results/morphing/ (<metric>: reward_rate or the column):
+Written to weinhardt2026/studies/dezfouli2019/results/morphing/ (<metric>: reward_rate or the column):
     morphing_<metric>.csv              per (module, term, step): coefficient (mean, SE), inclusion (mean, SE)
-    morphing_<metric>.png/.pdf         per module: coefficient and inclusion curves of the terms included anywhere
+    morphing_<metric>[_clean].png/.pdf per module: coefficient and inclusion curves of the terms included anywhere
     morphing_<metric>_validation.csv   per step: mean reward of the simulated virtual participants (mean, SE over runs)
 
 Usage:
-    python weinhardt2026/analysis/analysis_morphing.py dezfouli2019                   # metric: reward rate
-    python weinhardt2026/analysis/analysis_morphing.py braun2018 --metric rt --participant_col subject   # another column
-    python weinhardt2026/analysis/analysis_morphing.py dezfouli2019 --n_steps 3 --epochs 20             # quick test
-    sbatch --export=ALL,STUDY=dezfouli2019 slurm_jobs/morphing.sh
+    python weinhardt2026/analysis/explorative/run_morphing.py                       # metric: reward rate
+    python weinhardt2026/analysis/explorative/run_morphing.py --metric rt           # another data column
+    python weinhardt2026/analysis/explorative/run_morphing.py --n_steps 3 --epochs 20   # quick test
+    sbatch slurm_jobs/morphing.sh
 """
 
 import argparse
 import os
 import sys
 
-ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
 sys.path.insert(0, ROOT)
 
 import numpy as np
@@ -48,9 +47,9 @@ from sklearn.linear_model import LinearRegression
 from spice import SpiceDataset, SpiceEstimator
 from spice.resources.spice_training import _run_sindy_training, cross_entropy_loss
 
-from weinhardt2026.figures import figure_model_evaluation as evaluation
-from weinhardt2026.analysis.analysis_coefficient_betas import get_criterion
-from weinhardt2026.analysis.analysis_grid_search import parse_grid_tags
+from weinhardt2026.utils import studies
+from spice.utils.analysis.coefficient_betas import get_criterion
+from weinhardt2026.analysis.grid_search.run_spice_grid_search import parse_grid_tags
 from weinhardt2026.utils.final_models import best_checkpoint
 from weinhardt2026.utils.participant_metrics import reward_rate, study_data
 from weinhardt2026.utils.study_models import choices_and_rewards, load_study_module
@@ -167,10 +166,10 @@ def participant_metric(study: str, metric_col: str = None, participant_col: str 
 
 def run_morphing(study: str, metric: np.ndarray, metric_name: str, n_steps: int = N_STEPS,
                  epochs: int = None) -> tuple[pd.DataFrame, SpiceEstimator]:
-    spice_module, dataset_train, _ = evaluation.load_study(study)
-    build = lambda **overrides: evaluation.spice_estimator(spice_module, dataset_train, **overrides)
+    spice_module, dataset_train, _ = studies.load_study(study)
+    build = lambda **overrides: studies.spice_estimator(spice_module, dataset_train, **overrides)
     checkpoint = best_checkpoint(study, 'spice')
-    estimator = evaluation.load_spice(checkpoint, spice_module, dataset_train)
+    estimator = studies.load_spice(checkpoint, spice_module, dataset_train)
     if len(metric) != estimator.n_participants:
         raise ValueError(f'{study}: {len(metric)} participants in the data, {estimator.n_participants} in the model')
 
@@ -247,57 +246,62 @@ def validate(study: str, estimator: SpiceEstimator, n_steps: int) -> pd.DataFram
 
 # ── Plot ────────────────────────────────────────────────────────────
 
-def plot_morphing(table: pd.DataFrame, study: str, metric_col: str, output_path: str):
+def plot_morphing(table: pd.DataFrame, study: str, metric_col: str, output_path: str, clean: bool = False):
+    """Per module: coefficient and inclusion curves along the axis. With `clean`, also without titles, labels
+    and legends (<output_path>_clean)."""
     included = table.groupby(['module', 'term'], sort=False)['inclusion'].max()
     modules = list(dict.fromkeys(table['module']))
-    fig, axes = plt.subplots(2, len(modules), figsize=(3.6 * len(modules), 6), squeeze=False, sharex=True)
-    for col, module in enumerate(modules):
-        terms = [term for (m, term), value in included.items() if m == module and value >= MIN_INCLUSION]
-        colors = plt.cm.tab20(np.linspace(0, 1, max(len(terms), 1)))
-        for term, color in zip(terms, colors):
-            rows = table[(table['module'] == module) & (table['term'] == term)]
-            for row, (value, se) in enumerate((('coefficient', 'coefficient_se'), ('inclusion', 'inclusion_se'))):
-                ax = axes[row, col]
-                ax.plot(rows['step'], rows[value], color=color, linewidth=1.2, label=term if row == 0 else None)
-                ax.fill_between(rows['step'], rows[value] - rows[se].fillna(0), rows[value] + rows[se].fillna(0),
-                                color=color, alpha=0.2, linewidth=0)
-        axes[0, col].set_title(module, fontsize=9, fontweight='bold')
-        axes[0, col].axhline(0, color='grey', linewidth=0.5)
-        axes[0, col].legend(fontsize=6, frameon=False)
-        axes[1, col].set_ylim(-0.02, 1.02)
-        axes[1, col].set_xlabel(f'morphing step (low → high {metric_col})', fontsize=8)
-        for ax in axes[:, col]:
-            ax.tick_params(labelsize=7)
-            for side in ('top', 'right'):
-                ax.spines[side].set_visible(False)
-    axes[0, 0].set_ylabel('coefficient (mean over participants)', fontsize=8)
-    axes[1, 0].set_ylabel('inclusion probability', fontsize=8)
-    fig.suptitle(f'{study}: equations along {metric_col} (mean ± SE over ensemble members)', fontsize=10)
-    fig.tight_layout()
-    for extension in ('pdf', 'png'):
-        fig.savefig(f'{output_path}.{extension}', bbox_inches='tight', dpi=200)
-    plt.close(fig)
-    print(f'Saved {output_path}.pdf/.png')
+    for annotated in ((True, False) if clean else (True,)):
+        fig, axes = plt.subplots(2, len(modules), figsize=(3.6 * len(modules), 6), squeeze=False, sharex=True)
+        for col, module in enumerate(modules):
+            terms = [term for (m, term), value in included.items() if m == module and value >= MIN_INCLUSION]
+            colors = plt.cm.tab20(np.linspace(0, 1, max(len(terms), 1)))
+            for term, color in zip(terms, colors):
+                rows = table[(table['module'] == module) & (table['term'] == term)]
+                for row, (value, se) in enumerate((('coefficient', 'coefficient_se'), ('inclusion', 'inclusion_se'))):
+                    ax = axes[row, col]
+                    ax.plot(rows['step'], rows[value], color=color, linewidth=1.2, label=term if row == 0 else None)
+                    ax.fill_between(rows['step'], rows[value] - rows[se].fillna(0), rows[value] + rows[se].fillna(0),
+                                    color=color, alpha=0.2, linewidth=0)
+            axes[0, col].axhline(0, color='grey', linewidth=0.5)
+            axes[1, col].set_ylim(-0.02, 1.02)
+            if annotated:
+                axes[0, col].set_title(module, fontsize=9, fontweight='bold')
+                axes[0, col].legend(fontsize=6, frameon=False)
+                axes[1, col].set_xlabel(f'morphing step (low → high {metric_col})', fontsize=8)
+            for ax in axes[:, col]:
+                ax.tick_params(labelsize=7)
+                for side in ('top', 'right'):
+                    ax.spines[side].set_visible(False)
+        if annotated:
+            axes[0, 0].set_ylabel('coefficient (mean over participants)', fontsize=8)
+            axes[1, 0].set_ylabel('inclusion probability', fontsize=8)
+            fig.suptitle(f'{study}: equations along {metric_col} (mean ± SE over ensemble members)', fontsize=10)
+        fig.tight_layout()
+        path = output_path if annotated else f'{output_path}_clean'
+        for extension in ('pdf', 'png'):
+            fig.savefig(f'{path}.{extension}', bbox_inches='tight', dpi=200)
+        plt.close(fig)
+        print(f'Saved {path}.pdf/.png')
 
+
+STUDY = 'dezfouli2019'
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('study')
     parser.add_argument('--metric', default=None, help='data column, averaged per participant (default: reward rate)')
-    parser.add_argument('--participant_col', default='participant', help='participant column of the data (with --metric)')
     parser.add_argument('--n_steps', type=int, default=N_STEPS, help='positions along the morphing axis')
     parser.add_argument('--epochs', type=int, default=None, help='Stage 2 epochs per phase (default: as in training, 1000)')
     args = parser.parse_args()
     metric_name = args.metric or 'reward_rate'
 
-    output_dir = evaluation._study_path(args.study, 'results', 'morphing')
+    output_dir = studies.study_path(STUDY, 'results', 'morphing')
     os.makedirs(output_dir, exist_ok=True)
-    metric = participant_metric(args.study, args.metric, args.participant_col)
-    table, morphed = run_morphing(args.study, metric, metric_name, n_steps=args.n_steps, epochs=args.epochs)
+    metric = participant_metric(STUDY, args.metric)
+    table, morphed = run_morphing(STUDY, metric, metric_name, n_steps=args.n_steps, epochs=args.epochs)
     table.to_csv(os.path.join(output_dir, f'morphing_{metric_name}.csv'), index=False)
-    plot_morphing(table, args.study, metric_name, os.path.join(output_dir, f'morphing_{metric_name}'))
+    plot_morphing(table, STUDY, metric_name, os.path.join(output_dir, f'morphing_{metric_name}'), clean=True)
 
-    if morphed.model.n_reward_features > 0 and not evaluation.load_study(args.study)[1].continuous_action:
-        validation = validate(args.study, morphed, args.n_steps)
-        validation.to_csv(os.path.join(output_dir, f'morphing_{metric_name}_validation.csv'), index=False)
-        print(validation.round(4).to_string(index=False))
+    validation = validate(STUDY, morphed, args.n_steps)
+    validation.to_csv(os.path.join(output_dir, f'morphing_{metric_name}_validation.csv'), index=False)
+    print(validation.round(4).to_string(index=False))

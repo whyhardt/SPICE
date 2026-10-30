@@ -38,7 +38,7 @@ parameters_mean = {
 }
 
 
-# Model types for balanced sampling: active mechanisms per type (definitions as in analysis_parameter_recovery):
+# Model types for balanced sampling: active mechanisms per type (definitions as in analysis/validation/run_parameter_recovery.py):
 # Reward: beta_reward > 0; Asymmetry: alpha_penalty != alpha_reward; Forgetting: forget_rate > 0;
 # Choice: beta_choice > 0 and alpha_choice > 0. Asymmetry and Forgetting require Reward.
 MODEL_TYPES = (

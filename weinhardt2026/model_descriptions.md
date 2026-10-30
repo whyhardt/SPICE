@@ -2,7 +2,7 @@
 
 This document provides full architectural descriptions of all SPICE models, benchmark models, and the GRU baseline used across the benchmark studies. It is intended as input for writing the methods/supplementary sections of the SPICE paper.
 
-The study-to-model mapping follows the cluster runs in `slurm_jobs/spice_stability_studies.sh` (synthetic data: `slurm_jobs/spice_parameter_recovery.sh`); each section names the module that defines the model.
+The study-to-model mapping follows the cluster runs in `slurm_jobs/grid_search.sh` (synthetic data: `slurm_jobs/parameter_recovery.sh`); each section names the module that defines the model.
 
 ---
 

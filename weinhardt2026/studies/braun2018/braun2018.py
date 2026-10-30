@@ -12,7 +12,7 @@ from weinhardt2026.studies.braun2018.spice_braun2018 import SpiceModel, CONFIG
 from weinhardt2026.utils.benchmarking_gru import GRUModel, training
 from weinhardt2026.utils.final_models import best_checkpoint, load_best
 from weinhardt2026.studies.braun2018.benchmarking_braun2018 import ExpectedValueControl, get_dataset
-from weinhardt2026.analysis.analysis_model_evaluation import analysis_model_evaluation
+from weinhardt2026.analysis.evaluation.model_evaluation import analysis_model_evaluation
 
 
 train_spice = False

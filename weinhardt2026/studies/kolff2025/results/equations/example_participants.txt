@@ -1,8 +1,0 @@
-checkpoint: spice_kolff2025_th0.05_sw0.01_al0.0005_er0.5_gp0_fp0_rs4.pkl
-ensemble member: 9
-
-group model: participant 0 (ID group)
-  negotiation_received[t+1] = -0.272 +0.389·negotiation_received[t] +0.999·grooming_solicitation +0.624·self_reposition -0.238·directed_scratch
-  negotiation_given[t+1] = +0.036 +0.806·negotiation_given[t] -0.328·own_grooming_solicitation -0.208·own_self_reposition +0.214·own_directed_scratch
-  grooming_received[t+1] = +0.227 +0.706·grooming_received[t] -1.152·reposition_body -0.752·grooming_process -0.722·grooming
-  grooming_given[t+1] = -0.374 +0.037·grooming_given[t] +1.145·own_reposition_body +1.064·own_grooming_process -1.176·own_grooming

@@ -6,8 +6,8 @@ Existing fits (json) are skipped, so an interrupted run can simply be restarted;
 reported at the end and does not stop the others.
 
 Usage (from the repository root):
-    python weinhardt2026/confusion_matrix/fit_benchmarks.py
-    python weinhardt2026/confusion_matrix/fit_benchmarks.py --studies dezfouli2019 weber2024 --seeds 10 11
+    python weinhardt2026/analysis/validation/model_identification/fit_benchmarks.py
+    python weinhardt2026/analysis/validation/model_identification/fit_benchmarks.py --studies dezfouli2019 weber2024 --seeds 10 11
 """
 
 import sys
@@ -15,11 +15,11 @@ import argparse
 import traceback
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(ROOT))
 
-from weinhardt2026.confusion_matrix.fit_confusion_matrix import DEFAULT_DATA_DIR, DEFAULT_OUT_DIR, fit_run, run_name
-from weinhardt2026.confusion_matrix.generate_datasets import GENERATORS, STUDIES
+from weinhardt2026.analysis.validation.model_identification.fit_confusion_matrix import DEFAULT_DATA_DIR, DEFAULT_OUT_DIR, fit_run, run_name
+from weinhardt2026.analysis.validation.model_identification.generate_datasets import GENERATORS, STUDIES
 
 
 CLOSED_FORM_STUDIES = ('kolff2025',)

@@ -2,7 +2,7 @@
 
 Per study and generator (SPICE, benchmark), one dataset is simulated from the generator's median seed:
 all final seeds (weinhardt2026/utils/final_models.py) are ranked by their training log-likelihood per
-trial and the (lower) median one is taken, as aggregate_grid_search.py picks its median run.
+trial and the (lower) median one is taken, as run_benchmark_grid_search.py picks its median run.
 For SPICE, the seeds are scored by their best ensemble member (highest training likelihood), and the
 dataset is simulated from that member's SPICE-EQ.
 
@@ -10,7 +10,7 @@ The simulation replays the real experiment (all blocks and participants) with th
 (studies/<study>/simulation_<study>.py: load_dataset, generate). Continuous studies (bruckner2025,
 weber2024) simulate from the Gaussian likelihood their models are scored with: the response is the
 model's prediction plus N(0, sigma^2), sigma the generator's MLE residual s.d. on the training data
-per (participant, experiment) group, as in the AIC/BIC of figures/figure_model_evaluation.py.
+per (participant, experiment) group, as in the AIC/BIC of analysis/evaluation/run_model_evaluation.py.
 
 Every dataset is a copy of the study's CSV with the simulated columns overwritten in raw units
 (SIMULATED_COLUMNS), so it is fit exactly like the real data (run.py with the study's data_kwargs and
@@ -18,7 +18,7 @@ hooks, the benchmark's own get_dataset). Simulated cells without a simulated val
 a session's last trial, which never enters the dataset) are NaN; columns the fit does not read keep the
 real values. Each CSV is checked by loading it through that pipeline and comparing with the simulation.
 
-Written to <out_dir>/ (default weinhardt2026/confusion_matrix/data/):
+Written to <out_dir>/ (default weinhardt2026/analysis/validation/model_identification/data/):
     <study>_sim<generator>.csv   the simulated dataset
     generators.csv               one row per (study, generator): the generator (checkpoint, member,
                                  training likelihood, response noise) and the configuration every model
@@ -29,7 +29,7 @@ kolff2025's benchmark is a logistic regression fit in closed form: there is one 
 instead of seeds, and it is the generator.
 
 Usage (from the repository root):
-    python weinhardt2026/confusion_matrix/generate_datasets.py --studies dezfouli2019 weber2024
+    python weinhardt2026/analysis/validation/model_identification/generate_datasets.py --studies dezfouli2019 weber2024
 """
 
 import sys
@@ -41,7 +41,7 @@ import os
 import re
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / 'weinhardt2026'))  # study modules import 'studies.<study>...' (as in run.py)
 
@@ -54,8 +54,8 @@ from spice import SpiceDataset, csv_to_dataset
 
 STUDIES = ('dezfouli2019', 'ganesh2024a', 'eckstein2026', 'bustamante2023', 'braun2018', 'bruckner2025', 'weber2024', 'kolff2025')
 GENERATORS = ('spice', 'benchmark')
-DEFAULT_OUT_DIR = 'weinhardt2026/confusion_matrix/data'
-BENCHMARK_RUNS_DIR = ROOT / 'weinhardt2026' / 'benchmark_grid_search' / 'runs'
+DEFAULT_OUT_DIR = 'weinhardt2026/analysis/validation/model_identification/data'
+BENCHMARK_RUNS_DIR = ROOT / 'weinhardt2026' / 'analysis' / 'grid_search' / 'runs'
 ROW = '_row'   # raw row index, carried through csv_to_dataset as an extra additional input
 CLOSED_FORM = 'closed-form fit'   # checkpoint of kolff2025's benchmark
 
@@ -80,7 +80,7 @@ def study_data(study: str) -> tuple[dict, list[int]]:
     if study == 'kolff2025':
         from weinhardt2026.studies.kolff2025.benchmarking_kolff2025 import DATA_KWARGS, get_dataset
         return dict(DATA_KWARGS), list(get_dataset(test_fold=0)[2]['test_blocks'])
-    from weinhardt2026.figures.figure_model_evaluation import STUDIES as REGISTRY
+    from weinhardt2026.utils.studies import STUDIES as REGISTRY
     return dict(REGISTRY[study]['data_kwargs']), list(REGISTRY[study]['test_blocks'])
 
 
@@ -171,7 +171,7 @@ def load_generator(study: str, generator: str, selected: pd.Series):
 def predict(model, dataset: SpiceDataset) -> torch.Tensor:
     """Outputs (B, T, W, A) on CPU of a benchmark or an EnsembleMember."""
     from weinhardt2026.utils.study_models import EnsembleMember
-    from weinhardt2026.figures.figure_model_evaluation import predict as predict_registered
+    from weinhardt2026.utils.studies import predict as predict_registered
     if not isinstance(model, EnsembleMember):
         return predict_registered(model, dataset)
     model.estimator.model.init_state(batch_size=dataset.xs.shape[0])
@@ -182,7 +182,7 @@ def predict(model, dataset: SpiceDataset) -> torch.Tensor:
 def response_noise_std(study: str, generator: str, model, dataset: SpiceDataset) -> torch.Tensor:
     """(n_sessions,) noise s.d. of every session of `dataset`: sqrt(SSE / (n * dim)) of the generator on the
     training data of the session's (participant, experiment) group."""
-    from weinhardt2026.figures.figure_model_evaluation import continuous_session_sse
+    from weinhardt2026.utils.studies import continuous_session_sse
     from weinhardt2026.utils.final_models import model_setup
 
     _, dataset_train = model_setup(study, generator)

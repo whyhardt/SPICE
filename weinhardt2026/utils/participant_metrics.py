@@ -26,7 +26,7 @@ import os
 import numpy as np
 import pandas as pd
 
-from weinhardt2026.analysis.analysis_coefficient_betas import get_criterion
+from spice.utils.analysis.coefficient_betas import get_criterion
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 
@@ -64,3 +64,4 @@ def reward_rate(study: str) -> np.ndarray:
         raise ValueError(f'{study}: no reward column (see weinhardt2026/utils/participant_metrics.py)')
     column, participant, block = REWARD_COLUMNS[study]
     return get_criterion(study_data(study), column, participant, block_col=block)[column].to_numpy()
+

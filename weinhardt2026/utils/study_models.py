@@ -6,7 +6,7 @@ Every study has ``weinhardt2026/studies/<study>/simulation_<study>.py`` with
                                final seed (utils/final_models.py); for SPICE the ensemble member with the
                                highest training likelihood (select_spice_members)
     generate(model, dataset)   one simulated run of `dataset` -> SpiceDataset
-used by analysis/analysis_posterior_predictive.py and confusion_matrix/generate_datasets.py.
+used by analysis/evaluation/run_posterior_predictive.py and analysis/validation/model_identification/generate_datasets.py.
 """
 
 import importlib
@@ -33,14 +33,14 @@ def load_study_module(study: str):
 
 
 def load_registered_dataset(study: str) -> SpiceDataset:
-    """Full dataset as figures/figure_model_evaluation.py (and run.py) builds it."""
-    from weinhardt2026.figures.figure_model_evaluation import load_dataset
+    """Full dataset as analysis/evaluation/run_model_evaluation.py (and run.py) builds it."""
+    from weinhardt2026.utils.studies import load_dataset
     return load_dataset(study)[1]
 
 
 def load_registered_models(study: str, dataset: SpiceDataset) -> dict:
-    """Every final seed of GRU, benchmark and SPICE (best member per seed), built as figures/figure_model_evaluation.py registers them."""
-    from weinhardt2026.figures.figure_model_evaluation import STUDIES as REGISTRY, load_study, load_spice
+    """Every final seed of GRU, benchmark and SPICE (best member per seed), built as analysis/evaluation/run_model_evaluation.py registers them."""
+    from weinhardt2026.utils.studies import STUDIES as REGISTRY, load_study, load_spice
     from weinhardt2026.utils.final_models import final_checkpoints
     config = REGISTRY[study]
     n_participants, n_actions = dataset.n_participants, dataset.n_actions
@@ -84,9 +84,9 @@ def trial_loglik(study: str, outputs: torch.Tensor, dataset: SpiceDataset) -> fl
     """Log-likelihood per trial of one model's outputs (B, T, W, A) on `dataset`.
 
     Discrete: mean log-probability of the chosen actions. Continuous: Gaussian log-likelihood with the
-    model's MLE noise variance (likelihood definitions as in figures/figure_model_evaluation.py).
+    model's MLE noise variance (likelihood definitions as in analysis/evaluation/run_model_evaluation.py).
     """
-    from weinhardt2026.figures.figure_model_evaluation import discrete_session_nll, continuous_session_sse
+    from weinhardt2026.utils.studies import discrete_session_nll, continuous_session_sse
     if dataset.continuous_action:
         sse, n_trials, dim = continuous_session_sse(outputs, dataset, study)
         variance = sse.sum().item() / (n_trials.sum().item() * dim)
@@ -107,7 +107,7 @@ def member_train_loglik(study: str, estimator, dataset_train: SpiceDataset) -> n
 
 def model_train_loglik(study: str, model: torch.nn.Module, dataset_train: SpiceDataset) -> float:
     """Training log-likelihood per trial of a benchmark or GRU."""
-    from weinhardt2026.figures.figure_model_evaluation import predict
+    from weinhardt2026.utils.studies import predict
     return trial_loglik(study, predict(model, dataset_train), dataset_train)
 
 

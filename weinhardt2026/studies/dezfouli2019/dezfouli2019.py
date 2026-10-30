@@ -15,7 +15,7 @@ from weinhardt2026.utils.final_models import best_checkpoint, load_best
 from weinhardt2026.studies.dezfouli2019.benchmarking_dezfouli2019 import (
     GQLModel, get_dataset,
 )
-from weinhardt2026.analysis.analysis_model_evaluation import analysis_model_evaluation
+from weinhardt2026.analysis.evaluation.model_evaluation import analysis_model_evaluation
 
 
 train_spice = False

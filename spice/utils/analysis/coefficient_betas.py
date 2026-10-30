@@ -2,7 +2,7 @@
 
 SPICE's claim is about structural individual differences — which terms exist
 in a participant's equation — so this tests **presence**, never coefficient
-magnitude: one logistic regression per node, presence ~ z(metric), with
+magnitude: one Firth-penalized logistic regression per node, presence ~ z(metric), with
 Benjamini-Hochberg correction across all tested nodes. A discrete criterion
 (e.g. diagnosis) is compared group by group against a reference, each contrast
 over the participants of its two groups with its own correction; beta is then
@@ -42,7 +42,7 @@ trial count — it checks for this, and warns when the metric correlates with it
 
 Usage:
 
-    python -m weinhardt2026.analysis.analysis_coefficient_betas \
+    python -m spice.utils.analysis.coefficient_betas \
         --model weinhardt2026/studies/dezfouli2019/params_array/spice_dezfouli2019_0.1_0.7.pkl \
         --module spice.precoded.workingmemory \
         --data weinhardt2026/studies/dezfouli2019/data/dezfouli2019.csv \
@@ -53,28 +53,24 @@ Usage:
 import argparse
 import importlib
 import os
-import sys
 import textwrap
-import warnings
 from typing import List, Optional, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import statsmodels.api as sm
-from scipy.stats import kruskal, pearsonr
+from scipy.optimize import brentq, minimize_scalar
+from scipy.special import expit
+from scipy.stats import chi2, kruskal, pearsonr
 from statsmodels.stats.multitest import multipletests
-from statsmodels.tools.sm_exceptions import PerfectSeparationError, PerfectSeparationWarning
-
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
 from spice import BaseModel, SpiceConfig
-from weinhardt2026.analysis.analysis_coefficient_dendrogram import (
+from spice.utils.analysis.coefficient_dendrogram import (
     cluster_module,
     get_module_matrices,
     split_by_sign,
 )
-from weinhardt2026.utils.checkpoints import load_estimator
+from spice.utils.analysis.loading import load_estimator
 
 
 # ---------------------------------------------------------------------------
@@ -230,7 +226,7 @@ def get_mechanism_candidates(consensus: dict, mechanisms: List[Tuple[str, frozen
     """
     from scipy.cluster.hierarchy import linkage
     from scipy.spatial.distance import squareform
-    from weinhardt2026.analysis.analysis_coefficient_dendrogram import presence_distance
+    from spice.utils.analysis.coefficient_dendrogram import presence_distance
 
     candidates = []
 
@@ -279,7 +275,7 @@ def select_reported(table: pd.DataFrame) -> Tuple[pd.Series, pd.Series]:
     """Per group, the largest significant node; otherwise break it up.
 
     Walks each group from its root. A node that is significant is reported and
-    its subgroups are not. A node that is not — non-significant, invariant or
+    its subgroups are not. A node that is not — non-significant, too few or
     not estimable — hands over to its two children, down to single terms, which
     are reported whatever their result. The reported nodes partition the terms.
 
@@ -305,37 +301,95 @@ def select_reported(table: pd.DataFrame) -> Tuple[pd.Series, pd.Series]:
 # Regression
 # ---------------------------------------------------------------------------
 
+def _penalized_loglik(beta: np.ndarray, design: np.ndarray,
+                      presence: np.ndarray) -> Tuple[float, np.ndarray]:
+    """Firth's penalized log-likelihood (log-likelihood + 1/2 log det of the Fisher
+    information) and its gradient, the Firth-modified score (Heinze & Schemper 2002)."""
+    linear = design @ beta
+    probability = expit(linear)
+    weights = probability * (1 - probability)
+    information = design.T @ (weights[:, None] * design)
+    _, logdet = np.linalg.slogdet(information)
+    leverage = weights * np.einsum("ij,jk,ik->i", design, np.linalg.inv(information), design)
+    score = design.T @ (presence - probability + leverage * (0.5 - probability))
+    return np.sum(presence * linear - np.logaddexp(0, linear)) + 0.5 * logdet, score
+
+
+def firth_profile(design: np.ndarray, presence: np.ndarray, slope: float,
+                  intercept_bound: float = 40.0) -> float:
+    """Firth-penalized log-likelihood maximized over the intercept at a fixed slope.
+
+    The penalized likelihood is unimodal in the intercept, so a bounded scalar
+    search is enough, even where fitted probabilities saturate.
+    """
+    result = minimize_scalar(lambda intercept: -_penalized_loglik(np.array([intercept, slope]),
+                                                                  design, presence)[0],
+                             bounds=(-intercept_bound, intercept_bound), method="bounded",
+                             options={"xatol": 1e-8})
+    return -result.fun
+
+
+def firth_fit(design: np.ndarray, presence: np.ndarray,
+              slope_grid: np.ndarray = np.linspace(-15, 15, 121)) -> Tuple[float, float]:
+    """Firth-penalized logistic regression of presence on [intercept, slope].
+
+    The penalized likelihood is not concave in the slope — a high-leverage
+    predictor value adds a second mode near zero — so a local optimizer can stop
+    in the wrong mode. Its profile over the intercept is well behaved, so the
+    slope is found globally: the profile on *slope_grid*, refined around the best
+    grid point. Returns the slope and the maximum penalized log-likelihood.
+    """
+    profile = [firth_profile(design, presence, slope) for slope in slope_grid]
+    best = int(np.argmax(profile))
+    if best in (0, len(slope_grid) - 1):
+        raise np.linalg.LinAlgError("Firth slope outside the search grid")
+    result = minimize_scalar(lambda slope: -firth_profile(design, presence, slope),
+                             bounds=(slope_grid[best - 1], slope_grid[best + 1]), method="bounded",
+                             options={"xatol": 1e-6})
+    return result.x, -result.fun
+
+
 def presence_beta(presence: np.ndarray, predictor: np.ndarray,
-                  standardize: bool = True) -> dict:
-    """Logistic regression of presence on one predictor.
+                  standardize: bool = True, ci_level: float = 0.95,
+                  max_ci_width: float = 50.0) -> dict:
+    """Firth-penalized logistic regression of presence on one predictor.
 
     With a standardized continuous predictor, beta is the change in log-odds of
     presence per SD. With a 0/1 group indicator (standardize=False), beta is the
-    log odds ratio of presence in the group vs the reference. Fits that separate
-    perfectly or fail to converge are returned as not estimable rather than as a
-    spuriously huge effect.
+    log odds ratio of presence in the group vs the reference. Firth's penalty
+    keeps beta finite under (quasi-)separation — a group in which nobody, or
+    everybody, has the term — so the strongest group differences are tested
+    rather than dropped. The p-value is the penalized likelihood-ratio test and
+    the interval the profile penalized-likelihood interval, both valid under
+    separation where the Wald statistics are not; an interval bound beyond
+    *max_ci_width* from beta is reported as infinite.
     """
-    empty = {"beta": np.nan, "se": np.nan, "p": np.nan, "estimable": False}
+    empty = {"beta": np.nan, "ci_low": np.nan, "ci_high": np.nan, "p": np.nan, "estimable": False}
+    design = np.column_stack([np.ones(len(predictor)),
+                              zscore(predictor) if standardize else predictor])
+    try:
+        slope, maximum = firth_fit(design, presence)
 
-    # Quasi-separation: a group in which nobody (or everybody) has the term makes
-    # the odds ratio infinite. statsmodels only flags *complete* separation, so
-    # the fit would drift to a huge, meaningless beta; check the 2x2 cells instead.
-    if not standardize and np.isin(predictor, (0.0, 1.0)).all():
-        for level in (0.0, 1.0):
-            share = presence[predictor == level].mean()
-            if share in (0.0, 1.0):
-                return empty
+        def profile(value: float) -> float:
+            return firth_profile(design, presence, value)
 
-    design = sm.add_constant(zscore(predictor) if standardize else predictor)
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", PerfectSeparationWarning)
-        try:
-            fit = sm.Logit(presence, design).fit(disp=0)
-        except (PerfectSeparationError, PerfectSeparationWarning, np.linalg.LinAlgError):
-            return empty
-    if not fit.mle_retvals.get("converged", False):
+        statistic = max(2 * (maximum - profile(0.0)), 0.0)
+        threshold = maximum - chi2.ppf(ci_level, 1) / 2
+
+        def bound(direction: int) -> float:
+            width = 1.0
+            while profile(slope + direction * width) > threshold:
+                width *= 2
+                if width > max_ci_width:
+                    return direction * np.inf
+            ends = sorted((slope, slope + direction * width))
+            return brentq(lambda slope: profile(slope) - threshold, *ends)
+
+        ci_low, ci_high = bound(-1), bound(+1)
+    except np.linalg.LinAlgError:
         return empty
-    return {"beta": fit.params[1], "se": fit.bse[1], "p": fit.pvalues[1], "estimable": True}
+    return {"beta": slope, "ci_low": ci_low, "ci_high": ci_high,
+            "p": chi2.sf(statistic, 1), "estimable": True}
 
 
 def add_fdr(table: pd.DataFrame, alpha: float = 0.05) -> pd.DataFrame:
@@ -354,6 +408,19 @@ def add_fdr(table: pd.DataFrame, alpha: float = 0.05) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 # Contrasts
 # ---------------------------------------------------------------------------
+
+def contrast_suffix(criterion_col: str, criterion_type: str, name: str) -> str:
+    """File-name suffix of one contrast: the criterion, plus the compared groups for a discrete one."""
+    return criterion_col if criterion_type == "continuous" else f"{criterion_col}_{name}"
+
+
+def contrast_xlabel(criterion_col: str, criterion_type: str, name: str) -> str:
+    """Axis label of one contrast's betas."""
+    if criterion_type == "continuous":
+        return f"log-odds of presence per SD of {criterion_col} (95% CI)"
+    label, reference = name.split("_vs_")
+    return f"log odds ratio of presence, {label} vs {reference} (95% CI)"
+
 
 def get_contrasts(criterion: np.ndarray, criterion_col: str,
                   criterion_type: str = "continuous",
@@ -375,7 +442,7 @@ def get_contrasts(criterion: np.ndarray, criterion_col: str,
                  "mask": defined,
                  "predictor": criterion[defined].astype(float),
                  "standardize": True,
-                 "xlabel": f"log-odds of presence per SD of {criterion_col} (95% CI)"}]
+                 "xlabel": contrast_xlabel(criterion_col, criterion_type, criterion_col)}]
 
     if criterion_type != "discrete":
         raise ValueError(f"Unknown criterion_type '{criterion_type}'.")
@@ -394,19 +461,22 @@ def get_contrasts(criterion: np.ndarray, criterion_col: str,
                           "mask": mask,
                           "predictor": (criterion[mask] == label).astype(float),
                           "standardize": False,
-                          "xlabel": f"log odds ratio of presence, {label} vs {reference} (95% CI)"})
+                          "xlabel": contrast_xlabel(criterion_col, criterion_type, f"{label}_vs_{reference}")})
     return contrasts
 
 
 def test_candidates(candidates: List[dict], contrast: dict,
-                    invariant_bounds: Tuple[float, float] = (0.05, 0.95),
+                    min_count: int = 5,
                     alpha: float = 0.05) -> pd.DataFrame:
     """Test every node for one contrast, correct once, apply the break-up rule.
 
-    Presence shares and the invariance check are computed on the contrast's own
-    participants, since that is the sample the regression sees.
+    A node is tested only when at least *min_count* of the contrast's participants
+    carry it and at least *min_count* do not (Vittinghoff & McCulloch 2007: 5-9
+    cases per predictor suffice; Firth's penalty removes most of the small-sample
+    bias); otherwise it is marked "too few". A count, not a share, so the rule is
+    the same for samples of any size. Presence and counts are computed on the
+    contrast's own participants, since that is the sample the regression sees.
     """
-    lower, upper = invariant_bounds
     mask = contrast["mask"]
     rows = []
     for node in candidates:
@@ -417,12 +487,13 @@ def test_candidates(candidates: List[dict], contrast: dict,
                "size": len(node["members"]),
                "active_all": presence.mean(),
                "active_any": node["presence_any"][mask].mean()}
-        if lower <= row["active_all"] <= upper:
+        n_present = int(presence.sum())
+        if min(n_present, len(presence) - n_present) >= min_count:
             row.update(presence_beta(presence, contrast["predictor"], contrast["standardize"]))
             row["status"] = "tested" if row["estimable"] else "not estimable"
         else:
-            row.update({"beta": np.nan, "se": np.nan, "p": np.nan, "estimable": False,
-                        "status": "invariant"})
+            row.update({"beta": np.nan, "ci_low": np.nan, "ci_high": np.nan, "p": np.nan, "estimable": False,
+                        "status": "too few"})
         rows.append(row)
 
     table = add_fdr(pd.DataFrame(rows), alpha=alpha)
@@ -489,11 +560,21 @@ def plot_forest(table: pd.DataFrame, output_path: str, title: str,
     # colour follows the module's position in *order*, so it is the same in every plot
     color_of = {module: palette(order.index(module) % 10) for module in modules}
 
+    # An infinite profile bound (separation) runs to the plot edge and ends in an arrow.
+    bounds = table[["beta", "ci_low", "ci_high"]].to_numpy()
+    finite = bounds[np.isfinite(bounds)]
+    margin = 0.1 * max(finite.max() - finite.min(), 1.0)
+    edges = (min(finite.min(), 0) - margin, max(finite.max(), 0) + margin)
     for position, row in table.iterrows():
         color = color_of[row["module"]]
-        axis.errorbar(row["beta"], position, xerr=1.96 * row["se"], fmt="o", color=color,
-                      markersize=6, capsize=3,
+        low, high = np.clip([row["ci_low"], row["ci_high"]], *edges)
+        axis.errorbar(row["beta"], position, xerr=[[row["beta"] - low], [high - row["beta"]]],
+                      fmt="o", color=color, markersize=6, capsize=3,
                       markerfacecolor=color if row["significant"] else "white")
+        for bound, edge, marker in ((row["ci_low"], low, "<"), (row["ci_high"], high, ">")):
+            if np.isinf(bound):
+                axis.plot(edge, position, marker=marker, color=color, markersize=5)
+    axis.set_xlim(*edges)
 
     axis.axvline(0, color="0.3", linewidth=1)
     axis.set_yticks(range(len(table)))
@@ -515,6 +596,61 @@ def plot_forest(table: pd.DataFrame, output_path: str, title: str,
     figure.tight_layout()
     figure.savefig(output_path, dpi=200, bbox_inches="tight")
     plt.close(figure)
+
+
+def plot_mechanism_betas(table: pd.DataFrame, mechanisms: List[Tuple[str, frozenset]], output_path: str,
+                         xlabel: str, clean: bool = False):
+    """Beta and 95% CI of the mechanisms alone, for one contrast.
+
+    Rows are M1, M2, ... in the order of *mechanisms*. Black marks are significant
+    (FDR q below the analysis' alpha), white ones are not; a mechanism that was not
+    tested (too few carriers or non-carriers, or not estimable) is marked n.t. An
+    infinite profile bound runs to the plot edge and ends in an arrow. Saved
+    annotated (<output_path>.pdf/.png: n.t. marks and x-label) and, with *clean*,
+    without annotations (<output_path>_clean.pdf/.png).
+    """
+    roots = table[table["depth"] == 0]
+    row_of = {(row["module"], frozenset(row["leaf"].strip("{}").split(", "))): row for _, row in roots.iterrows()}
+    rows = [row_of.get((module, frozenset(core))) for module, core in mechanisms]
+    tested = [row for row in rows if row is not None and row["status"] == "tested"]
+
+    bounds = np.array([[row["beta"], row["ci_low"], row["ci_high"]] for row in tested]).ravel()
+    finite = bounds[np.isfinite(bounds)] if len(bounds) else np.zeros(1)
+    margin = 0.1 * max(finite.max() - finite.min(), 1.0)
+    edges = (min(finite.min(), 0) - margin, max(finite.max(), 0) + margin)
+
+    for annotated in ((True, False) if clean else (True,)):
+        figure, axis = plt.subplots(figsize=(3.0, 0.32 * len(mechanisms) + 0.8))
+        axis.axvline(0, color="0.6", linewidth=0.8, zorder=0)
+        for position, row in enumerate(rows):
+            if row is None or row["status"] != "tested":
+                if annotated:
+                    axis.text(0, position, "n.t.", ha="center", va="center", fontsize=7, color="0.5", style="italic")
+                continue
+            low, high = np.clip([row["ci_low"], row["ci_high"]], *edges)
+            axis.plot([low, high], [position, position], color="black", linewidth=1.3, zorder=1)
+            for bound, edge, marker in ((row["ci_low"], low, "<"), (row["ci_high"], high, ">")):
+                if np.isinf(bound):
+                    axis.plot(edge, position, marker=marker, color="black", markersize=4)
+            axis.plot(row["beta"], position, marker="o", markersize=6, markeredgecolor="black", markeredgewidth=1.2,
+                      markerfacecolor="black" if row["significant"] else "white", zorder=2)
+
+        axis.set_xlim(*edges)
+        axis.set_yticks(range(len(mechanisms)))
+        axis.set_yticklabels([f"M{i + 1}" for i in range(len(mechanisms))], fontsize=8.5)
+        axis.set_ylim(len(mechanisms) - 0.5, -0.5)
+        axis.tick_params(axis="y", length=0)
+        axis.tick_params(axis="x", labelsize=7.5)
+        for spine in ("top", "right", "left"):
+            axis.spines[spine].set_visible(False)
+        if annotated:
+            axis.set_xlabel(xlabel, fontsize=7.5)
+
+        path = output_path if annotated else f"{output_path}_clean"
+        figure.savefig(f"{path}.pdf", bbox_inches="tight")
+        figure.savefig(f"{path}.png", dpi=200, bbox_inches="tight")
+        plt.close(figure)
+        print(f"Saved {path}.pdf/.png")
 
 
 # ---------------------------------------------------------------------------
@@ -540,12 +676,12 @@ def analysis_coefficient_betas(
     polynomial_degree: int = 2,
     model_kwargs: Optional[dict] = None,
     linkage_method: str = "average",
-    min_active_fraction: float = 0.05,
+    min_carriers: int = 5,
     n_permutations: int = 10000,
     grouping_alpha: float = 0.05,
     permutation_seed: int = 0,
     split_signs: bool = True,
-    invariant_bounds: Tuple[float, float] = (0.05, 0.95),
+    min_count: int = 5,
     alpha: float = 0.05,
     prefix: Optional[str] = None,
 ) -> pd.DataFrame:
@@ -595,7 +731,7 @@ def analysis_coefficient_betas(
             terms=data["terms"],
             mode="presence",
             linkage_method=linkage_method,
-            min_active_fraction=min_active_fraction,
+            min_carriers=min_carriers,
             n_permutations=n_permutations,
             grouping_alpha=grouping_alpha,
             seed=permutation_seed,
@@ -605,15 +741,16 @@ def analysis_coefficient_betas(
             candidates.append(node)
 
     return run_contrasts(candidates, criterion, criterion_col, criterion_type, reference,
-                         comparisons, output_dir, prefix, invariant_bounds, alpha)
+                         comparisons, output_dir, prefix, min_count, alpha)
 
 
 def run_contrasts(candidates: List[dict], criterion: np.ndarray, criterion_col: str,
                   criterion_type: str, reference: Optional[str],
                   comparisons: Optional[List[Tuple[str, str]]], output_dir: str, prefix: str,
-                  invariant_bounds: Tuple[float, float] = (0.05, 0.95),
-                  alpha: float = 0.05, plot_significant_only: bool = False) -> pd.DataFrame:
-    """Test the candidates for every contrast; print, plot and save each one.
+                  min_count: int = 5,
+                  alpha: float = 0.05, plot_significant_only: bool = False,
+                  forest_plot: bool = True) -> pd.DataFrame:
+    """Test the candidates for every contrast; print, save and (with *forest_plot*) plot each one.
 
     The forest plot shows the reported, tested leaves — only the significant ones
     with *plot_significant_only*; the CSV always holds every node.
@@ -621,28 +758,29 @@ def run_contrasts(candidates: List[dict], criterion: np.ndarray, criterion_col: 
     tables = []
     for contrast in get_contrasts(criterion, criterion_col, criterion_type, reference,
                                   comparisons):
-        table = test_candidates(candidates, contrast, invariant_bounds, alpha)
+        table = test_candidates(candidates, contrast, min_count, alpha)
         report_contrast(table, contrast["name"], alpha)
 
-        suffix = (criterion_col if criterion_type == "continuous"
-                  else f"{criterion_col}_{contrast['name']}")
-        plot_path = os.path.join(output_dir, f"betas_structural_{prefix}_{suffix}.png")
-        shown = table["reported"] & (table["status"] == "tested")
-        if plot_significant_only:
-            shown &= table["significant"]
-        if os.path.exists(plot_path):
-            os.remove(plot_path)  # nothing to show leaves no stale plot behind
-        plot_forest(table[shown], plot_path,
-                    module_order=list(dict.fromkeys(node["module"] for node in candidates)),
-                    title=f"{prefix} — presence, {contrast['name']}",
-                    xlabel=contrast["xlabel"])
+        suffix = contrast_suffix(criterion_col, criterion_type, contrast["name"])
+        if forest_plot:
+            plot_path = os.path.join(output_dir, f"betas_structural_{prefix}_{suffix}.png")
+            shown = table["reported"] & (table["status"] == "tested")
+            if plot_significant_only:
+                shown &= table["significant"]
+            if os.path.exists(plot_path):
+                os.remove(plot_path)  # nothing to show leaves no stale plot behind
+            plot_forest(table[shown], plot_path,
+                        module_order=list(dict.fromkeys(node["module"] for node in candidates)),
+                        title=f"{prefix} — presence, {contrast['name']}",
+                        xlabel=contrast["xlabel"])
+            print(f"Saved {plot_path}")
 
         # One file per contrast, so runs with other comparisons never overwrite it.
         saved = table.copy()
         saved["children"] = saved["children"].map(lambda c: " ".join(map(str, c)))
         table_path = os.path.join(output_dir, f"betas_structural_{prefix}_{suffix}.csv")
         saved.to_csv(table_path, index=False)
-        print(f"Saved {table_path}\nSaved {plot_path}")
+        print(f"Saved {table_path}")
         tables.append(table)
 
     table = pd.concat(tables, ignore_index=True)
@@ -661,17 +799,18 @@ def analysis_mechanism_betas(
     comparisons: Optional[List[Tuple[str, str]]] = None,
     participant_col: str = "participant",
     criterion_aggregate: str = "mean",
-    invariant_bounds: Tuple[float, float] = (0.05, 0.95),
+    min_count: int = 5,
     alpha: float = 0.05,
     prefix: str = "mechanisms",
-    plot_significant_only: bool = False,
     criterion_map: Optional[dict] = None,
     block_col: Optional[str] = None,
+    figure_prefix: str = "figure_mechanism_betas",
+    clean: bool = False,
 ) -> pd.DataFrame:
     """Structural beta effects of mechanisms recurring across seeds, plus all other terms.
 
     Instead of one model's dendrogram groups, the leaves are *mechanisms* found
-    across seeds (e.g. ``analysis_grid_mechanisms.core_mechanisms``) and every
+    across seeds (e.g. ``spice.utils.analysis.equation_discovery.core_mechanisms``) and every
     signed term outside them. Presence is the seed vote of ``consensus_presence``
     (>= *votes* seeds). A non-significant mechanism is broken up by one step only
     (``get_mechanism_candidates``); as in ``analysis_coefficient_betas``, every
@@ -679,7 +818,11 @@ def analysis_mechanism_betas(
 
     *criterion_map* relabels the criterion values (discrete: names groups, or merges
     them by mapping several values onto one label). *data_path* (CSV or DataFrame)
-    and *block_col* as in ``get_criterion``.
+    and *block_col* as in ``get_criterion``. Per contrast, the table of every node is
+    saved as ``betas_structural_<prefix>_<criterion>[_<group>_vs_<reference>].csv``
+    and the mechanisms alone are plotted (``plot_mechanism_betas``, rows M1, M2, ...
+    in the order of *mechanisms*) as ``<figure_prefix>_<criterion>[...]``, with
+    *clean* also without annotations.
     """
     os.makedirs(output_dir, exist_ok=True)
     aggregate = "first" if criterion_type == "discrete" else criterion_aggregate
@@ -691,9 +834,15 @@ def analysis_mechanism_betas(
                       criterion_type=criterion_type, alpha=alpha)
 
     candidates = get_mechanism_candidates(consensus_presence(seed_matrices, votes), mechanisms)
-    return run_contrasts(candidates, criterion, criterion_col, criterion_type, reference,
-                         comparisons, output_dir, prefix, invariant_bounds, alpha,
-                         plot_significant_only=plot_significant_only)
+    table = run_contrasts(candidates, criterion, criterion_col, criterion_type, reference,
+                          comparisons, output_dir, prefix, min_count, alpha, forest_plot=False)
+
+    if mechanisms:
+        for name, contrast_table in table.groupby("contrast", sort=False):
+            suffix = contrast_suffix(criterion_col, criterion_type, name)
+            plot_mechanism_betas(contrast_table, mechanisms, os.path.join(output_dir, f"{figure_prefix}_{suffix}"),
+                                 contrast_xlabel(criterion_col, criterion_type, name), clean=clean)
+    return table
 
 
 def main():
@@ -715,7 +864,7 @@ def main():
     parser.add_argument("--criterion-aggregate", default="mean")
     parser.add_argument("--n-actions", type=int, default=2)
     parser.add_argument("--polynomial-degree", type=int, default=2)
-    parser.add_argument("--min-active-fraction", type=float, default=0.05)
+    parser.add_argument("--min-carriers", type=int, default=5)
     parser.add_argument("--n-permutations", type=int, default=10000)
     parser.add_argument("--grouping-alpha", type=float, default=0.05)
     parser.add_argument("--no-split-signs", action="store_true",
@@ -747,7 +896,7 @@ def main():
         participant_col=args.participant_col,
         criterion_aggregate=args.criterion_aggregate,
         polynomial_degree=args.polynomial_degree,
-        min_active_fraction=args.min_active_fraction,
+        min_carriers=args.min_carriers,
         n_permutations=args.n_permutations,
         grouping_alpha=args.grouping_alpha,
         split_signs=not args.no_split_signs,

@@ -1,58 +1,9 @@
-"""Loading fitted SPICE checkpoints without the data they were trained on.
-
-Analyses that only read coefficients need the model, not the dataset, so the
-ensemble size and participant count are inferred from the saved tensors.
-"""
+"""Selecting and labelling fitted SPICE checkpoints (loading them: spice.utils.analysis.loading)."""
 
 import os
 from typing import Optional
 
 import pandas as pd
-import torch
-
-from spice import BaseModel, SpiceConfig, SpiceEstimator
-
-
-def load_estimator(
-    model_path: str,
-    spice_class: BaseModel,
-    spice_config: SpiceConfig,
-    n_actions: int = 2,
-    n_participants: Optional[int] = None,
-    n_experiments: int = 1,
-    polynomial_degree: int = 2,
-    model_kwargs: Optional[dict] = None,
-    eval_mode: bool = True,
-) -> SpiceEstimator:
-    """Rebuild a SpiceEstimator around a saved checkpoint.
-
-    *n_participants* is read off the checkpoint when not given.
-    """
-    checkpoint = torch.load(model_path, map_location="cpu")
-    first_module = next(iter(spice_config.library_setup))
-    shape = checkpoint["model"][f"sindy_coefficients.{first_module}"].shape
-    ensemble_size = shape[0]
-    if n_participants is None:
-        n_participants = shape[1]
-    del checkpoint
-
-    estimator = SpiceEstimator(
-        spice_class=spice_class,
-        spice_config=spice_config,
-        n_actions=n_actions,
-        n_participants=n_participants,
-        n_experiments=n_experiments,
-        sindy_library_polynomial_degree=polynomial_degree,
-        ensemble_size=ensemble_size,
-        use_sindy=True,
-        kwargs_spice_class=model_kwargs or {},
-    )
-    estimator.load_spice(model_path)
-    if eval_mode:
-        estimator.model.eval()
-    return estimator
-
-
 def select_lowest_bic_checkpoint(hpscan_csv: str, params_dir: str):
     """Return (path, row) of the checkpoint with the lowest BIC in a scan table."""
     scan = pd.read_csv(hpscan_csv)

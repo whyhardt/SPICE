@@ -16,8 +16,7 @@ from spice.resources.spice_training import cross_entropy_loss
 from spice.resources.spice_training import _get_terminal_width
 
 from studies.synthetic.benchmarking_qlearning import QLearning
-from analysis.analysis_model_evaluation import analysis_model_evaluation
-from analysis.analysis_sindy_onestepahead import analysis_sindy_onestepahead
+from analysis.evaluation.model_evaluation import analysis_model_evaluation
 
 
 if __name__=='__main__':
@@ -261,28 +260,14 @@ if __name__=='__main__':
     
     if args.results:
         
-        # print("\nEvaluation (train: likelihood, AIC, BIC; test: likelihood):")
-        # analysis_model_evaluation(
-        #     dataset_train=dataset_train,
-        #     dataset_test=dataset_test,
-        #     spice_model=estimator,
-        #     spice_selection='best-on-train',
-        #     verbose=True,
-        # )
-
-        print("\nSINDy one-step-ahead diagnostic (train):")
-        summary_train, trial_train = analysis_sindy_onestepahead(
-            dataset=dataset_train,
+        print("\nEvaluation (train: likelihood, AIC, BIC; test: likelihood):")
+        analysis_model_evaluation(
+            dataset_train=dataset_train,
+            dataset_test=dataset_test,
             spice_model=estimator,
+            spice_selection='best-on-train',
+            verbose=True,
         )
-        print(summary_train)
-
-        print("\nSINDy one-step-ahead diagnostic (test):")
-        summary_test, trial_test = analysis_sindy_onestepahead(
-            dataset=dataset_test,
-            spice_model=estimator,
-        )
-        print(summary_test)
 
         # agents={
         #     'rnn': estimator.rnn_agent,

@@ -1,117 +1,144 @@
-# CLAUDE.md — SPICE Paper Writing Guide
+# SPICE - Sparse and Interpretable Cognitive Equations
 
-You help write the SPICE manuscript (target: Nature) and its Supplementary Information. You draft, revise and check text. You do not run analyses or change code. When something the text needs is missing, report it instead of filling the gap.
+## Project Overview
 
-This file holds the rules for writing. The technical facts live in the reference files of this directory, listed below. Do not restate technical content here and do not take technical facts from anywhere else.
+SPICE is a framework for discovering symbolic cognitive mechanisms from behavioral data. It combines Recurrent Neural Networks (RNNs) with Sparse Identification of Nonlinear Dynamics (SINDy) to extract interpretable mathematical equations that describe latent cognitive processes.
 
----
+## Abstract
 
-## The Paper in One Paragraph
+Discovering computational models that explain human cognition and behavior remains a central goal of cognitive science, yet the reliance on hand-crafted equations limits the range of cognitive mechanisms that can be uncovered. We introduce SPICE (Sparse and Interpretable Cognitive Equations), a framework that automates the discovery of mechanistically interpretable cognitive models directly from behavioral data. SPICE fits recurrent neural networks to capture latent cognitive dynamics and then applies sparse equation discovery to extract concise mathematical expressions describing those dynamics. Theory-guided priors make the approach data- and compute-efficient, while a hierarchical design reveals individual differences in the algorithmic structure of cognitive dynamics rather than in parameters alone. In simulations, SPICE accurately recovered the structure and parameters of known reinforcement learning models. Applied to human behavior in a two-armed bandit task, it uncovered new equations that outperformed existing models and revealed structural alterations in reinforcement learning mechanisms in clinical groups (*placeholder: the specific group and mechanism are still to be determined from the stability runs*). This approach provides systematic insights into structural individual differences in cognitive mechanisms and establishes a foundation for automated discovery of interpretable behavioral models.
 
-SPICE (Sparse and Interpretable Cognitive Equations) automates the discovery of mechanistically interpretable cognitive models from behavioral data. It fits a modular recurrent neural network (one submodule per cognitive mechanism) to trial-by-trial behavior, regularizes each submodule's dynamics toward sparse polynomial form with differentiable SINDy, and then extracts one concise equation per submodule from the frozen network. Theory-guided priors (which modules exist, which signals they see) make this data- and compute-efficient. A hierarchical design gives every participant their own equations, so SPICE reveals individual differences in the structure of cognitive mechanisms (which terms are present), not only in parameter values. In simulations SPICE recovers the structure and parameters of known reinforcement-learning models. Applied to a two-armed bandit task, it discovers equations that outperform existing models and reveal structural alterations of reinforcement-learning mechanisms in clinical groups (placeholder: the specific group and mechanism are still to be determined from the stability runs).
+### Core Methodology
 
----
+1. **RNN Training**: A task-specific RNN learns to predict human behavior, implicitly capturing latent cognitive mechanisms in disentangled submodules
+2. **SINDy Regularization**: During training, SINDy equations act as regularizers, pushing submodule dynamics toward spaces amenable to SINDy candidate terms
+3. **Equation Discovery**: SINDy approximates the fitted dynamics in each disentangled submodule, yielding interpretable symbolic equations, then a final refit stage recovers coefficients on the frozen RNN's dynamics
 
-## Paper Structure (Nature Format)
+### What SPICE Models
 
-1. **Introduction**: motivation, the gap in cognitive modeling (hand-crafted equations limit what can be discovered), SPICE's contribution
-2. **Results**: synthetic recovery, empirical applications across the task battery, discovered equations, structural individual differences
-3. **Discussion**: interpretation, limitations, broader impact
-4. **Conclusion**
-5. **Methods**: the general framework with illustrative examples
-6. **Supplementary Information**: per-study task descriptions, model configurations, benchmark models, extended analyses
+Any trial-by-trial behavioral task where a participant (human or animal) makes repeated choices and the researcher wants to recover *interpretable* latent cognitive dynamics — not just predict the next action. Studies in `weinhardt2026/studies/` cover: reward-learning bandits with working memory, directed exploration, confidence-weighted learning under perceptual uncertainty, patch foraging, task-switching/cognitive-control effort, changepoint/volatility belief updating (linear and circular state spaces), collaborative visuospatial foraging, and primate social behavior. See [docs/studies.md](docs/studies.md) for what each study models and its population.
 
----
+## Repository Structure
 
-## Sources of Truth
+```
+SPICE/
+├── spice/                              # Core framework (backend / pip package)
+│   ├── resources/
+│   │   ├── estimator.py                # SpiceEstimator — scikit-learn compatible wrapper
+│   │   ├── model.py                    # BaseModel — core RNN + SINDy architecture
+│   │   ├── spice_utils.py              # SpiceConfig, SpiceDataset, SpiceSignals
+│   │   ├── spice_training.py           # Two-stage training pipeline
+│   │   └── sindy_differentiable.py     # Differentiable SINDy polynomial library
+│   ├── precoded/                       # Pre-built cognitive model architectures
+│   │   ├── rescorlawagner.py           # Rescorla-Wagner learning model
+│   │   ├── choice.py                   # Choice perseveration
+│   │   ├── forgetting.py               # Forgetting mechanisms
+│   │   ├── learningrate.py             # Dynamic learning rates
+│   │   ├── interaction.py              # Interaction effects
+│   │   ├── embedding.py                # Participant embeddings
+│   │   ├── ddm.py                      # Drift Diffusion Model (within-trial dynamics)
+│   │   ├── workingmemory.py            # Working memory with reward/choice buffers
+│   │   └── workingmemory_*.py          # Working memory variants
+│   └── utils/
+│       ├── convert_dataset.py          # CSV ↔ SpiceDataset conversion pipeline
+│       ├── plotting.py                 # Visualization utilities
+│       └── analysis/                   # Generic analyses of any directory of SPICE fits (no study names):
+│                                       #   equation_discovery.py (mechanisms, correlations, beta effects),
+│                                       #   coefficient_dendrogram.py, coefficient_betas.py, loading.py
+│
+├── weinhardt2026/                      # Paper-specific code (fitting, benchmarking, analyses)
+│   ├── run.py                          # Main entry point for training
+│   ├── studies/                        # Self-contained study directories (see docs/studies.md); per study: <study>.py (fit/load + quick evaluation),
+│   │                                   #   spice_/benchmarking_/simulation_<study>.py, data/, params/ (final models), results/<item>/
+│   ├── analysis/                       # Paper runners, each writing CSV + figures (see docs/analyses.md):
+│   │                                   #   discovery/ (equation discovery for every study), evaluation/ (model evaluation, PPC),
+│   │                                   #   validation/ (parameter recovery, equation stability, model_identification/),
+│   │                                   #   grid_search/ (SPICE + benchmark/GRU; README.md = checkpoint names), explorative/ (morphing)
+│   ├── results/                        # Paper results across studies (README.md = index of all paper results)
+│   └── utils/                          # Shared utilities (study registry, final models, study simulation modules, generative benchmarking, ...)
+│
+├── docs/                                          # Documentation and tutorials
+│   ├── training.md                                # Model/training internals (start here for how SPICE fits)
+│   ├── analyses.md                                # Results layout + paper analysis pipelines
+│   ├── studies.md                                 # Per-study task/population summaries
+│   └── guidelines_polynomial_amenable_architectures.md  # Architecture design guidelines
+├── pyproject.toml                      # Package config (autospice v0.2.0, Python >=3.11)
+├── setup.py                            # Installation
+└── requirements.txt                    # Core dependencies
+```
 
-The reference files are a snapshot of the SPICE code repository (`whyhardt/SPICE`, commit `791cda7` plus the documentation updates of 2026-10-15) and are read-only. If the code changes, the whole directory is re-copied, never edited by hand.
+## Tech Stack
 
-| File | Use it for | Paper sections |
-|---|---|---|
-| [model_descriptions.md](model_descriptions.md) | §1: RNN submodules with individual-level gates, SINDy library and structural pruning, training summary, default hyperparameters with per-study deviations, train/test split strategy, shared RL architecture. §2: GRU baseline. §3: per study, the task, data, SPICE model and benchmark model. §4: summary table | Methods (from §1–2), SI (from §3–4) |
-| [training.md](training.md) | Details of the two-stage training pipeline: loss terms, warmup, optimizer, pruning (ensemble ratio test, patience, rate limit), Stage 2.1/2.2 refit (ridge, shooting), module cleanup | Methods, SI |
-| [analyses.md](analyses.md) | Analysis pipelines: model evaluation, generative benchmarking, coefficient distributions and clustering, structural beta effects, behavioral clustering, reward-history kernel, parameter recovery, hyperparameter scans | Methods (analysis subsections), SI |
-| [studies.md](studies.md) | Short overview of the task battery, which benchmark belongs to which study, and the per-study train/test splits and hyperparameter deviations | Results (framing of the applications) |
-| [kolff2025_preprocessing.md](kolff2025_preprocessing.md) | Recoding of the chimpanzee behavioral elements into categories | SI (kolff2025) |
-| [guidelines_polynomial_amenable_architectures.md](guidelines_polynomial_amenable_architectures.md) | Why the architectures look the way they do (externalized gating, few control signals per module, additive logits) | Methods (motivating design choices) |
+- **Language**: Python 3.11+
+- **ML Framework**: PyTorch (2.7+)
+- **API Style**: Scikit-learn estimator interface
+- **Package Name**: `autospice` (pip installable)
 
-`training.md` and `analyses.md` are written for developers. Use them for facts, not for phrasing. Leave function names, flags, tensor shapes and file paths out of the manuscript unless the text is explicitly about the software.
+## Commands
 
-If the reference files do not answer a question, say so and flag it in the text. Do not infer details from general knowledge of SINDy, RNNs or the original task papers.
-
-### Known Discrepancies (flag, do not resolve)
-
-- **Bruckner 2025:** the data's outcome noise is σ = 17.5 px, but the benchmark implementation uses σ = 15 px.
-- **Eckstein 2026:** the documented benchmark is Best RL (Eckstein et al., 2026). The study script still instantiated the Castro et al. (2025) program at snapshot time. Check which one produced the reported results.
-- **Dezfouli 2019:** the documented model is `spice_dezfouli2019` (shared RL architecture). The figure pipeline still loaded the older precoded working-memory model at snapshot time. Check which one produced the reported figures.
-
----
-
-## Claims Policy
-
-- **Numbers come from results, never from these files.** Every reported value (likelihoods, BIC, recovery scores, effect sizes, numbers of terms) must come from a result file or figure provided for the paper, with the source recorded next to the claim (e.g. as a LaTeX comment).
-- **Missing results stay visible.** Use `\todo{...}` placeholders. Never write an estimated or plausible-sounding value.
-- **Dataset facts** (participants, trials, blocks, conditions) may be taken from the Task and Data paragraphs of `model_descriptions.md` §3.
-- **Placeholders in this file** (e.g. the clinical-group finding) stay placeholders until the user provides the result.
-
----
-
-## Framing
-
-- SPICE reveals **structural** individual differences: participants differ in which terms their equations contain, not only in parameter values. Make this the recurring message wherever individual differences come up.
-- SPICE complements, not replaces, theory: the researcher specifies the modules and their control signals (theory-guided priors), and SPICE discovers the equations inside them.
-- The task battery shows generality across paradigms: bandits, perceptual uncertainty, foraging, task switching, predictive inference in linear and circular spaces, and observational animal behavior. In the main text, describe the tasks in general terms and keep the configurations for the SI.
-
----
-
-## Writing Style
-
-- **No semicolons.** Use periods or commas.
-- **No `\textit{}`** for emphasis or terminology. Use plain text or let context do the work.
-- **Build equations into sentences.** Block equations are part of the surrounding prose (e.g. "the agreement score [equation] measures the fraction..."), not isolated displays introduced with a colon.
-- **Top-down paragraphs.** Start with the big picture, then the specifics. Do not lead with implementation details.
-- **Task-specific details belong in the SI.** The main Methods describe the general framework with illustrative examples, not every task configuration.
-- **Explain concepts where they first appear.** Refer forward only when necessary, refer back for concepts already explained.
-- **Motivate design choices.** Explain why, not only what. For example, the residual update mirrors the SINDy update form, pruning is rate-limited because pruning many terms at once destabilizes training, and gating is externalized through action masks because polynomials cannot represent hard switches.
-- **Dense paragraphs are fine** for Nature Methods. Prefer fewer, substantive paragraphs over many fragments.
-- **Indicator functions** use `\mathbbm{1}` (bbm package).
-
----
-
-## Notation
-
-Every symbol is defined on first use and recorded in the paper project's `variable_reference.md` (symbol, LaTeX command, meaning, where it is introduced). Before introducing a symbol, check the reference for collisions. For example, $r$ is already the reward, and $\alpha$ is both the L1 strength and the usual name of learning rates in the benchmark models. Pick a different symbol, or state the distinction explicitly.
-
-Core symbols:
-
-| Symbol | Meaning |
-|---|---|
-| $h$ | Latent state of a submodule (memory state) |
-| $u$ | Control signals (observable task variables fed to a submodule) |
-| $\Phi$ | SINDy polynomial candidate library |
-| $\xi$ | SINDy coefficients (per ensemble member, participant, experiment) |
-| $\lambda_{\text{sindy}}$ | Weight of the SINDy regularization |
-| $\alpha$ | L1 sparsity strength on SINDy coefficients |
-| $e_p$ | Participant embedding |
-| $E, P, X, C$ | Ensemble members, participants, experiments, candidate terms |
-
-The gate symbols in `model_descriptions.md` §1.1 ($g_p$, $\gamma_p$) are not yet in this table. Add them to `variable_reference.md` before first use, and check $\gamma$ against existing uses.
+```bash
+pip install autospice                    # Install from PyPI
+pip install -e .                         # Install locally in editable mode
+python weinhardt2026/run.py              # Fit SPICE model to dataset
+```
 
 ---
 
-## Workflow
+## API at a Glance
 
-**Before writing or revising a section:**
-1. Read the relevant part of the reference files (see the table above).
-2. Read `variable_reference.md` and the existing manuscript sections that the new text refers to.
+Full details, current constructor signatures, and internals: **[docs/training.md](docs/training.md)**.
 
-**While writing:**
-- Every technical statement must trace to a reference file, and every number to a result.
-- Mark anything unverifiable with `\todo{}`.
+- **`SpiceConfig`** (`spice/resources/spice_utils.py`) — declares a model's architecture: which submodules exist (`library_setup`), the latent memory states they update (`memory_state`), and which states feed the output logits (`states_in_logit`).
+- **`BaseModel`** (`spice/resources/model.py`) — the RNN + SINDy architecture task-specific models subclass. Register submodules with `setup_module()`, run them each trial with `call_module()`.
+- **`SpiceDataset`** (`spice/resources/spice_utils.py`) — the training data container; build one from a behavioral CSV via `csv_to_dataset()` (`spice/utils/convert_dataset.py`).
+- **`SpiceEstimator`** (`spice/resources/estimator.py`) — the sklearn-style entry point: `.fit(data, targets)`, `.predict(conditions)`, `.print_spice_model()`, `.get_sindy_coefficients()`, `.save_spice()`/`.load_spice()`.
 
-**After writing:**
-1. Add new symbols to `variable_reference.md`.
-2. Record the result source of each number next to the claim.
-3. Build the LaTeX document.
-4. List open questions and flagged gaps at the end of your reply.
+**Precoded models** (`spice/precoded/`): Rescorla-Wagner, Choice Perseveration, Forgetting, Learning Rate, Interaction, Embedding, DDM, Working Memory (+ variants) — ready-made `BaseModel` subclasses for common cognitive mechanisms.
+
+**Generic analyses** (`spice/utils/analysis/`): equation discovery on any directory of fits of one SPICE model (`python -m spice.utils.analysis.equation_discovery --models-dir ... --module ... --data ...`) — mechanisms recurring across seeds (joint support), the reduced equation matrix, the correlations between mechanisms and their structural beta effects on a criterion.
+
+**Paper analyses** (`weinhardt2026/analysis/`; see **[docs/analyses.md](docs/analyses.md)**), all on the final models (`studies/<study>/params/`, 10 seeds; `weinhardt2026/utils/final_models.py`): equation discovery per study (mechanisms, correlations, beta effects), model evaluation (held-out prediction, PPC, AIC/BIC), posterior predictive checks (simulation via `studies/<study>/simulation_<study>.py`), parameter recovery (precision/recall/F1 per dataset size and ground-truth model), equation stability across seeds, model identification (confusion matrix SPICE vs benchmark), the SPICE and benchmark/GRU grid searches and model morphing (dezfouli2019). Outputs: `weinhardt2026/results/<item>/` (across studies) and `weinhardt2026/studies/<study>/results/<item>/` (per study); index in `weinhardt2026/results/README.md`.
+
+---
+
+## Coding Style
+
+### Philosophy
+- **Highly modular** over compact — prefer small, composable pieces
+- **Slim over backward-compatible** — delete dead code rather than shimming it; no `_deprecated_*` wrappers or re-exports
+- **General backend, specific frontends** — `BaseModel` and training infrastructure stay task-agnostic; all task-specific logic lives in `class MyModel(BaseModel)` subclasses
+- **Keep docs in sync with the code, but not line-by-line** — don't rewrite documentation after every small edit. When a task, feature, or package is considered finished (a function/module is done, a parameter is removed, a pipeline stage changes behavior), ask the user whether `CLAUDE.md` / `docs/training.md` / `docs/analyses.md` / `docs/studies.md` should be updated to match, rather than silently leaving them stale or silently rewriting them unprompted.
+
+### Conventions
+- snake_case for functions/variables, PascalCase for classes
+- Descriptive variable names (e.g., `n_participants` over `n`)
+- Follow existing PyTorch conventions (`.forward()`, `torch.nn.Module`, device handling)
+- Maintain sklearn estimator API compatibility for `SpiceEstimator`
+- Type hints where present in existing code
+- `@torch.compile` for performance-critical forward loops
+
+### Figures
+- Every analysis (generic in `spice/utils/analysis/` or paper runner in `weinhardt2026/analysis/`) writes a CSV and one **annotated** figure (`<name>.pdf/.png`: cell values, significance marks, titles). A **clean** version (`<name>_clean.pdf/.png`: marks, axes, tick labels and colourbars only) is written when asked for (`clean=True` / `--clean`); the paper runners ask for it. Not needed for brainstorming or scratchpad figures.
+- Figures and CSVs are written only to results folders: `weinhardt2026/results/<analysis>/` (across studies) or `weinhardt2026/studies/<study>/results/<analysis>/` (one study) — never into code folders.
+
+### File Organization
+- Core framework code → `spice/`
+- Research/paper code → `weinhardt2026/`
+- New utility functions → `spice/utils/`
+- Generic, study-agnostic analyses → `spice/utils/analysis/`; paper runners → `weinhardt2026/analysis/<category>/`
+- New model architectures → `spice/precoded/`
+
+### Designing Polynomial-Amenable Architectures
+
+When designing `BaseModel` subclasses, the architecture determines how well SINDy polynomials can approximate the learned RNN dynamics. Full guidelines (externalizing gating via action masks with an anchor per split pair, keeping the candidate library small, inputs in [-1, 1], additive logits, etc.): **[docs/training.md](docs/training.md#designing-polynomial-amenable-architectures)** and [docs/guidelines_polynomial_amenable_architectures.md](docs/guidelines_polynomial_amenable_architectures.md).
+
+## Common Pitfalls
+
+A living list of gotchas (tensor device reassignment, action-mask overlap, `SpiceEstimator.predict()`'s return shape, `sindy_refit=False` behavior, etc.) lives in **[docs/training.md](docs/training.md#common-pitfalls)** — check there before debugging shape or gradient issues.
+
+## Documentation
+
+- **[docs/training.md](docs/training.md)** — `BaseModel`, `SpiceConfig`, `SpiceDataset`, `SpiceEstimator` internals; the two-stage training pipeline; dimension conventions; the precoded-model pattern; architecture design guidelines; common pitfalls.
+- **[docs/analyses.md](docs/analyses.md)** — the results layout, generative benchmarking and every paper analysis (model evaluation, parameter recovery, mechanisms, beta effects, equation stability, model identification, posterior predictive checks, equation tables, morphing, grid search), with a suggested analysis sequence for a new study.
+- **[docs/studies.md](docs/studies.md)** — what each study in `weinhardt2026/studies/` models, its population, and its benchmark comparison model.
+- Full hosted documentation: https://whyhardt.github.io/SPICE/

@@ -1,6 +1,6 @@
 """
-Simulation of weber2024 (circular predictive inference / shield task) for the posterior predictive checks (analysis/analysis_posterior_predictive.py) and
-the confusion matrix (confusion_matrix/generate_datasets.py); interface: weinhardt2026/utils/study_models.py.
+Simulation of weber2024 (circular predictive inference / shield task) for the posterior predictive checks (analysis/evaluation/run_posterior_predictive.py) and
+the confusion matrix (analysis/validation/model_identification/generate_datasets.py); interface: weinhardt2026/utils/study_models.py.
 """
 
 import sys
