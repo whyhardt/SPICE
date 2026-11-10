@@ -938,10 +938,11 @@ class BaseModel(nn.Module):
         Direct comparison per ensemble member (no cross-ensemble averaging).
 
         Returns two loss terms:
-        - sindy_loss_reg: gradients flow to both RNN parameters and SINDy coefficients.
-          Scaled by sindy_weight in the training loop to control RNN regularization strength.
-        - sindy_loss_fit: gradients flow only to SINDy coefficients (h_next_rnn detached).
-          Independent of sindy_weight so coefficient fitting is decoupled from RNN regularization.
+        - sindy_loss_reg: gradients flow only to the RNN (h_next_sindy detached): pulls the RNN
+          towards the current equations. Scaled by sindy_weight in the training loop.
+        - sindy_loss_fit: gradients flow only to the SINDy coefficients (h_next_rnn detached): fits
+          the equations to the RNN's dynamics. Unweighted and not warmed up, so the
+          coefficients' balance of fit vs. L1 (sindy_alpha) does not depend on sindy_weight.
 
         Args:
             module_name: Name of the RNN module
@@ -961,24 +962,26 @@ class BaseModel(nn.Module):
             zero = torch.tensor(0.0, device=self.device)
             return zero, zero
 
+        # The equations read the RNN's state and controls as fixed data: their fit must not reach
+        # the RNN through its inputs either (sindy_loss_reg detaches h_next_sindy anyway).
         h_next_sindy = self.forward_sindy(
-            h_current=h_current,
+            h_current=h_current.detach(),
             key_module=module_name,
             participant_ids=participant_ids,
             experiment_ids=experiment_ids,
-            controls=controls,
+            controls=controls.detach() if controls is not None else None,
             polynomial_degree=polynomial_degree,
         )  # [W, E, B, I]
 
-        # diff_reg keeps full gradients (RNN + SINDy); diff_fit detaches the RNN side.
+        # Decoupled: diff_reg detaches the SINDy side (gradients → RNN only), diff_fit detaches
+        # the RNN side (gradients → SINDy coefficients only).
         # Both h_next_rnn and h_next_sindy are h_current + dt*(...), so their raw
         # difference carries a factor of dt that gets squared away to dt^2 -- for
         # dt << 1 this silently attenuates sindy_weight by ~dt^2, well below any
         # value tuned for dt=1 modules. Divide by dt first to compare in rate space,
         # consistent with sindy_ridge_accumulate's target normalization.
         dt = self.sindy_specs[module_name].get('dt', 1.)
-        diff_reg = ((h_next_rnn - h_next_sindy) / dt) ** 2  # full gradients
-        # diff_reg = (h_next_rnn - h_next_sindy.detach()) ** 2  # gradients → RNN only
+        diff_reg = ((h_next_rnn - h_next_sindy.detach()) / dt) ** 2  # gradients → RNN only
         diff_fit = ((h_next_rnn.detach() - h_next_sindy) / dt) ** 2  # gradients → SINDy coefficients only
 
         if action_mask is not None:

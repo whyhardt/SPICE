@@ -202,7 +202,6 @@ def _run_batch_training(
     ys: torch.Tensor,
     optimizer: torch.optim.Optimizer = None,
     sindy_weight: float = 0.,
-    sindy_weight_fit: float = 0.1,
     sindy_alpha: float = 0.,
     gate_penalty: float = 0.,
     n_steps: int = None,
@@ -246,17 +245,24 @@ def _run_batch_training(
         ys_step = ys_step[mask]
 
         loss_step = loss_fn(ys_pred, ys_step, **loss_fn_kwargs)
+        loss_reported = loss_step.item()   # the equations' fit to the RNN is not part of the reported loss
 
         if torch.is_grad_enabled():
-            # Add SINDy losses (sindy_loss_reg → RNN and SINDy coefficients)
+            # Decoupled SINDy losses: sindy_loss_reg → RNN only (weak pull, sindy_weight, warmed up),
+            # sindy_loss_fit → SINDy coefficients only, unweighted from the first epoch on, so the
+            # coefficients' balance of fit vs. L1 (sindy_alpha) is the same throughout training
             if sindy_weight > 0 and model.sindy_loss_reg != 0:
-                loss_step = loss_step + sindy_weight * model.sindy_loss_reg #+ sindy_weight_fit * model.sindy_loss_fit
+                loss_step = loss_step + sindy_weight * model.sindy_loss_reg + model.sindy_loss_fit
+                loss_reported += sindy_weight * model.sindy_loss_reg.item()
 
             if sindy_weight > 0 and sindy_alpha > 0:
-                loss_step = loss_step + model.compute_weighted_coefficient_penalty(sindy_alpha=sindy_alpha)
+                coefficient_penalty = model.compute_weighted_coefficient_penalty(sindy_alpha=sindy_alpha)
+                loss_step = loss_step + coefficient_penalty
+                loss_reported += coefficient_penalty.item()
 
             if gate_penalty > 0:
                 loss_step = loss_step + gate_penalty * model.gate_loss
+                loss_reported += gate_penalty * model.gate_loss.item()
                 
             # backpropagation
             optimizer.zero_grad()
@@ -271,9 +277,7 @@ def _run_batch_training(
             #     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
 
-        loss_batch += loss_step.item()
-        # if sindy_weight > 0 and model.sindy_loss_reg != 0:
-        #     loss_batch -= model.sindy_loss_fit.item() * sindy_weight_fit
+        loss_batch += loss_reported
         iterations += 1
 
     return model, optimizer, loss_batch/iterations
@@ -1361,11 +1365,9 @@ def _run_joint_training(
                 # Compute warmup-scaled SINDy weights
                 if n_calls_to_train_model >= n_warmup_steps:
                     sindy_weight_epoch = sindy_weight
-                    sindy_weight_fit_epoch = 1.0
                 else:
                     warmup_scale = warmup_scaler_sindy_weight[n_calls_to_train_model]
                     sindy_weight_epoch = sindy_weight * warmup_scale
-                    sindy_weight_fit_epoch = warmup_scale
 
                 # Training iterations for this epoch
                 for _ in range(iterations_per_epoch):
@@ -1389,7 +1391,6 @@ def _run_joint_training(
                         optimizer=optimizer,
                         n_steps=n_steps,
                         sindy_weight=sindy_weight_epoch,
-                        sindy_weight_fit=sindy_weight_fit_epoch,
                         sindy_alpha=sindy_alpha,
                         gate_penalty=gate_penalty,
                         loss_fn=loss_fn,

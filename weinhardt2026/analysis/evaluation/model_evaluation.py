@@ -236,11 +236,25 @@ def format_table(df: pd.DataFrame) -> str:
     return df.T.to_string(float_format=format_number, na_rep='-')
 
 
-# How the members of a SPICE ensemble are turned into one reported score (see analysis_model_evaluation)
-SPICE_SELECTIONS = ('averaged-model', 'averaged-logit', 'best-on-train')
-
 # Information criteria are only reported for the interpretable models
 INFORMATION_CRITERIA_MODELS = ('Benchmark', 'SPICE-EQ')
+
+
+def best_member_on_train(evaluations: dict, train_score: Callable[[dict], float]) -> dict:
+    """Reduce SPICE's per-member evaluations to the member with the best SPICE-EQ training score.
+
+    The same member supplies SPICE-EQ and SPICE-RNN, so both rows describe one fitted network.
+
+    Args:
+        evaluations: model name -> list of evaluations (SPICE: one per ensemble member; others: one).
+        train_score: evaluation -> training score, higher is better.
+    """
+    if 'SPICE-EQ' not in evaluations:
+        return evaluations
+    best = int(np.argmax([train_score(evaluation) for evaluation in evaluations['SPICE-EQ']]))
+    print(f"SPICE: best-on-train ensemble member {best} (by SPICE-EQ training score)")
+    return {name: [model_evaluations[best]] if name in ('SPICE-EQ', 'SPICE-RNN') else model_evaluations
+            for name, model_evaluations in evaluations.items()}
 
 
 def _prepare_split(dataset: SpiceDataset, trial_filter: Optional[Callable[[torch.Tensor], torch.Tensor]]) -> dict:
@@ -327,11 +341,11 @@ def _sindy_parameters(spice_model: SpiceEstimator, counts: torch.Tensor) -> Para
     return count
 
 
-def _spice_candidates(spice_model: SpiceEstimator, splits: dict, spice_selection: str) -> dict:
-    """SPICE-RNN and SPICE-EQ candidates: one ensemble-averaged-logit candidate, or one per ensemble member.
+def _spice_candidates(spice_model: SpiceEstimator, splits: dict) -> dict:
+    """SPICE-RNN and SPICE-EQ candidates, one per ensemble member (``best_member_on_train`` picks one).
 
     Returns:
-        model name -> list of (split name -> choice probs, ParameterCount).
+        model name -> list over members of (split name -> choice probs, ParameterCount).
     """
     spice_rnn_parameters = 0
     for module in spice_model.get_modules():
@@ -347,16 +361,6 @@ def _spice_candidates(spice_model: SpiceEstimator, splits: dict, spice_selection
             spice_model.model.init_state(batch_size=split['xs'].shape[0])
             logits[name][split_name] = spice_model(split['xs'].to(spice_model.device))[0].detach().cpu()
     spice_model.set_use_sindy(True)
-
-    if spice_selection == 'averaged-logit':
-        n_parameters = {
-            'SPICE-RNN': _shared_parameters(spice_rnn_parameters),
-            'SPICE-EQ': _sindy_parameters(spice_model, spice_model.count_sindy_coefficients().float().cpu()),
-        }
-        return {
-            name: [({split_name: get_choice_probs(split_logits.mean(dim=0)) for split_name, split_logits in logits[name].items()}, n_parameters[name])]
-            for name in ('SPICE-RNN', 'SPICE-EQ')
-        }
 
     coefficient_counts = spice_model.count_sindy_coefficients(aggregate=False).float().cpu()   # (E, P, X)
     members = range(coefficient_counts.shape[0])
@@ -398,7 +402,6 @@ def analysis_model_evaluation(
     spice_model: SpiceEstimator = None,
     benchmark_model: torch.nn.Module = None,
     gru_model: torch.nn.Module = None,
-    spice_selection: str = 'best-on-train',
     verbose: bool = False,
     output_dir: Optional[str] = None,
     trial_filter: Optional[Callable[[torch.Tensor], torch.Tensor]] = None,
@@ -410,15 +413,11 @@ def analysis_model_evaluation(
     ``n_parameters`` (± std) is the parameter count per (participant, experiment) group of the training
     split; ``n_parameters (total)`` is the parameter count of the joint model that enters AIC/BIC.
 
+    SPICE is scored as one ensemble member: the member with the highest SPICE-EQ training likelihood
+    (``best_member_on_train``) supplies both the SPICE-EQ and the SPICE-RNN row, on both splits. Across seeds,
+    average these per-seed scores.
+
     Args:
-        spice_selection: How the members of the SPICE ensemble enter the reported scores (applied to
-            SPICE-RNN and SPICE-EQ separately):
-              'averaged-model': every member is scored on its own (its own logits and coefficient count);
-                  the members' scores are averaged.
-              'averaged-logit': the members' logits are averaged at every time step and the averaged
-                  model is scored (SPICE-EQ counts the coefficients active in any member).
-              'best-on-train': every member is scored on its own; the member with the highest training
-                  likelihood is reported, on the training and on the test split.
         benchmark_group_model: Set True when the benchmark is a group model (one parameter set shared
             by all participants): its parameters are then counted once in the joint model instead of
             once per participant. SPICE's parameter sharing is read off the model (a SPICE group model,
@@ -444,12 +443,9 @@ def analysis_model_evaluation(
     When SPICE and the benchmark are evaluated, the benchmark's row also reports, per split, for how many
     participants SPICE-EQ reaches the higher trial likelihood (``SPICE-EQ better`` out of ``Participants``),
     a two-sided sign test on that count, and the median per-participant likelihood difference (SPICE-EQ minus
-    the benchmark); see ``participant_win_counts``. With 'averaged-model' each participant's likelihood is
-    averaged over the members before counting. To compare across seeds, average each participant's
+    the benchmark); see ``participant_win_counts``. To compare across seeds, average each participant's
     likelihood over seeds before counting, so that seed noise does not enter the count.
     """
-    if spice_selection not in SPICE_SELECTIONS:
-        raise ValueError(f"spice_selection must be one of {SPICE_SELECTIONS}, got '{spice_selection}'.")
 
     splits = {
         'train': _prepare_split(dataset_train, trial_filter),
@@ -477,35 +473,33 @@ def analysis_model_evaluation(
         candidates['GRU'] = [(probs, _shared_parameters(gru_parameters))]
 
     if spice_model is not None:
-        candidates.update(_spice_candidates(spice_model, splits, spice_selection))
+        candidates.update(_spice_candidates(spice_model, splits))
 
     # ------------------------------------------------------------
-    # Evaluate each model; reduce SPICE's members to one row
+    # Evaluate each model; reduce SPICE's members to the best-on-train member
     # ------------------------------------------------------------
+    evaluations = {
+        name: [_evaluate_candidate(probs, n_parameters, splits) for probs, n_parameters in model_candidates]
+        for name, model_candidates in candidates.items()
+    }
+    evaluations = best_member_on_train(evaluations, lambda evaluation: evaluation['train'][0]['Trial Lik.'])
+
     rows = {}
     trial_lik_per_participant = {split_name: {} for split_name in splits}
-    for name, model_candidates in candidates.items():
-        evaluations = [_evaluate_candidate(probs, n_parameters, splits) for probs, n_parameters in model_candidates]
-
-        if spice_selection == 'best-on-train' and len(evaluations) > 1:
-            best = int(np.argmax([evaluation['train'][0]['Trial Lik.'] for evaluation in evaluations]))
-            print(f"{name}: best-on-train ensemble member {best}")
-            evaluations = [evaluations[best]]
-
-        n_parameters = torch.cat([evaluation['n_parameters'] for evaluation in evaluations])
+    for name, (evaluation,) in evaluations.items():
+        n_parameters = evaluation['n_parameters']
         rows[name] = {
             'n_parameters': n_parameters.mean().item(),
             'n_parameters (std)': n_parameters.std().item() if n_parameters.numel() > 1 else 0.0,
-            'n_parameters (total)': np.mean([evaluation['n_parameters_total'] for evaluation in evaluations]),
+            'n_parameters (total)': evaluation['n_parameters_total'],
         }
         for split_name, prefix in (('train', 'Train '), ('test', 'Test ')):
-            scores = {metric: np.mean([evaluation[split_name][0][metric] for evaluation in evaluations]) for metric in evaluations[0][split_name][0]}
+            scores = evaluation[split_name][0]
             rows[name].update({f'{prefix}{metric}': scores[metric] for metric in ('Trial Lik.', 'Trial Lik. (std)', 'NLL')})
             if split_name == 'train':
                 for metric in ('AIC', 'BIC'):
-                    rows[name][metric] = np.mean([evaluation[metric] for evaluation in evaluations]) if name in INFORMATION_CRITERIA_MODELS else float('nan')
-            trial_lik_per_participant[split_name][name] = np.nanmean(
-                np.stack([evaluation[split_name][1] for evaluation in evaluations]), axis=0)
+                    rows[name][metric] = evaluation[metric] if name in INFORMATION_CRITERIA_MODELS else float('nan')
+            trial_lik_per_participant[split_name][name] = evaluation[split_name][1]
 
     # ------------------------------------------------------------
     # Per-participant comparison against SPICE-EQ
@@ -639,8 +633,8 @@ def _benchmark_parameters_mse(benchmark_model: torch.nn.Module) -> float:
     return n_params
 
 
-def _spice_candidates_mse(spice_model: SpiceEstimator, datasets: dict, spice_selection: str) -> dict:
-    """SPICE-RNN and SPICE-EQ candidates for the MSE evaluation (see ``_spice_candidates``).
+def _spice_candidates_mse(spice_model: SpiceEstimator, datasets: dict) -> dict:
+    """SPICE-RNN and SPICE-EQ candidates for the MSE evaluation, one per ensemble member (see ``_spice_candidates``).
 
     Returns:
         model name -> list of (split name -> (B, T, W, A) predictions, ParameterCount).
@@ -656,16 +650,6 @@ def _spice_candidates_mse(spice_model: SpiceEstimator, datasets: dict, spice_sel
         spice_model.eval(use_sindy=use_sindy)
         predictions[name] = {split_name: _get_predictions(spice_model, dataset.xs) for split_name, dataset in datasets.items()}
     spice_model.set_use_sindy(True)
-
-    if spice_selection == 'averaged-logit':
-        n_parameters = {
-            'SPICE-RNN': _shared_parameters(spice_rnn_parameters),
-            'SPICE-EQ': _sindy_parameters(spice_model, spice_model.count_sindy_coefficients().float().cpu()),
-        }
-        return {
-            name: [({split_name: split_preds.mean(dim=0) for split_name, split_preds in predictions[name].items()}, n_parameters[name])]
-            for name in ('SPICE-RNN', 'SPICE-EQ')
-        }
 
     coefficient_counts = spice_model.count_sindy_coefficients(aggregate=False).float().cpu()   # (E, P, X)
     members = range(coefficient_counts.shape[0])
@@ -695,7 +679,6 @@ def analysis_model_evaluation_mse(
     spice_model: SpiceEstimator = None,
     benchmark_model: torch.nn.Module = None,
     gru_model: torch.nn.Module = None,
-    spice_selection: str = 'best-on-train',
     output_dir: Optional[str] = None,
     verbose: bool = True,
     loss_fn: Callable = None,
@@ -715,19 +698,15 @@ def analysis_model_evaluation_mse(
     sign test on that count, and the median per-participant MSE difference (the benchmark minus SPICE-EQ, so
     positive favours SPICE-EQ); see ``participant_win_counts``.
 
+    SPICE is scored as one ensemble member: the member with the lowest SPICE-EQ training MSE
+    (``best_member_on_train``) supplies both the SPICE-EQ and the SPICE-RNN row, on both splits.
+
     Args:
         dataset_train: Training dataset (SpiceDataset with continuous targets).
         dataset_test: Test dataset.
         spice_model: Fitted SpiceEstimator (optional).
         benchmark_model: Fitted benchmark nn.Module (optional).
         gru_model: Fitted GRU nn.Module (optional).
-        spice_selection: How the members of the SPICE ensemble enter the reported scores (applied to
-            SPICE-RNN and SPICE-EQ separately):
-              'averaged-model': every member is scored on its own; the members' scores are averaged.
-              'averaged-logit': the members' predictions are averaged at every time step and the
-                  averaged model is scored (SPICE-EQ counts the coefficients active in any member).
-              'best-on-train': every member is scored on its own; the member with the lowest training
-                  MSE (highest Gaussian likelihood) is reported, on the training and on the test split.
         output_dir: If provided, save summary CSV and a bar plot of the test metrics to this directory.
         verbose: Print results to console.
         loss_fn: Optional loss function ``(prediction, target) → scalar``.
@@ -739,9 +718,6 @@ def analysis_model_evaluation_mse(
     Returns:
         DataFrame with n_parameters and the train/test metrics per model.
     """
-    if spice_selection not in SPICE_SELECTIONS:
-        raise ValueError(f"spice_selection must be one of {SPICE_SELECTIONS}, got '{spice_selection}'.")
-
     datasets = {'train': dataset_train, 'test': dataset_test}
     valid_masks = {split_name: ~torch.isnan(dataset.xs[:, :, 0, 0]).cpu() for split_name, dataset in datasets.items()}
     targets = {split_name: dataset.ys.cpu() for split_name, dataset in datasets.items()}
@@ -766,43 +742,32 @@ def analysis_model_evaluation_mse(
         candidates['GRU'] = [(preds, _shared_parameters(sum(p.numel() for p in gru_model.parameters())))]
 
     if spice_model is not None:
-        candidates.update(_spice_candidates_mse(spice_model, datasets, spice_selection))
+        candidates.update(_spice_candidates_mse(spice_model, datasets))
 
     n_valid_train = valid_masks['train'].sum().item()
     unique_pairs_train, _ = get_participant_experiment_groups(dataset_train)
 
     # ------------------------------------------------------------
-    # Evaluate each model; reduce SPICE's members to one entry
+    # Evaluate each model; reduce SPICE's members to the best-on-train member
     # ------------------------------------------------------------
-    scalar_metrics = ('mse', 'rmse', 'mae', 'r2')
+    def evaluate(preds, n_parameters):
+        metrics = {split_name: _compute_mse_metrics(preds[split_name], targets[split_name], valid_masks[split_name], loss_fn=loss_fn) for split_name in datasets}
+        n_parameters_per_group, n_parameters_total = n_parameters(unique_pairs_train)
+        aic, bic = _gaussian_information_criteria(metrics['train']['mse'], n_valid_train, n_parameters_total)
+        return {'metrics': metrics, 'n_parameters': n_parameters_per_group.float(), 'n_parameters_total': n_parameters_total, 'AIC': aic, 'BIC': bic}
+
+    evaluations = {name: [evaluate(preds, n_parameters) for preds, n_parameters in model_candidates] for name, model_candidates in candidates.items()}
+    evaluations = best_member_on_train(evaluations, lambda evaluation: -evaluation['metrics']['train']['mse'])
+
     models = {}   # model name -> (split name -> metrics, parameter counts and train AIC/BIC)
-    for name, model_candidates in candidates.items():
-        evaluations = []
-        for preds, n_parameters in model_candidates:
-            metrics = {split_name: _compute_mse_metrics(preds[split_name], targets[split_name], valid_masks[split_name], loss_fn=loss_fn) for split_name in datasets}
-            n_parameters_per_group, n_parameters_total = n_parameters(unique_pairs_train)
-            aic, bic = _gaussian_information_criteria(metrics['train']['mse'], n_valid_train, n_parameters_total)
-            evaluations.append({'metrics': metrics, 'n_parameters': n_parameters_per_group.float(), 'n_parameters_total': n_parameters_total, 'AIC': aic, 'BIC': bic})
-
-        if spice_selection == 'best-on-train' and len(evaluations) > 1:
-            best = int(np.argmin([evaluation['metrics']['train']['mse'] for evaluation in evaluations]))
-            print(f"{name}: best-on-train ensemble member {best}")
-            evaluations = [evaluations[best]]
-
-        metrics = {
-            split_name: {
-                **{metric: np.mean([evaluation['metrics'][split_name][metric] for evaluation in evaluations]) for metric in scalar_metrics},
-                'mse_per_session': torch.stack([evaluation['metrics'][split_name]['mse_per_session'] for evaluation in evaluations]).nanmean(dim=0),
-            }
-            for split_name in datasets
-        }
-        n_parameters = torch.cat([evaluation['n_parameters'] for evaluation in evaluations])
-        models[name] = (metrics, {
+    for name, (evaluation,) in evaluations.items():
+        n_parameters = evaluation['n_parameters']
+        models[name] = (evaluation['metrics'], {
             'n_parameters': n_parameters.mean().item(),
             'n_parameters (std)': n_parameters.std().item() if n_parameters.numel() > 1 else 0.0,
-            'n_parameters (total)': np.mean([evaluation['n_parameters_total'] for evaluation in evaluations]),
-            'AIC': np.mean([evaluation['AIC'] for evaluation in evaluations]),
-            'BIC': np.mean([evaluation['BIC'] for evaluation in evaluations]),
+            'n_parameters (total)': evaluation['n_parameters_total'],
+            'AIC': evaluation['AIC'],
+            'BIC': evaluation['BIC'],
         })
 
     # ------------------------------------------------------------

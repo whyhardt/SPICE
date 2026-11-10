@@ -122,6 +122,5 @@ analysis_model_evaluation(
     spice_model=estimator,
     benchmark_model=benchmark.to(torch.device('cpu')),
     gru_model=gru.to(torch.device('cpu')),
-    spice_selection='best-on-train',
     verbose=True,
 )

@@ -115,7 +115,6 @@ analysis_model_evaluation(
     spice_model=estimator,
     benchmark_model=benchmark,
     gru_model=gru,
-    spice_selection='best-on-train',
     trial_filter=has_target,
     benchmark_group_model=True,   # lag-1 logistic regression: one parameter set for all participants
     verbose=True,

@@ -202,7 +202,7 @@ The merged contrasts (Patients, adults) map several codes onto one group (`crite
 
 ### Model Comparison Figure — `evaluation/run_model_evaluation.py`
 
-The paper's model comparison: one column per study (discrete studies first, kolff2025 included, then bruckner2025 and weber2024), one bar per model (GRU, Benchmark, SPICE-EQ, SPICE-RNN; bar = mean over the final seeds of `weinhardt2026/utils/final_models.py`, ± SD, white dots = seeds). Data and SPICE estimators come from the `utils/studies.py` registry, so every model is scored on the split the SPICE checkpoints were trained on.
+The paper's model comparison: one column per study (discrete studies first, kolff2025 included, then bruckner2025 and weber2024), one bar per model (GRU, Benchmark, SPICE-EQ, SPICE-RNN; bar = mean over the final seeds of `weinhardt2026/utils/final_models.py`, ± SD, white dots = seeds). Each SPICE seed is scored as its ensemble member with the highest SPICE-EQ training likelihood (`utils/study_models.best_member`), which supplies both SPICE-EQ and SPICE-RNN; `utils/studies.predict` refuses a whole ensemble. Data and SPICE estimators come from the `utils/studies.py` registry, so every model is scored on the split the SPICE checkpoints were trained on.
 
 ```bash
 python weinhardt2026/analysis/evaluation/run_model_evaluation.py              # cached evaluation + plot
@@ -283,7 +283,7 @@ Simulating a stateful model trial by trial must give the same predictions as one
 
 Both grid searches read checkpoints by file name; the naming conventions are in [`weinhardt2026/analysis/grid_search/README.md`](../weinhardt2026/analysis/grid_search/README.md).
 
-- **SPICE** (`run_spice_grid_search.py`, fits: `slurm_jobs/grid_search.sh`, dezfouli2019): scores every checkpoint of `studies/<study>/params/params_grid_search/` with `evaluate_checkpoint` (in-sample AIC/BIC and trial likelihood, held-out trial likelihood, RNN-only reference; `prepare_split` builds the split) and dissects the cell table (variance decomposition per hyperparameter, sparsity mediation, pairwise substitution). Outputs in `studies/dezfouli2019/results/grid_search/` (`grid_search_*.csv`, `fig_*.png`).
+- **SPICE** (`run_spice_grid_search.py`, fits: `slurm_jobs/grid_search.sh`, dezfouli2019): scores every checkpoint of `studies/<study>/params/params_grid_search/` with `evaluate_checkpoint` (in-sample AIC/BIC and trial likelihood, held-out trial likelihood, RNN-only reference; each checkpoint scored as its member with the highest SPICE-EQ training likelihood, column `member`; `prepare_split` builds the split) and dissects the cell table (variance decomposition per hyperparameter, sparsity mediation, pairwise substitution). Outputs in `studies/dezfouli2019/results/grid_search/` (`grid_search_*.csv`, `fig_*.png`).
 - **Benchmark and GRU** (`benchmark_grid_search.py` fits one grid point of one study for all seeds, `slurm_jobs/benchmark_grid_search.sh`; fits in `grid_search/runs/<study>/`): `run_benchmark_grid_search.py` aggregates the test loss over seeds (median) and selects the grid point with the lowest median per study and model kind. Outputs in `weinhardt2026/results/benchmark_grid_search/`: `grid_search_configs.csv`, `grid_search_best.csv`, `figure_benchmark_grid_search[_clean]` (per study every grid point's median test loss ± SD over seeds, the selected one in red).
 
 ### Model Morphing — `explorative/run_morphing.py`
@@ -309,7 +309,7 @@ Quantifies how well a fitted SPICE model (RNN and SINDy-equation form) fits the 
 ```python
 analysis_model_evaluation(
     dataset_train, dataset_test, spice_model=None, benchmark_model=None, gru_model=None,
-    spice_selection='best-on-train', verbose=False, output_dir=None, trial_filter=None,
+    verbose=False, output_dir=None, trial_filter=None,
     benchmark_group_model=False,
 )
 ```
@@ -318,14 +318,11 @@ analysis_model_evaluation(
 - **Number of parameters** per model: `n_parameters` (mean ± std over the training split's (participant, experiment) groups; SPICE-EQ counts the active coefficients) and `n_parameters (total)`, the parameter count of the joint model.
 - AIC/BIC treat the **whole training split as one model** (`joint_information_criteria`): the NLL is summed over all N trials of all participants, and K = `n_parameters (total)` counts every participant's own parameters — per-participant parameters summed over participants (SPICE-EQ: over its distinct (participant, experiment) coefficient sets; benchmark: `count_parameters()` × participants), shared parameters once (GRU, SPICE-RNN, a SPICE group model with `n_participants=1`, or the benchmark with `benchmark_group_model=True`). AIC = 2 NLL + 2K, BIC = 2 NLL + K log N.
 - AIC/BIC are reported only for the interpretable models (Benchmark, SPICE-EQ); GRU and SPICE-RNN get NaN (printed as `-`).
-- `spice_selection` sets how the SPICE ensemble members enter the scores (SPICE-EQ and SPICE-RNN separately):
-  - `'best-on-train'` (default, used by every study): each member is scored on its own; the member with the highest training likelihood is reported, on train **and** test.
-  - `'averaged-model'`: each member is scored on its own (its own logits and coefficient count); the scores are averaged over members.
-  - `'averaged-logit'`: the members' logits are averaged at every time step and that averaged model is scored (SPICE-EQ counts the terms active in any member).
+- **SPICE is scored as one ensemble member** (`best_member_on_train`): every member is scored on its own, and the member with the highest **SPICE-EQ** training likelihood supplies both the SPICE-EQ and the SPICE-RNN row, on train **and** test (its own logits and coefficient count). Ensemble-averaged logits are never scored. Across seeds, average these per-seed scores.
 - When SPICE and the benchmark are both evaluated, the benchmark's row reports a per-participant sign test against SPICE-EQ for each split (`Train …` / `Test …` columns, `participant_win_counts`).
 - `trial_filter` lets you restrict evaluation to a subset of trials (applied to both splits, e.g. excluding "wait" responses in a DDM-style task).
 - The printed table is transposed (models as columns), numbers rounded to 3 decimals (integers without decimals), NaN as `-`; the returned DataFrame and the CSV keep full precision.
-- `analysis_model_evaluation_mse` — parallel pipeline for continuous-output (regression) models with the same `dataset_train`/`dataset_test`/`spice_selection` interface: MSE, RMSE, MAE, R² on both splits, AIC/BIC on the training split from a joint Gaussian likelihood (one MLE variance over all trials; same parameter counting; Benchmark and SPICE-EQ only); `best-on-train` selects the member with the lowest training MSE. Writes `model_evaluation_mse.csv` and a plot of the test metrics.
+- `analysis_model_evaluation_mse` — parallel pipeline for continuous-output (regression) models with the same `dataset_train`/`dataset_test` interface: MSE, RMSE, MAE, R² on both splits, AIC/BIC on the training split from a joint Gaussian likelihood (one MLE variance over all trials; same parameter counting; Benchmark and SPICE-EQ only); SPICE's member is the one with the lowest SPICE-EQ training MSE. Writes `model_evaluation_mse.csv` and a plot of the test metrics.
 - **Result**: a DataFrame (saved as `model_evaluation.csv` in `output_dir`) with one row per model (Benchmark, GRU, SPICE-RNN, SPICE-EQ) and columns `n_parameters`, `n_parameters (total)`, `Train Trial Lik.`, `Train NLL`, `AIC`, `BIC`, `Test Trial Lik.`, `Test NLL` (plus stds) — the standard model-comparison table used to argue SPICE fits at least as well as hand-crafted models.
 
 ### Coefficient Clustering (library) — `spice/utils/analysis/coefficient_dendrogram.py`

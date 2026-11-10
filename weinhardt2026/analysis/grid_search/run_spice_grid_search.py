@@ -50,13 +50,18 @@ from weinhardt2026.analysis.evaluation.model_evaluation import (
 # ── Scoring one checkpoint ──────────────────────────────────────────
 
 @torch.no_grad()
-def _split_likelihood(estimator, split, use_sindy):
-    """Ensemble-mean prediction on one split → per-session NLL and pooled trial likelihood."""
+def _split_logits(estimator, split, use_sindy):
+    """Logits of every ensemble member on one split, (E, B, T, W, A) on CPU."""
     estimator.model.eval()
     estimator.set_use_sindy(use_sindy)
+    estimator.model.init_state(batch_size=split['xs'].shape[0])
     logits, _ = estimator.model(split['xs'])
-    # (E, B, T, W, A) → ensemble mean → softmax
-    probs = torch.softmax(logits.mean(dim=0), dim=-1).cpu().clamp(1e-9, 1 - 1e-9)
+    return logits.cpu()
+
+
+def _split_likelihood(logits, split):
+    """One ensemble member's logits (B, T, W, A) on one split → per-session NLL and pooled trial likelihood."""
+    probs = torch.softmax(logits, dim=-1).clamp(1e-9, 1 - 1e-9)
     ll = (split['ys'] * torch.log(probs)).sum(dim=-1).sum(dim=-1)  # (B, T)
     # a diverged model yields NaN predictions, which nansum would score as a perfect fit
     nonfinite = (~torch.isfinite(ll) & split['valid']).any().item()
@@ -95,7 +100,8 @@ def evaluate_checkpoint(
     model_kwargs=None,
     device=None,
 ):
-    """Train/hold-out metrics of one checkpoint (SINDy autoregressive, plus RNN reference).
+    """Train/hold-out metrics of one checkpoint (SINDy autoregressive, plus RNN reference), scored as its
+    best-on-train ensemble member (highest SPICE-EQ training likelihood).
 
     BIC/AIC are computed in-sample per (participant, experiment) group and
     reported as mean ± std across groups; the hold-out only gets likelihoods
@@ -123,16 +129,22 @@ def evaluate_checkpoint(
     )
     estimator.load_spice(path)
 
-    # Coefficient count per (participant, experiment) group actually in each split
-    n_params = estimator.count_sindy_coefficients()  # (P, X)
+    # Best-on-train: the member with the highest SPICE-EQ training likelihood represents the checkpoint,
+    # for SPICE-EQ and SPICE-RNN alike (a diverged member scores NaN and is never picked unless all diverged)
+    logits_train = _split_logits(estimator, split_train, use_sindy=True)
+    member_lik = np.array([_split_likelihood(member_logits, split_train)[2] for member_logits in logits_train])
+    member = int(np.nanargmax(member_lik)) if not np.isnan(member_lik).all() else 0
+
+    # Coefficient count of that member per (participant, experiment) group actually in each split
+    n_params = estimator.count_sindy_coefficients(aggregate=False)[member]  # (P, X)
     def params_per_group(split):
         return n_params[split['unique_pairs'][:, 0], split['unique_pairs'][:, 1]].float()
     n_params_per_group = params_per_group(split_test)
 
-    nll_per_session_train, nll_train, trial_lik_train = _split_likelihood(estimator, split_train, use_sindy=True)
-    _, nll_test, trial_lik_test = _split_likelihood(estimator, split_test, use_sindy=True)
-    _, _, trial_lik_train_rnn = _split_likelihood(estimator, split_train, use_sindy=False)
-    _, _, trial_lik_test_rnn = _split_likelihood(estimator, split_test, use_sindy=False)
+    nll_per_session_train, nll_train, trial_lik_train = _split_likelihood(logits_train[member], split_train)
+    _, nll_test, trial_lik_test = _split_likelihood(_split_logits(estimator, split_test, use_sindy=True)[member], split_test)
+    _, _, trial_lik_train_rnn = _split_likelihood(_split_logits(estimator, split_train, use_sindy=False)[member], split_train)
+    _, _, trial_lik_test_rnn = _split_likelihood(_split_logits(estimator, split_test, use_sindy=False)[member], split_test)
 
     # BIC/AIC computed per (participant, experiment) group -- using that
     # group's own trial count and own coefficient count -- then averaged
@@ -169,6 +181,7 @@ def evaluate_checkpoint(
         'generalization_gap': trial_lik_train - trial_lik_test,
         'trial_likelihood_rnn': trial_lik_train_rnn,
         'trial_likelihood_test_rnn': trial_lik_test_rnn,
+        'member': member,
         'path': os.path.basename(path),
     }
 

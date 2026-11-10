@@ -8,7 +8,8 @@ Models per study, every seed of the final models in ``studies/<study>/params/``
 (see ``weinhardt2026/utils/final_models.py``; bars = mean over seeds, dots = single seeds):
   - Benchmark: the study's hand-crafted cognitive model
   - GRU:       a GRU without participant embedding (hidden size read from the checkpoint)
-  - SPICE-RNN / SPICE-EQ: the study's SPICE grid-search checkpoints
+  - SPICE-RNN / SPICE-EQ: the study's SPICE grid-search checkpoints; per seed the ensemble member with the
+    highest SPICE-EQ training likelihood (utils/study_models.best_member) supplies both
 
 Data and SPICE estimators are rebuilt exactly as ``slurm_jobs/grid_search.sh`` →
 ``weinhardt2026/run.py`` built them, so all models are scored on the split the
@@ -57,7 +58,8 @@ from weinhardt2026.analysis.evaluation.run_posterior_predictive import (
     ROLLOUT_UNITS as RESPONSE_UNITS,
     load_scores as load_ppc_scores,
 )
-from weinhardt2026.utils.final_models import checkpoint_seed, final_checkpoints
+from weinhardt2026.utils.final_models import checkpoint_seed, final_checkpoints, load_gru
+from weinhardt2026.utils.study_models import best_member
 from weinhardt2026.utils.studies import (
     ALL_STUDIES, GROUP_STUDIES, LABELS, STUDIES, continuous_session_sse, discrete_session_nll, load_spice, load_study,
     n_benchmark_parameters, predict, response_session_sse, study_path,
@@ -141,7 +143,7 @@ def evaluate_study(study):
     for path in final_checkpoints(study, 'spice'):
         seed = checkpoint_seed(path)
         print(f'  {os.path.basename(path)}', flush=True)
-        estimator = load_spice(path, spice_module, dataset_train)
+        estimator = best_member(study, load_spice(path, spice_module, dataset_train), dataset_train)
         coefficient_counts = estimator.count_sindy_coefficients().cpu()
 
         metrics = evaluate(predict(estimator, dataset_train, use_sindy=False),
@@ -191,7 +193,7 @@ def evaluate_group_study(study):
         rows.append(dict(model='GRU', seed=checkpoint_seed(path), **evaluate(load_gru(path, ModelInputGRU))))
     for path in final_checkpoints(study, 'spice'):
         print(f'  {os.path.basename(path)}', flush=True)
-        estimator = load_group_spice(path)
+        estimator = best_member(study, load_group_spice(path), dataset_train)
         k_spice = estimator.count_sindy_coefficients().cpu()[0, 0].float().item()
         rows.append(dict(model='SPICE-RNN', seed=checkpoint_seed(path), **evaluate(estimator, use_sindy=False)))
         rows.append(dict(model='SPICE-EQ', seed=checkpoint_seed(path), **evaluate(estimator, k=k_spice, use_sindy=True)))

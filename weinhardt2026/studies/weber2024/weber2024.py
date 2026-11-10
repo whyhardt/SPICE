@@ -146,7 +146,6 @@ analysis_model_evaluation_mse(
     spice_model=estimator,
     benchmark_model=benchmark,
     gru_model=gru,
-    spice_selection='best-on-train',
     verbose=True,
     loss_fn=clamped_angular_mse,
 )

@@ -265,7 +265,6 @@ if __name__=='__main__':
             dataset_train=dataset_train,
             dataset_test=dataset_test,
             spice_model=estimator,
-            spice_selection='best-on-train',
             verbose=True,
         )
 

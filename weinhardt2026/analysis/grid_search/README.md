@@ -24,6 +24,12 @@ saved with their config and losses in `runs/<study>/`:
     benchmark_<study>_lr<lr>_sc<scheduler 0/1>_rs<seed>.pkl / .json
     gru_<study>_lr<lr>_sc<scheduler 0/1>_hs<hidden_size>_do<dropout>_rs<seed>.pkl / .json
 
+Training (`training` in `weinhardt2026/utils/benchmarking_gru.py`, shared by GRU and benchmarks):
+Adam (PyTorch defaults besides lr) on the full training batch for 1000 epochs; lr ∈ {0.01, 0.001};
+scheduler `sc1` = `ReduceLROnPlateau(mode='min', factor=0.5, patience=50, min_lr=1e-5)` stepped every
+epoch on the test loss, `sc0` = constant lr. Benchmark seeds start from the default parameters
+jittered by N(0, 0.5) (`--init_std`).
+
 `run_benchmark_grid_search.py` aggregates the test loss over seeds (median) per grid point and selects
 the grid point with the lowest median per study and model kind. Output:
 `weinhardt2026/results/benchmark_grid_search/` (`grid_search_configs.csv`, `grid_search_best.csv`,

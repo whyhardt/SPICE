@@ -115,6 +115,5 @@ analysis_model_evaluation(
     spice_model=estimator,
     benchmark_model=bay,
     gru_model=gru,
-    spice_selection='best-on-train',
     verbose=True,
 )

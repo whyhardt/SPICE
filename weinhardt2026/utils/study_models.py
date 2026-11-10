@@ -69,6 +69,14 @@ class EnsembleMember:
     def device(self):
         return self.estimator.device
 
+    @property
+    def model(self):
+        return self.estimator.model
+
+    def count_sindy_coefficients(self) -> torch.Tensor:
+        """Active coefficients of this member, (n_participants, n_experiments)."""
+        return self.estimator.count_sindy_coefficients(aggregate=False)[self.member]
+
     def eval(self, use_sindy: bool = None) -> 'EnsembleMember':
         """Without `use_sindy` the current mode is kept (generation wrappers call eval() on their model)."""
         if use_sindy is not None:
@@ -111,18 +119,19 @@ def model_train_loglik(study: str, model: torch.nn.Module, dataset_train: SpiceD
     return trial_loglik(study, predict(model, dataset_train), dataset_train)
 
 
+def best_member(study: str, estimator, dataset_train: SpiceDataset, name: str = '') -> EnsembleMember:
+    """The ensemble member with the highest SPICE-EQ training likelihood; its SPICE-EQ and SPICE-RNN represent the fit."""
+    loglik = member_train_loglik(study, estimator, dataset_train)
+    best = int(np.argmax(loglik))
+    print(f'SPICE: {name}member {best} (training log-lik. / trial {loglik[best]:.4f})')
+    return EnsembleMember(estimator, best)
+
+
 def select_spice_members(study: str, checkpoints: list[str], load, dataset_train: SpiceDataset) -> list[EnsembleMember]:
     """Per checkpoint (seed), the ensemble member with the highest training likelihood (load: path -> SpiceEstimator)."""
     if not checkpoints:
         raise FileNotFoundError(f'{study}: no SPICE checkpoints found')
-    members = []
-    for path in checkpoints:
-        estimator = load(path)
-        loglik = member_train_loglik(study, estimator, dataset_train)
-        best = int(np.argmax(loglik))
-        members.append(EnsembleMember(estimator, best))
-        print(f'SPICE: {os.path.basename(path)}, member {best} (training log-lik. / trial {loglik[best]:.4f})')
-    return members
+    return [best_member(study, load(path), dataset_train, name=f'{os.path.basename(path)}, ') for path in checkpoints]
 
 
 # -------------------------------------------------------------------------------------------

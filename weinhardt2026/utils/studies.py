@@ -184,7 +184,8 @@ def n_benchmark_parameters(model, n_participants):
 
 @torch.no_grad()
 def predict(model, dataset, use_sindy=None):
-    """Raw model outputs (B, T, W, A) on CPU. ``use_sindy`` only for SPICE estimators."""
+    """Raw model outputs (B, T, W, A) on CPU. ``use_sindy`` only for SPICE, which is scored as one ensemble member
+    (``utils.study_models.best_member``), never as an ensemble average."""
     if use_sindy is None:
         model.eval()
         outputs, _ = model.to('cpu')(dataset.xs)
@@ -192,7 +193,9 @@ def predict(model, dataset, use_sindy=None):
         model.eval(use_sindy=use_sindy)
         model.model.init_state(batch_size=dataset.xs.shape[0])
         outputs, _ = model(dataset.xs.to(model.device))
-        outputs = outputs.mean(dim=0)  # ensemble average
+        if outputs.shape[0] != 1:
+            raise ValueError('SPICE is scored as one ensemble member: pass utils.study_models.best_member(...)')
+        outputs = outputs[0]
     if isinstance(outputs, tuple):
         outputs = outputs[0]
     return outputs.detach().cpu()
