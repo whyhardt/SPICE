@@ -14,7 +14,7 @@ from weinhardt2026.studies.bustamante2023.benchmarking_bustamante2023 import (
 from weinhardt2026.analysis.evaluation.model_evaluation import analysis_model_evaluation
 
 
-train_spice = False
+train_spice = True
 train_mvt = False
 train_gru = False
 
