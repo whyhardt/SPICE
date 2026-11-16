@@ -35,7 +35,7 @@ pip install -e .
 - Scikit-learn compatible estimator interface
 - Customizable network architecture for identifying complex cognitive mechanisms
 - Participant embeddings for identifying individual differences
-- Precoded models for simple Rescorla-Wagner, forgetting mechanism, choise perseveration and parcitipant embeddings
+- Precoded models for simple Rescorla-Wagner, forgetting mechanism, choice perseveration and participant embeddings
 
 ## Quick Start
 
