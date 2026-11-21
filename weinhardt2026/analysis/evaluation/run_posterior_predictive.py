@@ -29,7 +29,13 @@ Per study, written to weinhardt2026/studies/<study>/results/posterior_predictive
                                  grid; violins over participants x runs (x instances) per model,
                                  participants as dots (models: pooled over instances and runs) joined
                                  Benchmark - Real - SPICE-EQ - SPICE-RNN.
-                                 continuous: 'rollout', per-participant rollout MSE per model.
+                                 continuous: 'rollout', per-participant rollout MSE per model and, beside it,
+                                 one example rollout (the participant with the median SPICE-EQ MSE, first
+                                 EXAMPLE_TRIALS trials; per model the instance with the median MSE): responses,
+                                 absolute error per trial, its running sum, and every SPICE-EQ / SPICE-RNN latent
+                                 state, one row each.
+    cache_rollout.csv            continuous: per (model, instance, participant) summed squared rollout error
+    cache_rollout_example.csv    continuous: the example rollout, long format (responses, outcomes, SPICE states)
     ppc_bins.json                the bins of the grids, from the real data (95% of the decisions captured)
     ppc_participants.csv         per (model, participant, statistic) value (models: pooled over instances and runs)
     ppc_scores_instances.csv     discrete: per (model, instance, seed, panel, statistic) nRMSE; statistic 'all' = panel
@@ -71,6 +77,7 @@ import matplotlib.pyplot as plt
 from matplotlib.transforms import blended_transform_factory
 
 from spice import SpiceDataset
+from spice.utils.plotting import MODEL_COLORS
 from weinhardt2026.utils.study_models import load_study_module, study_dir, choices_and_rewards, valid_trials
 from weinhardt2026.utils.final_models import checkpoint_seed, final_checkpoints
 
@@ -79,14 +86,8 @@ N_RUNS = 100            # runs per model instance, run r with torch seed r
 
 MODEL_ORDER = ['GRU', 'Benchmark', 'Real', 'SPICE-EQ', 'SPICE-RNN']
 SIMULATED_MODELS = [model for model in MODEL_ORDER if model != 'Real']
-# model colors as in analysis/evaluation/run_model_evaluation.py; Real is neutral ink
-COLORS = {
-    'GRU':       '#5b8db8',
-    'Benchmark': '#1a3a5c',
-    'Real':      '#6b6b6b',
-    'SPICE-EQ':  '#8b2529',
-    'SPICE-RNN': '#c44e52',
-}
+# model colors of spice.utils.plotting (as in run_model_evaluation.py); Real is neutral ink
+COLORS = {**MODEL_COLORS, 'Real': '#6b6b6b'}
 MIN_COUNT = 5           # decisions of a participant for a conditional probability
 MIN_PARTICIPANTS = 10   # participants for an nRMSE
 COVERAGE = 0.95         # share of the real decisions captured by the grids
@@ -469,6 +470,37 @@ STUDY_SPECS = {
 
 # continuous studies: rollout error in the response's units
 ROLLOUT_UNITS = {'bruckner2025': 'px²', 'weber2024': 'deg²'}
+# example rollout panel: response label, outcome label, angular variables (unwrapped around the real responses)
+ROLLOUT_EXAMPLE = {
+    'bruckner2025': dict(response='Bucket position (px)', outcome='Bag', unit='px', circular=()),
+    'weber2024': dict(response='Shield angle (deg)', outcome='Laser', unit='deg',
+                      circular=('response', 'outcome', 'belief_value')),
+}
+# how SPICE states are shown in the example rollout; states not listed are shown raw under their own name.
+#   label, transform (None: raw), positional (drawn against the real responses and outcomes),
+#   module_input: (legend label, f(wide, model) -> per-trial input of the module) drawn dashed on the same axis
+_SIGMOID = lambda values: 1 / (1 + np.exp(-values))
+
+
+def _weber_movement_input(wide: pd.DataFrame, model: str) -> pd.Series:
+    """movement_update's input |b_{t+1} - s_t| / DISTANCE_SCALE, clipped at 1 (both unwrapped around the same
+    reference, so their difference is the shortest arc)."""
+    from weinhardt2026.studies.weber2024.spice_weber2024 import DISTANCE_SCALE
+    return ((wide[(model, 'belief_value')] - wide[(model, 'response')]).abs() / DISTANCE_SCALE).clip(upper=1.)
+
+
+EXAMPLE_STATES = {
+    'bruckner2025': {
+        'learning_rate_value': dict(label='α = σ(learning_rate_value)', transform=_SIGMOID),
+    },
+    'weber2024': {
+        'belief_value': dict(label='belief vs. shield (deg)', positional=True),
+        'learning_rate_value': dict(label='α = σ(learning_rate_value)', transform=_SIGMOID),
+        'movement_value': dict(label='g = σ(movement_value)', transform=_SIGMOID,
+                               module_input=('|b − s| / 90 (input)', _weber_movement_input)),
+    },
+}
+EXAMPLE_TRIALS = 150    # first trials of the example session shown in the rollout figure
 STUDIES = tuple(STUDY_SPECS) + tuple(ROLLOUT_UNITS)
 
 
@@ -650,6 +682,85 @@ def simulate_rollouts(study: str, recompute: bool) -> pd.DataFrame:
     return df
 
 
+def _outcomes(study: str, dataset: SpiceDataset) -> np.ndarray:
+    """Outcomes in the response units: bruckner2025 bag position (px), weber2024 laser angle (deg); NaN where padded."""
+    xs = dataset.xs[:, :, 0].numpy()
+    if study == 'bruckner2025':
+        from weinhardt2026.studies.bruckner2025.spice_bruckner2025 import POSITION_SCALE
+        outcome = xs[..., 1] * POSITION_SCALE
+    else:
+        outcome = np.degrees(np.arctan2(xs[..., 2], xs[..., 3])) % 360
+    return np.where(valid_trials(dataset), outcome, np.nan)
+
+
+def _example_selection(df: pd.DataFrame, scores_instances: pd.DataFrame) -> tuple[int, dict]:
+    """A representative rollout: the participant with the median SPICE-EQ rollout MSE (pooled over instances) and,
+    per model, the instance whose MSE is closest to the model's median over instances."""
+    spice = df[df['model'] == 'SPICE-EQ'].groupby('participant_id')[['sse', 'n_trials']].sum()
+    mse = (spice['sse'] / spice['n_trials']).sort_values()
+    participant = int(mse.index[len(mse) // 2])
+    instances = {}
+    for model, rows in scores_instances.groupby('model'):
+        distance = (rows['mse'] - rows['mse'].median()).abs()
+        instances[model] = int(rows.loc[distance.idxmin(), 'instance'])
+    # SPICE-EQ and SPICE-RNN of one fit (the same member supplies both), so their latent states are comparable
+    instances['SPICE-RNN'] = instances['SPICE-EQ']
+    return participant, instances
+
+
+@torch.no_grad()
+def _replay_states(model, xs_session: torch.Tensor, n_trials: int) -> dict[str, np.ndarray]:
+    """Latent states of a SPICE ensemble member after every trial, replaying its own rollout (`xs_session`,
+    (1, T, W, F)) trial by trial as the generation did; {state (item suffix if n_items > 1): (n_trials,)}."""
+    state, trajectories = None, {}
+    xs_session = xs_session.to(model.device)
+    for trial in range(n_trials):
+        _, state = model(xs_session[:, trial:trial + 1], state)
+        for key, value in state.items():
+            items = value[-1, model.member, 0].detach().cpu().numpy()   # (W, E, B, n_items) -> (n_items,)
+            for item, item_value in enumerate(items):
+                name = key if len(items) == 1 else f'{key}_{item}'
+                trajectories.setdefault(name, np.full(n_trials, np.nan))[trial] = item_value
+    return trajectories
+
+
+def simulate_rollout_example(study: str, df: pd.DataFrame, scores_instances: pd.DataFrame,
+                             recompute: bool) -> pd.DataFrame:
+    """One rollout of the representative participant's first session, per model its representative instance;
+    long format (model, instance, seed, participant_id, session, trial, variable, value). Variables: 'response'
+    (all models and Real), 'outcome' (Real) and, for SPICE-EQ / SPICE-RNN, every latent memory state."""
+    path = study_dir(study, 'results', 'posterior_predictive', 'cache_rollout_example.csv')
+    if os.path.isfile(path) and not recompute:
+        return pd.read_csv(path)
+    participant, instances = _example_selection(df, scores_instances)
+    study_module = load_study_module(study)
+    dataset = study_module.load_dataset()
+    participants = dataset.xs[:, :, 0, -1].nan_to_num(-1).max(dim=1).values.long().numpy()
+    session = int(np.flatnonzero(participants == participant)[0])
+    n_trials = min(EXAMPLE_TRIALS, int(valid_trials(dataset)[session].sum()))
+    trials = np.arange(n_trials)
+
+    def rows(model, instance, seed, variable, values):
+        return pd.DataFrame(dict(model=model, instance=instance, seed=seed, participant_id=participant,
+                                 session=session, trial=trials, variable=variable, value=values[:n_trials]))
+
+    frames = [rows('Real', 0, 0, 'response', _responses(study, dataset)[session]),
+              rows('Real', 0, 0, 'outcome', _outcomes(study, dataset)[session])]
+    for name, instance, seed, model in _model_instances(study, study_module.load_models(dataset)):
+        if instance != instances.get(name):
+            continue
+        print(f'{study}: example rollout of {name} instance {instance} (seed {seed}), session {session}', flush=True)
+        _set_mode(name, model)
+        generated = _generate(study_module, model, dataset, seed=0)
+        frames.append(rows(name, instance, seed, 'response', _responses(study, generated)[session]))
+        if name.startswith('SPICE'):
+            states = _replay_states(model, generated.xs[session:session + 1], n_trials)
+            frames += [rows(name, instance, seed, key, values) for key, values in states.items()]
+    example = pd.concat(frames, ignore_index=True)
+    example.to_csv(path, index=False)
+    return example
+
+
 def score_rollouts(df: pd.DataFrame) -> pd.DataFrame:
     """Per-trial MSE per (model, instance), pooled over all trials."""
     scores = df.groupby(['model', 'instance', 'seed'], as_index=False)[['sse', 'n_trials']].sum()
@@ -803,18 +914,118 @@ def plot_discrete(df: pd.DataFrame, panels: list[Panel], scores: pd.DataFrame, s
             _save(fig, os.path.join(output_dir, f'ppc_{panel.name}{suffix}'))
 
 
-def plot_rollouts(df: pd.DataFrame, scores: pd.DataFrame, study: str, output_dir: str, clean: bool = False):
-    """Per-participant rollout MSE (pooled over instances) per model; violins over (participant, instance). With
-    *clean*, also without title and axis label (ppc_rollout_clean)."""
+def _example_trajectories(example: pd.DataFrame, study: str) -> pd.DataFrame:
+    """Example rollout wide: one column per (model, variable), indexed by trial; circular variables unwrapped
+    around the real responses so that the lines do not jump at 0/360."""
+    wide = example.pivot_table(index='trial', columns=['model', 'variable'], values='value', dropna=False)
+    wide = wide.loc[:, wide.notna().any()]   # pivot_table creates every (model, variable) pair; keep the recorded ones
+    circular = ROLLOUT_EXAMPLE[study]['circular']
+    if 'response' in circular:
+        real = wide[('Real', 'response')]
+        reference = pd.Series(np.degrees(np.unwrap(np.radians(real.interpolate().bfill().to_numpy()))), index=wide.index)
+        reference -= 360 * np.floor(reference.median() / 360)   # centre the unwrapped trace on [0, 360)
+        for column in wide.columns:
+            if column[1] in circular:
+                wide[column] = reference + (wide[column] - real + 180) % 360 - 180
+    return wide
+
+
+def _plot_example(axes: list, example: pd.DataFrame, study: str, models: list[str], annotated: bool):
+    """Row 0: real and simulated responses (outcomes as dots); row 1: absolute error to the real response per trial;
+    row 2: cumulative absolute error (running sum up to the trial); below, one row per SPICE latent state, as
+    EXAMPLE_STATES shows it (gates sigmoid-transformed, positional states against the real responses and outcomes)."""
+    spec = ROLLOUT_EXAMPLE[study]
+    wide = _example_trajectories(example, study)
+    trials = wide.index.to_numpy() + 1
+    states = [variable for variable in dict.fromkeys(example.loc[example['model'].str.startswith('SPICE'), 'variable'])
+              if variable != 'response']
+
+    ax = axes[0]
+    ax.scatter(trials, wide[('Real', 'outcome')], s=5, color='#b5b5b5', linewidths=0, zorder=1,
+               label=spec['outcome'])
+    ax.plot(trials, wide[('Real', 'response')], color=COLORS['Real'], linewidth=1.6, zorder=3, label='Real')
+    for model in models:
+        if (model, 'response') in wide.columns:
+            ax.plot(trials, wide[(model, 'response')], color=COLORS[model], linewidth=1.0, alpha=0.9, zorder=4,
+                    label=model)
+    for model in models:
+        if (model, 'response') in wide.columns:
+            # unwrapped responses: their difference is already the shortest arc on the circle
+            error = (wide[(model, 'response')] - wide[('Real', 'response')]).abs()
+            axes[1].plot(trials, error, color=COLORS[model], linewidth=0.9, alpha=0.9, label=model)
+            axes[2].plot(trials, error.cumsum(), color=COLORS[model], linewidth=1.2, label=model)
+    for ax, state in zip(axes[3:], states):
+        display = EXAMPLE_STATES.get(study, {}).get(state, {})
+        label, transform = display.get('label', state), display.get('transform')
+        if display.get('positional'):
+            # the state against the real responses and outcomes and the model's own simulated responses (dashed)
+            ax.scatter(trials, wide[('Real', 'outcome')], s=5, color='#b5b5b5', linewidths=0, zorder=1)
+            ax.plot(trials, wide[('Real', 'response')], color=COLORS['Real'], linewidth=1.6, zorder=2)
+            for model in models:
+                if (model, state) in wide.columns:
+                    ax.plot(trials, wide[(model, 'response')], color=COLORS[model], linewidth=0.9, linestyle='--',
+                            alpha=0.8, zorder=2)
+            if annotated:
+                ax.plot([], [], color=COLORS['Real'], linewidth=1.6, label='real response')
+                ax.plot([], [], color='#6b6b6b', linewidth=0.9, linestyle='--', label='simulated response')
+        for model in models:
+            if (model, state) in wide.columns:
+                values = wide[(model, state)]
+                values = transform(values) if transform is not None else values
+                ax.plot(trials, values, color=COLORS[model], linewidth=1.0, alpha=0.9, zorder=3, label=model)
+        if annotated and display.get('positional'):
+            ax.legend(fontsize=6, frameon=False, loc='lower right', ncol=4)
+        if 'module_input' in display:
+            input_label, module_input = display['module_input']
+            for model in models:
+                if (model, state) in wide.columns:
+                    ax.plot(trials, module_input(wide, model), color=COLORS[model], linewidth=0.9, linestyle='--',
+                            alpha=0.8, zorder=2)
+            if annotated:
+                ax.plot([], [], color='#6b6b6b', linewidth=0.9, linestyle='--', label=input_label)
+                ax.legend(fontsize=6, frameon=False, loc='upper right', ncol=3)
+        if transform is _SIGMOID:
+            ax.set_ylim(0, 1)
+        if annotated:
+            ax.set_ylabel(label, fontsize=7)
+
+    for ax in axes:
+        ax.tick_params(labelsize=7)
+        ax.grid(axis='y', color='#e6e6e6', linewidth=0.6)
+        ax.set_axisbelow(True)
+        for side in ('top', 'right'):
+            ax.spines[side].set_visible(False)
+    if annotated:
+        participant, session = example['participant_id'].iloc[0], example['session'].iloc[0]
+        axes[0].set_title(f'Example rollout: participant {participant}, session {session}, '
+                          f'first {len(trials)} trials', fontsize=8)
+        axes[0].set_ylabel(spec['response'], fontsize=7)
+        axes[1].set_ylabel(f"|error| per trial ({spec['unit']})", fontsize=7)
+        axes[2].set_ylabel(f"cumulative |error| ({spec['unit']})", fontsize=7)
+        axes[0].legend(fontsize=6, ncol=len(models) + 2, frameon=False, loc='upper left', bbox_to_anchor=(0, -0.08))
+        axes[-1].set_xlabel('Trial', fontsize=8)
+
+
+def plot_rollouts(df: pd.DataFrame, scores: pd.DataFrame, example: pd.DataFrame, study: str, output_dir: str,
+                  clean: bool = False):
+    """Left: per-participant rollout MSE (pooled over instances) per model; violins over (participant, instance).
+    Right: one example rollout: responses, absolute error per trial, its running sum and every SPICE latent state,
+    one row each. With
+    *clean*, also without titles, axis labels and legend (ppc_rollout_clean)."""
     unit = ROLLOUT_UNITS[study]
     models = [model for model in SIMULATED_MODELS if (df['model'] == model).any()]
     df = df.assign(mse=df['sse'] / df['n_trials'].where(df['n_trials'] > 0))
     sums = df.groupby(['model', 'participant_id'])[['sse', 'n_trials']].sum()
     dots = (sums['sse'] / sums['n_trials']).unstack('model')
     jitter = pd.Series(np.random.default_rng(0).uniform(-0.12, 0.12, len(dots)), index=dots.index)
+    n_states = example.loc[example['model'].str.startswith('SPICE') & (example['variable'] != 'response'),
+                           'variable'].nunique()
+    n_rows = 3 + n_states
 
     for annotated in ((True, False) if clean else (True,)):
-        fig, ax = plt.subplots(figsize=(4.2, 3.4))
+        fig = plt.figure(figsize=(12, max(3.4, 1.0 + 1.5 * n_rows)))
+        grid = fig.add_gridspec(n_rows, 2, width_ratios=[1, 2.8], height_ratios=[1.6, 1, 1] + [1] * n_states)
+        ax = fig.add_subplot(grid[:, 0])
         _draw(ax, {model: df.loc[df['model'] == model, 'mse'].to_numpy() for model in models}, dots, models, jitter)
         if annotated:
             summary = _score_text(scores, 'all', 'all', models)
@@ -822,6 +1033,12 @@ def plot_rollouts(df: pd.DataFrame, scores: pd.DataFrame, study: str, output_dir
                          + '   '.join(f'{model} {value:.1f}' for model, value in summary.items()), fontsize=8)
             ax.set_ylabel(f'Per-trial MSE to the real responses ({unit})', fontsize=8)
         _style(ax, models, show_xticks=True)
+
+        example_axes = [fig.add_subplot(grid[0, 1])]
+        example_axes += [fig.add_subplot(grid[row, 1], sharex=example_axes[0]) for row in range(1, n_rows)]
+        for example_ax in example_axes[:-1]:
+            example_ax.tick_params(labelbottom=False)
+        _plot_example(example_axes, example, study, models, annotated)
         fig.tight_layout()
         _save(fig, os.path.join(output_dir, 'ppc_rollout' if annotated else 'ppc_rollout_clean'))
 
@@ -867,7 +1084,8 @@ def run_posterior_predictive(study: str, n_runs: int = N_RUNS, recompute: bool =
     participants[['model', 'participant_id', 'statistic', 'value']].to_csv(os.path.join(output_dir, 'ppc_participants.csv'), index=False)
 
     if study in ROLLOUT_UNITS:
-        plot_rollouts(df, scores, study, output_dir, clean=True)
+        example = simulate_rollout_example(study, df, scores_instances, recompute)
+        plot_rollouts(df, scores, example, study, output_dir, clean=True)
     else:
         plot_discrete(df, panels, scores, study, output_dir, clean=True)
 

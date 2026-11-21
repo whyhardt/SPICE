@@ -49,6 +49,7 @@ from spice.resources.spice_training import _run_sindy_training, cross_entropy_lo
 
 from weinhardt2026.utils import studies
 from spice.utils.analysis.coefficient_betas import get_criterion
+from spice.utils.plotting import palette_colors
 from weinhardt2026.analysis.grid_search.run_spice_grid_search import parse_grid_tags
 from weinhardt2026.utils.final_models import best_checkpoint
 from weinhardt2026.utils.participant_metrics import reward_rate, study_data
@@ -255,7 +256,7 @@ def plot_morphing(table: pd.DataFrame, study: str, metric_col: str, output_path:
         fig, axes = plt.subplots(2, len(modules), figsize=(3.6 * len(modules), 6), squeeze=False, sharex=True)
         for col, module in enumerate(modules):
             terms = [term for (m, term), value in included.items() if m == module and value >= MIN_INCLUSION]
-            colors = plt.cm.tab20(np.linspace(0, 1, max(len(terms), 1)))
+            colors = palette_colors(max(len(terms), 1))
             for term, color in zip(terms, colors):
                 rows = table[(table['module'] == module) & (table['term'] == term)]
                 for row, (value, se) in enumerate((('coefficient', 'coefficient_se'), ('inclusion', 'inclusion_se'))):

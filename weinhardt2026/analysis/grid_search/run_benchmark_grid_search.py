@@ -23,6 +23,8 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import pandas as pd
 
+from spice.utils.plotting import HIGHLIGHT_COLOR, MODEL_COLORS
+
 
 DEFAULT_RUNS_DIR = 'weinhardt2026/analysis/grid_search/runs'
 DEFAULT_OUT_DIR = 'weinhardt2026/results/benchmark_grid_search'
@@ -66,12 +68,12 @@ def select_best(configs: pd.DataFrame) -> pd.DataFrame:
     return configs.loc[configs.groupby(['study', 'kind'])['test_loss_median'].idxmin()].reset_index(drop=True)
 
 
-KIND_COLORS = {'benchmark': '#2f6f9f', 'gru': '#4d4d4d'}
+KIND_COLORS = {'benchmark': MODEL_COLORS['Benchmark'], 'gru': MODEL_COLORS['GRU']}
 
 
 def plot_grid_search(configs: pd.DataFrame, best: pd.DataFrame, output_path: Path, clean: bool = False) -> None:
     """Per study (one panel): every grid point's median test loss with its SD over seeds, per model kind; the
-    selected grid point is red. With `clean`, also without titles, labels and legend (<output_path>_clean)."""
+    selected grid point is filled yellow. With `clean`, also without titles, labels and legend (<output_path>_clean)."""
     studies = list(dict.fromkeys(configs['study']))
     for annotated in ((True, False) if clean else (True,)):
         fig, axes = plt.subplots(1, len(studies), figsize=(1.9 * len(studies) + 0.6, 2.6), squeeze=False)
@@ -87,7 +89,7 @@ def plot_grid_search(configs: pd.DataFrame, best: pd.DataFrame, output_path: Pat
                     selected = point['best_run'] == chosen
                     ax.errorbar(position + offset, point['test_loss_median'], yerr=point['test_loss_std'],
                                 fmt='o', markersize=5 if selected else 3.5, color=KIND_COLORS[kind], elinewidth=0.6,
-                                markerfacecolor='#c44e52' if selected else 'white', zorder=3 if selected else 2)
+                                markerfacecolor=HIGHLIGHT_COLOR if selected else KIND_COLORS[kind], zorder=3 if selected else 2)
             ax.set_xticks([0, 1], ['Benchmark', 'GRU'], fontsize=7.5)
             ax.set_xlim(-0.6, 1.6)
             ax.tick_params(axis='y', labelsize=7)
@@ -97,7 +99,7 @@ def plot_grid_search(configs: pd.DataFrame, best: pd.DataFrame, output_path: Pat
                 ax.set_title(study, fontsize=8.5)
         if annotated:
             axes[0, 0].set_ylabel('test loss (median ± SD over seeds)', fontsize=8)
-            fig.suptitle('Benchmark / GRU grid search: one point per grid point, red = selected', fontsize=9)
+            fig.suptitle('Benchmark / GRU grid search: one point per grid point, yellow = selected', fontsize=9)
         fig.tight_layout()
         path = output_path if annotated else output_path.with_name(f'{output_path.name}_clean')
         for extension in ('pdf', 'png'):

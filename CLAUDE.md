@@ -119,6 +119,7 @@ Full details, current constructor signatures, and internals: **[docs/training.md
 
 ### Figures
 - Every analysis (generic in `spice/utils/analysis/` or paper runner in `weinhardt2026/analysis/`) writes a CSV and one **annotated** figure (`<name>.pdf/.png`: cell values, significance marks, titles). A **clean** version (`<name>_clean.pdf/.png`: marks, axes, tick labels and colourbars only) is written when asked for (`clean=True` / `--clean`); the paper runners ask for it. Not needed for brainstorming or scratchpad figures.
+- Colours come from `spice/utils/plotting.py`, never ad hoc: `correlation_cmap()` (−1..1) / `rate_cmap()` (0..1, the upper half of the same scale), `EMPTY_COLOR` for missing cells, `palette_colors(n)` / `shade_colors(n)` for categories / ordinal levels, `HIGHLIGHT_COLOR` for a selected element, `MODEL_COLORS` for Benchmark / GRU (purples) and SPICE-EQ / SPICE-RNN (blue-greens). See [docs/analyses.md](docs/analyses.md).
 - Figures and CSVs are written only to results folders: `weinhardt2026/results/<analysis>/` (across studies) or `weinhardt2026/studies/<study>/results/<analysis>/` (one study) — never into code folders.
 
 ### File Organization

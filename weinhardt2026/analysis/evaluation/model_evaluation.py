@@ -13,6 +13,7 @@ from scipy.stats import binomtest
 
 # standard methods and classes used for every model evaluation
 from spice import SpiceEstimator, csv_to_dataset, SpiceDataset
+from spice.utils.plotting import MODEL_COLORS, palette_colors
 
 
 def get_choice_probs(logits: torch.Tensor) -> torch.Tensor:
@@ -828,7 +829,7 @@ def _plot_mse_comparison(models: dict, output_dir: str) -> None:
     """Bar chart of MSE per model + per-session violin overlay (models: name -> metrics of one split)."""
     model_names = list(models.keys())
     n_models = len(model_names)
-    colors = plt.cm.tab10.colors[:n_models]
+    colors = [MODEL_COLORS.get(name, fallback) for name, fallback in zip(model_names, palette_colors(n_models))]
 
     fig, axes = plt.subplots(1, 2, figsize=(12, 5))
 

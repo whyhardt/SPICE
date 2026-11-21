@@ -35,7 +35,8 @@ def final_checkpoints(study: str, kind: str) -> list[str]:
     """All seeds of a study's final `kind` model ('spice', 'benchmark' or 'gru'), ordered by seed."""
     if kind not in KINDS:
         raise ValueError(f"kind must be one of {KINDS}, got '{kind}'")
-    paths = glob(os.path.join(ROOT, 'weinhardt2026', 'studies', study, 'params', f'{kind}_{study}_*.pkl'))
+    paths = [path for path in glob(os.path.join(ROOT, 'weinhardt2026', 'studies', study, 'params', f'{kind}_{study}_*.pkl'))
+             if not path.endswith('_stage1.pkl')]
     if not paths:
         raise FileNotFoundError(f'{study}: no final {kind} checkpoints in params/')
     return sorted(paths, key=checkpoint_seed)

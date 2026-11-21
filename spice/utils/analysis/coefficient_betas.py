@@ -57,6 +57,7 @@ import textwrap
 from typing import List, Optional, Tuple
 
 import matplotlib.pyplot as plt
+from spice.utils.plotting import palette_colors
 import numpy as np
 import pandas as pd
 from scipy.optimize import brentq, minimize_scalar
@@ -71,6 +72,9 @@ from spice.utils.analysis.coefficient_dendrogram import (
     split_by_sign,
 )
 from spice.utils.analysis.loading import load_estimator
+
+# Levels of the all-level beta analysis, in figure order
+LEVEL_ORDER = {"mechanism": 0, "submechanism": 1, "term": 2}
 
 
 # ---------------------------------------------------------------------------
@@ -268,6 +272,62 @@ def get_mechanism_candidates(consensus: dict, mechanisms: List[Tuple[str, frozen
             if term not in in_mechanism:
                 group += 1
                 candidates.append(node(module, group, 0, -1, 0, (), [term], present))
+    return candidates
+
+
+def presence_tree_nodes(members: List[str], columns: np.ndarray, linkage_method: str = "average") -> List[List[str]]:
+    """Every node of the presence tree of *members* (1 - phi on *columns*, one per member), largest first."""
+    from scipy.cluster.hierarchy import linkage
+    from scipy.spatial.distance import squareform
+    from spice.utils.analysis.coefficient_dendrogram import presence_distance
+
+    nodes = {index: [index] for index in range(len(members))}
+    if len(members) > 1:
+        distance, _, _ = presence_distance(columns)
+        for row, (left, right, _, _) in enumerate(linkage(squareform(distance, checks=False), method=linkage_method)):
+            nodes[len(members) + row] = nodes[int(left)] + nodes[int(right)]
+    return [[members[i] for i in node] for node in sorted(nodes.values(), key=len, reverse=True)]
+
+
+def get_all_level_candidates(consensus: dict, mechanisms: List[Tuple[str, frozenset]]) -> List[dict]:
+    """The mechanisms, all their sub-mechanisms (nodes of their presence trees) and every single signed term.
+
+    Each distinct term set of a module is one candidate and so one test, also when
+    it occurs in several mechanisms. ``level`` is 'mechanism', 'submechanism' or
+    'term'; ``mechanisms`` names the mechanisms containing it ('M1/M3', M-numbers
+    in the order of *mechanisms*; empty for a term outside all of them).
+    """
+    levels, codes = {}, {}
+
+    def add(module, names, level, code=None):
+        key = (module, frozenset(names))
+        if LEVEL_ORDER[level] < LEVEL_ORDER[levels.get(key, "term")] or key not in levels:
+            levels[key] = level
+        codes.setdefault(key, [])
+        if code is not None and code not in codes[key]:
+            codes[key].append(code)
+
+    for index, (module, terms) in enumerate(mechanisms):
+        members = sorted(terms)
+        present = consensus[module]["presence"][:, [consensus[module]["terms"].index(t) for t in members]]
+        for names in presence_tree_nodes(members, present):
+            level = "mechanism" if len(names) == len(members) else "term" if len(names) == 1 else "submechanism"
+            add(module, names, level, f"M{index + 1}")
+    for module, data in consensus.items():
+        for term in data["terms"]:
+            add(module, [term], "term")
+
+    candidates = []
+    for group, (module, terms) in enumerate(levels, start=1):
+        names = sorted(terms)
+        data = consensus[module]
+        columns = data["presence"][:, [data["terms"].index(t) for t in names]] > 0
+        candidates.append({"module": module, "group": group, "node": 0, "parent": -1, "depth": 0, "children": (),
+                           "members": names,
+                           "label": names[0] if len(names) == 1 else "{" + ", ".join(names) + "}",
+                           "presence": columns.all(axis=1).astype(float),
+                           "presence_any": columns.any(axis=1).astype(float),
+                           "level": levels[(module, terms)], "mechanisms": "/".join(codes[(module, terms)])})
     return candidates
 
 
@@ -487,6 +547,7 @@ def test_candidates(candidates: List[dict], contrast: dict,
                "size": len(node["members"]),
                "active_all": presence.mean(),
                "active_any": node["presence_any"][mask].mean()}
+        row.update({key: node[key] for key in ("level", "mechanisms") if key in node})
         n_present = int(presence.sum())
         if min(n_present, len(presence) - n_present) >= min_count:
             row.update(presence_beta(presence, contrast["predictor"], contrast["standardize"]))
@@ -555,10 +616,10 @@ def plot_forest(table: pd.DataFrame, output_path: str, title: str,
     row_height = 0.22 * max(label.count("\n") + 1 for label in labels) + 0.14
     figure, axis = plt.subplots(figsize=(10, max(3.0, row_height * len(table))))
 
-    palette = plt.get_cmap("tab10")
+    palette = palette_colors(len(order))
     modules = list(dict.fromkeys(table["module"]))
     # colour follows the module's position in *order*, so it is the same in every plot
-    color_of = {module: palette(order.index(module) % 10) for module in modules}
+    color_of = {module: palette[order.index(module)] for module in modules}
 
     # An infinite profile bound (separation) runs to the plot edge and ends in an arrow.
     bounds = table[["beta", "ci_low", "ci_high"]].to_numpy()
@@ -645,6 +706,80 @@ def plot_mechanism_betas(table: pd.DataFrame, mechanisms: List[Tuple[str, frozen
             axis.spines[spine].set_visible(False)
         if annotated:
             axis.set_xlabel(xlabel, fontsize=7.5)
+
+        path = output_path if annotated else f"{output_path}_clean"
+        figure.savefig(f"{path}.pdf", bbox_inches="tight")
+        figure.savefig(f"{path}.png", dpi=200, bbox_inches="tight")
+        plt.close(figure)
+        print(f"Saved {path}.pdf/.png")
+
+
+def all_level_label(row, width: int = 48) -> str:
+    """Row label of the all-level figure: containing mechanisms, module and the terms of the node."""
+    terms = " + ".join(row["leaf"].strip("{}").split(", "))
+    prefix = f"{row['mechanisms']} " if row["mechanisms"] else ""
+    return textwrap.fill(f"{prefix}{row['module'].replace('value_', '')}: {terms}", width)
+
+
+def highest_significant(table: pd.DataFrame) -> pd.DataFrame:
+    """The significant nodes that are not part of a larger significant node of their module."""
+    significant = table[table["significant"]]
+    nodes = [(row["module"], frozenset(row["leaf"].strip("{}").split(", "))) for _, row in significant.iterrows()]
+    keep = [not any(module == other_module and terms < other_terms for other_module, other_terms in nodes)
+            for module, terms in nodes]
+    return significant[np.array(keep, dtype=bool)]
+
+
+def plot_significant_betas(table: pd.DataFrame, output_path: str, xlabel: str, title: str, clean: bool = False):
+    """Beta and 95% CI of the highest significant nodes of one all-level contrast; empty axes without any.
+
+    A significant mechanism or sub-mechanism hides the significant nodes inside it
+    (``highest_significant``). Rows run by mechanism (M1, M2, ...; terms outside all
+    mechanisms last), within one from the mechanism over its sub-mechanisms to its
+    single terms. Saved
+    annotated (<output_path>.pdf/.png: beta and q per row, title and x-label) and,
+    with *clean*, without annotations (<output_path>_clean.pdf/.png).
+    """
+    shown = highest_significant(table).copy()
+    modules = list(dict.fromkeys(table["module"]))
+    shown["sort_mechanism"] = [int(m.split("/")[0][1:]) if m else np.inf for m in shown["mechanisms"]]
+    shown["sort_level"] = shown["level"].map(LEVEL_ORDER)
+    shown["sort_module"] = shown["module"].map(modules.index)
+    shown = shown.sort_values(["sort_mechanism", "sort_level", "sort_module", "q"])
+    labels = [all_level_label(row) for _, row in shown.iterrows()]
+
+    n_rows = len(shown)
+    row_height = 0.2 * max([label.count("\n") + 1 for label in labels], default=1) + 0.14
+    bounds = shown[["beta", "ci_low", "ci_high"]].to_numpy(dtype=float).ravel()
+    finite = bounds[np.isfinite(bounds)] if n_rows else np.zeros(1)
+    margin = 0.1 * max(finite.max() - finite.min(), 1.0)
+    edges = (min(finite.min(), 0) - margin, max(finite.max(), 0) + margin)
+
+    for annotated in ((True, False) if clean else (True,)):
+        figure, axis = plt.subplots(figsize=(4.2, max(1.2, row_height * n_rows + 0.8)))
+        axis.axvline(0, color="0.6", linewidth=0.8, zorder=0)
+        for position, (_, row) in enumerate(shown.iterrows()):
+            low, high = np.clip([row["ci_low"], row["ci_high"]], *edges)
+            axis.plot([low, high], [position, position], color="black", linewidth=1.3, zorder=1)
+            for bound, edge, marker in ((row["ci_low"], low, "<"), (row["ci_high"], high, ">")):
+                if np.isinf(bound):
+                    axis.plot(edge, position, marker=marker, color="black", markersize=4)
+            axis.plot(row["beta"], position, marker="o", markersize=6, color="black", linestyle="", zorder=2)
+            if annotated:
+                axis.text(1.02, position, f"β = {row['beta']:.2f}, q = {row['q']:.3f}".replace("-", "−"),
+                          transform=axis.get_yaxis_transform(), va="center", fontsize=7, color="0.35")
+
+        axis.set_xlim(*edges)
+        axis.set_yticks(range(n_rows))
+        axis.set_yticklabels(labels, fontsize=7.5)
+        axis.set_ylim(max(n_rows, 1) - 0.5, -0.5)
+        axis.tick_params(axis="y", length=0)
+        axis.tick_params(axis="x", labelsize=7.5)
+        for spine in ("top", "right", "left"):
+            axis.spines[spine].set_visible(False)
+        if annotated:
+            axis.set_xlabel(xlabel, fontsize=7.5)
+            axis.set_title(title, fontsize=8.5)
 
         path = output_path if annotated else f"{output_path}_clean"
         figure.savefig(f"{path}.pdf", bbox_inches="tight")
@@ -787,6 +922,67 @@ def run_contrasts(candidates: List[dict], criterion: np.ndarray, criterion_col: 
     return table
 
 
+def participant_criterion(data_path, criterion_col: str, criterion_type: str, participant_col: str,
+                          criterion_aggregate: str, criterion_map: Optional[dict], block_col: Optional[str],
+                          alpha: float) -> np.ndarray:
+    """The criterion per participant (relabelled by *criterion_map*), checked against the trial count."""
+    aggregate = "first" if criterion_type == "discrete" else criterion_aggregate
+    criterion_frame = get_criterion(data_path, criterion_col, participant_col, aggregate, block_col=block_col)
+    if criterion_map is not None:
+        criterion_frame[criterion_col] = criterion_frame[criterion_col].map(criterion_map)
+    criterion = criterion_frame[criterion_col].to_numpy()
+    check_trial_count(criterion, criterion_frame["log_n_trials"].to_numpy(), criterion_col,
+                      criterion_type=criterion_type, alpha=alpha)
+    return criterion
+
+
+def analysis_all_level_betas(
+    seed_matrices: List[dict],
+    mechanisms: List[Tuple[str, frozenset]],
+    data_path,
+    output_dir: str,
+    votes: int,
+    criterion_col: str = "reward",
+    criterion_type: str = "continuous",
+    reference: Optional[str] = None,
+    comparisons: Optional[List[Tuple[str, str]]] = None,
+    participant_col: str = "participant",
+    criterion_aggregate: str = "mean",
+    min_count: int = 5,
+    alpha: float = 0.05,
+    prefix: str = "all_levels",
+    criterion_map: Optional[dict] = None,
+    block_col: Optional[str] = None,
+    figure_prefix: str = "figure_all_betas",
+    clean: bool = False,
+) -> pd.DataFrame:
+    """Structural beta effects of the mechanisms, all their sub-mechanisms and every single term.
+
+    Unlike ``analysis_mechanism_betas``, nothing is reached through a break-up rule:
+    all distinct term sets (``get_all_level_candidates``) are tested and form one
+    FDR family per contrast, which is larger than the mechanism analysis' family, so
+    its q-values can differ. Nested nodes are not independent tests of separate
+    effects: a sub-mechanism and a term with the same carriers give the same result.
+    Arguments as in ``analysis_mechanism_betas``. Per contrast, every node is saved
+    as ``betas_structural_<prefix>_<criterion>[...].csv`` and the highest significant
+    ones are plotted (``plot_significant_betas``, empty axes without any) as
+    ``<figure_prefix>_<criterion>[...]``.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    criterion = participant_criterion(data_path, criterion_col, criterion_type, participant_col,
+                                      criterion_aggregate, criterion_map, block_col, alpha)
+    candidates = get_all_level_candidates(consensus_presence(seed_matrices, votes), mechanisms)
+    table = run_contrasts(candidates, criterion, criterion_col, criterion_type, reference,
+                          comparisons, output_dir, prefix, min_count, alpha, forest_plot=False)
+
+    for name, contrast_table in table.groupby("contrast", sort=False):
+        suffix = contrast_suffix(criterion_col, criterion_type, name)
+        plot_significant_betas(contrast_table, os.path.join(output_dir, f"{figure_prefix}_{suffix}"),
+                               contrast_xlabel(criterion_col, criterion_type, name),
+                               name.replace("_", " "), clean=clean)
+    return table
+
+
 def analysis_mechanism_betas(
     seed_matrices: List[dict],
     mechanisms: List[Tuple[str, frozenset]],
@@ -825,13 +1021,8 @@ def analysis_mechanism_betas(
     *clean* also without annotations.
     """
     os.makedirs(output_dir, exist_ok=True)
-    aggregate = "first" if criterion_type == "discrete" else criterion_aggregate
-    criterion_frame = get_criterion(data_path, criterion_col, participant_col, aggregate, block_col=block_col)
-    if criterion_map is not None:
-        criterion_frame[criterion_col] = criterion_frame[criterion_col].map(criterion_map)
-    criterion = criterion_frame[criterion_col].to_numpy()
-    check_trial_count(criterion, criterion_frame["log_n_trials"].to_numpy(), criterion_col,
-                      criterion_type=criterion_type, alpha=alpha)
+    criterion = participant_criterion(data_path, criterion_col, criterion_type, participant_col,
+                                      criterion_aggregate, criterion_map, block_col, alpha)
 
     candidates = get_mechanism_candidates(consensus_presence(seed_matrices, votes), mechanisms)
     table = run_contrasts(candidates, criterion, criterion_col, criterion_type, reference,

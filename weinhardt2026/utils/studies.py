@@ -120,6 +120,14 @@ STUDIES = {
 GROUP_STUDIES = {'kolff2025': dict(label='Chimpanzee Grooming\n(Kolff 2025)')}
 ALL_STUDIES = list(STUDIES) + list(GROUP_STUDIES)
 LABELS = {study: config['label'] for study, config in {**STUDIES, **GROUP_STUDIES}.items()}
+# task domains (families of tasks), in plotting order
+DOMAINS = {
+    'Reinforcement learning': ['dezfouli2019', 'ganesh2024a', 'eckstein2026'],
+    'Switching behavior': ['braun2018', 'bustamante2023'],
+    'Predictive inference': ['bruckner2025', 'weber2024'],
+    'Communication': ['kolff2025'],
+}
+STUDY_DOMAINS = {study: domain for domain, studies in DOMAINS.items() for study in studies}
 
 
 # ── Data + model loading ────────────────────────────────────────────

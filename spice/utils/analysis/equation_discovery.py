@@ -17,8 +17,10 @@ terms that switch on together across participants, reproducibly across seeds.
      sets grouped all together in >= ``votes`` seeds.
   3. The reduced equation matrix of the mechanisms and the correlation between them
      (phi of their presence across participants); the joint-support dendrogram.
-  4. Optionally (``--criterion``), the structural beta effects of the mechanisms on a
-     per-participant criterion (``coefficient_betas.analysis_mechanism_betas``).
+  4. Optionally (``--criterion``), the structural beta effects on a per-participant
+     criterion: of the mechanisms (``coefficient_betas.analysis_mechanism_betas``) and,
+     as a separate analysis with its own FDR family, of the mechanisms, all their
+     sub-mechanisms and every single term (``coefficient_betas.analysis_all_level_betas``).
 
 A participant carries a term when at least ``votes`` seeds give it to them. Every
 figure is saved with annotations (``<name>.pdf/.png``) and, with ``--clean``, also
@@ -29,6 +31,8 @@ Written to --output-dir:
     figure_mechanism_correlations, .csv        phi between the mechanisms; per pair: carriers, co-occurrence, phi, q
     figure_mechanism_dendrogram, mechanisms.csv  joint-support tree; per mechanism: joint support, merge distances
     figure_mechanism_betas_<criterion>[_<group>_vs_<reference>], betas_structural_mechanisms_<criterion>[...].csv
+    figure_all_betas_<criterion>[...] (highest significant node per branch; empty without any),
+        betas_structural_all_levels_<criterion>[...].csv (every node)
     caches: equation_matrices.pkl (coefficients per seed), seed_clusters.pkl (groups per seed)
 
 Usage:
@@ -51,19 +55,24 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.colors import Normalize
 from matplotlib.patches import Rectangle
+from spice.utils.plotting import correlation_cmap, palette_colors
 from joblib import Parallel, delayed
 from scipy.cluster.hierarchy import cophenet, dendrogram, fcluster
 from scipy.spatial.distance import squareform
 
 from spice.utils import csv_to_dataset
-from spice.utils.analysis.coefficient_betas import analysis_mechanism_betas, consensus_presence
+from spice.utils.analysis.coefficient_betas import (
+    analysis_all_level_betas,
+    analysis_mechanism_betas,
+    consensus_presence,
+)
 from spice.utils.analysis.coefficient_dendrogram import cluster_module, get_module_matrices, split_by_sign
 from spice.utils.analysis.loading import load_estimator
 
-GROUP_COLORS = ['#c44e52', '#2f6f9f', '#d99a1e', '#5a9e6f', '#7b5ea7', '#8c6d31']
+GROUP_COLORS = palette_colors(6)
 NEUTRAL = '#9a9a9a'
 # phi, shared by the equation matrix (within a mechanism) and the mechanism correlations (between mechanisms)
-PHI_CMAP, PHI_NORM = plt.cm.viridis, Normalize(-1, 1)
+PHI_CMAP, PHI_NORM = correlation_cmap(), Normalize(-1, 1)
 
 
 def text_color(color):
@@ -184,8 +193,10 @@ def cluster_seeds(matrices_per_seed, cache_path=None, n_jobs=8, **settings):
 def seed_matrices(models_dir, load, cache_path=None):
     """Per seed (file of `models_dir` that `load` can load, in name order): each module's coefficient values,
     presence and term names (``get_module_matrices``). Files that do not load are skipped and logged. With
-    `cache_path`, cached there and reused while the directory holds the same files."""
-    names = sorted(name for name in os.listdir(models_dir) if os.path.isfile(os.path.join(models_dir, name)))
+    `cache_path`, cached there and reused while the directory holds the same files. Stage-1 checkpoints
+    (``*_stage1.pkl``) are not fits."""
+    names = sorted(name for name in os.listdir(models_dir)
+                   if os.path.isfile(os.path.join(models_dir, name)) and not name.endswith('_stage1.pkl'))
     if cache_path and os.path.exists(cache_path):
         with open(cache_path, 'rb') as file:
             cached = pickle.load(file)
@@ -670,11 +681,11 @@ def equation_discovery(matrices_per_seed, output_dir, votes=6, n_jobs=8, criteri
     table.to_csv(os.path.join(output_dir, 'mechanisms.csv'), index=False)
 
     mechanisms = [(c['module'], c['core']) for c in cores]
+    shared = dict(votes=votes, participant_col=participant_col, min_count=min_count, alpha=alpha, clean=clean)
     for criterion in criteria:
-        analysis_mechanism_betas(matrices_per_seed, mechanisms, data, output_dir, votes=votes,
-                                 participant_col=participant_col, min_count=min_count, alpha=alpha,
-                                 prefix='mechanisms', figure_prefix='figure_mechanism_betas', clean=clean,
-                                 **criterion)
+        analysis_mechanism_betas(matrices_per_seed, mechanisms, data, output_dir, prefix='mechanisms',
+                                 figure_prefix='figure_mechanism_betas', **shared, **criterion)
+        analysis_all_level_betas(matrices_per_seed, mechanisms, data, output_dir, **shared, **criterion)
     return cores
 
 

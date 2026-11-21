@@ -41,6 +41,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / 'weinhardt2026'))
 
 from spice import SpiceEstimator, csv_to_dataset, split_data_along_blockdim
+from spice.utils.plotting import palette_colors, rate_cmap, shade_colors, text_color
 from weinhardt2026.analysis.evaluation.model_evaluation import (
     get_participant_experiment_groups,
     grouped_information_criteria,
@@ -364,10 +365,9 @@ def best_cells(df, metric='BIC', n=10):
 # ── Plotting ─────────────────────────────────────────────────────────
 
 INK, INK_MUTED, GRID = '#0b0b0b', '#52514e', '#e4e3df'
-ORDINAL_BLUES = ['#86b6ef', '#2a78d6', '#104281']                    # ordinal sw levels, light → dark
-CATEGORICAL = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4']  # fixed slot order
+ORDINAL_SHADES = shade_colors(3)    # ordinal sw levels, light → dark
+CATEGORICAL = palette_colors(5)      # fixed slot order
 NEUTRAL = '#b5b4ae'                                                   # seed noise
-SEQUENTIAL = ['#cde2fb', '#86b6ef', '#3987e5', '#1c5cab', '#0d366b']
 METRIC_LABELS = {
     'BIC': 'SINDy BIC (train) ↓', 'AIC': 'SINDy AIC (train) ↓', 'n_params_mean': 'active coefficients / participant',
     'trial_likelihood': 'SINDy trial likelihood (train)', 'trial_likelihood_test': 'SINDy trial likelihood (test)',
@@ -406,7 +406,7 @@ def plot_main_effects(df, output_path,
         levels = sorted(df[tag].unique())
         x_of = {level: i for i, level in enumerate(levels)}
         # the sw column has only one line (sw itself is the x-axis)
-        series = [(None, INK)] if tag == 'sw' else list(zip(sw_levels, ORDINAL_BLUES))
+        series = [(None, INK)] if tag == 'sw' else list(zip(sw_levels, ORDINAL_SHADES))
         offsets = np.linspace(-0.15, 0.15, len(series)) if len(series) > 1 else [0.0]
         for row, metric in enumerate(metrics):
             ax = axes[row, col]
@@ -438,11 +438,11 @@ def plot_interaction_heatmaps(df, output_path, row_tag='al', col_tag='gp', facet
                               fixed=None, metrics=KEY_METRICS):
     """row_tag × col_tag heatmaps of seed-mean metrics, one figure row per facet_tag level.
 
-    Darker = better for every panel (the ramp is flipped for metrics where lower is better).
+    Towards yellow = better for every panel (the rate colormap of spice.utils.plotting over each metric's range,
+    flipped for metrics where lower is better).
     """
     _style()
-    from matplotlib.colors import LinearSegmentedColormap
-    cmap = LinearSegmentedColormap.from_list('seq', SEQUENTIAL)
+    cmap = rate_cmap()
     data = df.copy()
     for tag, value in (fixed or {}).items():
         data = data[data[tag] == value]
@@ -457,16 +457,14 @@ def plot_interaction_heatmaps(df, output_path, row_tag='al', col_tag='gp', facet
             subset = data[data[facet_tag] == facet]
             mean = subset.groupby([row_tag, col_tag])[metric].mean().unstack(col_tag)
             sem = subset.groupby([row_tag, col_tag])[metric].sem().unstack(col_tag)
-            im = ax.imshow(mean.values, cmap=cmap.reversed() if lower_is_better else cmap,
-                           vmin=vmin, vmax=vmax, aspect='auto', origin='lower')
+            panel_cmap = cmap.reversed() if lower_is_better else cmap
+            im = ax.imshow(mean.values, cmap=panel_cmap, vmin=vmin, vmax=vmax, aspect='auto', origin='lower')
             for i in range(mean.shape[0]):
                 for j in range(mean.shape[1]):
                     value = mean.values[i, j]
-                    shade = (value - vmin) / (vmax - vmin + 1e-12)
-                    dark_cell = shade > 0.55 if not lower_is_better else shade < 0.45
                     fmt = '{:.1f}' if abs(value) > 10 else ('{:.2f}' if abs(value) > 1 else '{:.4f}')
                     ax.text(j, i, fmt.format(value) + f'\n±{fmt.format(sem.values[i, j])}', ha='center',
-                            va='center', fontsize=7.5, color='#ffffff' if dark_cell else INK)
+                            va='center', fontsize=7.5, color=text_color(panel_cmap, value, vmin, vmax + 1e-12))
             ax.set_xticks(range(mean.shape[1]), [f'{v:g}' for v in mean.columns])
             ax.set_yticks(range(mean.shape[0]), [f'{v:g}' for v in mean.index])
             ax.set_xlabel(col_tag)
@@ -493,7 +491,7 @@ def plot_tradeoffs(df, output_path, n_failed=0):
               ('trial_likelihood_test_rnn', 'trial_likelihood_test')]
     for ax, (x, y) in zip(axes, panels):
         ax.grid(True, axis='both')
-        for sw, color in zip(sw_levels, ORDINAL_BLUES):
+        for sw, color in zip(sw_levels, ORDINAL_SHADES):
             for er, marker in markers.items():
                 subset = df[(df['sw'] == sw) & (df['er'] == er)]
                 ax.scatter(subset[x], subset[y], s=30, marker=marker, color=color,
@@ -623,7 +621,7 @@ def plot_single_hp(df, tag, output_path, line_tag=None, title=None,
     _style()
     levels = sorted(df[tag].unique())
     x_of = {level: i for i, level in enumerate(levels)}
-    series = [(None, INK)] if line_tag is None else list(zip(sorted(df[line_tag].unique()), ORDINAL_BLUES))
+    series = [(None, INK)] if line_tag is None else list(zip(sorted(df[line_tag].unique()), ORDINAL_SHADES))
     offsets = np.linspace(-0.12, 0.12, len(series)) if len(series) > 1 else [0.0]
     n_cols = 2
     n_rows = int(np.ceil(len(metrics) / n_cols))

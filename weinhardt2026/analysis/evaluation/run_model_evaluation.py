@@ -58,6 +58,7 @@ from weinhardt2026.analysis.evaluation.run_posterior_predictive import (
     ROLLOUT_UNITS as RESPONSE_UNITS,
     load_scores as load_ppc_scores,
 )
+from spice.utils.plotting import MODEL_COLORS
 from weinhardt2026.utils.final_models import checkpoint_seed, final_checkpoints, load_gru
 from weinhardt2026.utils.study_models import best_member
 from weinhardt2026.utils.studies import (
@@ -208,12 +209,7 @@ def evaluate_group_study(study):
 
 # ── Plot ────────────────────────────────────────────────────────────
 
-COLORS = {
-    'Benchmark': '#1a3a5c',
-    'GRU':       '#5b8db8',
-    'SPICE-RNN': '#c44e52',
-    'SPICE-EQ':  '#8b2529',
-}
+COLORS = MODEL_COLORS  # comparison models pink / violet, SPICE blue-green (spice.utils.plotting)
 MODEL_ORDER = ['GRU', 'Benchmark', 'SPICE-EQ', 'SPICE-RNN']
 ROWS = [
     ('heldout', None),  # ylabel depends on discrete/continuous

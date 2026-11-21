@@ -2,10 +2,65 @@ from typing import List, Dict
 
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib.colors import Normalize
+from matplotlib.colors import LinearSegmentedColormap, ListedColormap, Normalize, to_hex
 import matplotlib.cm as cm
 import torch
 from typing import Tuple, Optional
+
+# ── Value colormaps ─────────────────────────────────────────────────
+# One scale for every figure that colours a value: correlations (-1 to 1) span all of VALUE_CMAP, rates (0 to 1) its
+# upper half, so that a value has the same colour in both (the lower half stays reserved for negative correlations).
+# Missing cells in EMPTY_COLOR, a light grey that is still darker than a near-white 0.
+# Anchors at -1, -0.5, 0, 0.5, 1: purple (PRGn), pink (plasma), white (PRGn centre), blue-green and yellow (viridis).
+VALUE_CMAP = LinearSegmentedColormap.from_list('PRPkBGYe', list(zip(
+    (0., 0.25, 0.5, 0.75, 1.),
+    (plt.get_cmap('PRGn')(0.), plt.get_cmap('plasma')(0.6), plt.get_cmap('PRGn')(0.5),
+     plt.get_cmap('viridis')(0.6), plt.get_cmap('viridis')(1.)))), N=256)
+EMPTY_COLOR = '#d4d4d4'
+HIGHLIGHT_COLOR = to_hex(VALUE_CMAP(1.))  # yellow end of VALUE_CMAP: marks a selected / chosen element
+
+def correlation_cmap(bad_color: str = EMPTY_COLOR) -> ListedColormap:
+    """VALUE_CMAP for values in [-1, 1] (use with vmin=-1, vmax=1)."""
+    cmap = ListedColormap(VALUE_CMAP(np.linspace(0, 1, 256)), name='correlation')
+    cmap.set_bad(bad_color)
+    return cmap
+
+
+def rate_cmap(bad_color: str = EMPTY_COLOR) -> ListedColormap:
+    """Upper half of VALUE_CMAP for values in [0, 1] (use with vmin=0, vmax=1)."""
+    cmap = ListedColormap(VALUE_CMAP(np.linspace(0.5, 1, 256)), name='rate')
+    cmap.set_bad(bad_color)
+    return cmap
+
+
+def text_color(cmap, value: float, vmin: float = 0., vmax: float = 1.) -> str:
+    """Dark or white text, whichever reads on the colour of `value`."""
+    red, green, blue, _ = cmap((value - vmin) / (vmax - vmin))
+    return '#1f1f1f' if 0.299 * red + 0.587 * green + 0.114 * blue > 0.5 else 'white'
+
+
+def palette_colors(n: int, stop: float = 1.) -> List[str]:
+    """n categorical (or ordered) colours along VALUE_CMAP from its purple end to `stop` (purple -> pink -> blue-green
+    -> yellow), skipping the pale centre (0.3-0.7) that would vanish on a white background. A stop below 1
+    leaves out the light yellow end, e.g. for lines on white."""
+    usable = np.linspace(0, stop - 0.4, n) if n > 1 else np.array([0.])
+    positions = np.where(usable <= 0.3, usable, usable + 0.4)
+    return [to_hex(VALUE_CMAP(position)) for position in positions]
+
+
+def shade_colors(n: int) -> List[str]:
+    """n blue-green shades of VALUE_CMAP for ordinal levels, light -> dark."""
+    return [to_hex(VALUE_CMAP(position)) for position in np.linspace(0.58, 0.75, n)]
+
+
+# Model families: the comparison models in purple shades (PRGn, the purple end of VALUE_CMAP), SPICE in blue-green shades
+MODEL_COLORS = {
+    'GRU': to_hex(plt.get_cmap('PRGn')(0.25)),        # light purple
+    'Benchmark': to_hex(plt.get_cmap('PRGn')(0.12)),  # purple
+    'SPICE-EQ': to_hex(VALUE_CMAP(0.75)),   # blue-green
+    'SPICE-RNN': to_hex(VALUE_CMAP(0.64)),  # light blue-green
+}
+
 
 try:
     from .agent import Agent, get_update_dynamics

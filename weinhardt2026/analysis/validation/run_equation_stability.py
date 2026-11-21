@@ -34,13 +34,14 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.colors import Normalize
 from matplotlib.cm import ScalarMappable
+from spice.utils.plotting import palette_colors, rate_cmap, text_color
 
 from weinhardt2026.utils import studies
 from weinhardt2026.utils.final_models import seed_matrices
 
 MODULES_PER_ROW = 3
-CMAP_AGREEMENT = plt.cm.RdYlGn
-NORM_AGREEMENT = Normalize(vmin=0.5, vmax=1.0)
+CMAP_AGREEMENT = rate_cmap()  # the shared rate colormap over 0-1, so that a rate has the same colour in every figure
+NORM_AGREEMENT = Normalize(vmin=0., vmax=1.)
 
 
 def stability_table(matrices):
@@ -72,7 +73,6 @@ def plot_stability(table, study, output_path, clean=False):
     for annotated in ((True, False) if clean else (True,)):
         fig = plt.figure(figsize=(5.2 * MODULES_PER_ROW + 0.6, sum(heights) + 0.6))
         subfigures = np.atleast_1d(fig.subfigures(len(rows), 1, height_ratios=heights))
-        seed_colors = plt.cm.tab10
 
         for subfigure, row in zip(subfigures, rows):
             # per module: [blank column for the term labels, agreement, coefficients]
@@ -92,7 +92,7 @@ def plot_stability(table, study, output_path, clean=False):
                                     norm=NORM_AGREEMENT, interpolation='nearest')
                 for i, value in enumerate(module_table['agreement'] if annotated else []):
                     ax_agreement.text(0, i, f'{value:.2f}', ha='center', va='center', fontsize=6,
-                                      color='black' if value > 0.65 else 'white')
+                                      color=text_color(CMAP_AGREEMENT, value))
                 ax_agreement.set_yticks(y)
                 ax_agreement.set_yticklabels(module_table['term'], fontsize=6.5)
                 ax_agreement.set_xticks([])
@@ -104,7 +104,7 @@ def plot_stability(table, study, output_path, clean=False):
                 n_seeds = seed_means.shape[1]
                 for seed in range(n_seeds):
                     offset = (seed - (n_seeds - 1) / 2) * 0.6 / n_seeds
-                    color = seed_colors(seed % 10)
+                    color = palette_colors(n_seeds)[seed]
                     ax_coefficients.errorbar(seed_means[:, seed], y + offset, xerr=seed_sds[:, seed], fmt='o', markersize=2.5,
                                              color=color, elinewidth=0.6, capsize=1, alpha=0.75, zorder=3)
                 ax_coefficients.axvline(0, color='#404040', linestyle='--', linewidth=0.8, zorder=1)

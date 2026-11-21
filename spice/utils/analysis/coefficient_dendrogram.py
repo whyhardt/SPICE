@@ -32,6 +32,7 @@ import os
 from typing import Dict, List, Optional
 
 import matplotlib.pyplot as plt
+from spice.utils.plotting import correlation_cmap, rate_cmap, shade_colors
 import numpy as np
 import pandas as pd
 from scipy.cluster.hierarchy import dendrogram, fcluster, linkage
@@ -517,7 +518,7 @@ def plot_coassignment(
         order = dendrogram(result["linkage"], no_plot=True)["leaves"]
         probability = stabilities[module]["coassignment"][np.ix_(order, order)]
         labels = [result["terms"][i] for i in order]
-        image = axis.imshow(probability, cmap="viridis", vmin=0, vmax=1)
+        image = axis.imshow(probability, cmap=rate_cmap(), vmin=0, vmax=1)
         axis.set_xticks(range(len(labels)))
         axis.set_xticklabels(labels, rotation=90, fontsize=7)
         axis.set_yticks(range(len(labels)))
@@ -566,7 +567,7 @@ def describe_clusters(result: dict, mode: str) -> List[str]:
 # ---------------------------------------------------------------------------
 
 # Significance tiers, dark = strongest, shared by every panel.
-STAR_COLORS = {"***": "#08306b", "**": "#2171b5", "*": "#6baed6", "ns": "0.75"}
+STAR_COLORS = dict(zip(("*", "**", "***"), shade_colors(3)), ns="0.75")  # light -> dark blue-green
 
 
 def plot_dendrograms(
@@ -701,7 +702,7 @@ def plot_similarity_heatmaps(results: Dict[str, dict], output_path: str):
         order = dendrogram(result["linkage"], no_plot=True)["leaves"]
         similarity = result["similarity"][np.ix_(order, order)]
         labels = [result["terms"][i] for i in order]
-        image = axis.imshow(similarity, cmap="RdBu_r", vmin=-1, vmax=1)
+        image = axis.imshow(similarity, cmap=correlation_cmap(), vmin=-1, vmax=1)
         axis.set_xticks(range(len(labels)))
         axis.set_xticklabels(labels, rotation=90, fontsize=7)
         axis.set_yticks(range(len(labels)))

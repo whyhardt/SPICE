@@ -42,6 +42,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / 'weinhardt2026'))  # study modules import 'studies.<study>...' (as in run.py)
 
 import matplotlib.pyplot as plt
+from spice.utils.plotting import rate_cmap, text_color
 import numpy as np
 import pandas as pd
 import torch
@@ -300,8 +301,8 @@ def print_tables(tables: dict[str, pd.DataFrame]) -> None:
         print(cells.to_string())
 
 
-CMAP = 'viridis'   # as the confusion matrices of run_parameter_recovery.py (dark: P = 0, light: P = 1)
-INK, INK_ON_DARK, INK_MUTED = '#222222', '#ffffff', '#6b6b6b'
+CMAP = rate_cmap()  # the shared rate colormap (spice.utils.plotting)
+INK_MUTED = '#6b6b6b'
 
 
 def study_label(study: str) -> str:
@@ -331,7 +332,7 @@ def plot_confusion(table: pd.DataFrame, criterion: str, path: Path, clean: bool 
                 for i in range(2 if annotated else 0):
                     for j in range(2):
                         ax.text(j, i, f'{p[i, j]:.2f}\n±{sd[i, j]:.2f}', ha='center', va='center', fontsize=7.5,
-                                color=INK if p[i, j] > 0.6 else INK_ON_DARK, linespacing=1.15)
+                                color=text_color(CMAP, p[i, j]), linespacing=1.15)
                 ax.set_xticks([0, 1], [label.replace('Benchmark', 'Bench.') for label in fitted], fontsize=7.5)
                 ax.set_yticks([0, 1], [label.replace('Benchmark', 'Bench.') for label in simulated], fontsize=7.5)
                 ax.tick_params(which='both', length=0)

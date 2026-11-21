@@ -8,12 +8,14 @@ import torch
 
 from spice import SpiceEstimator, csv_to_dataset
 from weinhardt2026.studies.synthetic.benchmarking_qlearning import QLearning
+from weinhardt2026.analysis.validation.run_spice_recovery import term_library_rms
 
 from spice.precoded.choice import SpiceModel, CONFIG
 # from spice.precoded.workingmemory import SpiceModel, CONFIG
 # from weinhardt2026.studies.dezfouli2019.spice_dezfouli2019 import SpiceModel, CONFIG
 
 import matplotlib as mpl
+from spice.utils.plotting import EMPTY_COLOR, MODEL_COLORS, rate_cmap
 mpl.rcParams['figure.dpi'] = 300
 mpl.rcParams['svg.fonttype'] = 'none'  # keep text as editable text in vector exports
 mpl.rcParams['pdf.fonttype'] = 42
@@ -24,10 +26,10 @@ path_model = 'weinhardt2026/studies/synthetic/params/spice_synthetic_balanced_PA
 rl_parameters = ['beta_reward', 'beta_choice', 'alpha_reward', 'alpha_penalty', 'alpha_choice', 'forget_rate']
 participants = [32, 64, 128, 256, 512]
 iterations = 8
-coefficient_threshold = 0.01
 ensemble_size = 10
-# training seeds per dataset (SEED in path_model); a term counts as recovered only if it is active in more than half of them
-# (structure is shared within an ensemble, so each seed contributes one vote)
+# training seeds per dataset (SEED in path_model); a term counts as recovered only if it is active in more than half of them.
+# Within a seed a term is active if the majority of the ensemble members carry it (presence masks, no coefficient cutoff),
+# as in the SPICE -> SPICE recovery (run_spice_recovery.py)
 seeds = list(range(10))
 
 # figures are saved twice: annotated and as '_clean' copy without annotations (titles, axis labels, tick labels, numbers inside heatmaps)
@@ -78,9 +80,20 @@ n_coefficients_fitted_model = sum(
 )
 print(f"Detected n_coefficients_fitted_model = {n_coefficients_fitted_model}")
 
+# module and term of every storage index; source terms of term collapsing are zero by construction
+term_modules_storage, term_labels_storage, term_collapsed_storage = [], [], []
+for module in sample_model.model.get_modules():
+    for term in sample_model.model.sindy_candidate_terms[module]:
+        term_modules_storage.append(module)
+        term_labels_storage.append(term)
+        term_collapsed_storage.append(term in {source for _, source in term_collapsing})
+
 # get coefficients storage
+true_effects = np.zeros((len(participants), participants[-1]*iterations, n_coefficients_fitted_model))
+cells_datasets = []  # signed participant x term cells per dataset (written to <prefix>_cells.csv)
 true_coefs = np.zeros((len(participants), participants[-1]*iterations, n_coefficients_fitted_model))
 fitted_coefs = np.zeros((len(participants), participants[-1]*iterations, n_coefficients_fitted_model))
+fitted_active = np.zeros((len(participants), participants[-1]*iterations, n_coefficients_fitted_model), dtype=bool)
 active_params = np.zeros((len(participants), participants[-1]*iterations), dtype=int)
 active_mechanisms = np.full((len(participants), participants[-1]*iterations), None, dtype=object)
 
@@ -131,36 +144,82 @@ def get_active_mechanisms(mechanism_masks):
 # Get true and fitted SINDy coefficients
 # -------------------------------------------------------------------------------
 
+def collapse_terms(values_module, candidate_terms_fitted_model, combine):
+    """Merge each source term of term_collapsing into its target term (combine(target, source)); the source becomes empty."""
+
+    for term in term_collapsing:
+        index_target_term = candidate_terms_fitted_model.index(term[0]) if term[0] in candidate_terms_fitted_model else None
+        index_source_term = candidate_terms_fitted_model.index(term[1]) if term[1] in candidate_terms_fitted_model else None
+        if index_source_term is not None and index_target_term is not None:
+            values_module[..., index_target_term] = combine(values_module[..., index_target_term], values_module[..., index_source_term])
+            values_module[..., index_source_term] = 0
+    return values_module
+
 def get_fitted_coefficients(fitted_model):
     """Ensemble-aggregated, term-collapsed fitted coefficients (n_participants, n_coefficients) in storage layout."""
 
     fitted_coef_vals = fitted_model.get_sindy_coefficients(aggregate=True)
     coefs_modules = []
     for module in fitted_model.get_modules():
-        candidate_terms_fitted_model = fitted_model.sindy_candidate_terms[module]
         coefs_module = fitted_coef_vals[module][:, 0].detach().cpu().numpy().copy()
-
-        # term collapsing
-        for term in term_collapsing:
-            index_target_term = candidate_terms_fitted_model.index(term[0]) if term[0] in candidate_terms_fitted_model else None
-            index_source_term = candidate_terms_fitted_model.index(term[1]) if term[1] in candidate_terms_fitted_model else None
-            if index_source_term is not None and index_target_term is not None:
-                coefs_module[..., index_target_term] += coefs_module[..., index_source_term]
-                coefs_module[..., index_source_term] = 0
-
-        coefs_modules.append(coefs_module)
+        coefs_modules.append(collapse_terms(coefs_module, fitted_model.sindy_candidate_terms[module], np.add))
     return np.concatenate(coefs_modules, axis=-1)
 
-def aggregate_seeds(coefs_seeds):
-    """Majority vote over seeds (n_seeds, ...): a term is active if active in more than half the seeds;
-    its value is the median over the seeds in which it is active (0 otherwise)."""
+def get_fitted_presence(fitted_model):
+    """Term-collapsed presence (n_participants, n_coefficients): carried by the majority of the ensemble members."""
 
-    active_seeds = np.abs(coefs_seeds) >= coefficient_threshold
-    active_majority = active_seeds.sum(axis=0) > len(coefs_seeds) / 2
+    presence_modules = []
+    for module in fitted_model.get_modules():
+        presence_module = (fitted_model.sindy_coefficients_presence[module].float().mean(dim=0)[:, 0] > 0.5).cpu().numpy()
+        presence_modules.append(collapse_terms(presence_module, fitted_model.sindy_candidate_terms[module], np.logical_or))
+    return np.concatenate(presence_modules, axis=-1)
+
+def get_fitted_rms(fitted_model, inputs):
+    """Ensemble-mean, term-collapsed RMS of the library values along the fitted SPICE-EQ trajectories (n_participants, n_coefficients).
+    Collapsed source terms are binary duplicates of their target, so the target keeps its own RMS."""
+
+    rms = term_library_rms(fitted_model, inputs)
+    rms_modules = []
+    for module in fitted_model.get_modules():
+        n_terms_module = fitted_model.sindy_coefficients[module].shape[-1]
+        rms_module = rms[module].mean(axis=0) if module in rms else np.zeros((fitted_model.n_participants, n_terms_module))
+        rms_modules.append(collapse_terms(rms_module.copy(), fitted_model.sindy_candidate_terms[module], lambda target, source: target))
+    return np.concatenate(rms_modules, axis=-1)
+
+def signed_cells(true_block, true_effect_block, coefs_seeds, presence_seeds, effects_seeds):
+    """Participant x signed term cells of one dataset that the ground truth has or the seeds' vote recovers
+    (`term (+)` and `term (-)` are different terms, as in run_spice_recovery.py)."""
+
+    rows = []
+    for sign, label in ((1, '+'), (-1, '-')):
+        true = np.sign(true_block) == sign
+        present = presence_seeds & (np.sign(coefs_seeds) == sign)  # (S, P, C)
+        n_seeds = present.sum(axis=0)
+        found = n_seeds > len(coefs_seeds) / 2
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', category=RuntimeWarning)
+            coefficient_found = np.nan_to_num(np.nanmedian(np.where(present, coefs_seeds, np.nan), axis=0))
+        effect_found = (effects_seeds * present).sum(axis=0) / np.maximum(n_seeds, 1)
+        participants_cells, terms_cells = np.nonzero((true | found) & ~np.array(term_collapsed_storage))
+        rows.append(pd.DataFrame(dict(
+            module=[term_modules_storage[t] for t in terms_cells],
+            term=[f'{term_labels_storage[t]} ({label})' for t in terms_cells], participant=participants_cells,
+            true=true[participants_cells, terms_cells], found=found[participants_cells, terms_cells],
+            coefficient_true=true_block[participants_cells, terms_cells] * true[participants_cells, terms_cells],
+            coefficient_found=coefficient_found[participants_cells, terms_cells] * found[participants_cells, terms_cells],
+            effect_true=true_effect_block[participants_cells, terms_cells], effect_found=effect_found[participants_cells, terms_cells],
+        )))
+    return pd.concat(rows, ignore_index=True)
+
+def aggregate_seeds(coefs_seeds, presence_seeds):
+    """Majority vote over seeds (n_seeds, ...): a term is active if active in more than half the seeds;
+    its value is the median over the seeds in which it is active (0 otherwise). Returns (values, active)."""
+
+    active_majority = presence_seeds.sum(axis=0) > len(coefs_seeds) / 2
     with warnings.catch_warnings():
         warnings.simplefilter('ignore', category=RuntimeWarning)  # all-NaN slices: term inactive in every seed
-        median_active = np.nanmedian(np.where(active_seeds, coefs_seeds, np.nan), axis=0)
-    return np.where(active_majority, np.nan_to_num(median_active), 0.)
+        median_active = np.nanmedian(np.where(presence_seeds, coefs_seeds, np.nan), axis=0)
+    return np.where(active_majority, np.nan_to_num(median_active), 0.), active_majority
 
 for index_par, par in enumerate(participants):
     for it in range(iterations):
@@ -182,6 +241,12 @@ for index_par, par in enumerate(participants):
         rl_parameters_dataset = {param: dataset.xs[mask, 0, 0, n_actions*2+index_param].unsqueeze(-1) for index_param, param in enumerate(rl_parameters)}
         mechanism_masks = get_mechanism_masks(rl_parameters_dataset)
 
+        # inputs without the generating parameters, for the trajectories behind the effect sizes
+        dataset_inputs = csv_to_dataset(file=path_data_replaced)
+        dataset_inputs.normalize_rewards()
+        inputs = dataset_inputs.xs
+        n_trials_dataset = int((~inputs[:, :, :, 0].isnan().all(dim=2)).sum())
+
         # load true model
         true_model = QLearning(
             n_actions=n_actions,
@@ -189,8 +254,10 @@ for index_par, par in enumerate(participants):
             **rl_parameters_dataset,
         )
 
+        rms_true = term_library_rms(true_model, inputs)  # effect size = |coefficient| x RMS of the term's library value
+
         # load fitted models (one per seed)
-        fitted_coefs_seeds = []
+        fitted_coefs_seeds, fitted_presence_seeds, fitted_effects_seeds = [], [], []
         for path_model_replaced in paths_model_replaced:
             fitted_model = SpiceEstimator(
                 spice_class=SpiceModel,
@@ -203,7 +270,10 @@ for index_par, par in enumerate(participants):
             fitted_model.load_spice(path_model=path_model_replaced)
             fitted_model = fitted_model.model
             fitted_coefs_seeds.append(get_fitted_coefficients(fitted_model))
-        fitted_coefs[index_par, par*it:par*(it+1)] = aggregate_seeds(np.stack(fitted_coefs_seeds))
+            fitted_presence_seeds.append(get_fitted_presence(fitted_model))
+            fitted_effects_seeds.append(np.abs(fitted_coefs_seeds[-1]) * get_fitted_rms(fitted_model, inputs))
+        fitted_coefs[index_par, par*it:par*(it+1)], fitted_active[index_par, par*it:par*(it+1)] = aggregate_seeds(
+            np.stack(fitted_coefs_seeds), np.stack(fitted_presence_seeds))
 
         # put true coefs into storage (candidate terms are identical across seeds)
         index_coefs_all = 0
@@ -229,8 +299,15 @@ for index_par, par in enumerate(participants):
 
                 index_coef = candidate_terms_fitted_model.index(term_fitted)
                 true_coefs[index_par, par*it:par*(it+1), index_coefs_all+index_coef] = true_coef_vals * module_present
+                rms_term = rms_true[module][0, :, candidate_terms_true_model.index(term)] if module in rms_true else 0.
+                true_effects[index_par, par*it:par*(it+1), index_coefs_all+index_coef] = np.abs(true_coef_vals) * rms_term * module_present
 
             index_coefs_all += n_terms_module
+
+        cells_datasets.append(signed_cells(
+            true_coefs[index_par, par*it:par*(it+1)], true_effects[index_par, par*it:par*(it+1)],
+            np.stack(fitted_coefs_seeds), np.stack(fitted_presence_seeds), np.stack(fitted_effects_seeds),
+        ).assign(dataset=f'{par}p_{it}', n_participants=par, n_trials=n_trials_dataset))
 
         # store active mechanisms and number of active params per participant
         labels_mechanisms, n_params_mechanisms = get_active_mechanisms(mechanism_masks)
@@ -241,9 +318,8 @@ for index_par, par in enumerate(participants):
 # POST-PROCESSING: Compute classification metrics
 # -------------------------------------------------------------------------------
 
-# Apply threshold to determine active coefficients (use >= for boundary consistency with training)
-true_active = np.abs(true_coefs) >= coefficient_threshold
-fitted_active = np.abs(fitted_coefs) >= coefficient_threshold
+# Active coefficients: nonzero in the ground truth; fitted_active comes from the presence vote (aggregate_seeds)
+true_active = true_coefs != 0
 
 # Get unique active param counts for x-axis
 max_active_params = int(np.max(active_params)) + 1
@@ -286,8 +362,6 @@ def compute_classification_metrics(counts, eps=1e-9):
         'accuracy': (tp + tn) / (tp + tn + fp + fn + eps),
         'precision': precision,
         'recall': recall,
-        'f1_score': 2 * (precision * recall) / (precision + recall + eps),
-        'f2_score': 5 * (precision * recall) / (4 * precision + recall + eps),
     }
     for metric in metrics.values():
         metric[counts['samples'] == 0] = np.nan
@@ -302,11 +376,8 @@ true_pos_rate = metrics_params['true_pos_rate']
 true_neg_rate = metrics_params['true_neg_rate']
 false_pos_rate = metrics_params['false_pos_rate']
 false_neg_rate = metrics_params['false_neg_rate']
-accuracy = metrics_params['accuracy']
 precision = metrics_params['precision']
 recall = metrics_params['recall']
-f1_score = metrics_params['f1_score']
-f2_score = metrics_params['f2_score']
 
 # Metrics binned by ground-truth model type (active mechanisms), sorted by number of parameters
 mechanism_types = sorted(
@@ -329,6 +400,11 @@ np.savez(
     fitted_coefs=fitted_coefs,
     active_mechanisms=active_mechanisms.astype(str),
 )
+
+# Signed participant x term cells per dataset (true / found, coefficients, effect sizes), read by run_recovery_by_target.py
+cells = pd.concat(cells_datasets, ignore_index=True)
+cells['term_id'] = cells['module'] + '|' + cells['term']
+cells.to_csv(os.path.join(path_results, f'{figure_prefix}_cells.csv'), index=False)
 
 # Classification metrics per dataset size and ground-truth model (one row each), the numbers behind the figures
 mechanism_rows = []
@@ -393,11 +469,12 @@ y_labels = participants
 
 for row in range(2):
     for col in range(2):
+        axs[row, col].set_facecolor(EMPTY_COLOR)  # masked (NaN) tiles show the background
         sns.heatmap(
             confusion_matrices[row][col],
             annot=True,
             fmt='.2f',
-            cmap='viridis',
+            cmap=rate_cmap(),
             ax=axs[row, col],
             cbar=(col == 1),
             cbar_ax=axs[row, 2] if col == 1 else None,
@@ -417,48 +494,38 @@ plt.suptitle('Confusion Matrix Rates', fontsize=14)
 finalize_figure(fig, 'confusion_rates')
 
 # -------------------------------------------------------------------------------
-# PLOTTING: 2x2 Classification Metrics
+# PLOTTING: Classification Metrics (precision, recall)
 # -------------------------------------------------------------------------------
 
-fig, axs = plt.subplots(nrows=2, ncols=3, figsize=(12, 8),
+fig, axs = plt.subplots(nrows=1, ncols=3, figsize=(12, 4.5),
                         gridspec_kw={'width_ratios': [10, 10, 1]})
 
-metrics_matrices = [
-    [accuracy, precision],
-    [recall, f2_score],
-]
-metrics_titles = [
-    ['Accuracy', 'Precision'],
-    ['Recall', 'F2 Score'],
-]
-
-for row in range(2):
-    for col in range(2):
-        sns.heatmap(
-            metrics_matrices[row][col],
-            annot=True,
-            fmt='.2f',
-            cmap='viridis',
-            ax=axs[row, col],
-            cbar=(col == 1),
-            cbar_ax=axs[row, 2] if col == 1 else None,
-            xticklabels=x_labels if row == 1 else [''] * n_param_bins,
-            yticklabels=y_labels if col == 0 else [''] * len(participants),
-            vmin=0,
-            vmax=1,
-            mask=np.isnan(metrics_matrices[row][col]),
-        )
-        axs[row, col].set_title(metrics_titles[row][col], fontsize=12)
-        if row == 1:
-            axs[row, col].set_xlabel('Number of Active Parameters', fontsize=10)
-        if col == 0:
-            axs[row, col].set_ylabel('Number of Participants', fontsize=10)
+for col, (title, metric) in enumerate((('Precision', precision), ('Recall', recall))):
+    axs[col].set_facecolor(EMPTY_COLOR)  # masked (NaN) tiles show the background
+    sns.heatmap(
+        metric,
+        annot=True,
+        fmt='.2f',
+        cmap=rate_cmap(),
+        ax=axs[col],
+        cbar=(col == 1),
+        cbar_ax=axs[2] if col == 1 else None,
+        xticklabels=x_labels,
+        yticklabels=y_labels if col == 0 else [''] * len(participants),
+        vmin=0,
+        vmax=1,
+        mask=np.isnan(metric),
+    )
+    axs[col].set_title(title, fontsize=12)
+    axs[col].set_xlabel('Number of Active Parameters', fontsize=10)
+    if col == 0:
+        axs[col].set_ylabel('Number of Participants', fontsize=10)
 
 plt.suptitle('Classification Metrics', fontsize=14)
 finalize_figure(fig, 'classification_metrics')
 
 # -------------------------------------------------------------------------------
-# PLOTTING: Precision, Recall, F1 per ground-truth model type (mechanisms on y-axis)
+# PLOTTING: Precision and recall per ground-truth model type (mechanisms on y-axis)
 # -------------------------------------------------------------------------------
 
 n_mechanism_types = len(mechanism_labels)
@@ -471,20 +538,20 @@ y_labels_mechanisms = [
 metrics_panels = (
     ('Precision', metrics_mechanisms['precision']),
     ('Recall', metrics_mechanisms['recall']),
-    ('F1 Score', metrics_mechanisms['f1_score']),
 )
 
-fig, axs = plt.subplots(nrows=1, ncols=len(metrics_panels) + 1, figsize=(14, 1.5 + 0.45 * n_mechanism_types),
+fig, axs = plt.subplots(nrows=1, ncols=len(metrics_panels) + 1, figsize=(10, 1.5 + 0.45 * n_mechanism_types),
                         gridspec_kw={'width_ratios': [10] * len(metrics_panels) + [1]})
 
 for col, (title, metric) in enumerate(metrics_panels):
     # (participant sizes, mechanisms) -> (mechanisms, participant sizes)
     metric = metric.T
+    axs[col].set_facecolor(EMPTY_COLOR)  # masked (NaN) tiles show the background
     sns.heatmap(
         metric,
         annot=True,
         fmt='.2f',
-        cmap='viridis',
+        cmap=rate_cmap(),
         ax=axs[col],
         cbar=(col == len(metrics_panels) - 1),
         cbar_ax=axs[-1] if col == len(metrics_panels) - 1 else None,
@@ -574,12 +641,12 @@ term_panels = (
 )
 
 for row, (title, rates) in enumerate(term_panels):
-    axs[row, 0].set_facecolor('lightgrey')  # masked (NaN) tiles show the background
+    axs[row, 0].set_facecolor(EMPTY_COLOR)  # masked (NaN) tiles show the background
     sns.heatmap(
         rates,
         annot=True,
         fmt='.2f',
-        cmap='viridis',
+        cmap=rate_cmap(),
         ax=axs[row, 0],
         cbar_ax=axs[row, 1],
         xticklabels=term_labels_plot,
@@ -603,7 +670,7 @@ finalize_figure(fig, 'per_term_recovery')
 # -------------------------------------------------------------------------------
 
 # Find which terms have any non-zero true coefficients (active terms)
-active_term_mask = np.any(np.abs(true_coefs) > coefficient_threshold, axis=(0, 1))
+active_term_mask = np.any(true_active, axis=(0, 1))
 active_term_indices = np.where(active_term_mask)[0]
 
 if len(active_term_indices) == 0:
@@ -650,7 +717,7 @@ else:
             num_bins = 8
             true_range = true_v.max() - true_v.min()
             if true_range < 1e-6:
-                ax.scatter(true_v, fitted_v, alpha=0.4, s=8, color='cadetblue', zorder=3)
+                ax.scatter(true_v, fitted_v, alpha=0.4, s=8, color=MODEL_COLORS['SPICE-EQ'], zorder=3)
             else:
                 bin_edges = np.linspace(true_v.min(), true_v.max(), num_bins + 1)
                 bins = np.clip(np.digitize(true_v, bin_edges) - 1, 0, num_bins - 1)
@@ -665,7 +732,7 @@ else:
                     patch_artist=True,
                     showfliers=False,
                     manage_ticks=False,
-                    boxprops=dict(facecolor='cadetblue', alpha=0.6, linewidth=0.5),
+                    boxprops=dict(facecolor=MODEL_COLORS['SPICE-EQ'], alpha=0.6, linewidth=0.5),
                     medianprops=dict(color='black', linewidth=1.2),
                     whiskerprops=dict(color='gray', linewidth=0.7),
                     capprops=dict(color='gray', linewidth=0.7),

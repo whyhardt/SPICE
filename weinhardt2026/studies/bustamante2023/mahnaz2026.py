@@ -28,8 +28,8 @@ dataset_train, dataset_test, info_dataset = get_dataset(path_data=path_data, tes
 # SPICE ESTIMATOR
 # -------------------------------------------------------------------------------------------
 
-path_spice = 'weinhardt2026/studies/bustamante2023/params/spice_mahnaz2026.pkl'   # new fits only; otherwise the best final seed is loaded (utils/final_models.py)
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+path_spice = 'weinhardt2026/studies/bustamante2023/params/spice_mahnaz2026_cpu.pkl'   # new fits only; otherwise the best final seed is loaded (utils/final_models.py)
+device = torch.device('cpu')#torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 estimator = SpiceEstimator(
     spice_class=SpiceModel,
