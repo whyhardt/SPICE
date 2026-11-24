@@ -36,7 +36,7 @@ def get_dataset(
 ) -> tuple[SpiceDataset, SpiceDataset]:
     """Load bruckner2025 data and build a SpiceDataset for continuous prediction.
 
-    Feature layout of xs (n_features = 1 + 1 + 7 + 5 = 14):
+    Feature layout of xs (n_features = 1 + 1 + 9 + 5 = 16):
         [0]  b_t / 300       — "action" (bucket position, normalized)
         [1]  x_t / 300       — "reward" (outcome position, normalized)
         --- observable additional inputs (indices 0–5) ---
@@ -48,6 +48,9 @@ def get_dataset(
         [7]  mu_t / 300       — additional input 5: true helicopter position (NaN when v_t=0)
         --- unobservable additional inputs (index 6) ---
         [8]  c_t              — additional input 6: change point indicator
+        --- upcoming trial (indices 7-8; read by SPICE only) ---
+        [9]  v_{t+1}          — additional input 7: helicopter visible on the next trial
+        [10] mu_{t+1} / 300   — additional input 8: next trial's helicopter position (NaN unless visible)
         [-5] time_trial      — always 0
         [-4] trial index     — 0-based
         [-3] block           — raw block id from CSV
@@ -67,7 +70,7 @@ def get_dataset(
         df_feedback='x_t',
         additional_inputs=CONFIG.additional_inputs,
         continuous_action=True,
-        timeshift_additional_inputs=(0, 0, 0, 0, 0, 0, 0),
+        timeshift_additional_inputs=(0,) * len(CONFIG.additional_inputs),
     )
 
     if test_blocks is not None:
@@ -252,7 +255,7 @@ class EnvironmentBruckner2025:
         self.outcomes = dataset.xs[:, :, 0, 1].clone()                  # x_t / 300
         self.z_next = dataset.xs[:, :, 0, ai + _AI_Z_NEXT].clone()     # z_{t+1} / 300
         self.catch = dataset.xs[:, :, 0, ai + _AI_CATCH].clone()       # catch flag
-        self.v_t = dataset.xs[:, :, 0, ai + _AI_V_T].clone()           # helicopter visible (next trial)
+        self.v_t = dataset.xs[:, :, 0, ai + _AI_V_T].clone()           # helicopter visible on current trial
         self.mu_t = dataset.xs[:, :, 0, ai + _AI_MU_T].clone()         # mu_t / 300
         self.c_t = dataset.xs[:, :, 0, ai + _AI_C_T].clone()           # change point indicator
         self.r_t = dataset.xs[:, :, 0, ai + _AI_R_T].clone()           # coin value

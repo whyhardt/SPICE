@@ -19,7 +19,10 @@ from spice import SpiceConfig, BaseModel
 POSITION_SCALE = 300.0
 
 # Binary indicator control signals (x^2 = x)
-BINARY_SIGNALS = {'catch', 'v_t'}
+BINARY_SIGNALS = {'catch', 'visible', 'visible_next'}
+
+# helicopter_distance is 0 unless visible_next = 1, so their product duplicates helicopter_distance
+REDUNDANT_TERMS = {'helicopter_distance*visible_next'}
 
 
 def mse_loss(prediction: torch.Tensor, target: torch.Tensor, **kwargs) -> torch.Tensor:
@@ -33,7 +36,7 @@ def mse_loss(prediction: torch.Tensor, target: torch.Tensor, **kwargs) -> torch.
 
 
 def prepare_dataframe(df: pd.DataFrame) -> pd.DataFrame:
-    """Derive 'z_next', normalize screen positions and mask unobserved helicopter positions."""
+    """Derive 'z_next', 'v_next' and 'mu_next', normalize screen positions and mask unobserved helicopter positions."""
     # next trial's initial bucket position (within each block)
     df['z_next'] = df.groupby(['participant', 'experiment', 'block'])['z_t'].shift(-1)
 
@@ -43,6 +46,11 @@ def prepare_dataframe(df: pd.DataFrame) -> pd.DataFrame:
 
     # participants can only observe the helicopter position when v_t = 1
     df.loc[df['v_t'] != 1, 'mu_t'] = float('nan')
+
+    # the upcoming trial's visibility and helicopter (seen before b_{t+1} is placed); mu_next NaN unless visible
+    blocks = df.groupby(['participant', 'experiment', 'block'])
+    df['v_next'] = blocks['v_t'].shift(-1)
+    df['mu_next'] = blocks['mu_t'].shift(-1)
 
     return df
 
@@ -59,9 +67,9 @@ ANCHOR_SCALE = 0.3
 CONFIG = SpiceConfig(
     discovered_modules={
         # Learning rate: updated every trial from surprise (|PE|, scaled), catch and helicopter visibility
-        'learning_rate_update': ('|prediction_error|', 'catch', 'v_t',),
+        'learning_rate_update': ('|prediction_error|', 'catch', 'visible',),
         # Anchoring bias: learns compensation for bucket displacement
-        'anchor_update': ('anchor_shift',),
+        'anchor_update': ('anchor_shift', 'helicopter_distance'),
     },
 
     memory_state={
@@ -78,6 +86,8 @@ CONFIG = SpiceConfig(
         'r_t',
         'mu_t',
         'c_t',
+        'v_next',
+        'mu_next',
     ),
 )
 
@@ -87,7 +97,6 @@ NORMALIZE_REWARDS = False       # outcomes are positions, already scaled by prep
 LOSS_FN = mse_loss
 LOSS_FN_KWARGS = {}
 ESTIMATOR_KWARGS = {'n_items': 1}
-
 
 class SpiceModel(BaseModel):
 
@@ -105,13 +114,14 @@ class SpiceModel(BaseModel):
         """Zero out SINDy terms that are structurally redundant for binary indicators.
 
         Binary indicators satisfy x^2 = x, so the squared term duplicates the linear one.
+        Terms in REDUNDANT_TERMS duplicate another term by construction of the inputs.
         """
         candidate_terms = self.get_candidate_terms()
         for module in self.get_modules():
             binary_signals = [s for s in self.spice_config.discovered_modules[module] if s in BINARY_SIGNALS]
             for index_term, term in enumerate(candidate_terms[module]):
                 factors = term.split('*')
-                if any(signal + '^2' in factors for signal in binary_signals):
+                if any(signal + '^2' in factors for signal in binary_signals) or term in REDUNDANT_TERMS:
                     self.sindy_coefficients_presence[module][..., index_term] = 0
                     self.sindy_coefficients_prior_mask[module][..., index_term] = 0
 
@@ -132,14 +142,17 @@ class SpiceModel(BaseModel):
             # --- Prediction error relative to the current bucket position ---
             prediction_error = outcome[trial] - bucket[trial]
 
+            # --- Update target: helicopter position when visible, outcome otherwise ---
+            visible = spice_signals.additional_inputs['v_t'][trial]
+            visible_next = spice_signals.additional_inputs['v_next'][trial]
+            # target = torch.where(visible > 0.5, spice_signals.additional_inputs['mu_t'][trial], outcome[trial])
+
             # --- Anchor shift: bucket displacement from push (scaled to [-1, 1]) ---
             anchor_shift = (spice_signals.additional_inputs['z_next'][trial] - bucket[trial]) / ANCHOR_SCALE
             anchor_shift = anchor_shift.clamp(min=-1., max=1.)
-
-            # --- Update target: helicopter position when visible, outcome otherwise ---
-            mask_vt = spice_signals.additional_inputs['v_t'][trial]
-            target = torch.where(mask_vt > 0.5, spice_signals.additional_inputs['mu_t'][trial], outcome[trial])
-
+            helicopter_distance = ((spice_signals.additional_inputs['mu_next'][trial] - bucket[trial]) / PE_SCALE).clamp(-1, 1)
+            helicopter_distance = torch.where(visible_next > 0.5, helicopter_distance, 0)
+            
             # --- Learning rate: updated every trial from surprise |PE| (scaled to [0, 1]) ---
             self.call_module(
                 key_module='learning_rate_update',
@@ -147,7 +160,7 @@ class SpiceModel(BaseModel):
                 inputs=(
                     (prediction_error.abs() / PE_SCALE).clamp(max=1.),
                     spice_signals.additional_inputs['catch'][trial],
-                    mask_vt,
+                    visible,
                 ),
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
@@ -162,7 +175,10 @@ class SpiceModel(BaseModel):
                 key_module='anchor_update',
                 key_state='anchor_value',
                 action_mask=None,
-                inputs=(anchor_shift,),
+                inputs=(
+                    anchor_shift,
+                    helicopter_distance,
+                    ),
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
                 experiment_index=spice_signals.experiment_ids if experiment_embedding is not None else None,
@@ -172,7 +188,7 @@ class SpiceModel(BaseModel):
             # --- Delta rule + anchor correction ---
             spice_signals.logits[trial] = (
                 bucket[trial]
-                + alpha * (target - bucket[trial])
+                + alpha * prediction_error
                 + self.state['anchor_value']
             )
 

@@ -129,8 +129,8 @@ class SpiceModel(BaseModel):
             anchor_shift = ((start - bucket[trial]) / ANCHOR_SCALE).clamp(min=-1., max=1.)
 
             # --- Update target: helicopter position when visible, outcome otherwise ---
-            mask_vt = spice_signals.additional_inputs['v_t'][trial]
-            target = torch.where(mask_vt > 0.5, spice_signals.additional_inputs['mu_t'][trial], outcome[trial])
+            visible = spice_signals.additional_inputs['v_t'][trial]
+            target = torch.where(visible > 0.5, spice_signals.additional_inputs['mu_t'][trial], outcome[trial])
 
             # --- Learning rate: updated every trial from surprise |PE| (scaled to [0, 1]) ---
             self.call_module(
@@ -139,7 +139,7 @@ class SpiceModel(BaseModel):
                 inputs=(
                     (prediction_error.abs() / PE_SCALE).clamp(max=1.),
                     spice_signals.additional_inputs['catch'][trial],
-                    mask_vt,
+                    visible,
                 ),
                 **module_kwargs,
             )
@@ -160,6 +160,7 @@ class SpiceModel(BaseModel):
 
             # --- Move toward the helicopter if it is visible on the upcoming trial ---
             visible_next = spice_signals.additional_inputs['v_next'][trial] > 0.5
+            
             # the helicopter where visible, the delta-rule placement elsewhere (no NaN: it would poison the gradients via where)
             helicopter = torch.where(visible_next, spice_signals.additional_inputs['mu_next'][trial].nan_to_num(), delta_rule)
             helicopter_distance = helicopter - delta_rule

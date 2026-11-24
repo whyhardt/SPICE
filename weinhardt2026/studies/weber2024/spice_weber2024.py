@@ -5,8 +5,8 @@ belief, and a learned movement gain that carries the shield toward it.
     belief_t+1 = belief_t + alpha_t * PE_t,     alpha_t = sigmoid(learning_rate_value_t)
     shield_t+1 = shield_t + g_t * wrap(belief_t+1 - shield_t),  g_t = sigmoid(movement_value_t)
 
-The learning rate is the only gain on the belief update (recurrent: surprise, catch and the block's
-volatility/stochasticity drive it). The movement gain is a recurrent accumulator over time: each beam it is
+The learning rate is the only gain on the belief update (recurrent: surprise, catch, the block's
+volatility/stochasticity and the beam's duration in seconds drive it; a beam seen for longer can move the belief more). The movement gain is a recurrent accumulator over time: each beam it is
 updated from the belief-shield distance (the evidence for moving) and the beam's duration in seconds (the time
 over which that evidence is integrated, and the time the scored move has to happen in). Participants move about
 2 s after a change point regardless of how many beams arrive in that time, later under high noise and sooner for
@@ -45,8 +45,8 @@ def angular_delta_rule(belief, learning_rate, laser):
 
 CONFIG = SpiceConfig(
     discovered_modules={
-        # Learning rate: updated every beam from surprise (|PE|, scaled), catch and the block's conditions
-        'learning_rate_update': ('|prediction_error|', 'caught', 'volatility', 'stochasticity'),
+        # Learning rate: updated every beam from surprise (|PE|, scaled), catch, the block's conditions and the beam's duration (seconds)
+        'learning_rate_update': ('|prediction_error|', 'caught', 'volatility', 'stochasticity', 'duration'),
         # Movement gain: recurrent accumulator of the belief-shield distance over the beam's duration (seconds)
         'movement_update': ('|belief_shield_distance|', 'duration'),
     },
@@ -211,7 +211,7 @@ class SpiceModel(BaseModel):
             # --- Prediction error: shortest arc from belief to beam ---
             prediction_error = wrap_degrees(laser[trial] - self.state['belief_value'])
 
-            # --- Learning rate: updated every beam from surprise |PE| (scaled to [0, 1]) ---
+            # --- Learning rate: updated every beam from surprise |PE| (scaled to [0, 1]) and the beam's duration ---
             self.call_module(
                 key_module='learning_rate_update',
                 key_state='learning_rate_value',
@@ -220,6 +220,7 @@ class SpiceModel(BaseModel):
                     spice_signals.additional_inputs['laser_caught'][trial],
                     spice_signals.additional_inputs['volatility'][trial],
                     spice_signals.additional_inputs['stochasticity'][trial],
+                    duration[trial],
                 ),
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,

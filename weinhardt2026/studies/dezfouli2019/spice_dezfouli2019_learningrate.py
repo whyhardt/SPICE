@@ -64,8 +64,8 @@ CONFIG = SpiceConfig(
         'value_wm_reward': 0,
         'value_reward': 0,
         'value_choice': 0,
-        'learning_rate_reward': 0,
-        'forgetting_rate_reward': 0,
+        'learning_rate_reward': -5,
+        'forgetting_rate_reward': -5,
     },
 )
 
