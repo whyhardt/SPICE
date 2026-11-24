@@ -23,7 +23,7 @@ from spice import SpiceConfig, BaseModel, SpiceDataset
 N_ACTIONS = 2  # [not groom, groom]
 
 CONFIG = SpiceConfig(
-    library_setup={
+    discovered_modules={
         'negotiation_received': [
             'grooming_solicitation',
             'self_reposition',
@@ -51,12 +51,6 @@ CONFIG = SpiceConfig(
         'value_grooming_received': 0,
         'value_grooming_given': 0,
     },
-    states_in_logit=[
-        'value_negotiation_received',
-        'value_negotiation_given',
-        'value_grooming_received',
-        'value_grooming_given',
-        ],
     additional_inputs=(
         'partner_grooming_solicitation',
         'partner_self_reposition',
@@ -147,7 +141,7 @@ class SpiceModel(BaseModel):
         """
         candidate_terms = self.get_candidate_terms()
         for module in self.get_modules():
-            control_signals = self.spice_config.library_setup[module]
+            control_signals = self.spice_config.discovered_modules[module]
             binary_signals = [s for s in control_signals if s in BINARY_SIGNALS]
             for index_term, term in enumerate(candidate_terms[module]):
                 factors = term.split('*')

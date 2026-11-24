@@ -7,7 +7,7 @@ from ..resources.model import BaseModel
 # -------------------------------------------------------------------------------
 
 CONFIG = SpiceConfig(
-    library_setup={
+    discovered_modules={
         'value_reward_chosen': ['reward'],
     },
     memory_state={

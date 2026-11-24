@@ -30,7 +30,7 @@ def load_estimator(
     to the SpiceEstimator.
     """
     checkpoint = torch.load(model_path, map_location="cpu")
-    first_module = next(iter(spice_config.library_setup))
+    first_module = next(iter(spice_config.discovered_modules))
     shape = checkpoint["model"][f"sindy_coefficients.{first_module}"].shape
     ensemble_size = shape[0]
     if n_participants is None:

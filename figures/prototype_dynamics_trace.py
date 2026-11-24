@@ -115,7 +115,7 @@ def plot_dynamics_trace(
         n_participants = len(dataset.xs[..., -1].int().unique())
 
         ckpt = torch.load(estimator_or_path, map_location="cpu")
-        first_mod = next(iter(spice_config.library_setup))
+        first_mod = next(iter(spice_config.discovered_modules))
         ensemble_size = ckpt["model"][f"sindy_coefficients.{first_mod}"].shape[0]
         del ckpt
 

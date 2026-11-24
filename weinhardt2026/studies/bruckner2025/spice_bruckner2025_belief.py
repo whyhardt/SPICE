@@ -33,7 +33,7 @@ BINARY_SIGNALS = {'catch', 'v_t'}
 
 
 CONFIG = SpiceConfig(
-    library_setup={
+    discovered_modules={
         # Learning rate: updated every trial from surprise relative to the belief, catch and helicopter visibility
         'learning_rate_update': ('|prediction_error|', 'catch', 'v_t'),
         # Movement gain: how far the bucket moves from its start toward the belief
@@ -46,10 +46,6 @@ CONFIG = SpiceConfig(
         'movement_value': 0,        # per-trial movement gain (reset each trial), g = sigmoid(value)
     },
 
-    states_in_logit=[
-        'learning_rate_value',
-        'movement_value',
-    ],
 
     additional_inputs=(
         'z_next',
@@ -89,7 +85,7 @@ class SpiceModel(BaseModel):
         """
         candidate_terms = self.get_candidate_terms()
         for module in self.get_modules():
-            binary_signals = [s for s in self.spice_config.library_setup[module] if s in BINARY_SIGNALS]
+            binary_signals = [s for s in self.spice_config.discovered_modules[module] if s in BINARY_SIGNALS]
             for index_term, term in enumerate(candidate_terms[module]):
                 factors = term.split('*')
                 if any(signal + '^2' in factors for signal in binary_signals):

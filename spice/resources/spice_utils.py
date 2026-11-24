@@ -1,4 +1,5 @@
-from typing import Union, Dict, Iterable, List, Optional
+import inspect
+from typing import Callable, Union, Dict, Iterable, List, Optional, Tuple
 import numpy as np
 import torch
 
@@ -127,32 +128,42 @@ class SpiceDataset(torch.utils.data.Dataset):
 
 class SpiceConfig():
     def __init__(self,
-                 library_setup: Dict[str, Iterable[str]],
+                 discovered_modules: Dict[str, Iterable[str]],
                  memory_state: Union[List[str], Dict[str, float]],
-                 states_in_logit: List[str] = None,
+                 fixed_modules: Dict[str, Tuple[Callable, Iterable[str]]] = None,
+                 constants: Dict[str, Optional[Callable]] = None,
                  additional_inputs: List[str] = None,
                  ):
         """
         Config class for SPICE model.
 
         Args:
-            library_setup: Dictionary of rnn modules and their input signals (without self-references)
+            discovered_modules: Dictionary of modules whose equations are discovered (RNN + SINDy) and
+                their input signals (without self-references)
             memory_state: Dictionary of memory state variables and their initial values
-            states_in_logit: List of memory states which are included directly in the logit computation. If None: All states are used. 
+            fixed_modules: Dictionary of hand-coded modules as `name: (function, input_labels)`. The
+                function receives the inputs given to `call_module` in the order of `input_labels`
+                (its own state included explicitly, if needed) and returns the new state value.
+                Use module-level functions (not lambdas) so the config stays picklable.
+            constants: Dictionary of per-participant constants as `name: activation`; each is computed
+                once per forward pass from the participant embedding (`activation(FFN(embedding))`,
+                activation None = identity) and can be given as input to any module.
             additional_inputs: List of additional control signals in dataset. If None: No additional control signals available
         """
-        
-        self.library_setup = library_setup
+
+        self.discovered_modules = discovered_modules
+        self.fixed_modules = {} if fixed_modules is None else dict(fixed_modules)
+        self.constants = {} if constants is None else dict(constants)
         self.additional_inputs = additional_inputs if additional_inputs is not None else tuple([])
-        
+
         self.control_signals = []
-        for key in library_setup.keys():
-            self.control_signals += library_setup[key]
-            self.library_setup[key] = tuple(self.library_setup[key])
+        for key in discovered_modules.keys():
+            self.control_signals += discovered_modules[key]
+            self.discovered_modules[key] = tuple(self.discovered_modules[key])
         self.control_signals = tuple(np.unique(np.array(self.control_signals)))
-        self.modules = tuple(library_setup.keys())                
+        self.modules = tuple(discovered_modules.keys())
         self.all_features = self.modules + self.control_signals
-        
+
         if isinstance(memory_state, list):
             memory_state_dict = {}
             for state in memory_state:
@@ -160,32 +171,38 @@ class SpiceConfig():
             self.memory_state = memory_state_dict
         else:
             self.memory_state = memory_state
-            
-        if states_in_logit is not None:
-            # check that all states_in_logit actually appear in the memory state
-            if isinstance(states_in_logit, str):
-                states_in_logit = states_in_logit,
-            invalid_states = []
-            for state in states_in_logit:
-                if not state in memory_state:
-                    invalid_states.append(state)
-            if len(invalid_states) > 0:
-                raise ValueError(f"SpiceConfigError: states_in_logit contains states ({invalid_states}) which are not present in the memory state ({list(memory_state.keys())}).")
-            self.states_in_logit = states_in_logit
-        else:
-            self.states_in_logit = [state for state in memory_state]
-            
-        if not self.check_library_setup(self.library_setup, self.all_features):
+
+        if not self.check_discovered_modules(self.discovered_modules, self.all_features):
             raise ValueError('\nLibrary setup does not match feature list.')
-        
+        self.check_fixed_modules(self.fixed_modules)
+
+        names = list(self.modules) + list(self.fixed_modules) + list(self.constants)
+        duplicates = sorted({name for name in names if names.count(name) > 1})
+        if duplicates:
+            raise ValueError(f"SpiceConfigError: module names {duplicates} appear in more than one of discovered_modules, fixed_modules and constants.")
+
     @staticmethod
-    def check_library_setup(library_setup: Dict[str, List[str]], feature_names: List[str], verbose=False) -> bool:
+    def check_fixed_modules(fixed_modules: Dict[str, Tuple[Callable, Iterable[str]]]):
+        for key, spec in fixed_modules.items():
+            if not (isinstance(spec, tuple) and len(spec) == 2 and callable(spec[0])):
+                raise ValueError(f"SpiceConfigError: fixed module {key} must be given as (function, input_labels).")
+            function, input_labels = spec
+            parameters = inspect.signature(function).parameters.values()
+            if any(p.kind in (p.VAR_POSITIONAL, p.VAR_KEYWORD) for p in parameters):
+                continue
+            n_args = len([p for p in parameters if p.default is p.empty])
+            if n_args != len(input_labels):
+                raise ValueError(f"SpiceConfigError: fixed module {key}: {function.__name__} takes {n_args} arguments but {len(input_labels)} input labels are given ({list(input_labels)}).")
+            fixed_modules[key] = (function, tuple(input_labels))
+
+    @staticmethod
+    def check_discovered_modules(discovered_modules: Dict[str, List[str]], feature_names: List[str], verbose=False) -> bool:
         msg = '\n'
-        for key in library_setup.keys():
+        for key in discovered_modules.keys():
             if key not in feature_names:
                 msg += f'Key {key} not in feature_names.\n'
             else:
-                for feature in library_setup[key]:
+                for feature in discovered_modules[key]:
                     if feature not in feature_names:
                         msg += f'Key {key}: Feature {feature} not in feature_names.\n'
         if msg != '\n':

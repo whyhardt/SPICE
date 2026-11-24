@@ -112,7 +112,7 @@ def evaluate_checkpoint(
     """
     # Load checkpoint to get ensemble size and n_participants
     ckpt = torch.load(path, map_location='cpu')
-    first_mod = next(iter(spice_config.library_setup))
+    first_mod = next(iter(spice_config.discovered_modules))
     ensemble_size = ckpt['model'][f'sindy_coefficients.{first_mod}'].shape[0]
     n_participants = ckpt['model'][f'sindy_coefficients.{first_mod}'].shape[1]
     del ckpt

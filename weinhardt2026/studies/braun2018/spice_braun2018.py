@@ -30,7 +30,7 @@ MAX_VALUE_DIFFERENCE = 10.
 
 
 CONFIG = SpiceConfig(
-    library_setup={
+    discovered_modules={
         'reward_repeat': (
             'dreward_tasks',
             # 'dreward_trials_repeat',
@@ -88,7 +88,7 @@ class SpiceModel(BaseModel):
         """
         candidate_terms = self.get_candidate_terms()
         for module in self.get_modules():
-            control_signals = self.spice_config.library_setup[module]
+            control_signals = self.spice_config.discovered_modules[module]
             if not control_signals:
                 continue
             binary_cs = [cs for cs in control_signals if cs in BINARY_SIGNALS]

@@ -21,7 +21,7 @@ from studies.weber2024.spice_weber2024 import (  # shared data handling, loss an
 
 
 CONFIG = SpiceConfig(
-    library_setup={
+    discovered_modules={
         # Learning rate: updated every beam from surprise (|PE| to the shield, scaled), catch and the block's conditions
         'learning_rate_update': ('|prediction_error|', 'caught', 'volatility', 'stochasticity'),
     },
@@ -30,9 +30,6 @@ CONFIG = SpiceConfig(
         'learning_rate_value': 0,   # alpha = sigmoid(value), initially 0.5
     },
 
-    states_in_logit=[
-        'learning_rate_value',
-    ],
 
     additional_inputs=(
         'laser_caught',             # scored on the beam's onset frame (data_raw/data_processing.py)
@@ -64,7 +61,7 @@ class SpiceModel(BaseModel):
         """
         candidate_terms = self.get_candidate_terms()
         for module in self.get_modules():
-            binary_signals = [s for s in self.spice_config.library_setup[module] if s in BINARY_SIGNALS]
+            binary_signals = [s for s in self.spice_config.discovered_modules[module] if s in BINARY_SIGNALS]
             for index_term, term in enumerate(candidate_terms[module]):
                 factors = term.split('*')
                 if any(signal + '^2' in factors for signal in binary_signals):

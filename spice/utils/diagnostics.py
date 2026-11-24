@@ -126,7 +126,7 @@ class SpiceDiagnostics:
 
             mod_degree = (degree if degree is not None
                           else self.model.sindy_specs[module_name]['polynomial_degree'])
-            n_controls = len(self.config.library_setup[module_name])
+            n_controls = len(self.config.discovered_modules[module_name])
             feature_names = self.model.sindy_specs[module_name]['input_names']
             library_terms = self.model.sindy_candidate_terms[module_name]
 
@@ -299,7 +299,7 @@ class SpiceDiagnostics:
 
         mod_degree = (degree if degree is not None
                       else self.model.sindy_specs[module_name]['polynomial_degree'])
-        n_controls = len(self.config.library_setup[module_name])
+        n_controls = len(self.config.discovered_modules[module_name])
         feature_names = self.model.sindy_specs[module_name]['input_names']
         library_terms = self.model.sindy_candidate_terms[module_name]
 
@@ -601,7 +601,7 @@ class SpiceDiagnostics:
 
         for module_name in model.submodules_rnn:
             rnn = model.submodules_rnn[module_name]
-            n_controls = len(self.config.library_setup[module_name])
+            n_controls = len(self.config.discovered_modules[module_name])
 
             # weight_linear: (E, proj_size, input_size+1)
             # Columns: [controls(n_c), embedding(emb_dim), state(1)]
@@ -711,7 +711,7 @@ class SpiceDiagnostics:
 
             mod_degree = (degree if degree is not None
                           else self.model.sindy_specs[module_name]['polynomial_degree'])
-            n_controls = len(self.config.library_setup[module_name])
+            n_controls = len(self.config.discovered_modules[module_name])
             feature_names = list(self.model.sindy_specs[module_name]['input_names'])
             library_terms = self.model.sindy_candidate_terms[module_name]
 
@@ -759,7 +759,7 @@ class SpiceDiagnostics:
             # Correlate residuals with each raw input feature
             h_in_flat = h_in_f.reshape(-1).float()
             raw_features: List[Tuple[str, torch.Tensor]] = [('state', h_in_flat)]
-            control_names = list(self.config.library_setup[module_name])
+            control_names = list(self.config.discovered_modules[module_name])
             for c_idx, c_name in enumerate(control_names):
                 raw_features.append(
                     (c_name, controls_f[:, :, :, c_idx].reshape(-1).float()))

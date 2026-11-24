@@ -8,7 +8,7 @@ from ..resources.model import BaseModel
 
 CONFIG = SpiceConfig(
     # we are enabling interactions between modules by adding the respectively other memory state variable to the library setup of each module
-    library_setup = {
+    discovered_modules = {
         'value_reward_chosen': ['reward', 'value_choice'],
         'value_reward_not_chosen': ['value_choice'],
         'value_choice_chosen': ['value_reward'],
@@ -48,10 +48,6 @@ class SpiceModel(BaseModel):
         # set up the participant-embedding layer
         self.participant_embedding = self.setup_embedding(num_embeddings=self.n_participants, embedding_size=self.embedding_size)
         
-        # scaling factor (inverse noise temperature) for each participant for the values which are handled by an hard-coded equation
-        # self.betas['value_reward'] = self.setup_constant(embedding_size=self.embedding_size)
-        # self.betas['value_choice'] = self.setup_constant(embedding_size=self.embedding_size)
-        
         # set up the submodules
         self.setup_module(key_module='value_reward_chosen', input_size=2)
         self.setup_module(key_module='value_reward_not_chosen', input_size=1)
@@ -71,8 +67,6 @@ class SpiceModel(BaseModel):
         
         # Here we compute now the participant embeddings for each entry in the batch
         participant_embedding = self.participant_embedding(spice_signals.participant_ids)
-        # beta_reward = self.betas['value_reward'](participant_embedding)
-        # beta_choice = self.betas['value_choice'](participant_embedding)
         
         for timestep in spice_signals.trials: #, rewards_not_chosen
             
@@ -87,7 +81,6 @@ class SpiceModel(BaseModel):
                     ),
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
-                # activation_rnn=torch.nn.functional.sigmoid,
                 )
 
             self.call_module(
@@ -110,7 +103,6 @@ class SpiceModel(BaseModel):
                 inputs=(self.state['value_reward']),
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
-                # activation_rnn=torch.nn.functional.sigmoid,
                 )
 
             self.call_module(
@@ -120,7 +112,6 @@ class SpiceModel(BaseModel):
                 inputs=self.state['value_reward'],
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
-                # activation_rnn=torch.nn.functional.sigmoid,
                 )
             
             # Now keep track of the logit in the output array

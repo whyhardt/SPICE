@@ -767,10 +767,15 @@ def _run_shooting_epoch_vectorized(
 
         # MSE against pre-recorded RNN states
         step_loss = torch.tensor(0.0, device=model.device)
-        for s_key in model.spice_config.states_in_logit:
+        # targets: states written by discovered modules, only on the items those modules wrote in
+        # this step (items of the same state written by fixed modules are left out)
+        for s_key in model.discovered_states:
+            if s_key not in model.discovered_item_mask:
+                continue  # not written in this step
             target = state_trajectories[s_key][:, :, session_idx, t_k_safe + 1].to(model.device)
             pred = next_state[s_key]
-            mask = valid.unsqueeze(0).unsqueeze(-1).expand_as(pred)  # (W, E, B_eff, I)
+            item_mask = model.discovered_item_mask[s_key].expand_as(pred)
+            mask = valid.unsqueeze(0).unsqueeze(-1).expand_as(pred) & item_mask  # (W, E, B_eff, I)
             diff = (pred - target) ** 2
             step_loss = step_loss + (diff * mask).sum() / mask.sum().clamp(min=1)
 

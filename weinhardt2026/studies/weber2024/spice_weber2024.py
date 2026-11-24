@@ -6,8 +6,11 @@ belief, and a learned movement gain that carries the shield toward it.
     shield_t+1 = shield_t + g_t * wrap(belief_t+1 - shield_t),  g_t = sigmoid(movement_value_t)
 
 The learning rate is the only gain on the belief update (recurrent: surprise, catch and the block's
-volatility/stochasticity drive it); the movement gain is stateless and depends on how far the belief
-is from the shield. Beliefs are angles, so the update is rotation-invariant and stays on the circle.
+volatility/stochasticity drive it). The movement gain is a recurrent accumulator over time: each beam it is
+updated from the belief-shield distance (the evidence for moving) and the beam's duration in seconds (the time
+over which that evidence is integrated, and the time the scored move has to happen in). Participants move about
+2 s after a change point regardless of how many beams arrive in that time, later under high noise and sooner for
+larger distances, i.e. they integrate evidence over time rather than deciding per beam. Beliefs are angles, so the update is rotation-invariant and stays on the circle.
 The output is a point estimate of the next shield position (sin, cos), scored by clamped_angular_mse.
 """
 
@@ -28,28 +31,37 @@ PE_SCALE = 90.0
 # |belief - shield| scaled the same way
 DISTANCE_SCALE = 90.0
 
+# Frame rate of the raw data: beam durations (frames) / FRAME_RATE -> seconds (median 0.85 s, p99 ~2.9 s)
+FRAME_RATE = 20.0
+
 # Binary indicator control signals (x^2 = x)
 BINARY_SIGNALS = {'caught', 'volatility', 'stochasticity'}
 
 
+def angular_delta_rule(belief, learning_rate, laser):
+    """Belief update on the circle: move part of the shortest arc toward the beam (degrees)."""
+    return (belief + learning_rate * wrap_degrees(laser - belief)) % 360.
+
+
 CONFIG = SpiceConfig(
-    library_setup={
+    discovered_modules={
         # Learning rate: updated every beam from surprise (|PE|, scaled), catch and the block's conditions
         'learning_rate_update': ('|prediction_error|', 'caught', 'volatility', 'stochasticity'),
-        # Movement gain: how far the shield moves toward the belief, given their distance
-        'movement_update': ('|belief_shield_distance|',),
+        # Movement gain: recurrent accumulator of the belief-shield distance over the beam's duration (seconds)
+        'movement_update': ('|belief_shield_distance|', 'duration'),
+    },
+
+    fixed_modules={
+        # Belief: angular delta rule with the learned learning rate
+        'belief_update': (angular_delta_rule, ('belief_value', 'learning_rate', 'laser')),
     },
 
     memory_state={
         'belief_value': 0,          # belief about the laser position (degrees); set to the first beam
         'learning_rate_value': 0,   # alpha = sigmoid(value), initially 0.5
-        'movement_value': 0,        # per-beam movement gain (reset each beam), g = sigmoid(value)
+        'movement_value': 0,        # accumulated movement gain, g = sigmoid(value); carried over between beams
     },
 
-    states_in_logit=[
-        'learning_rate_value',
-        'movement_value',
-    ],
 
     additional_inputs=(
         'laser_caught',             # scored on the beam's onset frame (data_raw/data_processing.py)
@@ -162,9 +174,6 @@ class SpiceModel(BaseModel):
             dropout=self.dropout,
         )
 
-        # movement_update: stateless (reset each beam), a function of the belief-shield distance only
-        self.setup_module(key_module='movement_update', include_state=False)
-
         self.preprocess_coefficients()
 
     def preprocess_coefficients(self):
@@ -174,7 +183,7 @@ class SpiceModel(BaseModel):
         """
         candidate_terms = self.get_candidate_terms()
         for module in self.get_modules():
-            binary_signals = [s for s in self.spice_config.library_setup[module] if s in BINARY_SIGNALS]
+            binary_signals = [s for s in self.spice_config.discovered_modules[module] if s in BINARY_SIGNALS]
             for index_term, term in enumerate(candidate_terms[module]):
                 factors = term.split('*')
                 if any(signal + '^2' in factors for signal in binary_signals):
@@ -188,6 +197,7 @@ class SpiceModel(BaseModel):
         # Positions as angles (degrees) — shapes after init: (T, W, E, B, 1)
         shield = sincos_to_degrees(spice_signals.actions)
         laser = sincos_to_degrees(spice_signals.feedback)
+        duration = spice_signals.additional_inputs['trial_duration_frames'] / FRAME_RATE    # seconds
 
         # Embeddings
         participant_embedding = self.participant_embedding(spice_signals.participant_ids)
@@ -217,15 +227,25 @@ class SpiceModel(BaseModel):
             alpha = torch.sigmoid(self.state['learning_rate_value'])
 
             # --- Belief update: angular delta rule ---
-            self.state['belief_value'] = (self.state['belief_value'] + alpha * prediction_error) % 360.
+            self.call_module(
+                key_module='belief_update',
+                key_state='belief_value',
+                inputs=(
+                    self.state['belief_value'],
+                    alpha,
+                    laser[trial],
+                ),
+            )
 
-            # --- Movement gain: reset each beam, learns g(|belief - shield|) ---
+            # --- Movement gain: recurrent accumulator, learns g(g_prev, |belief - shield|, beam duration) ---
             distance = wrap_degrees(self.state['belief_value'] - shield[trial])
-            self.state['movement_value'] = torch.zeros_like(self.state['movement_value'])
             self.call_module(
                 key_module='movement_update',
                 key_state='movement_value',
-                inputs=((distance.abs() / DISTANCE_SCALE).clamp(max=1.),),
+                inputs=(
+                    (distance.abs() / DISTANCE_SCALE).clamp(max=1.),
+                    duration[trial],
+                ),
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
             )

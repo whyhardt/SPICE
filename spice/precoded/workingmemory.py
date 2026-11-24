@@ -11,7 +11,7 @@ import torch
 # -------------------------------------------------------------------------------
 
 CONFIG = SpiceConfig(
-    library_setup={
+    discovered_modules={
         # Value learning can depend on recent reward sequence (working memory)
         'value_reward_chosen': [
             'reward[t]',           
@@ -54,7 +54,6 @@ CONFIG = SpiceConfig(
         'buffer_action_3': 0.,   # t-3 choice
     },
     
-    states_in_logit=['value_reward', 'value_choice'],
 )
 
 
@@ -189,7 +188,7 @@ class SpiceModel(BaseModel):
         candidate_terms = self.get_candidate_terms()
         for module in self.get_modules():
             if ('reward' in module and reward_binary) or 'choice' in module:
-                control_signals = self.spice_config.library_setup[module]
+                control_signals = self.spice_config.discovered_modules[module]
                 for cs in control_signals:
                     for ict, ct in enumerate(candidate_terms[module]):
                         if cs+'^' in ct:

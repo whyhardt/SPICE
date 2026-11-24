@@ -22,7 +22,7 @@ class QLearning(BaseModel):
         ):
         
         spice_config = SpiceConfig(
-            library_setup={
+            discovered_modules={
                 'value_reward_chosen': ['reward[t]'],
                 'value_reward_not_chosen': [],
                 'value_choice': ['choice[t]'],

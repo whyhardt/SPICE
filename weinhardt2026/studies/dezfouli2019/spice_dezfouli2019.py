@@ -5,7 +5,7 @@ from spice import SpiceConfig
 
 
 CONFIG = SpiceConfig(
-    library_setup={
+    discovered_modules={
         'value_wm_reward_chosen': [
             'reward[t]',
             # 'reward[t-1]',
@@ -37,11 +37,6 @@ CONFIG = SpiceConfig(
         # 'action[t-1]': 0,
         # 'reward[t-1]': 0,
     },
-    states_in_logit=[
-        'value_wm_reward',
-        'value_reward', 
-        'value_choice', 
-        ],
 )
 
 
@@ -78,7 +73,7 @@ class SpiceModel(BaseModel):
         """
         candidate_terms = self.get_candidate_terms()
         for module in self.get_modules():
-            control_signals = self.spice_config.library_setup[module]
+            control_signals = self.spice_config.discovered_modules[module]
             binary_signals = [s for s in control_signals if s in BINARY_SIGNALS]
             for index_term, term in enumerate(candidate_terms[module]):
                 factors = term.split('*')

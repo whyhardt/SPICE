@@ -930,6 +930,15 @@ def _example_trajectories(example: pd.DataFrame, study: str) -> pd.DataFrame:
     return wide
 
 
+def _example_states(example: pd.DataFrame, study: str) -> list[str]:
+    """The SPICE states shown in the example: those EXAMPLE_STATES lists (e.g. not weber2024's bookkeeping states of
+    the last shield position and interval), every recorded state for a study without an entry."""
+    recorded = dict.fromkeys(example.loc[example['model'].str.startswith('SPICE') & (example['variable'] != 'response'),
+                                         'variable'])
+    shown = EXAMPLE_STATES.get(study)
+    return [state for state in recorded if shown is None or state in shown]
+
+
 def _plot_example(axes: list, example: pd.DataFrame, study: str, models: list[str], annotated: bool):
     """Row 0: real and simulated responses (outcomes as dots); row 1: absolute error to the real response per trial;
     row 2: cumulative absolute error (running sum up to the trial); below, one row per SPICE latent state, as
@@ -937,8 +946,7 @@ def _plot_example(axes: list, example: pd.DataFrame, study: str, models: list[st
     spec = ROLLOUT_EXAMPLE[study]
     wide = _example_trajectories(example, study)
     trials = wide.index.to_numpy() + 1
-    states = [variable for variable in dict.fromkeys(example.loc[example['model'].str.startswith('SPICE'), 'variable'])
-              if variable != 'response']
+    states = _example_states(example, study)
 
     ax = axes[0]
     ax.scatter(trials, wide[('Real', 'outcome')], s=5, color='#b5b5b5', linewidths=0, zorder=1,
@@ -1018,8 +1026,7 @@ def plot_rollouts(df: pd.DataFrame, scores: pd.DataFrame, example: pd.DataFrame,
     sums = df.groupby(['model', 'participant_id'])[['sse', 'n_trials']].sum()
     dots = (sums['sse'] / sums['n_trials']).unstack('model')
     jitter = pd.Series(np.random.default_rng(0).uniform(-0.12, 0.12, len(dots)), index=dots.index)
-    n_states = example.loc[example['model'].str.startswith('SPICE') & (example['variable'] != 'response'),
-                           'variable'].nunique()
+    n_states = len(_example_states(example, study))
     n_rows = 3 + n_states
 
     for annotated in ((True, False) if clean else (True,)):

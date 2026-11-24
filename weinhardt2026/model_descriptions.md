@@ -700,24 +700,61 @@ where $s_t$ is the current shield position in $(\sin, \cos)$, $v = 1$ °/frame a
 
 #### Benchmark Model: Bayesian Changepoint Observer
 
-**Reference:** Foucault et al. (2026), *eLife* 15:RP110137, changepoint model with variance inference and expected-catch response. Implemented as `ChangePointModel` in `benchmarking_weber2024.py` (grid step `h_step = 2`°).
+**Reference:** Foucault et al. (2026), *eLife* 15:RP110137 (reviewed preprint, v1), changepoint model with variance inference and expected-reward response. Implemented as `ChangePointModel` in `benchmarking_weber2024.py` (grid step `h_step = 2`°).
 
-Every beam runs three computations on a discretized circular grid ($[0°, 360°)$ in 2° steps):
-1. **Inference.** Posterior over the latent state (laser mean × observation-noise level) given the beam, with a circular normal likelihood per noise level.
-2. **Prediction.** Propagation through the changepoint transition: $\text{prior}_{t+1} = (1 - p_{\text{cp}}) \cdot \text{posterior} + p_{\text{cp}} \cdot \text{uniform}$ over the mean, keeping the noise level (the level is constant within a block). As in the paper, a changepoint redraws the mean uniformly from the circle: the task's actual jump sizes are unknown to participants.
-3. **Response.** The expected catch probability of every shield location, $P(\lvert\text{next beam} - \text{location}\rvert \le 10°)$, is the circular convolution of the predictive distribution with a catch kernel (computed via FFT). The location with the highest expected catch is selected (soft argmax, `choice_sharpness = 50`, to stay differentiable) and approached along the shortest arc, as far as reachable within the inter-beam interval. The shield moves with response probability $\text{HalfNormalCDF}(\lvert\text{distance}\rvert; \sigma_{\text{resp}})$.
+**The original model is normative, not fitted.** In the paper, the "change-point model with variance inference" is the *normative model* for their Experiment 1: it assumes the task's true generative process (hazard $1/16$; a changepoint redraws the mean uniformly from the circle; two variance levels, s.d. 10° and 30°, switching with $p = 1/16$). The models are simulated on each participant's beam sequences and compared with humans only qualitatively (apparent learning rate per prediction-error bin, paddle-width choices, event-related time courses). The only non-normative component, the response probability (CDF of a normal truncated at 0, s.d. 8°), has fixed parameters "chosen to approximate the observed human behavior", i.e. set by hand. The reviewers flagged the absence of individual fits as a limitation; the authors announced individual-level fitting for the revision. Everything below that makes the model fittable is our adaptation.
 
-The output is the expected next shield position in $(\sin, \cos)$, mixing staying and moving by the response probability, fitted with MSE. In generative simulations the move is drawn instead.
+Every beam runs the paper's three computations on a discretized circular grid ($[0°, 360°)$ in 2° steps, $S = 180$ points):
+
+1. **Inference.** Posterior over the latent state (laser mean $\mu$ × observation-noise level $\ell$) given the beam, with a normal likelihood on the wrapped angular difference per noise level, $\mathcal{N}(\text{wrap}(x_t - \mu);\, 0, \sigma_\ell^2)$ (an approximation of the paper's wrapped Gaussian, negligible at the fitted s.d.s). The prior at the first beam of a block is uniform over $(\mu, \ell)$.
+2. **Prediction.** Propagation through the changepoint transition: $p_{t+1}(\mu, \ell) = (1 - p_{\text{cp}})\, p_t(\mu, \ell \mid x_{1:t}) + p_{\text{cp}}\, p_t(\ell \mid x_{1:t}) / S$. A changepoint redraws the mean uniformly from the circle and keeps the noise level. The level does not switch: in weber2024, stochasticity is a block condition, so the model only infers which of the two levels the current block has.
+3. **Response.** Selects the location that maximizes the expected catch and moves toward it probabilistically (details below).
+
+**Expected catch (circular convolution).** For every candidate shield location $y$ the model needs the probability that the next beam $x \sim \mathcal{N}(\mu, \sigma_\ell^2)$ falls within the catch window:
+
+$$c_y = \sum_\ell \sum_\mu p_{t+1}(\mu, \ell)\; P\big(\lvert x - y\rvert \le 10° \mid \mu, \sigma_\ell\big).$$
+
+The inner probability depends only on the circular offset $\Delta = \text{wrap}(y - \mu)$, so it is a kernel (`_catch_kernel`), a ±10° window blurred by the observation noise:
+
+$$k_\ell(\Delta) = \Phi\!\left(\frac{\Delta + 10°}{\sigma_\ell}\right) - \Phi\!\left(\frac{\Delta - 10°}{\sigma_\ell}\right),$$
+
+and the expected catch of all locations is a circular convolution of the prior over the mean with that kernel, per noise level, summed over levels: $c = \sum_\ell p_{t+1}(\cdot, \ell) \circledast k_\ell$. This one operation does both the paper's prediction step (adding observation noise to the belief about the mean gives the predictive distribution of the next beam) and the integration of that predictive distribution over the catch window of every location. It is circular because the grid is periodic (359° and 1° are 2° apart). It is computed via FFT, $O(S \log S)$ instead of an $S \times S$ (location × mean) matrix product per level, session and beam; the result is identical. The Gaussian inside the kernel is not wrapped (tail mass reaching the window from the far side of the circle is ignored; negligible at the fitted s.d.s).
+
+**Soft argmax.** The paper selects $y^* = \arg\max_y c_y$. A hard argmax is piecewise constant in the parameters (the selected grid point either stays or jumps), so its gradient is zero almost everywhere and the model could not be fitted by gradient descent. We use a softmax over the grid on the log expected catch with sharpness $\beta$ = `choice_sharpness` = 50,
+
+$$w_y = \frac{\exp(\beta \log c_y)}{\sum_{y'} \exp(\beta \log c_{y'})} = \frac{c_y^{\,\beta}}{\sum_{y'} c_{y'}^{\,\beta}},$$
+
+and take the weighted **circular mean** of the grid angles, $y^* = \text{atan2}\big(\sum_y w_y \sin y,\; \sum_y w_y \cos y\big)$, which also frees the selection from the 2° grid. For scale: two locations with $c = 0.80$ and $0.78$ get a weight ratio of $(0.80/0.78)^{50} \approx 3.5$. Caveat: when the expected catch is bimodal with nearly equal peaks (e.g. right after a possible changepoint: old mean vs. new beam), the circular mean can land between the peaks, where a hard argmax would pick one.
+
+**Movement and output.** The shield approaches $y^*$ along the shortest arc, as far as reachable within the inter-beam interval (`MOVEMENT_SPEED` = 1°/frame × `trial_duration_frames`), giving $y^{\text{reach}}$. It moves with response probability $\pi = \text{HalfNormalCDF}(\lvert\text{wrap}(y^* - s_t)\rvert;\, \sigma_{\text{resp}}) = \text{erf}\big(\lvert\text{wrap}(y^* - s_t)\rvert / (\sigma_{\text{resp}}\sqrt{2})\big)$, the same function as the paper's truncated-normal CDF. The output is the expected next shield position in $(\sin, \cos)$, $(1 - \pi)\, s_t + \pi\, y^{\text{reach}}$. In generative simulations (`sample_response`), the move is drawn instead: $\text{Bernoulli}(\pi)$.
+
+**Fitting.** Per participant, by Adam (lr 0.01, 1000 epochs, LR scheduler) on `clamped_angular_mse` of the next shield position, on the training blocks only (test blocks 3, 5, 9, 12 held out); see `weber2024.py`.
 
 **Parameters (per participant, 4 total):**
 
-| Parameter | Constraint | Description |
-|-----------|-----------|-------------|
-| $p_{\text{cp}}$ | $(0, 1)$ sigmoid | Assumed changepoint probability per beam |
-| $\sigma_{\text{resp}}$ | $> 0$ (exp) | S.d. (degrees) of the response-probability CDF |
-| $\sigma_{\text{obs},1}, \sigma_{\text{obs},2}$ | $> 0$ (exp) | Observation-noise s.d. (degrees) of the two noise levels |
+| Parameter | Constraint | Initial value | Paper (fixed) | Description |
+|-----------|-----------|---------------|---------------|-------------|
+| $p_{\text{cp}}$ | $(0, 1)$ sigmoid | $1/16$ | $1/16$ (true hazard) | Assumed changepoint probability per beam |
+| $\sigma_{\text{resp}}$ | $> 0$ (exp) | 8° | 8° (hand-set) | S.d. (degrees) of the response-probability CDF |
+| $\sigma_{\text{obs},1}, \sigma_{\text{obs},2}$ | $> 0$ (exp) | 10°, 30° | 10°, 30° (true levels) | Observation-noise s.d. (degrees) of the two noise levels |
 
-**Deviations from the paper.** One update per beam, with the response clamped to the reachable arc; the paper's fixed hazard rate ($1/16$) and response s.d. (8°) are fitted per participant; the argmax over locations is a soft argmax.
+**Deviations from the paper.**
+
+*Task adaptations (Foucault et al. used a different, self-paced task):*
+- The paper's response chooses paddle location **and width** (60° / 120°) to maximize expected points (+10 small catch, +5 large catch, −10 miss). Ours chooses only a location, maximizing the catch probability for the fixed ±10° catch threshold (`CATCH_THRESHOLD`); there is no width choice and no point scheme.
+- The paper's paddle jumps to the selected location (self-paced trials). Our shield moves at most `MOVEMENT_SPEED` × inter-beam interval along the shortest arc.
+- One update per beam.
+- The noise level is constant within a block (stochasticity is a block condition in weber2024) instead of switching with $p = 1/16$ within a sequence.
+
+*Changes to make the normative model fittable to human data:*
+- The paper's fixed hazard rate, response s.d. and the two noise levels are free parameters, fitted per participant (initialized at the paper's values). No knowledge of the true generative process is assumed beyond "changepoints with a uniformly redrawn mean". The fitted response s.d. lies about an order of magnitude above the paper's 8°.
+- The paper draws whether the paddle moves. Our output is the expectation over staying and moving (deterministic, MSE-fittable). The draw is kept for generative simulation.
+- The paper has no loss. We fit with `clamped_angular_mse` (see the SPICE model above).
+- Hard argmax → soft argmax with circular mean (differentiability, see above).
+
+*Implementation details:* 2° grid; expected catch via FFT circular convolution; normal likelihood and kernel on the wrapped difference instead of a wrapped Gaussian.
+
+*Known limitation:* $p_{\text{cp}}$ is one value per participant, shared across the volatility conditions, whereas a normative observer would use a different hazard per volatility condition (the noise level, by contrast, is inferred per block). A per-condition hazard (+1 parameter) would make the benchmark stronger relative to SPICE, which receives `volatility` as a module input.
 
 ---
 

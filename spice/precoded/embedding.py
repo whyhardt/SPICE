@@ -13,9 +13,13 @@ import torch
 
 # The participant embedding RNN is basically the learning rate RNN with an additional participant embedding layer
 CONFIG = SpiceConfig(
-    library_setup={
+    discovered_modules={
         'value_reward_chosen': ['reward'],
         'value_reward_not_chosen': [],
+    },
+    # per-participant inverse noise temperature, positive by softplus
+    constants={
+        'inverse_temperature': torch.nn.functional.softplus,
     },
     memory_state={
             'value_reward': 0.5,
@@ -47,9 +51,6 @@ class SpiceModel(BaseModel):
         # specify here the participant embedding
         self.participant_embedding = self.setup_embedding(n_participants, self.embedding_size)
         
-        # Add a scaling factor (inverse noise temperature) for each participant by passing the participant embedding
-        self.betas['value_reward'] = self.setup_constant(self.embedding_size)
-        
         # and here we specify the general module architecture
         # set up the submodules
         self.setup_module(key_module='value_reward_chosen', input_size=1)
@@ -68,6 +69,12 @@ class SpiceModel(BaseModel):
 
         # Here we compute now the participant embeddings for each entry in the batch
         participant_embedding = self.participant_embedding(spice_signals.participant_ids)
+
+        # scaling factor (inverse noise temperature) for each participant, computed from the participant embedding
+        inverse_temperature = self.call_module(
+            key_module='inverse_temperature',
+            participant_embedding=participant_embedding,
+        )
         
         for timestep in spice_signals.trials:
             
@@ -75,26 +82,25 @@ class SpiceModel(BaseModel):
             self.call_module(
                 key_module='value_reward_chosen',
                 key_state='value_reward',
-                action_mask=spice_signals.actions[timestep, 0],
-                inputs=spice_signals.feedback[timestep, 0],
+                action_mask=spice_signals.actions[timestep],
+                inputs=spice_signals.feedback[timestep],
                 # add participant-embedding (for RNN-modules) and participant-index (later for SINDy-modules)
                 participant_index=spice_signals.participant_ids,
                 participant_embedding=participant_embedding,
-                activation_rnn=torch.nn.functional.sigmoid,
                 )
 
             # Update of the not-chosen reward-based value
             self.call_module(
                 key_module='value_reward_not_chosen',
                 key_state='value_reward',
-                action_mask=1-spice_signals.actions[timestep, 0],
+                action_mask=1-spice_signals.actions[timestep],
                 inputs=None,
                 participant_embedding=participant_embedding,
                 participant_index=spice_signals.participant_ids,
                 )
                         
             # Now keep track of the logit in the output array
-            spice_signals.logits[timestep] = self.state['value_reward'] * self.betas['value_reward'](participant_embedding)
+            spice_signals.logits[timestep] = self.state['value_reward'] * inverse_temperature
         
         # post-process the forward pass
         spice_signals = self.post_forward_pass(spice_signals)

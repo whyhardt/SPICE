@@ -5,7 +5,7 @@ from spice import SpiceConfig, BaseModel, SpiceDataset
 
 
 CONFIG = SpiceConfig(
-    library_setup={
+    discovered_modules={
         'perception_certainty': ['contr_diff[t]'],
         # 'value_wm_reward_chosen': ['reward[t]', 'certainty[t]'],
         # 'value_wm_reward_not_chosen': ['certainty[t]'],
@@ -20,11 +20,6 @@ CONFIG = SpiceConfig(
         'value_reward': 0,
         'value_choice': 0,
     },
-    states_in_logit=[
-        # 'value_wm_reward',
-        'value_reward',
-        'value_choice',
-    ],
     additional_inputs=('contrast_difference', 'contrast_difference_next'),
 )
 
@@ -76,7 +71,7 @@ class SpiceModel(BaseModel):
         """
         candidate_terms = self.get_candidate_terms()
         for module in self.get_modules():
-            binary_signals = [s for s in self.spice_config.library_setup[module] if s in BINARY_SIGNALS]
+            binary_signals = [s for s in self.spice_config.discovered_modules[module] if s in BINARY_SIGNALS]
             for index_term, term in enumerate(candidate_terms[module]):
                 factors = term.split('*')
                 if any(signal + '^2' in factors for signal in binary_signals):

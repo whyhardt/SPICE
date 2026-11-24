@@ -10,7 +10,7 @@ from ..resources.model import BaseModel
 # -------------------------------------------------------------------------------
 
 CONFIG = SpiceConfig(
-    library_setup = {
+    discovered_modules = {
         'value_reward_chosen': ['reward'],  # --> n_terms = 6
         'value_reward_not_chosen': [],      # --> n_terms = 3
         'value_choice': ['choice'],  # --> n_terms = 6

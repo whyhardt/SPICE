@@ -4,7 +4,7 @@ from spice import SpiceEstimator, BaseModel, SpiceConfig, SpiceDataset, csv_to_d
 
 
 SPICE_CONFIG = SpiceConfig(
-            library_setup={
+            discovered_modules={
                 'drift': ['stimulus'],
                 # 'diffusion': [],
             },

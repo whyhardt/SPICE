@@ -11,7 +11,7 @@ import torch
 # -------------------------------------------------------------------------------
 
 CONFIG = SpiceConfig(
-    library_setup={
+    discovered_modules={
         # Value learning can depend on recent reward sequence (working memory)
         'value_reward_chosen': [
             'reward[t]',

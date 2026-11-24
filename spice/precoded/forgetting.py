@@ -8,7 +8,7 @@ from ..resources.model import BaseModel
 
 CONFIG = SpiceConfig(
     # The new module which handles the not-chosen value, does not need any additional inputs except for the value
-    library_setup={
+    discovered_modules={
         'value_reward_chosen': ['reward'],
         'value_reward_not_chosen': [],
     },

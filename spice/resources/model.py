@@ -298,6 +298,12 @@ class BaseModel(nn.Module):
         self.n_sessions = n_participants * n_experiments
         self.use_sindy = use_sindy
         self.ridge_mode = False
+        # memory states written by a discovered module in call_module; filled during the forward pass
+        # and used as the Stage-2 refit targets. States written only by fixed modules or set by hand in
+        # forward() are never added. discovered_item_mask[state] marks, per item, whether the last write
+        # in the current forward pass came from a discovered module (reset in init_forward_pass).
+        self.discovered_states = set()
+        self.discovered_item_mask = {}
         self.ridge_sample_mask = None  # (E, B) validity of the current ridge chunk; None = all valid
         self._ridge_accumulators = {}
         self.n_items = n_items if n_items is not None else n_actions
@@ -309,7 +315,6 @@ class BaseModel(nn.Module):
         # session recording; used for sindy training; training variables start with 'x' and control parameters with 'c'
         self.recording = {}
         self.submodules_rnn = nn.ModuleDict()
-        self.submodules_eq = dict()
         self.embedding_fusion = lambda *embeddings: torch.cat(embeddings, dim=-1)
         self.total_embedding_size = 0
 
@@ -367,6 +372,7 @@ class BaseModel(nn.Module):
         self.gate_loss = torch.tensor(0, requires_grad=True, device=self.device, dtype=torch.float32)
         self._modules_gate_penalized = set()
         self.sindy_loss_fit = torch.tensor(0, requires_grad=True, device=self.device, dtype=torch.float32)
+        self.discovered_item_mask = {}
 
         spice_signals = SpiceSignals()
 
@@ -503,10 +509,6 @@ class BaseModel(nn.Module):
 
         return self
         
-    def setup_constant(self):
-        # return ParameterModule(n_ensemble, n_participants, n_experiments)
-        return nn.Parameter(torch.zeros((self.ensemble_size, self.n_participants, self.n_experiments, 1)))
-    
     def setup_embedding(
         self, 
         num_embeddings: int, 
@@ -533,8 +535,13 @@ class BaseModel(nn.Module):
         if dropout is None:
             dropout = self.dropout
             
-        for module in self.spice_config.library_setup:
+        for module in self.spice_config.discovered_modules:
             self.setup_module(key_module=module, dropout=dropout)
+
+        self.constants = nn.ModuleDict({
+            key: EnsembleLinear(self.ensemble_size, self.embedding_size, 1)
+            for key in self.spice_config.constants
+        })
     
     def setup_module(
         self,
@@ -576,7 +583,7 @@ class BaseModel(nn.Module):
             embedding_size = self.embedding_size
 
         if input_size is None:
-            input_size = len(self.spice_config.library_setup[key_module])
+            input_size = len(self.spice_config.discovered_modules[key_module])
 
         if dropout is None:
             dropout = self.dropout
@@ -629,9 +636,20 @@ class BaseModel(nn.Module):
         participant_index: torch.Tensor = None,
         experiment_embedding: torch.Tensor = None,
         experiment_index: torch.Tensor = None,
-        activation_rnn: Callable = None,
         ):
-        """Call a submodule (RNN, SINDy, or equation) to compute the next state value.
+        """Call a module to compute the next state value (or a per-participant constant).
+
+        Three kinds of modules (see SpiceConfig):
+            - discovered (RNN / SINDy): `discovered_modules`; its own state enters implicitly.
+            - fixed (hand-coded function): `fixed_modules`; called as function(*inputs) on every
+              within-trial step, its own state has to be given explicitly as one of the inputs.
+            - constant: `constants`; activation(FFN(embedding)) of shape [1, E, B, 1], computed from
+              the embeddings only (no inputs, action_mask or key_state). Call it once before the
+              trial loop and pass it as input to other modules.
+
+        Modules act on raw values and the memory holds raw values only: apply activations
+        (e.g. a sigmoid for a learning rate) where the value is used, not on the module output --
+        SINDy cannot recover an equation behind a nonlinear output activation reliably.
 
         Inputs are of shape [W, E, B, I].
         Lower-dim inputs are broadcast to match.
@@ -639,24 +657,37 @@ class BaseModel(nn.Module):
         Returns:
             torch.Tensor: [within_ts, ensemble, batch, n_items] — full within-trial trajectory
         """
-        
-        if key_state is not None:
-            if key_state in self.state:
-                # If include_state=False, the module is stateless: start from zeros
-                # but still write output to state for tracking (e.g. Stage 2 shooting).
-                if self.sindy_specs.get(key_module, {}).get('include_state', True):
-                    value = self.get_state()[key_state]  # [W, E, B, I]
-                else:
-                    value = None
-            else:
-                KeyError(f"key_state {key_state} is not in BaseModel's state.")
-        else:
-            value = None
-            
+
         E = self.ensemble_size
         B = self.state[list(self.state.keys())[0]].shape[2]
         I = self.n_items
         W = 1  # corrected after inputs processing
+
+        if participant_embedding is None:
+            participant_embedding = torch.zeros(E, B, 0, dtype=torch.float32, device=self.device)
+        if experiment_embedding is None:
+            experiment_embedding = torch.zeros(E, B, 0, dtype=torch.float32, device=self.device)
+
+        if key_module in self.constants:
+            return self.compute_constant(key_module, self.embedding_fusion(participant_embedding, experiment_embedding))
+
+        is_discovered = key_module in self.submodules_rnn
+        is_fixed = key_module in self.spice_config.fixed_modules
+        if not (is_discovered or is_fixed):
+            raise ValueError(f'Invalid module key {key_module}.')
+
+        if key_state is not None:
+            if key_state not in self.state:
+                raise KeyError(f"key_state {key_state} is not in BaseModel's state ({list(self.state.keys())}).")
+            if is_discovered:
+                self.discovered_states.add(key_state)
+        if key_state is not None and is_discovered and self.sindy_specs[key_module]['include_state']:
+            value = self.get_state()[key_state]  # [W, E, B, I]
+        else:
+            # include_state=False: the module is stateless and starts from zeros, but still writes its
+            # output to the state for tracking (e.g. Stage 2 shooting). Fixed modules get their own
+            # state as an explicit input.
+            value = None
 
         if inputs is None or (isinstance(inputs, tuple) and len(inputs) == 0):
             if value is None:
@@ -685,11 +716,6 @@ class BaseModel(nn.Module):
         if experiment_index is None:
             experiment_index = torch.zeros(E, B, dtype=torch.int, device=self.device)
 
-        if participant_embedding is None:
-            participant_embedding = torch.zeros(E, B, 0, dtype=torch.float32, device=self.device)
-        if experiment_embedding is None:
-            experiment_embedding = torch.zeros(E, B, 0, dtype=torch.float32, device=self.device)
-
         # embedding = torch.cat((experiment_embedding, participant_embedding), dim=-1)  # [E, B, emb]
         embedding = self.embedding_fusion(participant_embedding, experiment_embedding)
         embedding = embedding.view(1, E, B, 1, -1).expand(W, -1, -1, I, -1)  # [W, E, B, I, emb]
@@ -697,7 +723,7 @@ class BaseModel(nn.Module):
         # Replace NaN in inputs
         inputs = torch.nan_to_num(inputs, nan=0.0)
         
-        if key_module in self.submodules_rnn.keys():
+        if is_discovered:
             if not self.use_sindy or self.ridge_mode:
                 # L1 on the individual-level gates (time-invariant -> once per forward pass and module);
                 # gates are non-negative, so their mean is the L1 norm
@@ -711,8 +737,6 @@ class BaseModel(nn.Module):
                 # Get RNN module prediction
                 inputs_rnn = torch.cat((inputs, embedding), dim=-1)  # [W, E, B, I, feat+emb]
                 next_value = self.submodules_rnn[key_module](inputs_rnn, state=value).squeeze(-1)  # [W, E, B, I]
-                if activation_rnn is not None:
-                    next_value = activation_rnn(next_value)
                 if self.ridge_mode:
                     # Accumulate this chunk's normal-equation contribution for sindy coefficients.
                     # h_current must be the per-step preceding value (value[-1] for w=0,
@@ -748,15 +772,14 @@ class BaseModel(nn.Module):
                     ).squeeze(0)  # [E, B, I]
                     next_value[timestep] += next_value_t
 
-        elif key_module in self.submodules_eq.keys():
-            # hard-coded equation — operates on last within-trial step
-            next_value = self.submodules_eq[key_module](value, inputs[-1]).unsqueeze(0)  # [1, E, B, I]
-
         else:
-            raise ValueError(f'Invalid module key {key_module}.')
+            # fixed module: hand-coded function of the inputs (in the order of its input labels)
+            function = self.spice_config.fixed_modules[key_module][0]
+            next_value = function(*inputs.unbind(dim=-1))  # [W, E, B, I]
 
         # SINDy loss (uses unclipped values, last within-trial step)
         if (self.fit_sindy
+            and key_module in self.submodules_rnn
             and self.training
             and not self.use_sindy
             and participant_index is not None
@@ -776,19 +799,33 @@ class BaseModel(nn.Module):
             self.sindy_loss_reg = self.sindy_loss_reg + sindy_loss_reg
             self.sindy_loss_fit = self.sindy_loss_fit + sindy_loss_fit
 
-        # clip next_value to a specific range
-        next_value = torch.clip(input=next_value, min=-1e1, max=1e1)
-        
+        # clip discovered dynamics to a specific range; fixed modules keep the range of their equation
+        if is_discovered:
+            next_value = torch.clip(input=next_value, min=-1e1, max=1e1)
+
         if action_mask is not None:
             mask = action_mask[-1] if action_mask.dim() >= 4 else action_mask
             next_value = torch.where(mask == 1, next_value,
                                      self.get_state()[key_state] if key_state is not None else torch.zeros_like(next_value))
-            
+
         if key_state is not None:
             self.state[key_state] = next_value
+            # per item: was the last write to this state made by a discovered module?
+            written = (mask == 1) if action_mask is not None else torch.ones_like(next_value, dtype=torch.bool)
+            previous = self.discovered_item_mask.get(key_state, torch.zeros_like(next_value, dtype=torch.bool))
+            self.discovered_item_mask[key_state] = torch.where(written, is_discovered, previous)
 
         return next_value  # [W, E, B, I]
     
+    def compute_constant(self, key_module: str, embedding: torch.Tensor) -> torch.Tensor:
+        """Per-participant constant activation(FFN(embedding)): (E, B, D) -> [1, E, B, 1]."""
+        layer = self.constants[key_module]
+        constant = torch.einsum('eoi,ebi->ebo', layer.weight, embedding) + layer.bias.unsqueeze(1)  # (E, B, 1)
+        activation = self.spice_config.constants[key_module]
+        if activation is not None:
+            constant = activation(constant)
+        return constant.unsqueeze(0)
+
     def setup_sindy_coefficients(self, key_module: str, polynomial_degree: int = None):
         """
         Initialize learnable SINDy coefficients for each module.
@@ -798,7 +835,7 @@ class BaseModel(nn.Module):
         if polynomial_degree is None:
             polynomial_degree = self.sindy_polynomial_degree
 
-        control_features = self.spice_config.library_setup[key_module]
+        control_features = self.spice_config.discovered_modules[key_module]
         sindy_specs = self.sindy_specs[key_module]
 
         # Count features for this module: state + relevant controls

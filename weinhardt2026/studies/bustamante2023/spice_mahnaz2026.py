@@ -12,7 +12,7 @@ from spice import SpiceConfig
 # per-condition MVT threshold in Bustamante et al. (2023, Eqs. 2-5): its SINDy terms b0 + b1*is_msit + b2*is_high
 # + b3*is_msit*is_high are the four condition thresholds, with b2 the extra cost of high-effort travel.
 CONFIG = SpiceConfig(
-    library_setup={
+    discovered_modules={
         'value_wm_reward_chosen': ['reward[t]'],
         'value_wm_reward_not_chosen': [],
         'value_reward_chosen': ['reward[t]'],
@@ -24,11 +24,6 @@ CONFIG = SpiceConfig(
         'value_reward': 0,
         'value_choice': 0,
     },
-    states_in_logit=[
-        'value_wm_reward',
-        'value_reward',
-        'value_choice',
-    ],
 )
 
 
@@ -54,7 +49,7 @@ class SpiceModel(BaseModel):
         """
         candidate_terms = self.get_candidate_terms()
         for module in self.get_modules():
-            control_signals = self.spice_config.library_setup[module]
+            control_signals = self.spice_config.discovered_modules[module]
             binary_signals = [s for s in control_signals if s in BINARY_SIGNALS]
             for index_term, term in enumerate(candidate_terms[module]):
                 factors = term.split('*')
