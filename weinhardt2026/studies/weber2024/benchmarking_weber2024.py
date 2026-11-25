@@ -36,7 +36,6 @@ def move_toward(shield: torch.Tensor, laser: torch.Tensor, max_degrees: torch.Te
     movement = torch.min(max_degrees, dist)
     return shield + direction * movement
 CATCH_THRESHOLD = 10.0      # degrees — shield catches laser if angular distance <= this
-INITIAL_SHIELD = 360.0      # degrees (shield starting position each block)
 
 
 # =============================================================================
@@ -382,8 +381,9 @@ def generate_behavior(
     xs_gen = dataset.xs.clone().to(device)
     ys_gen = torch.full_like(dataset.ys, float('nan'), device=device)
 
-    # Initialize shield at 360° (≡ 0° mod 360) for every session
-    shield_deg = torch.full((n_sessions,), INITIAL_SHIELD, device=device)
+    # Start every session at the real shield position on its first beam (blocks begin at the first catch,
+    # data_raw/data_processing.py)
+    shield_deg = torch.rad2deg(torch.atan2(dataset.xs[:, 0, 0, 0], dataset.xs[:, 0, 0, 1])).to(device) % 360
 
     model_state = None
 

@@ -1,8 +1,9 @@
 """
 Model evaluation figure: one column per study, rows = held-out prediction, posterior predictive check, AIC, BIC.
 
-Within a row, the columns share the y-axis span (so equal differences look equal), wherever their
-values share a unit: all discrete studies, and the continuous studies' AIC/BIC (see SHARED_SPAN).
+Within a row, the columns of one kind share the y-axis span (so equal differences look equal): the discrete studies
+among themselves, and the continuous studies among themselves (their MSEs normalized to nRMSE in [0, 1], see
+RESPONSE_RANGE, so that they share a unit).
 
 Models per study, every seed of the final models in ``studies/<study>/params/``
 (see ``weinhardt2026/utils/final_models.py``; bars = mean over seeds, dots = single seeds):
@@ -18,17 +19,19 @@ SPICE checkpoints were trained on.
 Metrics:
   - Held-out prediction (test blocks):
       discrete   → average trial likelihood exp(-NLL / n_trials)
-      continuous → one-step MSE per trial in the response's units (bruckner2025: px², weber2024: deg²)
+      continuous → one-step MSE per trial in the response's units (bruckner2025: px², weber2024: deg²); plotted as
+                   nRMSE = sqrt(MSE) / response range (bruckner2025: 300 px screen, weber2024: 180° largest angular error)
   - Posterior predictive check (all blocks; computed and saved per study by
     ``weinhardt2026/analysis/evaluation/run_posterior_predictive.py``, read here per seed):
       discrete   → nRMSE of the summary statistics across participants (mean over panels)
-      continuous → per-trial MSE of an autonomous rollout (bruckner2025: px², weber2024: deg²)
+      continuous → per-trial MSE of an autonomous rollout (bruckner2025: px², weber2024: deg²); plotted as nRMSE
   - AIC / BIC per trial (training data: per (participant, experiment) group divided by the group's trials, then averaged over groups, see
     ``model_evaluation.grouped_information_criteria``) — only for the
     interpretable models (Benchmark, SPICE-EQ). Continuous studies use a Gaussian
     likelihood with per-group MLE variance.
 
-Written to weinhardt2026/results/model_evaluation/ (figure, model_evaluation_summary.csv: mean and SD over seeds);
+Written to weinhardt2026/results/model_evaluation/ (figure, model_evaluation_summary.csv: mean and SD over seeds, raw
+units, plus the plotted heldout_plot/ppc_plot);
 per study, the per-seed evaluation is cached in studies/<study>/results/model_evaluation/model_evaluation.csv.
 
 Usage:
@@ -55,7 +58,6 @@ from weinhardt2026.analysis.evaluation.model_evaluation import (
     grouped_information_criteria,
 )
 from weinhardt2026.analysis.evaluation.run_posterior_predictive import (
-    ROLLOUT_UNITS as RESPONSE_UNITS,
     load_scores as load_ppc_scores,
 )
 from spice.utils.plotting import MODEL_COLORS
@@ -217,12 +219,21 @@ ROWS = [
     ('aic', 'AIC / trial (train) ↓'),
     ('bic', 'BIC / trial (train) ↓'),
 ]
-HELDOUT_LABEL = {False: 'Held-out trial likelihood ↑', True: 'Held-out one-step MSE ↓'}
-PPC_LABEL = {False: 'PPC nRMSE ↓', True: 'Rollout MSE ↓'}
-# (metric, continuous) -> whether the columns share the y-axis span; continuous MSEs differ in unit (px², deg²)
-SHARED_SPAN = {(metric, continuous): not continuous or metric in ('aic', 'bic')
-               for metric, _ in ROWS for continuous in (False, True)}
+HELDOUT_LABEL = {False: 'Held-out trial likelihood ↑', True: 'Held-out one-step nRMSE ↓'}
+PPC_LABEL = {False: 'PPC nRMSE ↓', True: 'Rollout nRMSE ↓'}
 KIND_LABELS = {'heldout': HELDOUT_LABEL, 'ppc': PPC_LABEL}
+# continuous studies: range of the response, normalizing the MSEs to nRMSE = sqrt(MSE) / range in [0, 1]
+RESPONSE_RANGE = {'bruckner2025': (300., 'px'), 'weber2024': (180., '°')}
+
+
+def add_plotted_values(results: pd.DataFrame) -> pd.DataFrame:
+    """Columns heldout_plot/ppc_plot: the plotted values; continuous studies' MSEs as nRMSE (RESPONSE_RANGE)."""
+    results = results.copy()
+    scale = results['study'].map(lambda study: RESPONSE_RANGE.get(study, (np.nan,))[0])
+    continuous = results['continuous'].astype(bool)
+    for metric in ('heldout', 'ppc'):
+        results[f'{metric}_plot'] = np.where(continuous, np.sqrt(results[metric]) / scale, results[metric])
+    return results
 
 
 def add_posterior_predictive(results: pd.DataFrame) -> pd.DataFrame:
@@ -238,9 +249,9 @@ def plot_model_evaluation(results: pd.DataFrame, output_path: str, clean: bool =
     """Bars = mean over seeds (± SD if several seeds); white dots = single seeds.
 
     The y-axes are zoomed onto the model differences, so bars rise from the bottom
-    of each axis rather than from 0 (the continuous studies' AIC/BIC are negative). Where
-    SHARED_SPAN holds, the columns of a row (of one kind) span the same y-range: the largest
-    range among them. With *clean*, also saved without titles, axis labels, units and legend
+    of each axis rather than from 0 (the continuous studies' AIC/BIC are negative). The columns
+    of a row of one kind (discrete / continuous) span the same y-range: the largest range among them. Held-out and PPC
+    values are read from heldout_plot/ppc_plot (add_plotted_values). With *clean*, also saved without titles, axis labels, units and legend
     (<output_path>_clean).
     """
     present = set(results['study'])
@@ -256,13 +267,14 @@ def plot_model_evaluation(results: pd.DataFrame, output_path: str, clean: bool =
         study_results = results[results['study'] == study]
         for row, (metric, _) in enumerate(ROWS):
             model_values = {}
+            column = f'{metric}_plot' if metric in KIND_LABELS else metric
             for model in MODEL_ORDER:
-                values = study_results.loc[study_results['model'] == model, metric].dropna().to_numpy()
+                values = study_results.loc[study_results['model'] == model, column].dropna().to_numpy()
                 if values.size > 0:
                     model_values[model] = values
             panel_values[row, col] = model_values
             group = (metric, bool(continuous[study]))
-            if model_values and SHARED_SPAN[group]:
+            if model_values:
                 all_values = np.concatenate(list(model_values.values()))
                 shared_range[group] = max(shared_range.get(group, 0.), np.ptp(all_values))
 
@@ -281,7 +293,7 @@ def plot_model_evaluation(results: pd.DataFrame, output_path: str, clean: bool =
 
                 all_values = np.concatenate(list(model_values.values()))
                 low = all_values.min()
-                value_range = shared_range.get((metric, is_continuous), np.ptp(all_values))
+                value_range = shared_range[metric, is_continuous]
                 margin = 0.15 * value_range if value_range > 0 else 0.05 * abs(low) + 1e-3
                 floor = low - 2 * margin  # keeps the lowest bar visible
                 ax.set_ylim(floor, low + value_range + margin)
@@ -312,8 +324,9 @@ def plot_model_evaluation(results: pd.DataFrame, output_path: str, clean: bool =
                     if first_of_kind:
                         ax.set_ylabel(KIND_LABELS[metric][is_continuous], fontsize=8.5)
                     if is_continuous:
-                        ax.text(0.02, 0.98, RESPONSE_UNITS[study], transform=ax.transAxes, ha='left', va='top',
-                                fontsize=7, color='#555555')
+                        response_range, unit = RESPONSE_RANGE[study]
+                        ax.text(0.02, 0.98, f'RMSE / {response_range:g} {unit}', transform=ax.transAxes, ha='left',
+                                va='top', fontsize=7, color='#555555')
                 elif col == 0:
                     ax.set_ylabel(ylabel, fontsize=8.5)
 
@@ -352,8 +365,8 @@ if __name__ == '__main__':
         df.to_csv(cache, index=False)
         frames.append(df)
 
-    results = add_posterior_predictive(pd.concat(frames, ignore_index=True))
-    summary = results.groupby(['study', 'model'], sort=False)[['heldout', 'ppc', 'aic', 'bic', 'n_parameters']].agg(['mean', 'std'])
+    results = add_plotted_values(add_posterior_predictive(pd.concat(frames, ignore_index=True)))
+    summary = results.groupby(['study', 'model'], sort=False)[['heldout', 'ppc', 'heldout_plot', 'ppc_plot', 'aic', 'bic', 'n_parameters']].agg(['mean', 'std'])
     print(summary.to_string(float_format='{:.4f}'.format))
     summary.to_csv(os.path.join(OUTPUT_DIR, 'model_evaluation_summary.csv'))
     plot_model_evaluation(results, os.path.join(OUTPUT_DIR, 'figure_model_evaluation'), clean=True)

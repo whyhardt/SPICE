@@ -123,7 +123,13 @@ if all_subject_events:
     # 2. Add the look-ahead feature for next action/stimulus modeling
     # Bounding this shift by participant and global block prevents cross-block data leakage
     df_master['next_laserRotation'] = df_master.groupby(['participant', 'block'])['laserRotation'].shift(-1)
-    
+
+    # 3. Crop every block to start at the participant's first catch: before it the shield travels from its
+    # start position (360°) to the beams, at full speed and in an ambiguous direction when the beams are
+    # opposite; that approach is not belief updating and dominated the models' errors.
+    caught_so_far = df_master.groupby(['participant', 'block'])['laser_caught'].cummax().astype(bool)
+    df_master = df_master[caught_so_far].reset_index(drop=True)
+
     # Reordering columns strictly to place the target variable and lookahead feature cleanly together
     columns_ordered = [
         'participant', 'experiment', 'block', 'event', 

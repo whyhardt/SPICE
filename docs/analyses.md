@@ -199,7 +199,7 @@ Per study: the data with its derived criterion columns (`utils/participant_metri
 | ganesh2024a, eckstein2026 | reward rate (`reward`) |
 | bustamante2023 | reward per second: every round is a fixed 240 s window, so round total / 240 s, averaged over rounds (`block_col='overall_round'`; travel time and missed responses lower it) |
 | braun2018 | RT switch cost: mean RT on switch minus repeat trials (RTs 200–3000 ms); a participant who never switches has none and is left out |
-| weber2024 | reward rate = catch rate (`laser_caught`) |
+| weber2024 | reward rate = catch rate (`laser_caught`). The trial-count check flags it (r = 0.38 with log trials), but before cropping every participant has 8590 beams: cropping each block to the first catch removes 0.9–1.8%, fewer for good catchers, so any performance criterion correlates with trial count without a meaningful difference in data amount |
 | bruckner2025 | reward rate (`trial_reward` = coin value `r_t` if caught); age group, every pair of children (code 1, 7–11 y), younger adults (3, 20–28 y) and older adults (4, 61–76 y); adults (younger + older) vs children |
 
 The merged contrasts (Patients, adults) map several codes onto one group (`criterion_map`). The study-specific criteria are defined in `utils/participant_metrics.py`.
@@ -220,7 +220,7 @@ Rows:
 2. **Posterior predictive check**: read per (model, seed) from the study's `results/posterior_predictive/ppc_scores_instances.csv` (see [Posterior Predictive Checks](#posterior-predictive-checks--evaluationrun_posterior_predictivepy)); discrete → nRMSE, continuous → rollout MSE. Read at plot time, so re-running the checks only needs a re-plot, not `--recompute`.
 3. **AIC / trial** and 4. **BIC / trial** (training blocks, Benchmark and SPICE-EQ only): per (participant, experiment) group, divided by the group's trials, averaged over groups (`grouped_information_criteria`: `aic_per_trial_mean`, `bic_per_trial_mean`). SPICE-EQ counts each group's active coefficients; a SPICE model with one experiment slot (weber2024, `n_experiments=1`) shares it across experiments. Continuous studies use a Gaussian likelihood with per-group MLE variance.
 
-Within a row, the columns of one kind share the y-axis span (the largest range among them), so equal differences look equal: all discrete studies in every row, the continuous studies only in AIC/BIC (their MSEs differ in unit; `SHARED_SPAN`). Bars rise from the bottom of the zoomed axis, not from 0.
+The continuous studies' held-out and rollout MSEs are plotted as **nRMSE = √MSE / response range** (`RESPONSE_RANGE`: bruckner2025 300 px screen, weber2024 180°, the largest angular error), so both share a unit in [0, 1]; the CSVs keep the raw MSEs, the plotted values are `heldout_plot` / `ppc_plot` in `model_evaluation_summary.csv`. Within a row, the columns of one kind share the y-axis span (the largest range among them), so equal differences look equal: the discrete studies among themselves and the continuous studies among themselves, in every row. Bars rise from the bottom of the zoomed axis, not from 0.
 
 **kolff2025** is not in the `STUDIES` registry (`GROUP_STUDIES`, `evaluate_group_study`): its models are group models (one parameter set for all apes), scored only where the ape acts next on the held-out dyads of fold 0; AIC/BIC per trial on the pooled training data, since the parameters are shared. The benchmark (logistic regression) is fit in closed form, so it is one fit (seed 0).
 

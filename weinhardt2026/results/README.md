@@ -9,7 +9,7 @@ the repository root; details in `docs/analyses.md`. Every figure exists annotate
 
 | Item | Folder | Produced by |
 |---|---|---|
-| Model evaluation | `model_evaluation/` — figure, `model_evaluation_summary.csv` (mean/SD over seeds: held-out prediction, PPC, AIC, BIC, parameters) | `python weinhardt2026/analysis/evaluation/run_model_evaluation.py` |
+| Model evaluation | `model_evaluation/` — figure, `model_evaluation_summary.csv` (mean/SD over seeds: held-out prediction, PPC, AIC, BIC, parameters; continuous studies also as plotted nRMSE, `heldout_plot`/`ppc_plot`) | `python weinhardt2026/analysis/evaluation/run_model_evaluation.py` |
 | Parameter recovery | `parameter_recovery/` — `*_metrics_by_mechanism.csv` (precision, recall, F1 per dataset size × ground-truth model), figures, `*_metrics.npz`, `*_cells.csv` (participant × signed term) | `python weinhardt2026/analysis/validation/run_parameter_recovery.py` |
 | SPICE → SPICE recovery | `parameter_recovery/spice_recovery/` — precision / recall by effect size, prevalence and both, across studies (per study in `studies/<study>/results/parameter_recovery/`) | `python weinhardt2026/analysis/validation/run_spice_recovery.py` |
 | Recovery by target | `parameter_recovery/` — `recovery_by_target*.csv`, `recovery_spurious_share*.csv`, `recovery_grid_*` + `figure_recovery_grid_*` (share × effect-size matrices of precision and recall) | `python weinhardt2026/analysis/validation/run_recovery_by_target.py --recoveries {qlearning,spice} --split` |

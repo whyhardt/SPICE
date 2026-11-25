@@ -556,7 +556,7 @@ A delta-rule model with a learned learning rate and an anchoring term: 2 submodu
 | Submodule | Control signals | State updated | Action mask | `include_state` | Description |
 |-----------|----------------|---------------|-------------|-----------------|-------------|
 | `learning_rate_update` | $\lvert\delta_t\rvert$, `catch`, $v_t$ | `learning_rate_value` | — | True | Learning-rate dynamics, updated every trial |
-| `anchor_update` | $y_t$ | `anchor_value` | — | False | Anchoring correction for bucket displacement |
+| `anchor_update` | $y_t$, $h_t$ | `anchor_value` | — | False | Anchoring correction for bucket displacement and pull toward a visible helicopter |
 
 **Memory states:**
 - `learning_rate_value` (initial: 0): $\alpha_t = \sigma(\text{learning\_rate\_value}_t)$, initially 0.5.
@@ -565,15 +565,15 @@ A delta-rule model with a learned learning rate and an anchoring term: 2 submodu
 **Control signal preprocessing** (`prepare_dataframe`, `forward`):
 - Prediction error relative to the current bucket position: $\delta_t = x_t - b_t$ (subjective, as in the benchmark). The module receives $\min(\lvert\delta_t\rvert / 0.5, 1)$, which spreads the PE magnitude (mostly < 0.2 in screen units) over $[0, 1]$.
 - Anchor shift: $y_t = \text{clip}\big((z_{t+1} - b_t) / 0.3, -1, 1\big)$, the displacement between the next trial's initial bucket position and the current bucket position. It is 0 in the noPush condition.
-- `catch` $\in \{0, 1\}$: whether the bag was caught; $v_t \in \{0, 1\}$: whether the helicopter is visible. Both are binary, so their squared terms are pruned.
-- The true helicopter position $\mu_t$ is masked to NaN when $v_t = 0$; participants can only observe it when visible.
+- Helicopter distance: $h_t = \text{clip}\big((\mu_{t+1} - b_t) / 0.5, -1, 1\big)$ if the next trial's helicopter is visible ($v_{t+1} = 1$, seen before $b_{t+1}$ is placed), else 0. Its product with $v_{t+1}$ duplicates $h_t$ and is pruned (`REDUNDANT_TERMS`).
+- `catch` $\in \{0, 1\}$: whether the bag was caught; $v_t \in \{0, 1\}$ (module input `visible`): whether the helicopter is visible. Both are binary, so their squared terms are pruned.
+- The true helicopter position $\mu_t$ is masked to NaN when $v_t = 0$; participants can only observe it when visible. `prepare_dataframe` also derives the next trial's visibility and helicopter position (`v_next`, `mu_next`).
 - The coin value $r_t$, `sigma` and $c_t$ are loaded but not used by the SPICE model.
 
 **Output (delta rule + anchoring):**
-$$\text{target}_t = \begin{cases} \mu_t & \text{if } v_t = 1 \\ x_t & \text{otherwise} \end{cases}$$
-$$\hat{b}_{t+1} = b_t + \alpha_t \cdot (\text{target}_t - b_t) + V^{\text{anchor}}_t$$
+$$\hat{b}_{t+1} = b_t + \alpha_t \cdot \delta_t + V^{\text{anchor}}_t$$
 
-The predicted next bucket position moves from the current bucket position toward the outcome (or toward the helicopter when it is visible) by the learned learning rate, plus the anchoring correction.
+The predicted next bucket position moves from the current bucket position toward the outcome by the learned learning rate, plus the anchor module's correction, which covers both the push displacement and the pull toward a helicopter visible on the next trial (no hard-coded switch of the update target).
 
 **SINDy library degree:** 2.
 
@@ -656,7 +656,8 @@ The participant has to infer whether a deviating beam is noise or a change point
 The model works with events rather than frames. Each event is one laser beam, and the model predicts the shield position at the next beam. This is a continuous 2D prediction in $(\sin, \cos)$ space, trained with a custom clamped angular MSE loss instead of cross-entropy.
 
 **Data.**
-- 30 participants; 4 conditions (`experiment` 0–3 = volatility × stochasticity: low/low, low/high, high/low, high/high), 4 blocks per condition, i.e. 16 blocks of 516–565 events (8590 events per participant).
+- 30 participants; 4 conditions (`experiment` 0–3 = volatility × stochasticity: low/low, low/high, high/low, high/high), 4 blocks per condition, i.e. 16 blocks of 516–565 events (8590 events per participant before cropping).
+- Every block is cropped to start at the participant's first catch (`data_raw/data_processing.py`): before it, the shield travels from its start position (360°) to the beams at full speed, which is not belief updating and dominated the models' errors. This removes 0.9–1.8% of the beams per participant (8433–8512 left), fewer for participants who catch early, so trial counts correlate with catch rate (r = 0.38) without differing meaningfully in data amount. All models are fitted and scored on the cropped data; rollouts start at the real shield position on the first beam.
 - Additional inputs: `laser_caught` (scored on the beam's onset frame, so it does not contain the participant's subsequent movement), `volatility`, `stochasticity` (binary), `trial_duration_frames` (inter-beam interval), `trueMean` (diagnostics only, never a model input).
 - Held-out test blocks: 3, 5, 9, 12 (0-indexed; every volatility x stochasticity cell once per participant).
 - SPICE is fitted with `n_experiments=1`: the conditions enter as module inputs, so all conditions share one coefficient set.
@@ -665,21 +666,24 @@ The model works with events rather than frames. Each event is one laser beam, an
 
 #### SPICE Model (`studies/weber2024/spice_weber2024.py`)
 
-An angular delta-rule model (analogous to Bruckner 2025): a learned learning rate on a latent belief, and a learned movement gain that carries the shield toward it. 2 submodules on 3 memory states.
+An angular delta-rule model (analogous to Bruckner 2025): a learned learning rate on a latent belief, and a learned movement gain that carries the shield toward it. 2 discovered submodules and a fixed belief update (`belief_update`, `angular_delta_rule`) on 3 memory states.
 
 | Submodule | Control signals | State updated | `include_state` | Description |
 |-----------|----------------|---------------|-----------------|-------------|
-| `learning_rate_update` | $\lvert\delta_t\rvert$, `caught`, `volatility`, `stochasticity` | `learning_rate_value` | True | Learning-rate dynamics, updated every beam |
-| `movement_update` | $\lvert d_t\rvert$ | `movement_value` | False | Movement gain toward the belief, given the belief-shield distance |
+| `learning_rate_update` | $\lvert\delta_t\rvert$, `caught`, `volatility`, `stochasticity`, $\Delta t$ | `learning_rate_value` | True | Learning-rate dynamics, updated every beam |
+| `movement_update` | $\lvert d_t\rvert$, $\Delta t$ | `movement_value` | True | Movement gain toward the belief: a recurrent accumulator of the belief-shield distance over time |
+
+Beam duration enters both modules because participants respond to change points after a roughly fixed time (median ~2 s, slower under high noise, faster for larger distances) regardless of how many beams arrive in it, i.e. they integrate evidence over time rather than deciding per beam.
 
 **Memory states:**
 - `belief_value`: belief about the laser mean in degrees, initialized to the first beam of a block. Not written by a module: updated by the hardcoded delta rule below.
 - `learning_rate_value` (initial: 0): $\alpha_t = \sigma(\text{learning\_rate\_value}_t)$, initially 0.5.
-- `movement_value` (initial: 0): per-beam movement gain $g_t = \sigma(\text{movement\_value}_t)$, reset to 0 every beam.
+- `movement_value` (initial: 0): accumulated movement gain $g_t = \sigma(\text{movement\_value}_t)$, carried over between beams.
 
 **Control signal preprocessing:**
 - Prediction error: $\delta_t = \text{wrap}(\theta^{\text{laser}}_t - \hat{\mu}_t)$, the shortest arc from the belief to the beam, wrapped to $[-180°, 180°)$. The module receives $\min(\lvert\delta_t\rvert / 90°, 1)$.
 - Belief-shield distance: $d_t = \text{wrap}(\hat{\mu}_{t+1} - \theta^{\text{shield}}_t)$, computed after the belief update. The module receives $\min(\lvert d_t\rvert / 90°, 1)$.
+- Beam duration: $\Delta t$ = `trial_duration_frames` / 20 (the raw data run at 20 frames/s), in seconds (median 0.85 s, unclipped).
 - `caught`, `volatility`, `stochasticity` $\in \{0, 1\}$; their squared terms are pruned.
 
 **Belief update and output:**
