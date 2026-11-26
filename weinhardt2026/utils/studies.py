@@ -166,7 +166,7 @@ def spice_estimator(spice_module, dataset_train, **overrides):
         n_experiments=len(dataset_train.xs[..., -2].unique()),
         n_reward_features=dataset_train.n_reward_features,
         loss_fn=getattr(spice_module, 'LOSS_FN', cross_entropy_loss),
-        embedding_size=8,
+        embedding_size=32,
         compiled_forward=False,
         device=DEVICE,
     )

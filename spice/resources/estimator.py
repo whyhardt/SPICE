@@ -54,7 +54,7 @@ class SpiceEstimator(BaseEstimator):
         dropout: Optional[float] = 0.1,
         loss_fn: Optional[callable] = cross_entropy_loss,
         loss_fn_kwargs: Optional[dict] = {'label_smoothing': 0.01},
-        embedding_size: Optional[int] = 8,
+        embedding_size: Optional[int] = 32,
 
         # SPICE training parameters
         use_sindy: Optional[bool] = False,

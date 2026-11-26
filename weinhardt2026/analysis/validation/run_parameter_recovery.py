@@ -21,7 +21,7 @@ mpl.rcParams['svg.fonttype'] = 'none'  # keep text as editable text in vector ex
 mpl.rcParams['pdf.fonttype'] = 42
 
 path_data = 'weinhardt2026/studies/synthetic/data/synthetic_balanced_PARp_IT_0.csv'
-path_model = 'weinhardt2026/studies/synthetic/params/spice_synthetic_balanced_PARp_IT_0_th0.05_sw0_al0.0005_er0.5_gp0.01_fp0.0001_rsSEED.pkl'
+path_model = 'weinhardt2026/studies/synthetic/params/spice_synthetic_balanced_PARp_IT_0_probs_th0.05_sw0_al0.0005_er0.5_gp0.01_fp0.0001_rsSEED.pkl'
 
 rl_parameters = ['beta_reward', 'beta_choice', 'alpha_reward', 'alpha_penalty', 'alpha_choice', 'forget_rate']
 participants = [32, 64, 128, 256, 512]

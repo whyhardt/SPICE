@@ -38,8 +38,8 @@ if __name__=='__main__':
     parser.add_argument('--gate_penalty', type=float, default=1e-2, help='L1 penalty on the individual-level gates of the RNN modules')
     parser.add_argument('--loss_kwargs', type=json.loads, default='{"label_smoothing": 0.01}', help='Learning rate')
     parser.add_argument('--ensemble', type=int, default=10, help='Number of independent members in the ensemble setup')
-    parser.add_argument('--embedding', type=int, default=8, help='Embedding size of participants')
-
+    parser.add_argument('--embedding', type=int, default=32, help='Embedding size of participants')
+    
     # SINDy training parameters
     parser.add_argument('--sindy_skip_refit', action='store_false', help='Refits the SINDy coefficients in Stage 2 training (default: True)')
     parser.add_argument('--sindy_target', type=str, default='probabilities', choices=['probabilities', 'trajectories'], help="Stage 2 SGD objective: fit the RNN's output probabilities (default) or its hidden-state trajectories")
