@@ -89,34 +89,36 @@ def degrees_to_sincos(angle: torch.Tensor) -> torch.Tensor:
     return torch.cat((torch.sin(radians), torch.cos(radians)), dim=-1)
 
 
+def clamp_movement(position: torch.Tensor, shield_t: torch.Tensor, dt: torch.Tensor, speed: float = MOVEMENT_SPEED) -> torch.Tensor:
+    """Move from shield_t toward `position` (both (..., 2) sin, cos) by at most speed * dt (dt in frames).
+
+    The step is limited in sin/cos (chord) space: max step ≈ speed * dt * pi/180 for small angles; for large
+    angles the chord saturates, a reasonable approximation. Idempotent: a clamped position is not clamped again.
+    """
+    delta = position - shield_t
+    delta_mag = delta.norm(dim=-1, keepdim=True)
+    max_move = speed * dt * (math.pi / 180.0)
+    fraction = torch.clamp_max(max_move / (delta_mag + 1e-8), 1.0)
+    return shield_t + fraction * delta
+
+
 def clamped_angular_mse(prediction: torch.Tensor, target: torch.Tensor, speed: float = MOVEMENT_SPEED, **kwargs) -> torch.Tensor:
     """MSE loss with physical movement speed clamping.
 
-    The model predicts a raw belief position in (sin, cos) space.
-    This loss clamps the predicted movement to be physically feasible
-    given the inter-beam interval (dt) and movement speed.
+    The prediction (sin, cos) is clamped to the position reachable from the current shield within the
+    inter-beam interval (clamp_movement). SpiceModel already outputs that reachable position, so for SPICE
+    the clamp changes nothing; models that output a targeted position (benchmark) are clamped here.
 
     Args:
-        prediction: (N, 2) model output [belief_sin, belief_cos]
+        prediction: (N, 2) model output [sin, cos] of the next shield position
         target: (N, 5) packed target [sin(shield_{t+1}), cos(shield_{t+1}),
                 sin(shield_t), cos(shield_t), dt]
         speed: movement speed in degrees per frame
     """
-    belief = prediction[..., :2]                    # model's belief
     actual = target[..., :2]                        # actual shield at t+1
     shield_t = target[..., 2:4]                     # shield at t (sin, cos)
     dt = target[..., 4:5]                           # inter-beam interval (frames)
-
-    delta = belief - shield_t
-    delta_mag = delta.norm(dim=-1, keepdim=True)
-
-    # Max angular movement in sin/cos space ≈ speed * dt * (pi/180) for small angles
-    # For large angles, the sin/cos delta saturates, but this is a reasonable approximation
-    max_move = speed * dt * (math.pi / 180.0)
-    fraction = torch.clamp_max(max_move / (delta_mag + 1e-8), 1.0)
-
-    clamped_pred = shield_t + fraction * delta
-    return F.mse_loss(clamped_pred, actual)
+    return F.mse_loss(clamp_movement(prediction[..., :2], shield_t, dt, speed), actual)
 
 
 def prepare_dataframe(df: pd.DataFrame) -> pd.DataFrame:
@@ -252,8 +254,13 @@ class SpiceModel(BaseModel):
             )
             movement_gain = torch.sigmoid(self.state['movement_value'])
 
-            # --- Next shield position: move part of the way toward the belief (speed clamp in the loss) ---
-            spice_signals.logits[trial] = degrees_to_sincos(shield[trial] + movement_gain * distance)
+            # --- Next shield position: target part of the way toward the belief, reached at most at movement speed
+            # within the beam (the output is the reachable position, so fits and rollouts compare what can be observed)
+            target_position = degrees_to_sincos(shield[trial] + movement_gain * distance)
+            spice_signals.logits[trial] = clamp_movement(
+                target_position, spice_signals.actions[trial],
+                spice_signals.additional_inputs['trial_duration_frames'][trial],
+            )
 
         spice_signals = self.post_forward_pass(spice_signals)
         return spice_signals.logits, self.get_state()
