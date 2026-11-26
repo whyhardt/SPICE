@@ -160,7 +160,7 @@ class EnsembleRNNModule(nn.Module):
         h = state[-1].contiguous().reshape(E, B * I, 1) if self.include_state and state is not None else torch.zeros(E, B * I, 1, device=inputs.device)
 
         # context computation -> individual mechanism activation
-        context = self.dropout(self.compute_gates(embedding))
+        context = self.dropout(self.compute_feature_gates(embedding))
         module_gate = self.compute_module_gate(embedding)      # (E, B*I, 1); no dropout: would switch the whole module off at random
         
         # GRU cell over within-trial timesteps
@@ -183,6 +183,7 @@ class EnsembleRNNModule(nn.Module):
             y_t = y_t * context
             
             # New candidate
+            # n = y_t.sum(dim=-1, keepdim=True) * module_gate
             n = torch.einsum('ego,ebo->ebg', self.weight_n, y_t) * module_gate       # (E, B*I, 1)
             # if self.include_bias:
             #     n = n + self.bias_n.unsqueeze(1)
@@ -197,7 +198,7 @@ class EnsembleRNNModule(nn.Module):
         output = torch.stack(outputs)              # (W, E, B*I, H)
         return output.reshape(W, E, B, I, 1)
 
-    def compute_gates(self, embedding):
+    def compute_feature_gates(self, embedding):
         """Individual-level gates over the group-level features: sigmoid(U @ embedding) in (0, 1).
 
         Args:
@@ -206,7 +207,10 @@ class EnsembleRNNModule(nn.Module):
         Returns:
             (E, N, n_features); gates near 0 switch a feature off for that individual
         """
-        return self.hard_gate(torch.einsum('eoi,ebi->ebo', self.weight_context, embedding))
+        x = torch.einsum('eoi,ebi->ebo', self.weight_context, embedding)
+        soft = torch.nn.functional.sigmoid(x)
+        hard = torch.nn.functional.hardsigmoid(x)
+        return hard + (soft - soft.detach())
 
     def compute_module_gate(self, embedding):
         """Individual-level gate of the whole module: one value in [0, 1] per individual; 0 = module off.
@@ -217,16 +221,10 @@ class EnsembleRNNModule(nn.Module):
         Returns:
             (E, N, 1)
         """
-        return self.hard_gate(torch.einsum('eoi,ebi->ebo', self.weight_module_gate, embedding))
-
-    @staticmethod
-    def hard_gate(x):
-        """Hard sigmoid with straight-through sigmoid gradient: exact 0 / 1 in the forward pass,
-        gradient sigmoid'(x) everywhere (closed gates can reopen)."""
-        soft = torch.sigmoid(x)
+        x = torch.einsum('eoi,ebi->ebo', self.weight_module_gate, embedding)
+        soft = torch.nn.functional.sigmoid(x)
         hard = torch.nn.functional.hardsigmoid(x)
         return hard + (soft - soft.detach())
-
 
     def forward(self, inputs, state):
         if self._compile:
@@ -726,14 +724,15 @@ class BaseModel(nn.Module):
         if is_discovered:
             if not self.use_sindy or self.ridge_mode:
                 # L1 on the individual-level gates (time-invariant -> once per forward pass and module);
-                # gates are non-negative, so their mean is the L1 norm
+                # feature gates are signed (in [-1, 1]) -> mean of their absolute values; the module gate is
+                # non-negative (in [0, 1]), so its mean is already the L1 norm
                 rnn_module = self.submodules_rnn[key_module]
                 if self.training and rnn_module.embedding_size > 0 and key_module not in self._modules_gate_penalized:
-                    gates = rnn_module.compute_gates(embedding[0, :, :, 0])  # (E, B, n_features)
+                    gates = rnn_module.compute_feature_gates(embedding[0, :, :, 0])  # (E, B, n_features)
                     module_gate = rnn_module.compute_module_gate(embedding[0, :, :, 0])  # (E, B, 1)
-                    self.gate_loss = self.gate_loss + (gates.mean() + module_gate.mean()) / len(self.submodules_rnn)
+                    self.gate_loss = self.gate_loss + (gates.abs().mean() + module_gate.mean()) / len(self.submodules_rnn)
                     self._modules_gate_penalized.add(key_module)
-
+                    
                 # Get RNN module prediction
                 inputs_rnn = torch.cat((inputs, embedding), dim=-1)  # [W, E, B, I, feat+emb]
                 next_value = self.submodules_rnn[key_module](inputs_rnn, state=value).squeeze(-1)  # [W, E, B, I]

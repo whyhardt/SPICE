@@ -486,7 +486,7 @@ def _ridge_solve_sindy(
     values without touching the optimizer state.
 
     Runs a frozen RNN forward pass over flattened (trial, session) pairs, chunked with
-    automatic OOM backoff (mirrors _run_shooting_eval_batched) -- a single-shot pass over the
+    automatic OOM backoff (mirrors _run_eval_batched) -- a single-shot pass over the
     whole flattened dataset can OOM outright on models with large per-sample state (e.g.
     SpiceDDM's evidence_pdf grid), even though the batched SGD loop elsewhere handles the same
     dataset fine. Inside each call_module(), sindy_ridge_accumulate() scatter-adds this chunk's
@@ -803,24 +803,127 @@ def _run_shooting_epoch_vectorized(
     return 0.0
 
 
-def _run_shooting_eval_batched(
+def _rnn_output_targets(
     model: BaseModel,
     xs_train: torch.Tensor,
-    state_trajectories: dict,
-    nan_mask: torch.Tensor,
-    window_starts: list,
-    K: int,
+    batch_size_sessions: int = None,
+) -> torch.Tensor:
+    """Outputs of the frozen RNN on every session -- the targets of the output-matching SINDy refit.
+
+    Args:
+        model: Model with the trained RNN
+        xs_train: 5D data (E, B, T, W, F)
+        batch_size_sessions: Sessions per forward pass (None = all), halved on OOM
+
+    Returns:
+        (E, B, T, W, n_outputs) RNN outputs (logits for softmax models), on the CPU
+    """
+    B_total = xs_train.shape[1]
+    if batch_size_sessions is None or batch_size_sessions > B_total:
+        batch_size_sessions = B_total
+    model.eval(use_sindy=False)
+    while True:
+        try:
+            outputs = []
+            with torch.no_grad():
+                for b_start in range(0, B_total, batch_size_sessions):
+                    xs_batch = xs_train[:, b_start:b_start + batch_size_sessions].to(model.device)
+                    outputs.append(model(xs_batch, None)[0].detach().cpu())
+            return torch.cat(outputs, dim=1)
+        except (torch.cuda.OutOfMemoryError, RuntimeError) as e:
+            if _check_cuda_oom(e):
+                raise
+            if batch_size_sessions <= 1:
+                raise RuntimeError(f"Automatic batch size probing was unsuccessful for the RNN output targets. Current batch size is {batch_size_sessions} but could still not be started. Please try again with a smaller ensemble size (current: {model.ensemble_size}).")
+            torch.cuda.empty_cache()
+            batch_size_sessions = max(1, batch_size_sessions // 2)
+
+
+def _output_matching_loss(
+    prediction: torch.Tensor,
+    target: torch.Tensor,
+    mask: torch.Tensor,
+    softmax_outputs: bool,
+) -> torch.Tensor:
+    """Discrepancy between the SINDy model's and the frozen RNN's outputs on the valid steps.
+
+    softmax_outputs=True: KL(p_RNN || p_SINDy) of the action probabilities; otherwise the MSE
+    between the outputs (continuous predictions).
+    """
+    if softmax_outputs:
+        log_p_target = torch.log_softmax(target, dim=-1)
+        divergence = (log_p_target.exp() * (log_p_target - torch.log_softmax(prediction, dim=-1))).sum(dim=-1)
+    else:
+        divergence = ((prediction - target) ** 2).mean(dim=-1)
+    return divergence[mask].mean()
+
+
+def _run_output_matching_epoch(
+    model: BaseModel,
+    optimizer: torch.optim.Optimizer,
+    xs_train: torch.Tensor,
+    rnn_outputs: torch.Tensor,
+    batch_sessions: torch.Tensor,
+    sindy_alpha: float = None,
+    softmax_outputs: bool = True,
+) -> float:
+    """One output-matching step: roll the SINDy model out closed-loop over all trials of the
+    batch sessions and fit its outputs to the frozen RNN's (see _output_matching_loss).
+
+    Args:
+        model: Model in SINDy training mode (use_sindy=True, RNN frozen)
+        optimizer: SINDy coefficient optimizer (None = evaluation only, no penalty)
+        xs_train: 5D training data (E, B, T, W, F)
+        rnn_outputs: (E, B, T, W, n_outputs) frozen-RNN outputs from _rnn_output_targets
+        batch_sessions: Session indices for this batch (tensor)
+        sindy_alpha: L1 penalty strength (None or 0 = disabled)
+        softmax_outputs: KL on softmax probabilities (True) or MSE on the outputs (False)
+
+    Returns:
+        Loss of the batch (including the L1 penalty when optimizing)
+    """
+    xs_batch = xs_train[:, batch_sessions].to(model.device)
+    target = rnn_outputs[:, batch_sessions].to(model.device)
+    mask = ~torch.isnan(xs_batch[..., :model.n_actions].sum(dim=-1))  # (E, B, T, W)
+    if not mask.any():
+        return 0.0
+
+    model.zero_grad()
+    prediction, _ = model(xs_batch, None)
+    loss = _output_matching_loss(prediction, target, mask, softmax_outputs)
+
+    if optimizer is not None:
+        if sindy_alpha is not None and sindy_alpha > 0:
+            loss = loss + model.compute_weighted_coefficient_penalty(sindy_alpha=sindy_alpha)
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        optimizer.step()
+        with torch.no_grad():
+            for module in model.get_modules():
+                model.sindy_coefficients[module].data *= model.sindy_coefficients_presence[module]
+
+    return loss.item()
+
+
+def _run_eval_batched(
+    model: BaseModel,
+    epoch_fn: callable,
     B_total: int,
-    sindy_alpha: float,
     batch_size_sessions: int = None,
 ) -> tuple:
     """No-grad ridge-solution evaluation over all B_total sessions, chunked and with
     automatic OOM backoff -- mirrors the batching/backoff the SGD loops right after each
-    call site already do. The plain `batch_sessions=torch.arange(B_total)` single-shot
-    call this replaces has no such backoff, so on models with a large per-session state
-    (e.g. SpiceDDM's evidence_pdf grid) it can OOM outright on datasets the subsequent
-    (batched) SGD loop handles fine. Returns (mean_loss, safe_batch_size) so the caller
-    can seed the SGD loop's batch size with a value already known to fit.
+    call site already do. A single-shot call over all sessions has no such backoff, so on
+    models with a large per-session state (e.g. SpiceDDM's evidence_pdf grid) it can OOM
+    outright on datasets the subsequent (batched) SGD loop handles fine.
+
+    Args:
+        epoch_fn: epoch_fn(optimizer, batch_sessions, sindy_alpha) -> loss of the stage's
+            objective (shooting or output matching); called with optimizer=None here
+
+    Returns:
+        (mean_loss, safe_batch_size) so the caller can seed the SGD loop's batch size with
+        a value already known to fit.
     """
     if batch_size_sessions is None or batch_size_sessions > B_total:
         batch_size_sessions = B_total
@@ -831,18 +934,8 @@ def _run_shooting_eval_batched(
             n_batches = 0
             for b_start in range(0, B_total, batch_size_sessions):
                 b_end = min(b_start + batch_size_sessions, B_total)
-                batch_sessions = torch.arange(b_start, b_end)
-                loss_e = _run_shooting_epoch_vectorized(
-                    model=model,
-                    optimizer=None,
-                    xs_train=xs_train,
-                    state_trajectories=state_trajectories,
-                    nan_mask=nan_mask,
-                    window_starts=window_starts,
-                    K=K,
-                    batch_sessions=batch_sessions,
-                    sindy_alpha=sindy_alpha,
-                )
+                with torch.no_grad():
+                    loss_e = epoch_fn(None, torch.arange(b_start, b_end), None)
                 loss_total += loss_e
                 n_batches += 1
             return (loss_total / n_batches if n_batches > 0 else 0.0), batch_size_sessions
@@ -850,7 +943,7 @@ def _run_shooting_eval_batched(
             if _check_cuda_oom(e):
                 raise
             if batch_size_sessions <= 1:
-                raise RuntimeError(f"Automatic batch size probing was unsuccessful for shooting evaluation. Current batch size is {batch_size_sessions} but could still not be started. Please try again with a smaller ensemble size (current: {model.ensemble_size}).")
+                raise RuntimeError(f"Automatic batch size probing was unsuccessful for the ridge evaluation. Current batch size is {batch_size_sessions} but could still not be started. Please try again with a smaller ensemble size (current: {model.ensemble_size}).")
             model.zero_grad(set_to_none=True)
             torch.cuda.empty_cache()
             batch_size_sessions = max(1, batch_size_sessions // 2)
@@ -871,26 +964,36 @@ def _run_sindy_training(
     sindy_pruning_terms: int = None,
     shooting_steps: int = 20,
     sindy_ridge: bool = True,
+    sindy_target: str = 'probabilities',
+    softmax_outputs: bool = True,
     verbose: bool = True,
     ):
 
     """
-    Two-phase SINDy refit on frozen RNN hidden states.
+    Two-phase SINDy refit on the frozen RNN.
+
+    Both stages initialize the coefficients with a closed-form ridge solve on the RNN's
+    hidden-state trajectories and then refine them by SGD on the objective `sindy_target`:
+        'probabilities' (default): the SINDy model is rolled out closed-loop over all trials and
+            its outputs are fitted to the frozen RNN's (KL of the action probabilities for softmax
+            models, MSE of the outputs otherwise; see _output_matching_loss). Dynamics that do not
+            change the RNN's predictions (e.g. offsets of the states) are not fitted.
+        'trajectories': the SINDy model is fitted to the RNN's hidden-state trajectories
+            (one-step in Stage 2.1, multi-step shooting with K=shooting_steps in Stage 2.2).
 
     Stage 2.1 — Sparsity discovery:
         Reset all presence masks to fully active, re-initialize coefficients,
-        and train with multi-step shooting (K=shooting_steps) + pruning + L1
-        penalty. Uses the same LR adaptation as Stage 1: warmup at 0.01, then
-        drop to 0.001, boost back to 0.01 after pruning events.
+        and train on the objective + pruning + L1 penalty. Uses the same LR
+        adaptation as Stage 1: warmup at 0.01, then drop to 0.001, boost back to
+        0.01 after pruning events.
 
     Stage 2.2 — Coefficient estimation:
         Freeze the discovered sparsity pattern, re-initialize coefficients
-        within the support, and fit using multi-step shooting (K=shooting_steps)
-        without pruning or L1 penalty. Same LR schedule (warmup 0.01 -> 0.001).
+        within the support, and fit on the objective without pruning or L1
+        penalty. Same LR schedule (warmup 0.01 -> 0.001).
 
     Stage 2.1 uses bootstrapped data. Stage 2.2 optionally re-computes
-    trajectories on the full (non-bootstrapped) dataset and averages them
-    across ensemble members to create consensus targets.
+    the targets on the full (non-bootstrapped) dataset.
 
     Args:
         model: Trained RNN model with SINDy coefficients
@@ -906,18 +1009,25 @@ def _run_sindy_training(
         sindy_pruning_frequency: Epochs between pruning events in Stage 2.1
         sindy_ensemble_pruning: CI test alpha level for Stage 2.1
         sindy_threshold_pruning: Minimum effect size delta for Stage 2.1
-        shooting_steps: Rollout horizon K for Stage 2.2. (default: 20)
+        shooting_steps: Rollout horizon K for Stage 2.2 with sindy_target='trajectories'. (default: 20)
+        sindy_target: SGD objective, 'probabilities' (default) or 'trajectories' (see above)
+        softmax_outputs: The model's outputs are logits of a softmax (KL in the output matching);
+            False = continuous outputs (MSE)
         verbose: Print progress
 
     Returns:
         BaseModel: Model with refitted SINDy coefficients
     """
+    if sindy_target not in ('probabilities', 'trajectories'):
+        raise ValueError(f"sindy_target must be 'probabilities' or 'trajectories', got '{sindy_target}'.")
+
     _E, B, T, W, F = xs_train.shape
     E = model.ensemble_size
 
-    # Collect RNN state trajectories (shared across both stages)
-    model.eval(use_sindy=False)
-    state_trajectories, nan_mask = _vectorize_state_sequential(model, xs_train, ys_train, verbose=verbose)
+    # Collect RNN state trajectories (shared across both stages; only the shooting objective uses them)
+    if sindy_target == 'trajectories':
+        model.eval(use_sindy=False)
+        state_trajectories, nan_mask = _vectorize_state_sequential(model, xs_train, ys_train, verbose=verbose)
 
     # LR constants (same schedule as Stage 1)
     lr_base = 0.01
@@ -939,7 +1049,10 @@ def _run_sindy_training(
         if verbose:
             terminal_width = _get_terminal_width()
             print("\n" + "=" * terminal_width)
-            print(f"Stage 2.1: SINDy sparsity discovery (K={1})")
+            if sindy_target == 'trajectories':
+                print("Stage 2.1: SINDy sparsity discovery (one-step on the RNN trajectories)")
+            else:
+                print("Stage 2.1: SINDy sparsity discovery (closed-loop fit to the RNN's outputs)")
             print("=" * terminal_width)
 
         # Reset presence masks and re-initialize coefficients for full exploration,
@@ -953,15 +1066,29 @@ def _run_sindy_training(
                 * model.sindy_coefficients_prior_mask[module].float()
             )
 
-        # Genuine one-step (dw=1) fitting: flatten every (w, t) transition into
-        # its own independent T'=1, W'=1 pseudo-session, so K=1 here means one
-        # teacher-forced step regardless of whether this model's sequential
-        # structure lives in W (within-trial dynamics) or T (across-trial).
-        xs_21, state_trajectories_21, nan_mask_21, B_21 = _flatten_state_trajectories_onestep(
-            xs_train, state_trajectories, nan_mask,
-        )
-        K_21 = 1
-        window_starts_21 = [0]
+        if sindy_target == 'trajectories':
+            # Genuine one-step (dw=1) fitting: flatten every (w, t) transition into
+            # its own independent T'=1, W'=1 pseudo-session, so K=1 here means one
+            # teacher-forced step regardless of whether this model's sequential
+            # structure lives in W (within-trial dynamics) or T (across-trial).
+            xs_21, state_trajectories_21, nan_mask_21, B_21 = _flatten_state_trajectories_onestep(
+                xs_train, state_trajectories, nan_mask,
+            )
+
+            def epoch_21(optimizer, batch_sessions, alpha):
+                return _run_shooting_epoch_vectorized(
+                    model=model, optimizer=optimizer, xs_train=xs_21, state_trajectories=state_trajectories_21,
+                    nan_mask=nan_mask_21, window_starts=[0], K=1, batch_sessions=batch_sessions, sindy_alpha=alpha,
+                )
+        else:
+            rnn_outputs_21 = _rnn_output_targets(model, xs_train)
+            B_21 = B
+
+            def epoch_21(optimizer, batch_sessions, alpha):
+                return _run_output_matching_epoch(
+                    model=model, optimizer=optimizer, xs_train=xs_train, rnn_outputs=rnn_outputs_21,
+                    batch_sessions=batch_sessions, sindy_alpha=alpha, softmax_outputs=softmax_outputs,
+                )
 
         # Ridge solve with L2 penalty to initialize coefficients. Uses the
         # original (non-flattened) xs_train -- sindy_ridge_accumulate's h_current is
@@ -976,26 +1103,17 @@ def _run_sindy_training(
 
         batch_size_sessions = B_21
         if ridge_success_21:
-            # Evaluate ridge solution with the flattened one-step loss
-            with torch.no_grad():
-                ridge_loss_21, batch_size_sessions = _run_shooting_eval_batched(
-                    model=model,
-                    xs_train=xs_21,
-                    state_trajectories=state_trajectories_21,
-                    nan_mask=nan_mask_21,
-                    window_starts=window_starts_21,
-                    K=K_21,
-                    B_total=B_21,
-                    sindy_alpha=sindy_alpha,
-                    batch_size_sessions=batch_size_sessions,
-                )
+            # Evaluate ridge solution with the stage's objective
+            ridge_loss_21, batch_size_sessions = _run_eval_batched(
+                model=model, epoch_fn=epoch_21, B_total=B_21, batch_size_sessions=batch_size_sessions,
+            )
             # A closed-form solve can "succeed" (no LinAlgError) while still
             # producing coefficients that are non-finite once evaluated --
             # don't hand those to SGD as a starting point.
             if not math.isfinite(ridge_loss_21):
                 ridge_success_21 = False
             elif verbose:
-                print(f"Ridge initialization succeeded (K={K_21} loss: {ridge_loss_21:.7f}). Running SGD refinement...")
+                print(f"Ridge initialization succeeded (loss: {ridge_loss_21:.7f}). Running SGD refinement...")
 
         if not ridge_success_21:
             for module in model.get_modules():
@@ -1035,17 +1153,7 @@ def _run_sindy_training(
                     for b_start in range(0, B_21, batch_size_sessions):
                         b_end = min(b_start + batch_size_sessions, B_21)
                         batch_sessions = session_perm[b_start:b_end]
-                        loss_e = _run_shooting_epoch_vectorized(
-                            model=model,
-                            optimizer=optimizer_21,
-                            xs_train=xs_21,
-                            state_trajectories=state_trajectories_21,
-                            nan_mask=nan_mask_21,
-                            window_starts=window_starts_21,
-                            K=K_21,
-                            batch_sessions=batch_sessions,
-                            sindy_alpha=sindy_alpha,
-                        )
+                        loss_e = epoch_21(optimizer_21, batch_sessions, sindy_alpha)
                         loss_epoch += loss_e
                         n_batches += 1
 
@@ -1104,30 +1212,46 @@ def _run_sindy_training(
     # Switch to full (non-bootstrapped) data with per-member targets
     if xs_train_original is not None and E > 1:
         if verbose:
-            print("Re-computing state trajectories on full data (per-member targets)...")
+            print("Re-computing the targets on full data (per-member targets)...")
         xs_full_5d = xs_train_original.unsqueeze(0).expand(E, -1, -1, -1, -1).contiguous()
         ys_full_5d = ys_train_original.unsqueeze(0).expand(E, -1, -1, -1, -1).contiguous()
-        model.eval(use_sindy=False)
-        state_trajectories, nan_mask = _vectorize_state_sequential(
-            model, xs_full_5d, ys_full_5d, verbose=verbose
-        )
+        if sindy_target == 'trajectories':
+            model.eval(use_sindy=False)
+            state_trajectories, nan_mask = _vectorize_state_sequential(
+                model, xs_full_5d, ys_full_5d, verbose=verbose
+            )
         xs_train = xs_full_5d
         ys_train = ys_full_5d
         B = xs_train.shape[1]
 
-    K = shooting_steps
+    if sindy_target == 'trajectories':
+        K = shooting_steps
 
-    # Build shooting windows (shared by ridge evaluation and SGD)
-    if K > 1:
-        n_windows = T // K
-        window_starts = [i * K for i in range(n_windows)]
-        if T % K > 0 and T > K:
-            window_starts.append(T - K)
-        elif T % K > 0 and T <= K:
-            window_starts = [0]
-            K = T
+        # Build shooting windows (shared by ridge evaluation and SGD)
+        if K > 1:
+            n_windows = T // K
+            window_starts = [i * K for i in range(n_windows)]
+            if T % K > 0 and T > K:
+                window_starts.append(T - K)
+            elif T % K > 0 and T <= K:
+                window_starts = [0]
+                K = T
+        else:
+            window_starts = list(range(T))
+
+        def epoch_22(optimizer, batch_sessions, alpha):
+            return _run_shooting_epoch_vectorized(
+                model=model, optimizer=optimizer, xs_train=xs_train, state_trajectories=state_trajectories,
+                nan_mask=nan_mask, window_starts=window_starts, K=K, batch_sessions=batch_sessions, sindy_alpha=alpha,
+            )
     else:
-        window_starts = list(range(T))
+        rnn_outputs_22 = _rnn_output_targets(model, xs_train)
+
+        def epoch_22(optimizer, batch_sessions, alpha):
+            return _run_output_matching_epoch(
+                model=model, optimizer=optimizer, xs_train=xs_train, rnn_outputs=rnn_outputs_22,
+                batch_sessions=batch_sessions, sindy_alpha=alpha, softmax_outputs=softmax_outputs,
+            )
 
     if verbose:
         terminal_width = _get_terminal_width()
@@ -1138,7 +1262,9 @@ def _run_sindy_training(
         # inside each of these K forward calls (see call_module's SINDy branch),
         # so a model with T=1 and W>1 (e.g. this study) still gets full W-length
         # supervision per step even though K clamps to 1.
-        if K > 1:
+        if sindy_target == 'probabilities':
+            print(f"Stage 2.2: SINDy coefficient estimation (closed-loop fit to the RNN's outputs, W={W})")
+        elif K > 1:
             print(f"Stage 2.2: SINDy coefficient estimation (multi-step shooting across trials, K={K}, W={W})")
         else:
             print(f"Stage 2.2: SINDy coefficient estimation (one-step-ahead across trials, W={W})")
@@ -1158,34 +1284,25 @@ def _run_sindy_training(
         ridge_success = _ridge_solve_sindy(model, xs_train, ys_train)
         if ridge_success:
             sgd_epochs = min(1000, epochs)
-            # Evaluate ridge solution with K-step shooting loss
+            # Evaluate ridge solution with the stage's objective (multi-step rollout)
             model.fit_sindy = False
             model.train(use_sindy=True)
             for rnn_module in model.submodules_rnn.values():
                 rnn_module.eval()
-            with torch.no_grad():
-                ridge_loss, batch_size_sessions = _run_shooting_eval_batched(
-                    model=model,
-                    xs_train=xs_train,
-                    state_trajectories=state_trajectories,
-                    nan_mask=nan_mask,
-                    window_starts=window_starts,
-                    K=K,
-                    B_total=B,
-                    sindy_alpha=sindy_alpha,
-                    batch_size_sessions=batch_size_sessions,
-                )
+            ridge_loss, batch_size_sessions = _run_eval_batched(
+                model=model, epoch_fn=epoch_22, B_total=B, batch_size_sessions=batch_size_sessions,
+            )
             # A closed-form solve can "succeed" (no LinAlgError) while still
-            # producing a coefficient set that's unstable under the K-step
+            # producing a coefficient set that's unstable under the multi-step
             # rollout used to evaluate it -- e.g. a self-coefficient a>0 blows
             # up to inf/NaN over many steps even though the linear solve
             # itself was well-posed. Treat that the same as an outright ridge
             # failure rather than handing NaN-producing coefficients to SGD.
             if not math.isfinite(ridge_loss):
                 ridge_success = False
-                ridge_fail_reason = f"solved but produced a non-finite loss (K={K}: {ridge_loss})"
+                ridge_fail_reason = f"solved but produced a non-finite loss ({ridge_loss})"
             elif verbose:
-                print(f"Ridge regression succeeded (K={K} loss: {ridge_loss:.7f}). Running SGD refinement...")
+                print(f"Ridge regression succeeded (loss: {ridge_loss:.7f}). Running SGD refinement...")
         else:
             ridge_fail_reason = "failed"
 
@@ -1232,17 +1349,7 @@ def _run_sindy_training(
                 for b_start in range(0, B, batch_size_sessions):
                     b_end = min(b_start + batch_size_sessions, B)
                     batch_sessions = session_perm[b_start:b_end]
-                    loss_e = _run_shooting_epoch_vectorized(
-                        model=model,
-                        optimizer=optimizer_22,
-                        xs_train=xs_train,
-                        state_trajectories=state_trajectories,
-                        nan_mask=nan_mask,
-                        window_starts=window_starts,
-                        K=K,
-                        batch_sessions=batch_sessions,
-                        sindy_alpha=None,  # unpenalized
-                    )
+                    loss_e = epoch_22(optimizer_22, batch_sessions, None)  # unpenalized
                     loss_epoch += loss_e
                     n_batches += 1
 
@@ -1255,7 +1362,6 @@ def _run_sindy_training(
                     loss=f"{loss_epoch:.7f}",
                     lr=f"{optimizer_22.param_groups[0]['lr']:.1e}",
                     n_params=f"{model.count_sindy_coefficients().mean():.2f}+/-{model.count_sindy_coefficients().std():.2f}",
-                    K=K,
                 )
             break
         except KeyboardInterrupt:
@@ -1644,6 +1750,7 @@ def fit_spice(
     sindy_refit: bool = True,
     sindy_ridge: bool = True,
     sindy_shooting_steps: int = 20,
+    sindy_target: str = 'probabilities',
 
     verbose: bool = True,
     keep_log: bool = False,
@@ -1663,8 +1770,10 @@ def fit_spice(
         are ridge-recalibrated and the optimizer is reconditioned.
 
     Stage 2 (Final SINDy Refit):
-        Freeze RNN weights and refit SINDy coefficients via ridge solve on
-        stable hidden states. Single-pass: solve → prune → refit.
+        Freeze RNN weights; initialize the SINDy coefficients by a ridge solve on the RNN's
+        hidden-state trajectories and refine them by SGD on `sindy_target` (default: the
+        RNN's output probabilities), with pruning (Stage 2.1) and an unpenalized refit on the
+        discovered support (Stage 2.2). See _run_sindy_training.
 
     Args:
         model: RNN model with SINDy integration
@@ -1697,7 +1806,10 @@ def fit_spice(
             mode during Stage 2 coefficient fitting before computing loss.
             1 = one-step-ahead. Values > 1 enable multi-step shooting which
             penalizes error accumulation and produces more stable autoregressive
-            rollouts. (default: 20)
+            rollouts. Only used with sindy_target='trajectories'. (default: 20)
+        sindy_target: Stage 2 SGD objective: 'probabilities' (default; closed-loop fit to the
+            frozen RNN's outputs -- KL of the action probabilities for cross_entropy_loss, MSE of
+            the outputs for any other loss_fn) or 'trajectories' (fit to the RNN's hidden states)
         verbose: Print progress
         keep_log: Keep full training log (vs. live update)
         n_warmup_steps: Warmup epochs for SINDy weight (no pruning during warmup)
@@ -1858,6 +1970,8 @@ def fit_spice(
             sindy_pruning_terms=sindy_pruning_terms,
             shooting_steps=sindy_shooting_steps,
             sindy_ridge=sindy_ridge,
+            sindy_target=sindy_target,
+            softmax_outputs=loss_fn is cross_entropy_loss,
             verbose=verbose,
         )
 

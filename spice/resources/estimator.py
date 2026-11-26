@@ -69,6 +69,7 @@ class SpiceEstimator(BaseEstimator):
         sindy_refit: Optional[bool] = True,  # Enable Stage 2 Training (SINDy refit on frozen RNN parameters)
         sindy_ridge: Optional[bool] = True,  # Use ridge regression initialization in Stage 2.2 (falls back to SGD on failure)
         sindy_shooting_steps: Optional[int] = 100,  # Multi-step shooting horizon for Stage 2 (1 = one-step-ahead)
+        sindy_target: Optional[str] = 'probabilities',  # Stage 2 SGD objective: 'probabilities' (RNN outputs) or 'trajectories' (RNN states)
 
         verbose: Optional[bool] = False,
         keep_log: Optional[bool] = False,
@@ -118,7 +119,12 @@ class SpiceEstimator(BaseEstimator):
             sindy_ridge: Use closed-form ridge regression to initialize SINDy coefficients in Stage 2.2.
                 Falls back to SGD on failure. Set False to use pure SGD. (default: True)
             sindy_shooting_steps: Multi-step shooting horizon for Stage 2 SINDy refit.
-                1 = one-step-ahead. Values > 1 roll out K steps to penalize compounding error. (default: 20)
+                1 = one-step-ahead. Values > 1 roll out K steps to penalize compounding error.
+                Only used with sindy_target='trajectories'. (default: 100)
+            sindy_target: Stage 2 SGD objective after the ridge initialization on the RNN trajectories:
+                'probabilities' fits the SINDy model's closed-loop outputs to the frozen RNN's (KL of the
+                action probabilities for cross_entropy_loss, MSE otherwise); 'trajectories' fits the RNN's
+                hidden-state trajectories (shooting). (default: 'probabilities')
             verbose: Print training progress.
             keep_log: Keep full training log (vs. live terminal update).
             save_path_spice: File path (.pkl) to auto-save SPICE model after training.
@@ -160,6 +166,7 @@ class SpiceEstimator(BaseEstimator):
         self.sindy_refit = sindy_refit
         self.sindy_ridge = sindy_ridge
         self.sindy_shooting_steps = sindy_shooting_steps
+        self.sindy_target = sindy_target
         
         # Data parameters
         self.n_actions = n_actions
@@ -267,6 +274,7 @@ class SpiceEstimator(BaseEstimator):
             sindy_refit=self.sindy_refit,
             sindy_ridge=self.sindy_ridge,
             sindy_shooting_steps=self.sindy_shooting_steps,
+            sindy_target=self.sindy_target,
 
             verbose=self.verbose,
             keep_log=self.keep_log,
